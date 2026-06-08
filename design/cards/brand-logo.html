@@ -1,0 +1,28 @@
+<!-- @dsCard group="Brand" viewport="700x240" name="Logo" subtitle="Mark, lockup, and mono variant. A machine-vision reticle watching a frame." -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--bg-panel); padding: var(--space-6); font-family: var(--font-sans); display:flex; flex-direction:column; gap: var(--space-5); }
+  .row { display: flex; align-items: center; gap: var(--space-8); }
+  .cell { display:flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; }
+  .tok { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+  .swatchset { display:flex; gap: var(--space-4); align-items:center; }
+  .on { width: 88px; height: 64px; border-radius: var(--radius-md); display:flex; align-items:center; justify-content:center; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="cell"><img src="../assets/logo-lockup.svg" height="44"><span class="tok">logo-lockup.svg</span></div>
+    <div class="cell"><img src="../assets/logo-mark.svg" height="56"><span class="tok">logo-mark.svg</span></div>
+  </div>
+  <div class="swatchset">
+    <div class="on" style="background:var(--brand)"><img src="../assets/logo-mark-mono.svg" height="40" style="color:var(--slate-1000)"></div>
+    <div class="on" style="background:var(--slate-1000)"><img src="../assets/logo-mark-mono.svg" height="40" style="color:var(--signal-400)"></div>
+    <div class="on" style="background:var(--slate-50)"><img src="../assets/logo-mark-mono.svg" height="40" style="color:var(--slate-900)"></div>
+    <span class="tok">logo-mark-mono.svg · currentColor</span>
+  </div>
+</body>
+</html>

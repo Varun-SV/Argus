@@ -1,0 +1,55 @@
+/* ============================================================
+   ARGUS — Spacing & sizing tokens
+   4px base grid. Dense by default (it's an instrument), with room
+   to breathe in marketing/empty states.
+   ============================================================ */
+
+:root {
+  /* ---------- Spacing scale (4px base) ---------- */
+  --space-0:   0px;
+  --space-px:  1px;
+  --space-0-5: 2px;
+  --space-1:   4px;
+  --space-1-5: 6px;
+  --space-2:   8px;
+  --space-2-5: 10px;
+  --space-3:   12px;
+  --space-4:   16px;
+  --space-5:   20px;
+  --space-6:   24px;
+  --space-7:   28px;
+  --space-8:   32px;
+  --space-10:  40px;
+  --space-12:  48px;
+  --space-14:  56px;
+  --space-16:  64px;
+  --space-20:  80px;
+  --space-24:  96px;
+  --space-32:  128px;
+
+  /* ---------- Control heights (consistent hit targets) ---------- */
+  --control-xs: 24px;
+  --control-sm: 30px;
+  --control-md: 36px;   /* default */
+  --control-lg: 44px;
+  --control-xl: 52px;
+
+  /* ---------- Layout rails ---------- */
+  --rail-sidebar:    260px;
+  --rail-sidebar-sm: 56px;    /* collapsed icon rail */
+  --rail-inspector:  340px;
+  --topbar-height:   52px;
+  --statusbar-height:30px;
+  --content-max:     1200px;
+  --prose-max:       68ch;
+
+  /* ---------- Z-index scale ---------- */
+  --z-base:     0;    /* @kind other */
+  --z-raised:   10;   /* @kind other */
+  --z-sticky:   100;  /* @kind other */
+  --z-dropdown: 1000; /* @kind other */
+  --z-overlay:  1100; /* @kind other */
+  --z-modal:    1200; /* @kind other */
+  --z-toast:    1300; /* @kind other */
+  --z-tooltip:  1400; /* @kind other */
+}

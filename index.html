@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus — Universal Application Testing</title>
+<link rel="stylesheet" href="design/styles.css">
+<style>
+  body { margin: 0; min-height: 100vh; background: var(--bg-app); }
+
+  /* Nav */
+  .nav { display: flex; align-items: center; justify-content: space-between; height: 52px; padding: 0 var(--space-7); background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); position: sticky; top: 0; z-index: 10; }
+  .nav__brand { display: inline-flex; align-items: center; gap: var(--space-2-5); text-decoration: none; }
+  .nav__brand:hover { text-decoration: none; }
+  .nav__name { font-family: var(--font-display); font-weight: 600; font-size: var(--text-lg); letter-spacing: -0.01em; color: var(--text-primary); }
+  .nav__links { display: flex; align-items: center; gap: var(--space-1); }
+  .nav__link { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 var(--space-3); border-radius: var(--radius-md); background: none; border: none; color: var(--text-muted); font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; cursor: pointer; text-decoration: none; transition: var(--transition-colors); }
+  .nav__link:hover { background: var(--bg-hover); color: var(--text-primary); text-decoration: none; }
+  .nav__right { display: flex; align-items: center; gap: var(--space-3); }
+  .nav__tag { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); padding: 2px 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-pill); }
+
+  /* Hero */
+  .hero { max-width: 860px; margin: 0 auto; padding: var(--space-20) var(--space-7) var(--space-14); text-align: center; }
+  .hero__eyebrow { display: inline-flex; align-items: center; gap: var(--space-2); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-brand); background: var(--brand-tint); border: 1px solid rgba(20,201,172,0.2); padding: 4px 12px; border-radius: var(--radius-pill); margin-bottom: var(--space-6); }
+  .hero__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); animation: argus-running-dot 1.4s var(--ease-out) infinite; }
+  .hero__title { font-family: var(--font-display); font-size: var(--text-6xl); font-weight: 700; letter-spacing: var(--tracking-tighter); line-height: var(--leading-tight); color: var(--text-primary); margin-bottom: var(--space-5); }
+  .hero__title em { font-style: normal; color: var(--text-brand); }
+  .hero__sub { font-size: var(--text-lg); color: var(--text-muted); line-height: var(--leading-relaxed); max-width: 620px; margin: 0 auto var(--space-8); }
+  .hero__actions { display: flex; align-items: center; justify-content: center; gap: var(--space-3); flex-wrap: wrap; }
+  .hero__cmd { display: inline-flex; align-items: center; gap: var(--space-2); height: var(--control-lg); padding: 0 var(--space-5); background: var(--bg-inset); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-secondary); }
+  .hero__cmd span { color: var(--text-faint); }
+
+  /* Status row */
+  .status-row { display: flex; align-items: center; justify-content: center; gap: var(--space-3); flex-wrap: wrap; padding: 0 var(--space-7) var(--space-10); }
+
+  /* Surfaces */
+  .surfaces { max-width: 1160px; margin: 0 auto; padding: 0 var(--space-7) var(--space-16); }
+  .surfaces__title { font-family: var(--font-display); font-size: var(--text-3xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin-bottom: var(--space-2); }
+  .surfaces__sub { color: var(--text-muted); font-size: var(--text-sm); margin-bottom: var(--space-7); }
+  .surfaces__grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-5); }
+
+  .surface-card { display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); overflow: hidden; transition: var(--transition-colors), transform var(--dur-fast) var(--ease-out); text-decoration: none; color: inherit; }
+  .surface-card:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: var(--shadow-md); text-decoration: none; }
+  .surface-card__thumb { aspect-ratio: 16/9; background: var(--bg-sunken); border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+  .surface-card__thumb-inner { width: 100%; height: 100%; }
+  .surface-card__body { padding: var(--space-4) var(--space-5); flex: 1; display: flex; flex-direction: column; }
+  .surface-card__tag { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: var(--radius-pill); padding: 2px 8px; margin-bottom: var(--space-3); align-self: flex-start; }
+  .surface-card__title { font-family: var(--font-display); font-size: var(--text-xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin-bottom: var(--space-2); }
+  .surface-card__desc { font-size: var(--text-sm); color: var(--text-muted); line-height: var(--leading-normal); flex: 1; margin-bottom: var(--space-4); }
+  .surface-card__features { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1-5); }
+  .surface-card__feature { display: flex; align-items: flex-start; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary); font-family: var(--font-mono); }
+  .surface-card__feature::before { content: "→"; color: var(--text-brand); flex: none; margin-top: 1px; }
+  .surface-card__foot { padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border-subtle); background: var(--bg-panel); display: flex; align-items: center; justify-content: space-between; }
+  .surface-card__open { font-size: var(--text-xs); font-weight: 600; color: var(--text-brand); display: inline-flex; align-items: center; gap: 5px; }
+
+  /* Wireframe preview thumbnails */
+  .wt { background: var(--bg-sunken); width: 100%; height: 100%; display: flex; flex-direction: column; }
+  .wt__bar { height: 30px; background: var(--slate-850); border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; padding: 0 12px; gap: 6px; flex: none; }
+  .wt__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--slate-700); }
+  .wt__bar-fill { flex: 1; height: 10px; background: var(--slate-800); border-radius: 3px; }
+  .wt__body { display: flex; flex: 1; overflow: hidden; }
+  .wt__sidebar { width: 52px; background: var(--slate-900); border-right: 1px solid var(--border-subtle); flex: none; display: flex; flex-direction: column; align-items: center; padding-top: 10px; gap: 8px; }
+  .wt__sidebar-icon { width: 28px; height: 28px; background: var(--slate-750); border-radius: 5px; }
+  .wt__sidebar-icon--active { background: var(--brand-tint); }
+  .wt__main { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 7px; }
+  .wt__row { display: flex; gap: 6px; }
+  .wt__block { background: var(--slate-800); border-radius: 3px; }
+  .wt__block--sm { height: 10px; }
+  .wt__block--md { height: 14px; }
+  .wt__block--lg { height: 36px; }
+  .wt__block--pass { background: var(--status-pass-tint); border: 1px solid rgba(47,196,108,0.2); }
+  .wt__block--fail { background: var(--status-fail-tint); border: 1px solid rgba(245,73,79,0.2); }
+  .wt__block--running { background: var(--brand-tint); border: 1px solid rgba(20,201,172,0.2); }
+
+  /* Console thumb */
+  .ct { background: var(--bg-sunken); width: 100%; height: 100%; display: flex; flex-direction: column; }
+  .ct__top { height: 28px; background: var(--slate-900); border-bottom: 1px solid var(--border-subtle); flex: none; display: flex; align-items: center; padding: 0 10px; gap: 5px; }
+  .ct__wdot { width: 8px; height: 8px; border-radius: 50%; }
+  .ct__body { display: flex; flex: 1; overflow: hidden; }
+  .ct__tree { width: 100px; background: var(--slate-900); border-right: 1px solid var(--border-subtle); flex: none; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .ct__trow { height: 18px; background: var(--slate-800); border-radius: 3px; }
+  .ct__trow--active { background: var(--brand-tint); }
+  .ct__trow--fail { background: var(--status-fail-tint); }
+  .ct__stage { flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
+  .ct__frame { flex: 1; background: var(--slate-800); border-radius: 4px; border: 1px solid var(--border-default); position: relative; overflow: hidden; }
+  .ct__frame-inner { width: 40%; height: 60%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); border: 2px solid var(--signal-500); border-radius: 4px; }
+  .ct__steps { display: flex; flex-direction: column; gap: 3px; }
+  .ct__step { height: 16px; background: var(--slate-800); border-radius: 3px; display: flex; align-items: center; padding: 0 6px; gap: 5px; }
+  .ct__insp { width: 80px; background: var(--slate-900); border-left: 1px solid var(--border-subtle); flex: none; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+
+  /* Dashboard thumb */
+  .dt { background: var(--bg-sunken); width: 100%; height: 100%; display: flex; flex-direction: column; }
+  .dt__nav { height: 30px; background: var(--slate-900); border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; padding: 0 10px; gap: 6px; flex: none; }
+  .dt__kpis { display: flex; gap: 5px; padding: 8px; }
+  .dt__kpi { flex: 1; background: var(--slate-800); border-radius: 4px; border: 1px solid var(--border-subtle); padding: 6px; }
+  .dt__kpi-val { font-family: var(--font-display); font-size: 14px; font-weight: 700; color: var(--text-primary); }
+  .dt__kpi-label { font-size: 8px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+  .dt__panels { display: flex; gap: 5px; padding: 0 8px; flex: 1; }
+  .dt__chart { flex: 1.1; background: var(--slate-800); border-radius: 4px; border: 1px solid var(--border-subtle); padding: 6px; display: flex; align-items: flex-end; gap: 3px; }
+  .dt__bar { flex: 1; border-radius: 2px 2px 0 0; }
+  .dt__flaky { flex: 1; background: var(--slate-800); border-radius: 4px; border: 1px solid var(--border-subtle); padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+  .dt__frow { height: 10px; background: var(--slate-700); border-radius: 2px; }
+
+  /* CLI thumb */
+  .tmt { background: var(--slate-1000); width: 100%; height: 100%; display: flex; }
+  .tmt__rail { width: 80px; background: var(--slate-900); border-right: 1px solid var(--border-subtle); padding: 10px 8px; display: flex; flex-direction: column; gap: 5px; }
+  .tmt__cmd { height: 20px; background: var(--slate-800); border-radius: 3px; }
+  .tmt__cmd--active { background: var(--brand-tint); }
+  .tmt__term { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 3px; font-family: var(--font-mono); font-size: 8px; }
+  .tmt__line { height: 9px; border-radius: 2px; }
+  .tmt__line--cmd { background: var(--text-brand); opacity: 0.6; width: 70%; }
+  .tmt__line--pass { background: var(--status-pass); opacity: 0.7; }
+  .tmt__line--fail { background: var(--status-fail); opacity: 0.7; }
+  .tmt__line--dim { background: var(--slate-600); width: 60%; }
+  .tmt__line--indent { background: var(--slate-600); width: 50%; margin-left: 10px; }
+
+  /* Design tokens section */
+  .tokens-section { max-width: 1160px; margin: 0 auto; padding: 0 var(--space-7) var(--space-16); }
+  .tokens-section__title { font-family: var(--font-display); font-size: var(--text-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin-bottom: var(--space-2); }
+  .tokens-section__sub { color: var(--text-muted); font-size: var(--text-sm); margin-bottom: var(--space-7); }
+  .tokens-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-4); }
+
+  .token-card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); overflow: hidden; }
+  .token-card__head { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; gap: var(--space-2); }
+  .token-card__label { font-size: var(--text-xs); font-weight: 600; color: var(--text-secondary); }
+  .token-card__file { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); margin-left: auto; }
+  .token-card__body { padding: var(--space-4); }
+
+  /* Color swatches */
+  .swatches { display: flex; flex-direction: column; gap: var(--space-3); }
+  .swatch-group { display: flex; gap: var(--space-2); }
+  .swatch-group__label { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint); width: 60px; flex: none; display: flex; align-items: center; }
+  .swatch-row { display: flex; gap: 3px; flex: 1; }
+  .swatch { flex: 1; height: 24px; border-radius: 3px; }
+
+  /* Status palette */
+  .statuses { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+  /* Type showcase */
+  .type-samples { display: flex; flex-direction: column; gap: var(--space-4); }
+  .type-sample { display: flex; flex-direction: column; gap: var(--space-1); }
+  .type-sample__label { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint); }
+
+  /* Components showcase */
+  .comp-grid { display: flex; flex-direction: column; gap: var(--space-4); }
+  .comp-row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+  .comp-row__label { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint); width: 64px; flex: none; }
+
+  /* Footer */
+  .footer { border-top: 1px solid var(--border-subtle); padding: var(--space-8) var(--space-7); display: flex; align-items: center; justify-content: space-between; max-width: 1160px; margin: 0 auto; }
+  .footer__brand { font-family: var(--font-display); font-weight: 600; font-size: var(--text-md); letter-spacing: -0.01em; }
+  .footer__links { display: flex; gap: var(--space-5); }
+  .footer__link { font-size: var(--text-xs); color: var(--text-muted); text-decoration: none; font-family: var(--font-mono); }
+  .footer__link:hover { color: var(--text-primary); }
+  .footer__legal { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="nav__brand" href="#">
+    <img src="design/assets/logo-mark.svg" width="24" height="24" alt="">
+    <span class="nav__name">Argus</span>
+  </a>
+  <div class="nav__links">
+    <a class="nav__link" href="design/ui_kits/console/index.html">Console</a>
+    <a class="nav__link" href="design/ui_kits/dashboard/index.html">Dashboard</a>
+    <a class="nav__link" href="design/ui_kits/cli/index.html">CLI</a>
+    <a class="nav__link" href="design/readme.md">Design system</a>
+  </div>
+  <div class="nav__right">
+    <span class="nav__tag">v0.1.0-alpha</span>
+    <a href="https://github.com/Varun-SV/Argus" class="ds-btn ds-btn--secondary ds-btn--sm">GitHub</a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="hero__eyebrow">
+    <span class="hero__dot"></span>
+    Universal application testing
+  </div>
+  <h1 class="hero__title">Test <em>any</em> software,<br>any interface</h1>
+  <p class="hero__sub">Argus watches your application the way a person would — through screenshots, the accessibility tree, terminal output, and the browser DOM — then drives it to satisfy your tests.</p>
+  <div class="hero__actions">
+    <button class="ds-btn ds-btn--primary ds-btn--lg">Get started</button>
+    <button class="ds-btn ds-btn--secondary ds-btn--lg">Read the docs</button>
+    <div class="hero__cmd"><span>$</span> argus init</div>
+  </div>
+</section>
+
+<!-- Status row -->
+<div class="status-row">
+  <span class="ds-status ds-status--pass"><span class="ds-status__dot"></span>Passed</span>
+  <span class="ds-status ds-status--fail"><span class="ds-status__dot"></span>Failed</span>
+  <span class="ds-status ds-status--error"><span class="ds-status__dot"></span>Error</span>
+  <span class="ds-status ds-status--running"><span class="ds-status__dot"></span>Running</span>
+  <span class="ds-status ds-status--skipped"><span class="ds-status__dot"></span>Skipped</span>
+  <span class="ds-status ds-status--flaky"><span class="ds-status__dot"></span>Flaky</span>
+</div>
+
+<!-- Surfaces -->
+<section class="surfaces">
+  <h2 class="surfaces__title">Three surfaces, one tool</h2>
+  <p class="surfaces__sub">Argus ships as a single installer with a CLI, a desktop app, and a self-hosted web dashboard.</p>
+  <div class="surfaces__grid">
+
+    <!-- Console -->
+    <a class="surface-card" href="design/ui_kits/console/index.html">
+      <div class="surface-card__thumb">
+        <div class="ct surface-card__thumb-inner">
+          <div class="ct__top">
+            <span class="ct__wdot" style="background:#ff5f57"></span>
+            <span class="ct__wdot" style="background:#febc2e"></span>
+            <span class="ct__wdot" style="background:#28c840"></span>
+          </div>
+          <div class="ct__body">
+            <div class="ct__tree">
+              <div class="ct__trow"></div>
+              <div class="ct__trow ct__trow--active"></div>
+              <div class="ct__trow ct__trow--fail"></div>
+              <div class="ct__trow"></div>
+              <div class="ct__trow"></div>
+            </div>
+            <div class="ct__stage">
+              <div class="ct__frame">
+                <div class="ct__frame-inner"></div>
+              </div>
+              <div class="ct__steps">
+                <div class="ct__step" style="background:var(--status-pass-tint)"></div>
+                <div class="ct__step" style="background:var(--status-pass-tint)"></div>
+                <div class="ct__step" style="background:var(--status-fail-tint)"></div>
+              </div>
+            </div>
+            <div class="ct__insp">
+              <div class="ct__trow" style="width:80%"></div>
+              <div class="ct__trow" style="width:90%;height:32px"></div>
+              <div class="ct__trow" style="width:70%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="surface-card__body">
+        <span class="surface-card__tag">Tauri · Rust + React</span>
+        <div class="surface-card__title">Desktop console</div>
+        <p class="surface-card__desc">The hero surface. Run detail with captured-frame timeline, step inspector with assertion diff, YAML editor, and provider config.</p>
+        <ul class="surface-card__features">
+          <li class="surface-card__feature">Test tree with pass/fail/flaky indicators</li>
+          <li class="surface-card__feature">Captured-frame stage with element highlighting</li>
+          <li class="surface-card__feature">Per-step model reasoning + assertion diff</li>
+          <li class="surface-card__feature">YAML editor with live step preview</li>
+        </ul>
+      </div>
+      <div class="surface-card__foot">
+        <span class="surface-card__open">Open UI kit →</span>
+        <span class="ds-tag">desktop-gui</span>
+      </div>
+    </a>
+
+    <!-- Dashboard -->
+    <a class="surface-card" href="design/ui_kits/dashboard/index.html">
+      <div class="surface-card__thumb">
+        <div class="dt surface-card__thumb-inner">
+          <div class="dt__nav">
+            <div style="width:14px;height:14px;background:var(--brand-tint);border-radius:3px"></div>
+            <div style="width:36px;height:10px;background:var(--slate-700);border-radius:2px"></div>
+            <div style="width:40px;height:20px;background:var(--bg-raised);border-radius:3px;border:1px solid var(--border-subtle)"></div>
+            <div style="width:32px;height:20px;background:none;border-radius:3px"></div>
+            <div style="width:32px;height:20px;background:none;border-radius:3px"></div>
+            <div style="width:32px;height:20px;background:none;border-radius:3px"></div>
+          </div>
+          <div class="dt__kpis">
+            <div class="dt__kpi"><div class="dt__kpi-val" style="color:var(--status-pass);font-size:12px">94.2%</div><div class="dt__kpi-label">pass rate</div></div>
+            <div class="dt__kpi"><div class="dt__kpi-val" style="font-size:12px">47</div><div class="dt__kpi-label">runs today</div></div>
+            <div class="dt__kpi"><div class="dt__kpi-val" style="font-size:12px">8.3s</div><div class="dt__kpi-label">avg dur</div></div>
+            <div class="dt__kpi"><div class="dt__kpi-val" style="color:var(--status-flaky);font-size:12px">3</div><div class="dt__kpi-label">flaky</div></div>
+          </div>
+          <div class="dt__panels">
+            <div class="dt__chart">
+              <div class="dt__bar" style="height:60%;background:var(--status-pass)"></div>
+              <div class="dt__bar" style="height:80%;background:var(--status-pass)"></div>
+              <div class="dt__bar" style="height:55%;background:var(--status-pass)"></div>
+              <div class="dt__bar" style="height:90%;background:var(--status-pass)"></div>
+              <div class="dt__bar" style="height:70%;background:var(--signal-400)"></div>
+              <div class="dt__bar" style="height:65%;background:var(--status-pass)"></div>
+              <div class="dt__bar" style="height:45%;background:var(--status-fail)"></div>
+              <div class="dt__bar" style="height:85%;background:var(--status-pass)"></div>
+            </div>
+            <div class="dt__flaky">
+              <div class="dt__frow" style="width:90%"></div>
+              <div class="dt__frow" style="width:70%"></div>
+              <div class="dt__frow" style="width:80%"></div>
+              <div class="dt__frow" style="width:55%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="surface-card__body">
+        <span class="surface-card__tag">argus serve · self-hosted</span>
+        <div class="surface-card__title">Web dashboard</div>
+        <p class="surface-card__desc">Self-hosted overview dashboard. KPI cards, 14-day pass/fail trend, per-test flakiness sparklines, and cross-adapter run history.</p>
+        <ul class="surface-card__features">
+          <li class="surface-card__feature">Pass rate, run count, avg duration, flaky count</li>
+          <li class="surface-card__feature">14-day stacked pass/fail trend chart</li>
+          <li class="surface-card__feature">Per-test flakiness scores with sparklines</li>
+          <li class="surface-card__feature">Cross-adapter run history table</li>
+        </ul>
+      </div>
+      <div class="surface-card__foot">
+        <span class="surface-card__open">Open UI kit →</span>
+        <span class="ds-tag">web</span>
+      </div>
+    </a>
+
+    <!-- CLI -->
+    <a class="surface-card" href="design/ui_kits/cli/index.html">
+      <div class="surface-card__thumb">
+        <div class="tmt surface-card__thumb-inner">
+          <div class="tmt__rail">
+            <div class="tmt__cmd tmt__cmd--active"></div>
+            <div class="tmt__cmd"></div>
+            <div class="tmt__cmd"></div>
+            <div class="tmt__cmd"></div>
+            <div class="tmt__cmd"></div>
+            <div class="tmt__cmd"></div>
+          </div>
+          <div class="tmt__term">
+            <div class="tmt__line tmt__line--cmd"></div>
+            <div class="tmt__line tmt__line--pass" style="width:45%"></div>
+            <div class="tmt__line tmt__line--pass" style="width:60%"></div>
+            <div class="tmt__line tmt__line--pass" style="width:52%"></div>
+            <div class="tmt__line tmt__line--indent"></div>
+            <div class="tmt__line tmt__line--pass" style="width:48%"></div>
+            <div class="tmt__line tmt__line--fail" style="width:55%"></div>
+            <div class="tmt__line tmt__line--indent" style="width:70%"></div>
+            <div class="tmt__line tmt__line--dim"></div>
+            <div class="tmt__line tmt__line--dim" style="width:40%"></div>
+          </div>
+        </div>
+      </div>
+      <div class="surface-card__body">
+        <span class="surface-card__tag">argus run · CI/CD</span>
+        <div class="surface-card__title">CLI</div>
+        <p class="surface-card__desc">The primary developer interface. Streamed test output with per-step pass/fail glyphs, agentic action notes, assertion diffs, and a final summary.</p>
+        <ul class="surface-card__features">
+          <li class="surface-card__feature">argus run / watch / init / record / report / serve</li>
+          <li class="surface-card__feature">Per-step ✓ / ✗ / ⊘ with durations</li>
+          <li class="surface-card__feature">Agentic action annotations (↳)</li>
+          <li class="surface-card__feature">Expected vs actual assertion diff</li>
+        </ul>
+      </div>
+      <div class="surface-card__foot">
+        <span class="surface-card__open">Open UI kit →</span>
+        <span class="ds-tag">cli</span>
+      </div>
+    </a>
+
+  </div>
+</section>
+
+<!-- Design tokens showcase -->
+<section class="tokens-section">
+  <h2 class="tokens-section__title">Design system</h2>
+  <p class="tokens-section__sub">A dark-first instrument palette built on CSS custom properties. One stylesheet, full theming.</p>
+  <div class="tokens-grid">
+
+    <!-- Color -->
+    <div class="token-card">
+      <div class="token-card__head">
+        <span class="token-card__label">Color</span>
+        <span class="token-card__file">tokens/colors.css</span>
+      </div>
+      <div class="token-card__body">
+        <div class="swatches">
+          <div class="swatch-group">
+            <span class="swatch-group__label">Signal</span>
+            <div class="swatch-row">
+              <div class="swatch" style="background:var(--signal-800)"></div>
+              <div class="swatch" style="background:var(--signal-700)"></div>
+              <div class="swatch" style="background:var(--signal-600)"></div>
+              <div class="swatch" style="background:var(--signal-500)"></div>
+              <div class="swatch" style="background:var(--signal-400)"></div>
+              <div class="swatch" style="background:var(--signal-300)"></div>
+              <div class="swatch" style="background:var(--signal-200)"></div>
+              <div class="swatch" style="background:var(--signal-100)"></div>
+            </div>
+          </div>
+          <div class="swatch-group">
+            <span class="swatch-group__label">Beacon</span>
+            <div class="swatch-row">
+              <div class="swatch" style="background:var(--beacon-600)"></div>
+              <div class="swatch" style="background:var(--beacon-500)"></div>
+              <div class="swatch" style="background:var(--beacon-400)"></div>
+              <div class="swatch" style="background:var(--beacon-300)"></div>
+              <div class="swatch" style="background:var(--beacon-200)"></div>
+            </div>
+          </div>
+          <div class="swatch-group">
+            <span class="swatch-group__label">Ink</span>
+            <div class="swatch-row">
+              <div class="swatch" style="background:var(--slate-1000)"></div>
+              <div class="swatch" style="background:var(--slate-900)"></div>
+              <div class="swatch" style="background:var(--slate-800)"></div>
+              <div class="swatch" style="background:var(--slate-700)"></div>
+              <div class="swatch" style="background:var(--slate-600)"></div>
+              <div class="swatch" style="background:var(--slate-500)"></div>
+              <div class="swatch" style="background:var(--slate-400)"></div>
+              <div class="swatch" style="background:var(--slate-300)"></div>
+              <div class="swatch" style="background:var(--slate-200)"></div>
+              <div class="swatch" style="background:var(--slate-100)"></div>
+              <div class="swatch" style="background:var(--slate-50)"></div>
+            </div>
+          </div>
+          <div style="margin-top: var(--space-3)">
+            <div style="font-size:10px;font-family:var(--font-mono);color:var(--text-faint);margin-bottom:var(--space-2)">Status</div>
+            <div class="statuses">
+              <span class="ds-status ds-status--pass"><span class="ds-status__dot"></span>Passed</span>
+              <span class="ds-status ds-status--fail"><span class="ds-status__dot"></span>Failed</span>
+              <span class="ds-status ds-status--error"><span class="ds-status__dot"></span>Error</span>
+              <span class="ds-status ds-status--running"><span class="ds-status__dot"></span>Running</span>
+              <span class="ds-status ds-status--skipped"><span class="ds-status__dot"></span>Skipped</span>
+              <span class="ds-status ds-status--flaky"><span class="ds-status__dot"></span>Flaky</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Typography -->
+    <div class="token-card">
+      <div class="token-card__head">
+        <span class="token-card__label">Typography</span>
+        <span class="token-card__file">tokens/typography.css</span>
+      </div>
+      <div class="token-card__body">
+        <div class="type-samples">
+          <div class="type-sample">
+            <span class="type-sample__label">display / Space Grotesk 700</span>
+            <span style="font-family:var(--font-display);font-weight:700;font-size:var(--text-3xl);letter-spacing:var(--tracking-tight);line-height:1.1;color:var(--text-primary)">Test any app.</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-sample__label">UI body / IBM Plex Sans 400 · 14px</span>
+            <span style="font-family:var(--font-sans);font-size:var(--text-base);color:var(--text-secondary)">6 passed · 1 failed · 10.7s elapsed</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-sample__label">mono / IBM Plex Mono 400 · zero 1</span>
+            <span style="font-family:var(--font-mono);font-size:var(--text-sm);font-feature-settings:'zero' 1;color:var(--text-secondary)">checkout.test.yaml · 0.62s · exit 0</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-sample__label">eyebrow / mono uppercase</span>
+            <span class="t-eyebrow">Adapters · Status</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-sample__label">syntax (YAML)</span>
+            <span style="font-family:var(--font-mono);font-size:var(--text-sm)">
+              <span style="color:var(--syntax-key)">adapter</span><span style="color:var(--syntax-punct)">: </span><span style="color:var(--syntax-string)">browser</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Components -->
+    <div class="token-card">
+      <div class="token-card__head">
+        <span class="token-card__label">Components</span>
+        <span class="token-card__file">components/components.css</span>
+      </div>
+      <div class="token-card__body">
+        <div class="comp-grid">
+          <div class="comp-row">
+            <span class="comp-row__label">Buttons</span>
+            <button class="ds-btn ds-btn--primary ds-btn--sm">Run all</button>
+            <button class="ds-btn ds-btn--secondary ds-btn--sm">Re-run</button>
+            <button class="ds-btn ds-btn--ghost ds-btn--sm">Skip</button>
+            <button class="ds-btn ds-btn--danger ds-btn--sm">Cancel</button>
+          </div>
+          <div class="comp-row">
+            <span class="comp-row__label">Badges</span>
+            <span class="ds-badge">47</span>
+            <span class="ds-badge ds-badge--brand">+3</span>
+            <span class="ds-badge ds-badge--accent">new</span>
+          </div>
+          <div class="comp-row">
+            <span class="comp-row__label">Tags</span>
+            <span class="ds-tag"><span class="ds-tag__dot" style="background:var(--signal-500)"></span>browser</span>
+            <span class="ds-tag"><span class="ds-tag__dot" style="background:var(--beacon-500)"></span>desktop-gui</span>
+            <span class="ds-tag"><span class="ds-tag__dot" style="background:var(--violet-500)"></span>cli</span>
+          </div>
+          <div class="comp-row" style="align-items:flex-start;flex-direction:column;gap:var(--space-2)">
+            <span class="comp-row__label" style="width:auto">Progress</span>
+            <div class="ds-progress" style="width:100%">
+              <div class="ds-progress__seg ds-progress__seg--pass" style="width:66%"></div>
+              <div class="ds-progress__seg ds-progress__seg--fail" style="width:11%"></div>
+              <div class="ds-progress__seg ds-progress__seg--skip" style="width:11%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Motion & Elevation -->
+    <div class="token-card">
+      <div class="token-card__head">
+        <span class="token-card__label">Motion & elevation</span>
+        <span class="token-card__file">tokens/elevation.css · motion.css</span>
+      </div>
+      <div class="token-card__body">
+        <div style="display:flex;flex-direction:column;gap:var(--space-4)">
+          <div>
+            <div style="font-size:10px;font-family:var(--font-mono);color:var(--text-faint);margin-bottom:var(--space-2)">Radii</div>
+            <div style="display:flex;align-items:flex-end;gap:var(--space-3)">
+              <div style="width:28px;height:28px;background:var(--bg-raised);border:1px solid var(--border-default);border-radius:var(--radius-xs)"></div>
+              <div style="width:32px;height:32px;background:var(--bg-raised);border:1px solid var(--border-default);border-radius:var(--radius-sm)"></div>
+              <div style="width:36px;height:36px;background:var(--bg-raised);border:1px solid var(--border-default);border-radius:var(--radius-md)"></div>
+              <div style="width:40px;height:40px;background:var(--bg-raised);border:1px solid var(--border-default);border-radius:var(--radius-lg)"></div>
+              <div style="width:44px;height:44px;background:var(--bg-raised);border:1px solid var(--border-default);border-radius:var(--radius-xl)"></div>
+              <div style="width:44px;height:44px;background:var(--bg-raised);border:1px solid var(--border-default);border-radius:var(--radius-pill)"></div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:10px;font-family:var(--font-mono);color:var(--text-faint);margin-bottom:var(--space-2)">Shadows</div>
+            <div style="display:flex;gap:var(--space-4);align-items:flex-end">
+              <div style="width:48px;height:48px;background:var(--bg-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-xs)"></div>
+              <div style="width:56px;height:56px;background:var(--bg-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-sm)"></div>
+              <div style="width:64px;height:64px;background:var(--bg-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-md)"></div>
+              <div style="width:72px;height:72px;background:var(--bg-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-lg)"></div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:10px;font-family:var(--font-mono);color:var(--text-faint);margin-bottom:var(--space-2)">Glow</div>
+            <div style="display:flex;gap:var(--space-4)">
+              <div style="width:48px;height:48px;background:var(--brand-tint);border-radius:var(--radius-md);box-shadow:var(--glow-signal)"></div>
+              <div style="width:48px;height:48px;background:var(--accent-tint);border-radius:var(--radius-md);box-shadow:var(--glow-beacon)"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- Footer -->
+<footer style="border-top: 1px solid var(--border-subtle)">
+  <div class="footer">
+    <span class="footer__brand">Argus</span>
+    <div class="footer__links">
+      <a class="footer__link" href="design/ui_kits/console/index.html">Console</a>
+      <a class="footer__link" href="design/ui_kits/dashboard/index.html">Dashboard</a>
+      <a class="footer__link" href="design/ui_kits/cli/index.html">CLI</a>
+      <a class="footer__link" href="design/readme.md">Design system</a>
+      <a class="footer__link" href="https://github.com/Varun-SV/Argus">GitHub</a>
+    </div>
+    <span class="footer__legal">MIT License</span>
+  </div>
+</footer>
+
+</body>
+</html>
