@@ -1,0 +1,61 @@
+/* ============================================================
+   ARGUS — Base / reset
+   Minimal, opinionated resets + app defaults. Dark-first.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv05" 1;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+  color: var(--text-primary);
+}
+
+p { margin: 0; }
+
+a { color: var(--text-link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, kbd, pre, samp {
+  font-family: var(--font-mono);
+  font-feature-settings: "zero" 1;
+}
+
+::selection { background: var(--brand-tint-strong); color: var(--text-primary); }
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+/* Custom scrollbars (instrument feel) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--slate-700) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--slate-700);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--slate-600); background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }

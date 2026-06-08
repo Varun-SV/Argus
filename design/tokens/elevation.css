@@ -1,0 +1,42 @@
+/* ============================================================
+   ARGUS — Radius, border & elevation tokens
+   Tight, technical corners. Shadows are deep + cool (dark-first),
+   plus a "glow" elevation for live/running state and focus.
+   ============================================================ */
+
+:root {
+  /* ---------- Radii ---------- */
+  --radius-0:   0px;
+  --radius-xs:  3px;
+  --radius-sm:  5px;
+  --radius-md:  7px;    /* default control */
+  --radius-lg:  10px;   /* cards / panels */
+  --radius-xl:  14px;
+  --radius-2xl: 20px;
+  --radius-pill:999px;
+  --radius-round:50%;
+
+  /* ---------- Border widths ---------- */
+  --border-hair: 1px;
+  --border-thin: 1.5px;
+  --border-thick:2px;
+
+  /* ---------- Elevation (cool, deep — for dark surfaces) ---------- */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.42);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.48);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-xl: 0 28px 64px rgba(0, 0, 0, 0.62);
+
+  /* Inset / hairline top-light for raised panels */
+  --shadow-inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --ring-inset:       inset 0 0 0 1px var(--border-default);
+
+  /* ---------- Glow (live / running / brand emphasis) ---------- */
+  --glow-signal: 0 0 0 1px rgba(31, 224, 193, 0.30), 0 0 22px rgba(31, 224, 193, 0.28);
+  --glow-beacon: 0 0 0 1px rgba(255, 174, 26, 0.30), 0 0 22px rgba(255, 174, 26, 0.25);
+  --glow-fail:   0 0 0 1px rgba(245, 73, 79, 0.35), 0 0 20px rgba(245, 73, 79, 0.25);
+
+  /* ---------- Focus ring (composed) ---------- */
+  --ring-focus: 0 0 0 2px var(--focus-ring-offset), 0 0 0 4px var(--focus-ring);
+}

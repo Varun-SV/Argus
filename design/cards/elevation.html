@@ -1,0 +1,25 @@
+<!-- @dsCard group="Spacing" viewport="700x210" name="Elevation & glow" subtitle="Deep cool shadows for dark surfaces, plus signal/beacon glow for live state." -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--bg-app); padding: var(--space-8) var(--space-6); font-family: var(--font-sans); }
+  .row { display: flex; gap: var(--space-6); align-items: center; flex-wrap: wrap; }
+  .item { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); }
+  .box { width: 84px; height: 56px; background: var(--bg-raised); border-radius: var(--radius-lg); border: 1px solid var(--border-subtle); }
+  .tok { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="item"><div class="box" style="box-shadow:var(--shadow-sm)"></div><div class="tok">shadow-sm</div></div>
+    <div class="item"><div class="box" style="box-shadow:var(--shadow-md)"></div><div class="tok">shadow-md</div></div>
+    <div class="item"><div class="box" style="box-shadow:var(--shadow-lg)"></div><div class="tok">shadow-lg</div></div>
+    <div class="item"><div class="box" style="box-shadow:var(--shadow-xl)"></div><div class="tok">shadow-xl</div></div>
+    <div class="item"><div class="box" style="box-shadow:var(--glow-signal)"></div><div class="tok">glow-signal</div></div>
+    <div class="item"><div class="box" style="box-shadow:var(--glow-beacon)"></div><div class="tok">glow-beacon</div></div>
+  </div>
+</body>
+</html>

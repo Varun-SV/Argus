@@ -1,0 +1,32 @@
+<!-- @dsCard group="Colors" viewport="700x196" name="Brand — Signal" subtitle="Teal-cyan primary. The scanner. Use sparingly for action + live state." -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; background: var(--bg-panel); padding: var(--space-6); font-family: var(--font-sans); }
+  .row { display: flex; gap: var(--space-2); }
+  .sw { flex: 1; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-subtle); }
+  .chip { height: 56px; }
+  .meta { padding: var(--space-2) var(--space-2-5); background: var(--bg-raised); }
+  .name { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--text-secondary); }
+  .hex { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); letter-spacing: .02em; }
+  .lead { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-4); }
+  .lead b { font-family: var(--font-display); font-size: var(--text-xl); color: var(--text-primary); font-weight: 600; }
+  .lead .tok { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-brand); }
+  .star { color: var(--brand); }
+</style>
+</head>
+<body>
+  <div class="lead"><b>Signal</b><span class="tok">--brand · --signal-500</span></div>
+  <div class="row">
+    <div class="sw"><div class="chip" style="background:var(--signal-100)"></div><div class="meta"><div class="name">100</div><div class="hex">#c7fbef</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--signal-300)"></div><div class="meta"><div class="name">300</div><div class="hex">#54edcc</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--signal-400)"></div><div class="meta"><div class="name">400 · hover</div><div class="hex">#1fe0c1</div></div></div>
+    <div class="sw" style="border-color:var(--signal-500)"><div class="chip" style="background:var(--signal-500)"></div><div class="meta"><div class="name"><span class="star">★</span> 500</div><div class="hex">#14c9ac</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--signal-600)"></div><div class="meta"><div class="name">600 · press</div><div class="hex">#0faa91</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--signal-700)"></div><div class="meta"><div class="name">700</div><div class="hex">#0c8674</div></div></div>
+  </div>
+</body>
+</html>
