@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "argus-app-testing"
+version = "0.1.0"
+description = "Argus — universal application testing driven by multimodal LLMs. Tests any software: desktop GUI, CLI, web, TUI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Varun S V" }]
+keywords = ["testing", "llm", "gui-testing", "automation", "agentic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Testing",
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+
+dependencies = [
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "rich>=13.0",
+    "click>=8.1",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# Desktop GUI automation on Windows (UIA tree + input synthesis + screenshots)
+windows = [
+    "pywinauto>=0.6.8",
+    "mss>=9.0",
+]
+# The Argus desktop app window (WebView2 on Windows, WebKit elsewhere)
+gui = [
+    "pywebview>=5.0",
+]
+all = [
+    "argus-app-testing[windows,gui]",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+argus = "argus.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["argus*"]
+
+[tool.setuptools.package-data]
+"argus.gui" = ["web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
