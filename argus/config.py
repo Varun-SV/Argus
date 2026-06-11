@@ -139,7 +139,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
     cfg_path = project_dir / ".argus" / "config.yaml"
     raw: dict = {}
     if cfg_path.exists():
-        raw = yaml.safe_load(cfg_path.read_text()) or {}
+        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
 
     active = os.environ.get("ARGUS_PROVIDER") or raw.get("provider") or "ollama"
     providers = raw.get("providers") or {}
@@ -185,11 +185,11 @@ def init_project(project_dir: Optional[Path] = None) -> Path:
 
     cfg = argus_dir / "config.yaml"
     if not cfg.exists():
-        cfg.write_text(DEFAULT_CONFIG)
+        cfg.write_text(DEFAULT_CONFIG, encoding="utf-8")
 
     example = argus_dir / "notepad.test.yaml"
     if not example.exists():
-        example.write_text(EXAMPLE_TEST)
+        example.write_text(EXAMPLE_TEST, encoding="utf-8")
     return argus_dir
 
 

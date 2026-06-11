@@ -16,7 +16,37 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
+
+# Per-model pricing in USD per 1 000 tokens (prompt, completion).
+# Ollama models are free (local).
+_MODEL_PRICING: Dict[str, tuple] = {
+    "claude-sonnet-4-6":       (0.003, 0.015),
+    "claude-opus-4-8":         (0.015, 0.075),
+    "claude-haiku-4-5":        (0.00025, 0.00125),
+    "claude-3-5-sonnet-20241022": (0.003, 0.015),
+    "claude-3-haiku-20240307": (0.00025, 0.00125),
+    "gpt-4o":                  (0.005, 0.015),
+    "gpt-4o-mini":             (0.00015, 0.0006),
+    "gpt-4-turbo":             (0.01,   0.03),
+    "gemini-2.0-flash":        (0.00015, 0.0006),
+    "gemini-1.5-pro":          (0.00125, 0.005),
+}
+
+
+def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Return estimated cost in USD, or 0.0 for local/unknown models."""
+    key = model.lower()
+    if key not in _MODEL_PRICING:
+        # fuzzy match — strip date suffixes and try again
+        for k in _MODEL_PRICING:
+            if key.startswith(k) or k.startswith(key):
+                key = k
+                break
+        else:
+            return 0.0
+    p_rate, c_rate = _MODEL_PRICING[key]
+    return round(prompt_tokens * p_rate / 1000 + completion_tokens * c_rate / 1000, 6)
 
 
 @dataclass
@@ -73,7 +103,7 @@ class TokenTracker:
         data = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
         if path.exists():
             try:
-                data.update(json.loads(path.read_text()))
+                data.update(json.loads(path.read_text(encoding="utf-8")))
             except (json.JSONDecodeError, OSError):
                 pass
         snap = self.snapshot()
@@ -81,7 +111,7 @@ class TokenTracker:
         data["completion_tokens"] += snap["completion_tokens"]
         data["calls"] += snap["calls"]
         data["total_tokens"] = data["prompt_tokens"] + data["completion_tokens"]
-        path.write_text(json.dumps(data, indent=2))
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     @staticmethod
     def load_persisted(project_dir: Path) -> dict:
@@ -89,7 +119,7 @@ class TokenTracker:
         if not path.exists():
             return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
 

@@ -33,13 +33,30 @@ dependencies = [
 windows = [
     "pywinauto>=0.6.8",
     "mss>=9.0",
+    "psutil>=5.9",
+]
+# Linux GUI automation (X11 / Xvfb)
+linux = [
+    "python-xlib>=0.33",
+]
+# Browser automation via Playwright
+browser = [
+    "playwright>=1.40",
+]
+# Web dashboard (Flask)
+serve = [
+    "flask>=3.0",
+]
+# File-watch mode (re-run on YAML change)
+watch = [
+    "watchdog>=4.0",
 ]
 # The Argus desktop app window (WebView2 on Windows, WebKit elsewhere)
 gui = [
     "pywebview>=5.0",
 ]
 all = [
-    "argus-app-testing[windows,gui]",
+    "argus-app-testing[windows,linux,browser,serve,watch,gui]",
 ]
 dev = [
     "pytest>=8.0",

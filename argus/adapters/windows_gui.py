@@ -49,29 +49,94 @@ class WindowsGUIAdapter(Adapter):
 
     # ---- lifecycle -----------------------------------------------------
 
+    # Windows system-process singletons that must be attached, not launched.
+    _SINGLETONS = {"explorer.exe", "explorer"}
+
     def launch(self, target: str) -> None:
-        Application, _ = _require_pywinauto()
+        Application, Desktop = _require_pywinauto()
+        exe_name = shlex.split(target, posix=False)[0].lower().split("\\")[-1]
+
+        # Phase 0: system singleton — attach to existing process, don't spawn.
+        if exe_name in self._SINGLETONS:
+            try:
+                self._app = Application(backend="uia").connect(path=exe_name)
+                self._top_window()
+                return
+            except Exception as exc:
+                raise AdapterError(
+                    f"'{exe_name}' is a system singleton — could not attach: {exc}. "
+                    "Ensure Explorer is running."
+                ) from exc
+
         try:
             self._proc = subprocess.Popen(shlex.split(target, posix=False))
         except OSError as exc:
             raise AdapterError(f"could not launch '{target}': {exc}") from exc
 
-        # Give the process a moment to create its window, then attach.
-        deadline = time.monotonic() + 15
+        # Phase 1: try direct PID-based connect (works for classic Win32 apps).
+        deadline = time.monotonic() + 10
         last_err: Optional[Exception] = None
         while time.monotonic() < deadline:
             try:
                 self._app = Application(backend="uia").connect(
                     process=self._proc.pid, timeout=1
                 )
-                self._top_window()  # raises if no window yet
+                self._top_window()
                 return
-            except Exception as exc:  # pywinauto raises various types here
+            except Exception as exc:
                 last_err = exc
                 time.sleep(0.5)
+
+        # Phase 2: WinUI3/UWP — child process has different PID; scan process tree.
+        try:
+            import psutil  # optional; only needed for WinUI3 targets
+            child_pids: List[int] = []
+            try:
+                parent = psutil.Process(self._proc.pid)
+                child_pids = [c.pid for c in parent.children(recursive=True)]
+            except psutil.NoSuchProcess:
+                pass
+            for cpid in child_pids:
+                for _ in range(10):
+                    try:
+                        self._app = Application(backend="uia").connect(
+                            process=cpid, timeout=1
+                        )
+                        self._top_window()
+                        return
+                    except Exception:
+                        time.sleep(0.5)
+        except ImportError:
+            pass
+
+        # Phase 3: last resort — find a window whose title/class matches the exe.
+        deadline2 = time.monotonic() + 5
+        while time.monotonic() < deadline2:
+            try:
+                desktop = Desktop(backend="uia")
+                stem = exe_name.replace(".exe", "")
+                for win in desktop.windows():
+                    try:
+                        pid = win.process_id()
+                        if pid in ([self._proc.pid] if self._proc else []):
+                            self._app = Application(backend="uia").connect(process=pid)
+                            self._top_window()
+                            return
+                        # match by title substring as fallback
+                        title = win.window_text() or ""
+                        if stem.lower() in title.lower():
+                            self._app = Application(backend="uia").connect(handle=win.handle)
+                            self._top_window()
+                            return
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            time.sleep(0.5)
+
         raise AdapterError(
-            f"launched '{target}' (pid {self._proc.pid}) but no window appeared "
-            f"within 15s: {last_err}"
+            f"launched '{target}' (pid {self._proc.pid if self._proc else '?'}) but no window "
+            f"appeared within 15s. Last error: {last_err}"
         )
 
     def close(self) -> None:

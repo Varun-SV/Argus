@@ -22,6 +22,7 @@ class StepResult:
     expected: Optional[str] = None
     actual: Optional[str] = None
     note: Optional[str] = None
+    flaky: bool = False
 
 
 @dataclass
@@ -73,7 +74,7 @@ class RunResult:
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
         path = runs_dir / f"{stamp}-{safe}.json"
-        path.write_text(json.dumps(self.to_dict(), indent=2))
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return path
 
 
@@ -84,7 +85,7 @@ def load_runs(project_dir: Path, limit: int = 50) -> List[dict]:
     out = []
     for path in sorted(runs_dir.glob("*.json"), reverse=True)[:limit]:
         try:
-            out.append(json.loads(path.read_text()))
+            out.append(json.loads(path.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError):
             continue
     return out
