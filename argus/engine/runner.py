@@ -66,6 +66,29 @@ def check_assertion(step: AssertStep, adapter: Adapter) -> StepResult:
         needle = str(step.expected).lower()
         ok = any(needle in d.lower() for d in obs.dialogs)
         actual = f"open dialogs: {', '.join(obs.dialogs) or 'none'}"
+    elif step.assertion == "stdout_contains":
+        needle = str(step.expected).lower()
+        stdout = (obs.stdout or "").lower()
+        ok = needle in stdout
+        actual = f"stdout: {(obs.stdout or '').strip()[:120]!r}"
+    elif step.assertion == "stderr_contains":
+        needle = str(step.expected).lower()
+        stderr = (obs.stderr or "").lower()
+        ok = needle in stderr
+        actual = f"stderr: {(obs.stderr or '').strip()[:120]!r}"
+    elif step.assertion == "exit_code_is":
+        expected_code = int(step.expected)
+        ok = obs.exit_code == expected_code
+        actual = f"exit code: {obs.exit_code}"
+    elif step.assertion == "url_contains":
+        needle = str(step.expected).lower()
+        url = (obs.url or "").lower()
+        ok = needle in url
+        actual = f"url: {obs.url!r}"
+    elif step.assertion == "page_title_contains":
+        needle = str(step.expected).lower()
+        ok = needle in obs.window_title.lower()
+        actual = f'page title: "{obs.window_title}"'
 
     result.status = "pass" if ok else "fail"
     result.actual = actual
@@ -140,7 +163,9 @@ def run_test(
                 adapter.close()
                 sr = StepResult(index=index, kind="teardown", text="close target", status="pass")
             else:
-                sr = _run_nl_step(step, index, provider, adapter, use_vision)
+                sr = _run_nl_step_with_retries(
+                    step, index, provider, adapter, use_vision, spec.retries
+                )
 
             sr.duration_s = time.monotonic() - step_started
             result.steps.append(sr)
@@ -167,6 +192,26 @@ def run_test(
 
 def _step_text(step) -> str:
     return step.describe() if isinstance(step, AssertStep) else step.text
+
+
+def _run_nl_step_with_retries(
+    step: NLStep,
+    index: int,
+    provider: LLMProvider,
+    adapter: Adapter,
+    use_vision: bool,
+    retries: int,
+) -> StepResult:
+    sr = _run_nl_step(step, index, provider, adapter, use_vision)
+    if sr.status == "pass" or retries == 0:
+        return sr
+    for attempt in range(retries):
+        retry_sr = _run_nl_step(step, index, provider, adapter, use_vision)
+        if retry_sr.status == "pass":
+            retry_sr.flaky = (attempt > 0 or sr.status != "pass")
+            return retry_sr
+    sr.flaky = True
+    return sr
 
 
 def _run_nl_step(

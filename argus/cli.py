@@ -51,7 +51,9 @@ def init() -> None:
 @click.option("--minutes", type=float, default=None, help="Time budget in minutes.")
 @click.option("--max-tokens", type=int, default=None,
               help="Token budget (ignored for ollama — it is local and free).")
-def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]) -> None:
+@click.option("--dry-run", is_flag=True, help="Parse specs and show steps without running them.")
+def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int],
+        dry_run: bool = False) -> None:
     """Run one test file, or every .argus/*.test.yaml when TEST is omitted."""
     cfg = load_config()
     paths = _resolve_tests(test, cfg.project_dir)
@@ -73,6 +75,15 @@ def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]
         except SpecError as exc:
             console.print(f"[red]✗[/red] {path.name}: {exc}")
             exit_code = max(exit_code, 2)
+            continue
+
+        if dry_run:
+            console.print(f"\n[bold]{path.name}[/bold] ({len(spec.steps)} steps, adapter: {spec.adapter})")
+            for i, step in enumerate(spec.steps):
+                from argus.engine.spec import AssertStep
+                kind = step.kind
+                text = step.describe() if isinstance(step, AssertStep) else step.text
+                console.print(f"  {i+1}. [{kind}] {text}")
             continue
 
         from argus.adapters import AdapterError, create_adapter
@@ -152,11 +163,17 @@ def _resolve_tests(test: Optional[str], project_dir: Path) -> list:
               help="Token budget (ignored for ollama — it is local and free).")
 @click.option("--no-regressions", is_flag=True,
               help="Skip generating regression test stubs for findings.")
+@click.option("--adapter", "adapter_type", default="desktop-gui", show_default=True,
+              help="Adapter to use: desktop-gui | cli | browser.")
+@click.option("--memory/--no-memory", default=True, show_default=True,
+              help="Persist explored paths across sessions for this target.")
 def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
-         no_regressions: bool) -> None:
+         no_regressions: bool, adapter_type: str, memory: bool) -> None:
     """Let the LLM free-roam TARGET to find bugs and write a report.
 
     Example:  argus roam "notepad.exe" --minutes 5
+              argus roam "http://localhost:3000" --adapter browser
+              argus roam "my-script.sh" --adapter cli
     """
     cfg = load_config()
     tracker = TokenTracker()
@@ -168,19 +185,20 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
     from argus.adapters import AdapterError, create_adapter
 
     try:
-        adapter = create_adapter("desktop-gui")
+        adapter = create_adapter(adapter_type)
     except AdapterError as exc:
         _die(str(exc))
 
     budget = cfg.make_budget(tracker, minutes, max_tokens)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     session_dir = cfg.argus_dir / "roam" / stamp
+    memory_dir = cfg.argus_dir / "roam" / "memory" if memory else None
 
     console.print(
         f"[dim]Argus v{__version__} · provider:[/dim] [cyan]{provider.describe()}[/cyan] "
-        f"[dim]· budget:[/dim] {budget.describe()}"
+        f"[dim]· adapter:[/dim] {adapter_type} [dim]· budget:[/dim] {budget.describe()}"
     )
-    if sys.platform == "win32":
+    if sys.platform == "win32" and adapter_type == "desktop-gui":
         console.print(
             "[yellow]![/yellow] roaming drives the real desktop on Windows — "
             "avoid using the mouse/keyboard while it runs."
@@ -196,6 +214,7 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
         session_dir=session_dir,
         on_event=lambda line: console.print(f"  [dim]{line}[/dim]"),
         generate_regressions=not no_regressions,
+        memory_dir=memory_dir,
     )
     tracker.persist(cfg.project_dir)
 
@@ -206,6 +225,100 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
     )
     console.print(f"report: [cyan]{session_dir / 'report.md'}[/cyan]")
     sys.exit(0 if not session.findings else 1)
+
+
+# ---------------------------------------------------------------- watch ----
+
+
+@main.command()
+@click.argument("test", required=False)
+@click.option("--minutes", type=float, default=None)
+@click.option("--max-tokens", type=int, default=None)
+def watch(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]) -> None:
+    """Re-run tests automatically whenever a .test.yaml file changes."""
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+    except ImportError:
+        _die(
+            "watchdog is required for `argus watch` — "
+            "install with: pip install argus-app-testing[watch]"
+        )
+
+    cfg = load_config()
+
+    class _Handler(FileSystemEventHandler):
+        def on_modified(self, event):
+            if event.src_path.endswith(".test.yaml"):
+                console.print(f"\n[yellow]![/yellow] {event.src_path} changed — re-running…")
+                _run_all(test, cfg, minutes, max_tokens)
+
+    console.print(f"[dim]Watching[/dim] [bold]{cfg.argus_dir}[/bold] for changes…")
+    console.print("[dim](press Ctrl-C to stop)[/dim]")
+    _run_all(test, cfg, minutes, max_tokens)
+
+    observer = Observer()
+    observer.schedule(_Handler(), str(cfg.argus_dir), recursive=False)
+    observer.start()
+    try:
+        while observer.is_alive():
+            observer.join(timeout=1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
+
+def _run_all(test: Optional[str], cfg, minutes, max_tokens) -> None:
+    from argus.adapters import AdapterError, create_adapter
+    from argus.engine.runner import run_test
+
+    paths = _resolve_tests(test, cfg.project_dir)
+    tracker = TokenTracker()
+    try:
+        provider = cfg.make_provider(tracker)
+    except ProviderError as exc:
+        console.print(f"[red]✗[/red] {exc}")
+        return
+    for path in paths:
+        try:
+            spec = load_spec(path)
+        except SpecError as exc:
+            console.print(f"[red]✗[/red] {path.name}: {exc}")
+            continue
+        try:
+            adapter = create_adapter(spec.adapter)
+        except AdapterError as exc:
+            console.print(f"[red]✗[/red] {path.name}: {exc}")
+            continue
+        budget = cfg.make_budget(tracker, minutes, max_tokens)
+        result = run_test(spec, provider, adapter, budget, on_step=_print_step,
+                          warn=lambda m: console.print(f"[yellow]![/yellow] {m}"))
+        result.save(cfg.project_dir)
+        _print_summary(result)
+
+
+# ---------------------------------------------------------------- serve ----
+
+
+@main.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=5000, show_default=True)
+@click.option("--debug", is_flag=True)
+def serve(host: str, port: int, debug: bool) -> None:
+    """Start the Argus web dashboard (requires Flask)."""
+    try:
+        from argus.serve.app import create_app
+    except ImportError:
+        _die(
+            "Flask is required for `argus serve` — "
+            "install with: pip install argus-app-testing[serve]"
+        )
+    cfg = load_config()
+    app = create_app(cfg)
+    console.print(
+        f"[green]✓[/green] Argus dashboard at [cyan]http://{host}:{port}[/cyan]"
+    )
+    app.run(host=host, port=port, debug=debug)
 
 
 # ----------------------------------------------------------- providers ----

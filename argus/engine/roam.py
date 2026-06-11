@@ -97,11 +97,14 @@ def roam(
     on_event: Optional[Callable[[str], None]] = None,
     stop_flag: Optional[Callable[[], bool]] = None,
     generate_regressions: bool = True,
+    memory_dir: Optional[Path] = None,
 ) -> RoamSession:
     session = RoamSession(target=target, provider=provider.describe())
     session_dir.mkdir(parents=True, exist_ok=True)
     shots_dir = session_dir / "shots"
     shots_dir.mkdir(exist_ok=True)
+
+    prior_memory = _load_memory(memory_dir, target) if memory_dir else []
 
     def emit(line: str) -> None:
         session.log(line)
@@ -193,6 +196,11 @@ def roam(
                 "Free-roam exploration. Explore the application, try edge cases, "
                 "and report anything broken. Vary your actions; avoid repeating "
                 "the same action twice in a row."
+                + (
+                    "\n\nPreviously explored paths (avoid duplicating these):\n"
+                    + "\n".join(f"- {m}" for m in prior_memory[-20:])
+                    if prior_memory else ""
+                )
             )
             from argus.engine.agent import observation_prompt
 
@@ -265,6 +273,8 @@ def roam(
     if generate_regressions and session.findings:
         _write_regressions(session, session_dir)
     _write_session_json(session, session_dir)
+    if memory_dir:
+        _save_memory(memory_dir, target, session)
     return session
 
 
@@ -363,6 +373,43 @@ teardown:
   - close
 """
         (session_dir / f"regression-{i:02d}-{safe}.test.yaml").write_text(stub, encoding="utf-8")
+
+
+def _load_memory(memory_dir: Path, target: str) -> List[str]:
+    """Load the explored-paths memo for this target from previous sessions."""
+    path = memory_dir / f"{_target_key(target)}.memory.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return list(data.get("explored", []))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _save_memory(memory_dir: Path, target: str, session: RoamSession) -> None:
+    """Merge this session's action notes into the persistent memory file."""
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    path = memory_dir / f"{_target_key(target)}.memory.json"
+    existing: List[str] = []
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8")).get("explored", [])
+        except (json.JSONDecodeError, OSError):
+            pass
+    new_paths = [
+        a["note"] for a in session.actions
+        if isinstance(a.get("note"), str) and a["note"] not in existing
+    ]
+    merged = (existing + new_paths)[-200:]  # cap at 200 entries
+    path.write_text(
+        json.dumps({"target": target, "explored": merged}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _target_key(target: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")[:60] or "target"
 
 
 def _write_session_json(session: RoamSession, session_dir: Path) -> None:

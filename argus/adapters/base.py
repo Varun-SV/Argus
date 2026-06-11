@@ -66,6 +66,12 @@ class Observation:
     process_alive: bool = True
     dialogs: List[str] = field(default_factory=list)  # titles of extra/popup windows
     error: Optional[str] = None
+    # CLI adapter fields
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    exit_code: Optional[int] = None
+    # Browser adapter field
+    url: Optional[str] = None
 
     def tree_text(self, max_elements: int = 120) -> str:
         lines = [el.describe() for el in self.elements[:max_elements]]
@@ -76,6 +82,10 @@ class Observation:
     def find_text(self, needle: str) -> bool:
         needle = needle.lower()
         if needle in self.window_title.lower():
+            return True
+        if self.stdout and needle in self.stdout.lower():
+            return True
+        if self.stderr and needle in self.stderr.lower():
             return True
         return any(needle in el.name.lower() for el in self.elements)
 
@@ -107,12 +117,23 @@ def create_adapter(adapter_type: str) -> Adapter:
     if adapter_type in ("desktop-gui", "desktop", "gui"):
         if sys.platform == "win32":
             from argus.adapters.windows_gui import WindowsGUIAdapter
-
             return WindowsGUIAdapter()
+        if sys.platform.startswith("linux"):
+            from argus.adapters.linux_gui import LinuxGUIAdapter
+            return LinuxGUIAdapter()
         raise AdapterError(
-            "the desktop-gui adapter currently supports Windows only "
-            f"(this is {sys.platform}). Linux/macOS support is on the roadmap."
+            "the desktop-gui adapter supports Windows and Linux "
+            f"(this is {sys.platform}). macOS support is on the roadmap."
         )
+    if adapter_type in ("cli", "terminal", "shell"):
+        from argus.adapters.cli_adapter import CLIAdapter
+        return CLIAdapter()
+    if adapter_type in ("browser", "web", "playwright"):
+        from argus.adapters.browser_adapter import BrowserAdapter
+        return BrowserAdapter()
+    if adapter_type in ("linux-gui", "linux_gui", "x11"):
+        from argus.adapters.linux_gui import LinuxGUIAdapter
+        return LinuxGUIAdapter()
     raise AdapterError(
-        f"unknown adapter '{adapter_type}' — currently available: desktop-gui (Windows)"
+        f"unknown adapter '{adapter_type}' — available: desktop-gui, cli, browser"
     )

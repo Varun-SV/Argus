@@ -1,18 +1,18 @@
 # Argus
 
-**Argus** is a universal application testing tool driven by multimodal LLMs. It watches an application the way a person would — through **screenshots** and the **OS accessibility tree** — then drives it to satisfy tests written as a mix of natural-language steps and structured assertions.
+**Argus** is an autonomous application testing tool that uses multimodal LLMs to test any software — desktop GUI, web, CLI, or shell scripts — the way a real user would: by looking at screenshots, reading the accessibility tree, and taking actions.
 
-It is fully **provider-agnostic**: Ollama (local, free), Anthropic, OpenAI, Azure, Gemini, LiteLLM.
+**No selectors. No scripts. Just describe what you want.**
 
 ```
 $ argus run checkout.test.yaml
+
 Argus v0.1.0 · provider: ollama:gemma3:9b
 
 Running checkout.test.yaml…
-  ✓  Type the sentence 'hello from argus' into the editor  2.31s
-     ↳ typed 'hello from argus' — type into the editor area
-  ✓  text_visible: 'hello from argus'  0.12s
-  ✓  Open the File menu  1.08s
+  ✓  Type 'hello from argus' into the editor          2.31s
+  ✓  text_visible: 'hello from argus'                  0.12s
+  ✓  Open the File menu                                1.08s
   ✓  element_exists: {name: Save, control_type: MenuItem}  0.09s
 
 4 passed · 0 failed · 0 skipped · 3.6s · 1840 tokens · exit 0
@@ -20,48 +20,83 @@ Running checkout.test.yaml…
 
 ---
 
+## Why Argus?
+
+| Traditional automation | Argus |
+|---|---|
+| Brittle XPath/CSS selectors | Natural language + accessibility tree |
+| Breaks on UI changes | Adapts like a human tester |
+| Platform-specific scripts | Same YAML format on Windows, Linux, macOS, web |
+| Visual tests need special tooling | Multimodal LLMs understand screenshots natively |
+| Exploratory testing is manual | `argus roam` autonomously hunts for bugs |
+
+---
+
 ## Install
 
 ```bash
-# Windows (the first supported desktop-GUI platform):
-pip install -e ".[windows,gui]"
+# Core (works on any OS):
+pip install argus-app-testing
 
-# engine only (any OS — desktop-gui adapter requires Windows for now):
-pip install -e .
+# Windows desktop-GUI testing:
+pip install "argus-app-testing[windows]"
+
+# Browser testing (Playwright):
+pip install "argus-app-testing[browser]"
+playwright install chromium
+
+# Linux GUI testing (X11/Xvfb):
+pip install "argus-app-testing[linux]"
+
+# Web dashboard:
+pip install "argus-app-testing[serve]"
+
+# Everything:
+pip install "argus-app-testing[all]"
 ```
 
-Requires Python 3.10+. For local testing install [Ollama](https://ollama.com) and pull a **multimodal** model:
+Requires **Python 3.10+**. For free local testing, install [Ollama](https://ollama.com) and pull a multimodal model:
 
 ```bash
 ollama pull gemma3:9b
 ```
 
+---
+
 ## Quick start
 
 ```bash
-argus init             # scaffold .argus/ (config + example notepad test)
-argus providers        # check the connection AND whether your model has vision
-argus run              # run every .argus/*.test.yaml
-argus roam "notepad.exe" --minutes 5    # free-roam exploratory testing
-argus tokens           # cumulative token usage, any time
-argus report           # recent run history
-argus gui              # open the desktop app
+argus init                              # scaffold .argus/ (config + example test)
+argus providers                         # check connection and vision support
+argus run                               # run every .argus/*.test.yaml
+argus run checkout.test.yaml --dry-run  # preview steps without running
+argus watch                             # re-run on file change (CI dev mode)
+argus roam "notepad.exe" --minutes 5    # free-roam bug hunting
+argus roam "http://localhost:3000" --adapter browser --minutes 10
+argus roam "my-script.sh" --adapter cli
+argus serve                             # web dashboard at http://localhost:5000
+argus tokens                            # cumulative token usage
+argus report                            # recent run history
+argus gui                               # native desktop app
 ```
 
 ---
 
 ## Writing tests
 
-Tests are YAML files in `.argus/`, mixing **natural-language steps** (the LLM fills in the ambiguity) with **structured assertions** (executed deterministically — the model is never consulted for them):
+Tests are YAML files in `.argus/`, mixing **natural-language steps** with **structured assertions**. The LLM handles the NL steps; assertions run deterministically — the model is never consulted for them:
+
+### Desktop GUI (Windows/Linux)
 
 ```yaml
-name: Notepad types and finds text
+name: Notepad smoke test
 target:
   adapter: desktop-gui
   launch: notepad.exe
+retries: 1                              # retry flaky steps once
 
 steps:
-  - "Type the sentence 'hello from argus' into the editor"
+  - "Type 'hello from argus' into the editor"
   - assert:
       text_visible: "hello from argus"
   - "Open the File menu"
@@ -69,31 +104,87 @@ steps:
       element_exists:
         name: "Save"
         control_type: MenuItem
+  - assert:
+      window_title_contains: "Notepad"
 
 teardown:
   - close
 ```
 
-Supported assertions: `text_visible`, `window_title_contains`, `element_exists`, `process_running`, `dialog_open`.
+### Browser (Playwright)
 
-Exit codes: `0` all pass · `1` failure · `2` error/crash.
+```yaml
+name: Homepage loads
+target:
+  adapter: browser
+  launch: "https://example.com"
+
+steps:
+  - "Check that the page loaded"
+  - assert:
+      page_title_contains: "Example"
+  - assert:
+      url_contains: "example.com"
+  - "Click the first link"
+  - assert:
+      process_running: true
+
+teardown:
+  - close
+```
+
+### CLI / Shell script
+
+```yaml
+name: Script returns zero
+target:
+  adapter: cli
+  launch: "python my_script.py --check"
+
+steps:
+  - assert:
+      exit_code_is: 0
+  - assert:
+      stdout_contains: "OK"
+```
+
+**All assertion types:**
+
+| Assertion | Adapters | Example |
+|---|---|---|
+| `text_visible` | desktop, browser | `text_visible: "Hello"` |
+| `window_title_contains` | desktop | `window_title_contains: "Notepad"` |
+| `element_exists` | desktop | `element_exists: {name: Save}` |
+| `process_running` | all | `process_running: true` |
+| `dialog_open` | desktop | `dialog_open: "Error"` |
+| `stdout_contains` | cli | `stdout_contains: "OK"` |
+| `stderr_contains` | cli | `stderr_contains: "warning"` |
+| `exit_code_is` | cli | `exit_code_is: 0` |
+| `url_contains` | browser | `url_contains: "dashboard"` |
+| `page_title_contains` | browser | `page_title_contains: "Home"` |
+
+**Exit codes:** `0` all pass · `1` failure · `2` error/crash
 
 ---
 
-## Free-roam mode
+## Free-roam mode: autonomous bug hunting
 
 ```bash
 argus roam "your-app.exe" --minutes 10
+argus roam "http://localhost:3000" --adapter browser --minutes 5
+argus roam "./my-cli.sh" --adapter cli --minutes 2
 ```
 
-The LLM explores the application **like a curious child** — opens every menu, fills every field, tries empty/long/special-character input — with no script. While it roams, Argus:
+The LLM explores the application like a curious tester — opens every menu, fills every field, tries empty/long/special-character input — with no script. Argus:
 
-- **detects bugs automatically**: crashes, error dialogs, hangs — plus anything the model itself flags as broken,
-- **documents everything** in a session journal,
-- **captures a screenshot for each finding**, and
-- **writes `.argus/roam/<stamp>/report.md`** plus auto-generated regression-test stubs you can refine and keep.
+- **Detects bugs automatically**: crashes, error dialogs, hangs, and anything the model itself flags
+- **Remembers across sessions**: `--memory` (default) stores explored paths per target so each run discovers *new* territory
+- **Documents everything**: session journal + screenshot per finding
+- **Writes `.argus/roam/<stamp>/report.md`** + auto-generated regression-test stubs to refine and keep
 
-> On Windows, roaming drives the real desktop — avoid using the machine while it runs. A virtual-display mode (Linux/Xvfb) is on the roadmap so roaming can run fully in the background.
+```bash
+argus roam "notepad.exe" --minutes 5 --no-memory  # fresh exploration every time
+```
 
 ---
 
@@ -103,6 +194,7 @@ Configure in `.argus/config.yaml` (created by `argus init`):
 
 ```yaml
 provider: ollama          # ollama | anthropic | openai | azure | gemini | litellm
+
 providers:
   ollama:
     model: gemma3:9b
@@ -110,50 +202,69 @@ providers:
   anthropic:
     model: claude-sonnet-4-6
     api_key_env: ANTHROPIC_API_KEY
+  openai:
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
 
 budgets:
-  time_minutes: 10        # time budget — the only budget used for ollama (local = free)
-  max_tokens: null        # optional token budget for paid providers
+  time_minutes: 10        # time budget (all providers)
+  max_tokens: null        # optional token budget (ignored for ollama — it is local/free)
 ```
 
-Env overrides: `ARGUS_PROVIDER`, `ARGUS_MODEL`, `ARGUS_API_KEY`, `ARGUS_BASE_URL`.
+Environment overrides: `ARGUS_PROVIDER`, `ARGUS_MODEL`, `ARGUS_API_KEY`, `ARGUS_BASE_URL`
 
-**Vision detection.** Argus asks the backend **once** whether your model is multimodal (e.g. Ollama's capability metadata). If it isn't, Argus tells you that vision-related testing is unavailable and degrades gracefully to accessibility-tree-only observation.
+**Vision:** Argus auto-detects whether your model is multimodal. If not, it degrades gracefully to accessibility-tree-only observation and warns you.
 
-**Token tracking.** Every LLM call is metered. `argus tokens` (or the GUI status bar) shows cumulative usage at any point in time.
+**Token tracking and cost estimation:** Every LLM call is metered. `argus tokens` shows cumulative usage. Cost estimates are available for cloud providers (GPT-4o, Claude, Gemini, etc.).
 
 ---
 
-## The desktop app
+## Watch mode (CI development)
 
 ```bash
-pip install -e ".[gui]"
-argus gui
+argus watch                   # re-runs all tests whenever any .test.yaml changes
+argus watch my-test.yaml      # watch a specific test file
 ```
 
-A native window (WebView2 on Windows) built on the Argus design system: run tests with live step results, drive free-roam sessions with a live journal, check provider connectivity/vision, and watch token usage.
+Useful while writing tests: save the YAML, see the result instantly.
+
+---
+
+## Web dashboard
+
+```bash
+pip install "argus-app-testing[serve]"
+argus serve                   # opens at http://127.0.0.1:5000
+argus serve --host 0.0.0.0 --port 8080
+```
+
+Shows run history and roam session summaries from `.argus/runs/` and `.argus/roam/`.
+
+---
+
+## Windows-specific notes
+
+- `notepad.exe` on Windows 11 is a **WinUI3 packaged app** — Argus automatically falls back from PID-based connection to a process-tree scan, so it just works.
+- `explorer.exe` is a system singleton that cannot be re-launched — Argus attaches to the existing process automatically.
+- YAML files written by `argus init` use UTF-8; files saved by other editors (cp1252 on older Windows installs) are read with a cp1252 fallback.
 
 ---
 
 ## Project layout
 
 ```
-argus/              the application
-  providers/        provider-agnostic LLM layer (ollama, anthropic, openai-compatible)
-  adapters/         target adapters (windows desktop-gui; more to come)
+argus/
+  providers/        LLM layer — Ollama, Anthropic, OpenAI, Azure, Gemini, LiteLLM
+  adapters/         desktop-gui (Windows+Linux), cli, browser (Playwright)
   engine/           spec parser, hybrid-agentic runner, free-roam explorer
-  gui/              the desktop app (pywebview + design-system UI)
-  cli.py            argus init/run/roam/providers/tokens/report/gui
-tests/              pytest suite (fake provider + fake adapter, no OS deps)
-design/             the Argus design system (tokens, components, UI kits)
+  serve/            Flask web dashboard
+  gui/              native desktop app (pywebview)
+  cli.py            init / run / roam / watch / serve / providers / tokens / report / gui
+tests/              pytest suite — no OS or LLM deps (fake provider + fake adapter)
+.argus/             auto-created: config.yaml, *.test.yaml, runs/, roam/
 ```
 
-## Roadmap
-
-- Adapters: Linux/macOS desktop-GUI, browser (Playwright), CLI/terminal, TUI
-- Virtual-display roaming (Xvfb) — fully background exploration
-- `argus watch` (re-run on change) and `argus serve` (web dashboard)
-- Run history dashboards from `.argus/runs/`
+---
 
 ## License
 

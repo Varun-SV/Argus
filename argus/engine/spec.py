@@ -29,11 +29,19 @@ from typing import List, Optional, Union
 import yaml
 
 ASSERTION_KINDS = (
+    # desktop-gui
     "text_visible",
     "window_title_contains",
     "element_exists",
     "process_running",
     "dialog_open",
+    # cli
+    "stdout_contains",
+    "stderr_contains",
+    "exit_code_is",
+    # browser
+    "url_contains",
+    "page_title_contains",
 )
 
 
@@ -75,6 +83,7 @@ class TestSpec:
     steps: List[Step] = field(default_factory=list)
     path: Optional[Path] = None
     continue_on_failure: bool = False
+    retries: int = 0
 
     @property
     def file_name(self) -> str:
@@ -130,11 +139,16 @@ def parse_spec(text: str, path: Optional[Path] = None) -> TestSpec:
         steps=steps,
         path=path,
         continue_on_failure=bool(data.get("continue_on_failure", False)),
+        retries=int(data.get("retries", 0)),
     )
 
 
 def load_spec(path: Path) -> TestSpec:
-    return parse_spec(path.read_text(encoding="utf-8"), path=path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="cp1252", errors="replace")
+    return parse_spec(text, path=path)
 
 
 def discover_tests(project_dir: Path) -> List[Path]:
