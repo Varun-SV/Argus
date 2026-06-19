@@ -13,6 +13,8 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 
+import uuid as _uuid
+
 from argus.adapters.base import Adapter, AdapterError
 from argus.engine.agent import run_turn
 from argus.engine.results import RunResult, StepResult
@@ -36,7 +38,14 @@ Rules:
 ProgressFn = Callable[[StepResult], None]
 
 
-def check_assertion(step: AssertStep, adapter: Adapter) -> StepResult:
+def check_assertion(
+    step: AssertStep,
+    adapter: Adapter,
+    knowledge_store=None,
+    state_id: str = "",
+    target: str = "",
+    session_id: str = "",
+) -> StepResult:
     obs = adapter.observe(include_screenshot=False)
     result = StepResult(index=0, kind="assert", text=step.describe())
     result.expected = step.describe()
@@ -92,6 +101,16 @@ def check_assertion(step: AssertStep, adapter: Adapter) -> StepResult:
 
     result.status = "pass" if ok else "fail"
     result.actual = actual
+
+    if knowledge_store is not None and not ok and state_id:
+        try:
+            knowledge_store.record_assertion(
+                step.assertion, step.expected, state_id, passed=False,
+                target=target, session_id=session_id,
+            )
+        except Exception:
+            pass
+
     return result
 
 
@@ -102,6 +121,7 @@ def run_test(
     budget: Optional[Budget] = None,
     on_step: Optional[ProgressFn] = None,
     warn: Optional[Callable[[str], None]] = None,
+    knowledge_store=None,  # Optional[KnowledgeStore]
 ) -> RunResult:
     result = RunResult(
         test_name=spec.name,
@@ -110,6 +130,8 @@ def run_test(
         provider=provider.describe(),
     )
     started = time.monotonic()
+    session_id = str(_uuid.uuid4())[:8]
+    target = spec.launch or spec.name
 
     # Vision capability: ask once; degrade gracefully.
     try:
@@ -157,14 +179,21 @@ def run_test(
                 continue
 
             if isinstance(step, AssertStep):
-                sr = check_assertion(step, adapter)
+                sr = check_assertion(
+                    step, adapter,
+                    knowledge_store=knowledge_store,
+                    state_id="",  # assertion state recorded inside check_assertion
+                    target=target,
+                    session_id=session_id,
+                )
                 sr.index = index
             elif step.text == "close" and step.kind == "teardown":
                 adapter.close()
                 sr = StepResult(index=index, kind="teardown", text="close target", status="pass")
             else:
                 sr = _run_nl_step_with_retries(
-                    step, index, provider, adapter, use_vision, spec.retries
+                    step, index, provider, adapter, use_vision, spec.retries,
+                    knowledge_store=knowledge_store, target=target, session_id=session_id,
                 )
 
             sr.duration_s = time.monotonic() - step_started
@@ -187,6 +216,13 @@ def run_test(
     else:
         result.status = "pass"
     result.tokens = provider.tracker.snapshot()
+
+    if knowledge_store is not None:
+        try:
+            knowledge_store.finalize_session(session_id, target)
+        except Exception:
+            pass
+
     return result
 
 
@@ -201,12 +237,21 @@ def _run_nl_step_with_retries(
     adapter: Adapter,
     use_vision: bool,
     retries: int,
+    knowledge_store=None,
+    target: str = "",
+    session_id: str = "",
 ) -> StepResult:
-    sr = _run_nl_step(step, index, provider, adapter, use_vision)
+    sr = _run_nl_step(
+        step, index, provider, adapter, use_vision,
+        knowledge_store=knowledge_store, target=target, session_id=session_id,
+    )
     if sr.status == "pass" or retries == 0:
         return sr
     for attempt in range(retries):
-        retry_sr = _run_nl_step(step, index, provider, adapter, use_vision)
+        retry_sr = _run_nl_step(
+            step, index, provider, adapter, use_vision,
+            knowledge_store=knowledge_store, target=target, session_id=session_id,
+        )
         if retry_sr.status == "pass":
             retry_sr.flaky = (attempt > 0 or sr.status != "pass")
             return retry_sr
@@ -220,11 +265,34 @@ def _run_nl_step(
     provider: LLMProvider,
     adapter: Adapter,
     use_vision: bool,
+    knowledge_store=None,
+    target: str = "",
+    session_id: str = "",
 ) -> StepResult:
     sr = StepResult(index=index, kind=step.kind, text=step.text)
     history: list = []
+    prev_state_id = ""
+    prev_action: dict = {}
     for _ in range(_MAX_TURNS_PER_STEP):
-        turn = run_turn(provider, adapter, SYSTEM_PROMPT, step.text, history, use_vision)
+        turn = run_turn(
+            provider, adapter, SYSTEM_PROMPT, step.text, history, use_vision,
+            knowledge_store=knowledge_store,
+            target=target,
+            session_id=session_id,
+            prev_state_id=prev_state_id,
+        )
+        # record transition from previous state
+        if knowledge_store is not None and prev_state_id and turn.state_id and prev_action:
+            try:
+                knowledge_store.record_transition(
+                    prev_state_id, prev_action, turn.state_id,
+                    target, session_id, success=not bool(turn.error),
+                )
+            except Exception:
+                pass
+        prev_state_id = turn.state_id
+        prev_action = turn.action
+
         if turn.error and turn.action.get("action") == "done":
             sr.status = "error"
             sr.note = turn.error

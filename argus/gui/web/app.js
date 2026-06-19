@@ -197,6 +197,37 @@ async function refreshTokens() {
   } catch (e) { /* api not ready yet */ }
 }
 
+/* ---- knowledge ------------------------------------------------------- */
+
+async function loadKnowledgeStats() {
+  const target = $("ks-target").value.trim();
+  if (!target) return;
+  try {
+    const stats = await api().knowledge_stats(target);
+    $("ks-states").querySelector(".stat-val").textContent = stats.states ?? 0;
+    $("ks-transitions").querySelector(".stat-val").textContent = stats.transitions ?? 0;
+    $("ks-bugs").querySelector(".stat-val").textContent = stats.bugs ?? 0;
+    $("ks-sessions").querySelector(".stat-val").textContent = stats.sessions ?? 0;
+    $("ks-clear").disabled = false;
+  } catch (e) {
+    $("ks-states").querySelector(".stat-val").textContent = "—";
+  }
+}
+
+async function clearKnowledge() {
+  const target = $("ks-target").value.trim();
+  if (!target) return;
+  if (!confirm(`Reset all knowledge for "${target}"?`)) return;
+  try {
+    await api().knowledge_clear(target);
+    $("ks-states").querySelector(".stat-val").textContent = "0";
+    $("ks-transitions").querySelector(".stat-val").textContent = "0";
+    $("ks-bugs").querySelector(".stat-val").textContent = "0";
+    $("ks-sessions").querySelector(".stat-val").textContent = "0";
+    $("ks-clear").disabled = true;
+  } catch (e) { /* ignore */ }
+}
+
 function badge(status, label) {
   return `<span class="badge ${status}"><span class="dot"></span>${esc(label)}</span>`;
 }

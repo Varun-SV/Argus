@@ -154,6 +154,11 @@ button { font-family:inherit; cursor:pointer; }
   padding:10px 12px; border-radius:6px; }
 .check-result.ok { background:var(--pass-tint); color:var(--green-400); }
 .check-result.bad { background:var(--fail-tint); color:var(--red-400); }
+.stat-card { background:var(--bg-inset); border:1px solid var(--border-subtle); border-radius:8px;
+  padding:14px 16px; text-align:center; }
+.stat-val { font-size:28px; font-weight:700; color:var(--text-brand); font-family:var(--font-mono); }
+.stat-lbl { font-size:11px; color:var(--text-muted); margin-top:4px; text-transform:uppercase;
+  letter-spacing:.06em; }
 .warn-box { background:rgba(255,174,26,.1); border:1px solid rgba(255,174,26,.25);
   color:var(--beacon-500); border-radius:6px; padding:10px 12px; font-size:12px;
   margin-top:10px; }
@@ -185,6 +190,7 @@ button { font-family:inherit; cursor:pointer; }
       <button data-view="runs" class="active">Runs</button>
       <button data-view="roam">Roam</button>
       <button data-view="providers">Providers</button>
+      <button data-view="knowledge">Knowledge</button>
     </div>
     <span class="tok-pill">tokens <b id="tok-top">0</b></span>
   </div>
@@ -285,6 +291,65 @@ button { font-family:inherit; cursor:pointer; }
             <span>this session <b id="u-session">0</b></span>
             <span>project total <b id="u-project">0</b></span>
             <span>LLM calls <b id="u-calls">0</b></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- KNOWLEDGE -->
+  <div class="view" id="view-knowledge">
+    <div class="panel-view">
+      <div class="panel">
+        <h2>Knowledge Engine</h2>
+        <p class="sub">Argus builds a semantic graph of UI states and transitions across sessions.
+          Past bugs and unexplored paths are injected into the LLM context — every run is smarter
+          than the last.</p>
+        <div class="card">
+          <div class="field" style="margin-bottom:14px">
+            <label>Target</label>
+            <div style="display:flex;gap:8px">
+              <input id="ks-target" placeholder="notepad.exe" spellcheck="false" style="flex:1">
+              <button class="btn secondary" onclick="loadKnowledgeStats()">Load stats</button>
+              <button class="btn danger" onclick="clearKnowledge()" id="ks-clear" disabled>Reset</button>
+            </div>
+          </div>
+          <div class="row2" style="grid-template-columns:repeat(4,1fr);gap:10px" id="ks-stats">
+            <div class="stat-card" id="ks-states">
+              <div class="stat-val">—</div><div class="stat-lbl">states</div>
+            </div>
+            <div class="stat-card" id="ks-transitions">
+              <div class="stat-val">—</div><div class="stat-lbl">transitions</div>
+            </div>
+            <div class="stat-card" id="ks-bugs">
+              <div class="stat-val">—</div><div class="stat-lbl">bugs found</div>
+            </div>
+            <div class="stat-card" id="ks-sessions">
+              <div class="stat-val">—</div><div class="stat-lbl">sessions</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:12px">
+            How it works</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;font-size:13px;color:var(--text-secondary)">
+            <div>
+              <div style="color:var(--text-brand);font-weight:600;margin-bottom:6px">State graph</div>
+              Each observed UI state is fingerprinted and stored as a node. Actions become directed
+              edges. Red nodes mark known bug zones.
+            </div>
+            <div>
+              <div style="color:var(--text-brand);font-weight:600;margin-bottom:6px">Vector recall</div>
+              Observations are embedded with <code style="font-family:var(--font-mono);font-size:11px">all-MiniLM-L6-v2</code>.
+              Similar past states and bug reports are retrieved and injected into the LLM prompt.
+            </div>
+            <div>
+              <div style="color:var(--text-brand);font-weight:600;margin-bottom:6px">Cross-session</div>
+              Knowledge persists in <code style="font-family:var(--font-mono);font-size:11px">.argus/knowledge/</code>.
+              Configure <code style="font-family:var(--font-mono);font-size:11px">knowledge:</code> in
+              <code style="font-family:var(--font-mono);font-size:11px">.argus/config.yaml</code> to
+              switch backends.
+            </div>
           </div>
         </div>
       </div>
