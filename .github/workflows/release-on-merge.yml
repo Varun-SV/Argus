@@ -7,11 +7,13 @@ on:
 
 permissions:
   contents: write
+  id-token: write  # required for PyPI trusted publishing
 
 jobs:
   release:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,40 +24,110 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Determine bump type from PR labels
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Determine version bump from PR labels
         id: bump
         run: |
           LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
-          if echo "$LABELS" | grep -q "bump:major"; then
+          if echo "$LABELS" | grep -q '"bump:major"'; then
             echo "type=major" >> $GITHUB_OUTPUT
-          elif echo "$LABELS" | grep -q "bump:minor"; then
+          elif echo "$LABELS" | grep -q '"bump:minor"'; then
             echo "type=minor" >> $GITHUB_OUTPUT
           else
             echo "type=patch" >> $GITHUB_OUTPUT
           fi
 
-      - name: Prepare release (parse changelog, bump version)
-        id: release
+      - name: Read current version and compute new version
+        id: version
         run: |
-          python .github/scripts/prepare_release.py --bump ${{ steps.bump.outputs.type }}
+          CURRENT=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          BUMP="${{ steps.bump.outputs.type }}"
+          if [ "$BUMP" = "major" ]; then
+            NEW="$((MAJOR + 1)).0.0"
+          elif [ "$BUMP" = "minor" ]; then
+            NEW="$MAJOR.$((MINOR + 1)).0"
+          else
+            NEW="$MAJOR.$MINOR.$((PATCH + 1))"
+          fi
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "new=$NEW"         >> $GITHUB_OUTPUT
+
+      - name: Extract [Unreleased] notes from CHANGELOG
+        id: notes
+        run: |
+          NOTES=$(awk '/^## \[Unreleased\]/{found=1; next} found && /^## \[/{exit} found{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')
+          if [ -z "$NOTES" ]; then
+            echo "No unreleased content in CHANGELOG.md — skipping release."
+            exit 0
+          fi
+          {
+            echo "notes<<EOF_RELEASE_NOTES"
+            echo "$NOTES"
+            echo "EOF_RELEASE_NOTES"
+          } >> $GITHUB_OUTPUT
+
+      - name: Update CHANGELOG.md
+        if: steps.notes.outputs.notes != ''
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          TODAY=$(date +%Y-%m-%d)
+          # Replace "## [Unreleased]" with empty Unreleased + versioned section
+          python3 - <<'PYEOF'
+import re, os
+from datetime import date
+version = os.environ["VERSION"]
+today   = date.today().isoformat()
+text    = open("CHANGELOG.md").read()
+# Insert versioned heading right after [Unreleased] block header
+text = re.sub(
+    r'(## \[Unreleased\]\n)',
+    rf'\1\n## [{version}] - {today}\n',
+    text,
+    count=1,
+)
+open("CHANGELOG.md", "w").write(text)
+PYEOF
+        env:
+          VERSION: ${{ steps.version.outputs.new }}
+
+      - name: Update version in pyproject.toml
+        if: steps.notes.outputs.notes != ''
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
 
       - name: Commit version bump
-        if: steps.release.outputs.version != ''
+        if: steps.notes.outputs.notes != ''
         run: |
-          git config user.name "github-actions[bot]"
+          VERSION="${{ steps.version.outputs.new }}"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md pyproject.toml
-          git commit -m "chore: release v${{ steps.release.outputs.version }} [skip ci]"
-          git tag "v${{ steps.release.outputs.version }}"
+          git commit -m "chore: release v${VERSION} [skip ci]"
+          git tag "v${VERSION}"
           git push origin main
-          git push origin "v${{ steps.release.outputs.version }}"
+          git push origin "v${VERSION}"
+
+      - name: Build distribution packages
+        if: steps.notes.outputs.notes != ''
+        run: python -m build
+
+      - name: Publish to PyPI
+        if: steps.notes.outputs.notes != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
 
       - name: Create GitHub Release
-        if: steps.release.outputs.version != ''
+        if: steps.notes.outputs.notes != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v${{ steps.release.outputs.version }}"
-          name: "v${{ steps.release.outputs.version }}"
-          body: ${{ steps.release.outputs.notes }}
-          draft: false
+          tag_name: "v${{ steps.version.outputs.new }}"
+          name:     "v${{ steps.version.outputs.new }}"
+          body:     ${{ steps.notes.outputs.notes }}
+          files:    dist/*
+          draft:    false
           prerelease: false

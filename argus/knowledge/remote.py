@@ -342,6 +342,12 @@ class RemoteKnowledgeStore(KnowledgeStore):
                 except Exception:
                     pass
 
+    def confidence_for_state(self, state_id: str) -> int:
+        for g in self._graphs.values():
+            if g is not None and state_id in g.nodes:
+                return int(g.nodes[state_id].get("visit_count", 0))
+        return 0
+
     def close(self) -> None:
         for tgt in list(self._graphs.keys()):
             self._save_graph(tgt)

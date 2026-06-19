@@ -238,3 +238,103 @@ def test_runner_accepts_none_knowledge_store(tmp_path):
     )
     result = run_test(spec, provider, adapter, knowledge_store=None)
     assert result.status in ("pass", "fail", "error")
+
+
+# ── JsonKnowledgeStore ───────────────────────────────────────────────────────
+
+@pytest.fixture()
+def jstore(tmp_path: Path):
+    from argus.knowledge.json_store import JsonKnowledgeStore
+    return JsonKnowledgeStore(persist_dir=tmp_path / "jknowledge")
+
+
+def test_json_record_state_consistent_id(jstore):
+    obs = _obs("Notepad")
+    id1 = jstore.record_state(obs, "notepad", "s1", 0)
+    id2 = jstore.record_state(obs, "notepad", "s1", 1)
+    assert id1 == id2
+
+
+def test_json_record_state_different_windows(jstore):
+    id1 = jstore.record_state(_obs("Notepad"), "app", "s1", 0)
+    id2 = jstore.record_state(_obs("Calculator"), "app", "s1", 1)
+    assert id1 != id2
+
+
+def test_json_record_transition_no_crash(jstore):
+    sid_a = jstore.record_state(_obs("Notepad"), "notepad", "s1", 0)
+    sid_b = jstore.record_state(_obs("Notepad — File"), "notepad", "s1", 1)
+    jstore.record_transition(sid_a, {"action": "click", "element_id": 1}, sid_b, "notepad", "s1")
+    g = jstore._graph("notepad")
+    assert len(g["edges"]) == 1
+
+
+def test_json_record_finding_returns_id(jstore):
+    sid = jstore.record_state(_obs("Notepad"), "notepad", "s1", 0)
+    bug_id = jstore.record_finding(
+        title="crash on save", severity="high", state_id=sid,
+        action_sequence=[], target="notepad", session_id="s1",
+    )
+    assert isinstance(bug_id, str) and len(bug_id) > 0
+
+
+def test_json_retrieve_returns_context(jstore):
+    for i in range(3):
+        jstore.record_state(_obs(f"Window {i}"), "app", "s1", i)
+    ctx = jstore.retrieve(_obs("Window 1"), "app")
+    assert isinstance(ctx, KnowledgeContext)
+
+
+def test_json_confidence_zero_unknown(jstore):
+    assert jstore.confidence_for_state("unknown-state-id") == 0
+
+
+def test_json_confidence_increments(jstore):
+    obs = _obs("Notepad")
+    sid = jstore.record_state(obs, "notepad", "s1", 0)
+    assert jstore.confidence_for_state(sid) == 1
+    jstore.record_state(obs, "notepad", "s1", 1)
+    assert jstore.confidence_for_state(sid) == 2
+
+
+def test_json_finalize_writes_graph(jstore, tmp_path):
+    jstore.record_state(_obs("Notepad"), "notepad", "s1", 0)
+    jstore.finalize_session("s1", "notepad")
+    graph_files = list((tmp_path / "jknowledge").glob("*.graph.json"))
+    assert len(graph_files) == 1
+
+
+def test_json_get_stats_counts(jstore):
+    jstore.record_state(_obs("Notepad"), "notepad", "s1", 0)
+    jstore.record_state(_obs("Notepad — File"), "notepad", "s1", 1)
+    stats = jstore.get_stats("notepad")
+    assert stats["notepad"]["states"] == 2
+
+
+def test_json_clear_target_removes_data(jstore):
+    jstore.record_state(_obs("Notepad"), "notepad", "s1", 0)
+    jstore.finalize_session("s1", "notepad")
+    jstore.clear_target("notepad")
+    stats = jstore.get_stats("notepad")
+    assert stats.get("notepad", {}).get("states", 0) == 0
+
+
+def test_json_close_saves_graph(jstore, tmp_path):
+    jstore.record_state(_obs("Notepad"), "notepad", "s1", 0)
+    jstore.close()
+    graph_files = list((tmp_path / "jknowledge").glob("*.graph.json"))
+    assert len(graph_files) == 1
+
+
+def test_create_knowledge_store_json(tmp_path):
+    from argus.knowledge import create_knowledge_store
+    ks = create_knowledge_store(enabled=True, store_type="json", persist_dir=tmp_path / "ks")
+    assert ks is not None
+    ks.close()
+
+
+def test_json_store_record_assertion_failure(jstore):
+    sid = jstore.record_state(_obs("Notepad"), "notepad", "s1", 0)
+    jstore.record_assertion("text_visible", "hello", sid, passed=False, target="notepad", session_id="s1")
+    bugs_path = jstore._dir / "notepad.bugs.ndjson"
+    assert bugs_path.exists() and bugs_path.stat().st_size > 0

@@ -120,5 +120,9 @@ class KnowledgeStore(ABC):
         """Delete all stored knowledge for a given target."""
 
     @abstractmethod
+    def confidence_for_state(self, state_id: str) -> int:
+        """Return visit_count for state_id (0 if unknown). Used for progressive batching."""
+
+    @abstractmethod
     def close(self) -> None:
         """Flush and release all resources."""

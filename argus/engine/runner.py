@@ -11,12 +11,13 @@ Hybrid-agentic execution:
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 import uuid as _uuid
 
 from argus.adapters.base import Adapter, AdapterError
-from argus.engine.agent import run_turn
+from argus.engine.agent import extract_actions, run_turn
 from argus.engine.results import RunResult, StepResult
 from argus.engine.spec import AssertStep, NLStep, TestSpec
 from argus.providers.base import LLMProvider, ProviderError
@@ -46,7 +47,7 @@ def check_assertion(
     target: str = "",
     session_id: str = "",
 ) -> StepResult:
-    obs = adapter.observe(include_screenshot=False)
+    obs = adapter.observe(include_screenshot=True)
     result = StepResult(index=0, kind="assert", text=step.describe())
     result.expected = step.describe()
 
@@ -122,6 +123,7 @@ def run_test(
     on_step: Optional[ProgressFn] = None,
     warn: Optional[Callable[[str], None]] = None,
     knowledge_store=None,  # Optional[KnowledgeStore]
+    shots_dir: Optional[Path] = None,
 ) -> RunResult:
     result = RunResult(
         test_name=spec.name,
@@ -182,11 +184,12 @@ def run_test(
                 sr = check_assertion(
                     step, adapter,
                     knowledge_store=knowledge_store,
-                    state_id="",  # assertion state recorded inside check_assertion
+                    state_id="",
                     target=target,
                     session_id=session_id,
                 )
                 sr.index = index
+                _attach_screenshot(sr, adapter, index, shots_dir)
             elif step.text == "close" and step.kind == "teardown":
                 adapter.close()
                 sr = StepResult(index=index, kind="teardown", text="close target", status="pass")
@@ -194,6 +197,7 @@ def run_test(
                 sr = _run_nl_step_with_retries(
                     step, index, provider, adapter, use_vision, spec.retries,
                     knowledge_store=knowledge_store, target=target, session_id=session_id,
+                    shots_dir=shots_dir,
                 )
 
             sr.duration_s = time.monotonic() - step_started
@@ -230,6 +234,25 @@ def _step_text(step) -> str:
     return step.describe() if isinstance(step, AssertStep) else step.text
 
 
+def _attach_screenshot(
+    sr: StepResult,
+    adapter: Adapter,
+    index: int,
+    shots_dir: Optional[Path],
+) -> None:
+    if shots_dir is None:
+        return
+    try:
+        obs = adapter.observe(include_screenshot=True)
+        if obs.screenshot_png:
+            shots_dir.mkdir(parents=True, exist_ok=True)
+            name = f"step-{index + 1:02d}.png"
+            (shots_dir / name).write_bytes(obs.screenshot_png)
+            sr.screenshot_path = f"shots/{name}"
+    except Exception:
+        pass
+
+
 def _run_nl_step_with_retries(
     step: NLStep,
     index: int,
@@ -240,10 +263,12 @@ def _run_nl_step_with_retries(
     knowledge_store=None,
     target: str = "",
     session_id: str = "",
+    shots_dir: Optional[Path] = None,
 ) -> StepResult:
     sr = _run_nl_step(
         step, index, provider, adapter, use_vision,
         knowledge_store=knowledge_store, target=target, session_id=session_id,
+        shots_dir=shots_dir,
     )
     if sr.status == "pass" or retries == 0:
         return sr
@@ -251,6 +276,7 @@ def _run_nl_step_with_retries(
         retry_sr = _run_nl_step(
             step, index, provider, adapter, use_vision,
             knowledge_store=knowledge_store, target=target, session_id=session_id,
+            shots_dir=shots_dir,
         )
         if retry_sr.status == "pass":
             retry_sr.flaky = (attempt > 0 or sr.status != "pass")
@@ -268,6 +294,7 @@ def _run_nl_step(
     knowledge_store=None,
     target: str = "",
     session_id: str = "",
+    shots_dir: Optional[Path] = None,
 ) -> StepResult:
     sr = StepResult(index=index, kind=step.kind, text=step.text)
     history: list = []
@@ -302,14 +329,16 @@ def _run_nl_step(
             sr.status = "pass" if turn.action.get("success") else "fail"
             sr.note = str(turn.action.get("note", ""))
             sr.actions = history
+            _attach_screenshot(sr, adapter, index, shots_dir)
             return sr
         if turn.error:
             history.append(f"{turn.action.get('action')} FAILED: {turn.error}")
         else:
             why = turn.action.get("why", "")
             history.append(turn.note + (f" — {why}" if why else ""))
-        time.sleep(0.4)  # let the UI settle between synthesized inputs
+        time.sleep(0.4)
     sr.status = "fail"
     sr.note = f"step not completed within {_MAX_TURNS_PER_STEP} actions"
     sr.actions = history
+    _attach_screenshot(sr, adapter, index, shots_dir)
     return sr

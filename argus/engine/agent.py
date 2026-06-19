@@ -3,10 +3,11 @@
 
 Protocol: the model receives the current observation (window title, the
 UIA accessibility tree with element ids, and — when the model is
-multimodal — a screenshot) and must reply with **one JSON action**:
+multimodal — a screenshot) and must reply with one JSON action or, when
+confident (high batch_hint), a JSON array of actions to execute sequentially:
 
     {"action": "click", "element_id": 12, "why": "open the File menu"}
-    {"action": "type", "text": "hello", "element_id": 4, "why": "..."}
+    [{"action": "click", "element_id": 2}, {"action": "type", "text": "hello"}]
     {"action": "done", "success": true, "note": "step complete"}
 
 If the model is text-only, Argus warns once and proceeds with the
@@ -18,7 +19,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 from argus.adapters.base import Adapter, AdapterError, Observation
 from argus.providers.base import LLMProvider, ProviderError
@@ -37,6 +38,14 @@ Reply with EXACTLY ONE JSON object (no markdown fence, no prose) choosing one ac
   {"action":"done","success":true|false,"note":"..."}
 Use element_id values from the UI TREE below. Prefer element ids over coordinates."""
 
+BATCH_ADDENDUM = """\
+
+PROGRESSIVE MODE: You have visited this state {count} times before.
+You may return a JSON ARRAY of up to {max_batch} actions to execute in sequence
+if you are highly confident about all of them:
+  [{{"action":"click","element_id":3}},{{"action":"type","text":"hello"}}]
+Return a single action dict if uncertain about any step."""
+
 
 class AgentParseError(RuntimeError):
     """The model reply contained no usable JSON action."""
@@ -46,20 +55,48 @@ class AgentParseError(RuntimeError):
 class AgentTurn:
     action: dict
     raw_reply: str
-    note: str = ""          # adapter's note of what was actually done
+    note: str = ""
     error: Optional[str] = None
-    state_id: str = ""      # knowledge graph node ID for this turn's observation
+    state_id: str = ""
 
 
 def extract_action(reply: str) -> dict:
-    """Pull the first JSON object out of a model reply (tolerates fences/prose)."""
+    """Pull the first JSON object out of a model reply (single-action compat)."""
+    actions = extract_actions(reply)
+    return actions[0]
+
+
+def extract_actions(reply: str) -> List[dict]:
+    """Parse a model reply into a list of action dicts.
+
+    Handles both a single JSON object and a JSON array of objects.
+    """
     text = reply.strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    # Strip markdown fences
+    fenced = re.search(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", text, re.DOTALL)
     if fenced:
-        text = fenced.group(1)
+        text = fenced.group(1).strip()
+
+    # Try array first
+    if text.startswith("["):
+        end = text.rfind("]")
+        if end != -1:
+            try:
+                parsed = json.loads(text[: end + 1])
+                if isinstance(parsed, list) and parsed:
+                    result = []
+                    for item in parsed:
+                        if isinstance(item, dict) and "action" in item:
+                            result.append(item)
+                    if result:
+                        return result
+            except json.JSONDecodeError:
+                pass
+
+    # Fall back to first JSON object
     start = text.find("{")
     if start == -1:
-        raise AgentParseError(f"no JSON object in model reply: {reply[:200]!r}")
+        raise AgentParseError(f"no JSON in model reply: {reply[:200]!r}")
     depth = 0
     for i in range(start, len(text)):
         if text[i] == "{":
@@ -67,14 +104,14 @@ def extract_action(reply: str) -> dict:
         elif text[i] == "}":
             depth -= 1
             if depth == 0:
-                candidate = text[start : i + 1]
+                candidate = text[start: i + 1]
                 try:
                     action = json.loads(candidate)
                 except json.JSONDecodeError as exc:
                     raise AgentParseError(f"invalid JSON action: {exc}") from exc
                 if not isinstance(action, dict) or "action" not in action:
                     raise AgentParseError(f"JSON has no 'action' field: {candidate[:200]}")
-                return action
+                return [action]
     raise AgentParseError(f"unbalanced JSON in model reply: {reply[:200]!r}")
 
 
@@ -83,6 +120,7 @@ def observation_prompt(
     goal: str,
     history: list,
     knowledge_context: Optional[str] = None,
+    batch_hint: int = 1,
 ) -> str:
     parts = [f"GOAL: {goal}", ""]
     if history:
@@ -98,7 +136,11 @@ def observation_prompt(
     parts.append("UI TREE (element_id, type, name, rect):")
     parts.append(obs.tree_text())
     parts.append("")
-    parts.append(ACTION_SCHEMA)
+    schema = ACTION_SCHEMA
+    if batch_hint >= 5:
+        max_batch = min(batch_hint // 5, 5)
+        schema += BATCH_ADDENDUM.format(count=batch_hint, max_batch=max_batch)
+    parts.append(schema)
     if knowledge_context:
         parts.append("")
         parts.append("RELEVANT PAST EXPERIENCES:")
@@ -113,12 +155,12 @@ def run_turn(
     goal: str,
     history: list,
     use_vision: bool,
-    knowledge_store=None,  # Optional[KnowledgeStore] — avoid circular import
+    knowledge_store=None,
     target: str = "",
     session_id: str = "",
     prev_state_id: str = "",
 ) -> "AgentTurn":
-    """One observe → think → act cycle."""
+    """One observe → think → act cycle (single action, for runner.py)."""
     obs = adapter.observe(include_screenshot=use_vision)
     if not obs.process_alive:
         return AgentTurn(
@@ -127,17 +169,16 @@ def run_turn(
             error=obs.error or "target process exited",
         )
 
-    # Record state and retrieve relevant past experiences
     state_id = ""
     knowledge_context: Optional[str] = None
+    batch_hint = 1
     if knowledge_store is not None:
         try:
             state_id = knowledge_store.record_state(obs, target, session_id, len(history))
-            if prev_state_id:
-                pass  # transition recorded by caller with the action that caused it
             ctx = knowledge_store.retrieve(obs, target)
             if not ctx.is_empty():
                 knowledge_context = ctx.format()
+            batch_hint = knowledge_store.confidence_for_state(state_id)
         except Exception:
             pass
 
@@ -145,7 +186,8 @@ def run_turn(
     try:
         response = provider.chat(
             system=system_prompt,
-            user=observation_prompt(obs, goal, history, knowledge_context=knowledge_context),
+            user=observation_prompt(obs, goal, history, knowledge_context=knowledge_context,
+                                    batch_hint=batch_hint),
             images=images,
         )
     except ProviderError as exc:
@@ -155,7 +197,8 @@ def run_turn(
         )
 
     try:
-        action = extract_action(response.text)
+        actions = extract_actions(response.text)
+        action = actions[0]
     except AgentParseError as exc:
         return AgentTurn(
             action={"action": "done", "success": False}, raw_reply=response.text, error=str(exc),

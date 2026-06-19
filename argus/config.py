@@ -95,7 +95,7 @@ class ProviderConfig:
 @dataclass
 class KnowledgeConfig:
     enabled: bool = True
-    type: str = "local"           # "local" | "docker" | "external"
+    type: str = "auto"            # "auto" | "json" | "local" | "docker" | "external"
     vector_backend: str = "chroma"
     vector_url: Optional[str] = None
     persist_dir: Optional[str] = None

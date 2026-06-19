@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from dataclasses import asdict, dataclass, field
@@ -18,11 +19,12 @@ class StepResult:
     text: str
     status: str = "pending"
     duration_s: float = 0.0
-    actions: List[str] = field(default_factory=list)   # what the agent actually did
+    actions: List[str] = field(default_factory=list)
     expected: Optional[str] = None
     actual: Optional[str] = None
     note: Optional[str] = None
     flaky: bool = False
+    screenshot_path: Optional[str] = None  # relative path inside run dir
 
 
 @dataclass
@@ -52,7 +54,6 @@ class RunResult:
 
     @property
     def exit_code(self) -> int:
-        """0 = all pass, 1 = assertion/step failure, 2 = error/crash."""
         if self.status == "pass":
             return 0
         if self.status == "error":
@@ -73,9 +74,71 @@ class RunResult:
         runs_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        path = runs_dir / f"{stamp}-{safe}.json"
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        return path
+        run_dir = runs_dir / f"{stamp}-{safe}"
+        run_dir.mkdir(exist_ok=True)
+        # Write result JSON
+        (run_dir / "result.json").write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        # Write markdown report
+        write_report(self, run_dir)
+        # Legacy flat JSON for load_runs backward compat
+        flat = runs_dir / f"{stamp}-{safe}.json"
+        flat.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        return run_dir / "result.json"
+
+
+def write_report(result: RunResult, run_dir: Path) -> Path:
+    """Write a markdown report with per-step screenshots."""
+    lines = [
+        "# Argus Test Report",
+        "",
+        f"- **Test:** `{result.test_name}`",
+        f"- **Adapter:** `{result.adapter}`",
+        f"- **Provider:** `{result.provider}`",
+        f"- **Status:** {result.status.upper()}",
+        f"- **Duration:** {result.duration_s:.1f}s",
+        f"- **Tokens:** {result.tokens.get('total_tokens', 0)} "
+        f"({result.tokens.get('calls', 0)} LLM calls)",
+        "",
+        "| # | Step | Kind | Status | Duration |",
+        "|---|------|------|--------|----------|",
+    ]
+    for sr in result.steps:
+        status_icon = {"pass": "✅", "fail": "❌", "error": "💥", "skipped": "⏭"}.get(sr.status, sr.status)
+        lines.append(
+            f"| {sr.index + 1} | {sr.text[:60]} | {sr.kind} "
+            f"| {status_icon} {sr.status} | {sr.duration_s:.1f}s |"
+        )
+    lines.append("")
+
+    if result.error:
+        lines += [f"**Error:** {result.error}", ""]
+
+    lines.append("## Steps")
+    lines.append("")
+    for sr in result.steps:
+        status_icon = {"pass": "✅", "fail": "❌", "error": "💥", "skipped": "⏭"}.get(sr.status, sr.status)
+        lines += [f"### Step {sr.index + 1}: {sr.text}", ""]
+        lines.append(f"**Status:** {status_icon} `{sr.status}`  ")
+        lines.append(f"**Kind:** {sr.kind}  ")
+        lines.append(f"**Duration:** {sr.duration_s:.1f}s")
+        if sr.expected:
+            lines.append(f"  \n**Expected:** {sr.expected}")
+        if sr.actual:
+            lines.append(f"  \n**Actual:** {sr.actual}")
+        if sr.note:
+            lines.append(f"  \n**Note:** {sr.note}")
+        if sr.actions:
+            lines.append("  \n**Actions taken:**")
+            for a in sr.actions:
+                lines.append(f"  - {a}")
+        if sr.screenshot_path:
+            lines += ["", f"![step {sr.index + 1} screenshot]({sr.screenshot_path})", ""]
+        else:
+            lines.append("")
+
+    path = run_dir / "report.md"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def load_runs(project_dir: Path, limit: int = 50) -> List[dict]:
