@@ -100,11 +100,15 @@ def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]
 
         from argus.engine.runner import run_test
 
+        ks = cfg.make_knowledge_store()
         result = run_test(
             spec, provider, adapter, budget,
             on_step=_print_step,
             warn=lambda msg: console.print(f"[yellow]![/yellow] {msg}"),
+            knowledge_store=ks,
         )
+        if ks is not None:
+            ks.close()
         if result.error:
             console.print(f"[orange3]✗ {result.error}[/orange3]")
         result.save(cfg.project_dir)
@@ -206,6 +210,8 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
 
     from argus.engine.roam import roam as run_roam
 
+    ks = cfg.make_knowledge_store()
+
     session = run_roam(
         target=target,
         provider=provider,
@@ -215,7 +221,10 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
         on_event=lambda line: console.print(f"  [dim]{line}[/dim]"),
         generate_regressions=not no_regressions,
         memory_dir=memory_dir,
+        knowledge_store=ks,
     )
+    if ks is not None:
+        ks.close()
     tracker.persist(cfg.project_dir)
 
     console.print(
@@ -418,6 +427,125 @@ def gui() -> None:
 def _die(message: str) -> None:
     console.print(f"[red]✗[/red] {message}")
     sys.exit(2)
+
+
+# --------------------------------------------------------- knowledge ----
+
+
+@main.group()
+def knowledge() -> None:
+    """Manage the persistent knowledge graph and vector store."""
+
+
+@knowledge.command("stats")
+@click.option("--target", default=None, help="Filter to a specific target name.")
+def knowledge_stats(target: Optional[str]) -> None:
+    """Show knowledge graph statistics (states, transitions, bug nodes)."""
+    cfg = load_config()
+    ks = cfg.make_knowledge_store()
+    if ks is None:
+        console.print("[yellow]![/yellow] Knowledge store is disabled or unavailable.")
+        return
+    stats = ks.get_stats(target)
+    ks.close()
+    if not stats:
+        console.print("[dim]No knowledge recorded yet.[/dim]")
+        return
+    table = Table(header_style="dim")
+    table.add_column("target")
+    table.add_column("states", justify="right")
+    table.add_column("transitions", justify="right")
+    table.add_column("bug nodes", justify="right")
+    for tgt, s in stats.items():
+        table.add_row(
+            tgt,
+            str(s.get("states", 0)),
+            str(s.get("transitions", 0)),
+            f"[red]{s.get('bug_nodes', 0)}[/red]" if s.get("bug_nodes") else "0",
+        )
+    console.print(table)
+
+
+@knowledge.command("reset")
+@click.argument("target")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+def knowledge_reset(target: str, yes: bool) -> None:
+    """Delete all stored knowledge for TARGET."""
+    if not yes:
+        click.confirm(f"Delete all knowledge for '{target}'?", abort=True)
+    cfg = load_config()
+    ks = cfg.make_knowledge_store()
+    if ks is None:
+        console.print("[yellow]![/yellow] Knowledge store is disabled or unavailable.")
+        return
+    ks.clear_target(target)
+    ks.close()
+    console.print(f"[green]✓[/green] Knowledge cleared for '{target}'.")
+
+
+@knowledge.command("export")
+@click.argument("target")
+@click.option("--out", default=None, help="Output file path (default: <target>.graph.json).")
+def knowledge_export(target: str, out: Optional[str]) -> None:
+    """Export the state graph for TARGET as JSON."""
+    cfg = load_config()
+    persist_dir = cfg.argus_dir / "knowledge"
+    from argus.knowledge.fingerprint import target_key
+    key = target_key(target)
+    graph_path = persist_dir / f"{key}.graph.json"
+    if not graph_path.exists():
+        console.print(f"[red]✗[/red] No graph found for '{target}' at {graph_path}")
+        sys.exit(1)
+    dest = Path(out) if out else Path(f"{key}.graph.json")
+    import shutil
+    shutil.copy2(graph_path, dest)
+    console.print(f"[green]✓[/green] Exported to {dest}")
+
+
+@knowledge.group("docker")
+def knowledge_docker() -> None:
+    """Manage Docker-backed knowledge services (Qdrant)."""
+
+
+@knowledge_docker.command("up")
+def knowledge_docker_up() -> None:
+    """Start argus-qdrant Docker container."""
+    from argus.knowledge.docker_manager import DockerManager
+    cfg = load_config()
+    mgr = DockerManager(cfg.argus_dir)
+    if not mgr.available():
+        console.print("[red]✗[/red] Docker is not available on this system.")
+        sys.exit(1)
+    with console.status("Starting argus-qdrant…"):
+        url = mgr.ensure_qdrant()
+    if url:
+        console.print(f"[green]✓[/green] Qdrant running at {url}")
+    else:
+        console.print("[red]✗[/red] Failed to start Qdrant container.")
+        sys.exit(1)
+
+
+@knowledge_docker.command("down")
+def knowledge_docker_down() -> None:
+    """Stop argus-qdrant Docker container."""
+    from argus.knowledge.docker_manager import DockerManager
+    cfg = load_config()
+    mgr = DockerManager(cfg.argus_dir)
+    mgr.stop()
+    console.print("[green]✓[/green] Knowledge Docker services stopped.")
+
+
+@knowledge_docker.command("status")
+def knowledge_docker_status() -> None:
+    """Show running state of knowledge Docker containers."""
+    from argus.knowledge.docker_manager import DockerManager
+    cfg = load_config()
+    mgr = DockerManager(cfg.argus_dir)
+    s = mgr.status()
+    for name, running in s.items():
+        glyph = "[green]●[/green]" if running else "[dim]○[/dim]"
+        state = "running" if running else "stopped"
+        console.print(f"  {glyph}  {name}: {state}")
 
 
 if __name__ == "__main__":

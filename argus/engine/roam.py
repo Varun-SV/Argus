@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from argus.adapters.base import Adapter, AdapterError
-from argus.engine.agent import ACTION_SCHEMA, extract_action
+from argus.engine.agent import ACTION_SCHEMA, extract_action, observation_prompt
 from argus.providers.base import LLMProvider, ProviderError
 from argus.tokens import Budget
 
@@ -98,11 +98,15 @@ def roam(
     stop_flag: Optional[Callable[[], bool]] = None,
     generate_regressions: bool = True,
     memory_dir: Optional[Path] = None,
+    knowledge_store=None,  # Optional[KnowledgeStore]
 ) -> RoamSession:
     session = RoamSession(target=target, provider=provider.describe())
     session_dir.mkdir(parents=True, exist_ok=True)
     shots_dir = session_dir / "shots"
     shots_dir.mkdir(exist_ok=True)
+
+    import uuid as _uuid
+    session_id = str(_uuid.uuid4())[:8]
 
     prior_memory = _load_memory(memory_dir, target) if memory_dir else []
 
@@ -136,6 +140,8 @@ def roam(
     started = time.monotonic()
     history: List[str] = []
     consecutive_failures = 0
+    current_state_id = ""
+    prev_state_id = ""
 
     try:
         while True:
@@ -151,7 +157,7 @@ def roam(
 
             # ---- automatic bug detectors -------------------------------
             if not obs.process_alive:
-                _add_finding(session, Finding(
+                crash_finding = Finding(
                     title="Application crashed / exited unexpectedly",
                     severity="high",
                     expected="application keeps running during normal interaction",
@@ -160,7 +166,18 @@ def roam(
                            + (history[-1] if history else "launch"),
                     at_action=len(session.actions),
                     source="crash",
-                ), None, shots_dir, emit)
+                )
+                _add_finding(session, crash_finding, None, shots_dir, emit)
+                if knowledge_store is not None and current_state_id:
+                    try:
+                        knowledge_store.record_finding(
+                            title=crash_finding.title, severity=crash_finding.severity,
+                            state_id=current_state_id, action_sequence=session.actions[-5:],
+                            target=target, session_id=session_id,
+                            actual=crash_finding.actual,
+                        )
+                    except Exception:
+                        pass
                 session.stopped_reason = "target crashed"
                 break
 
@@ -191,6 +208,20 @@ def roam(
             else:
                 consecutive_failures = 0
 
+            # ---- knowledge: record state + retrieve context ---------------
+            prev_state_id = current_state_id
+            knowledge_context: Optional[str] = None
+            if knowledge_store is not None:
+                try:
+                    current_state_id = knowledge_store.record_state(
+                        obs, target, session_id, len(session.actions)
+                    )
+                    ctx = knowledge_store.retrieve(obs, target)
+                    if not ctx.is_empty():
+                        knowledge_context = ctx.format()
+                except Exception:
+                    pass
+
             # ---- ask the model for the next poke -------------------------
             goal = (
                 "Free-roam exploration. Explore the application, try edge cases, "
@@ -202,13 +233,12 @@ def roam(
                     if prior_memory else ""
                 )
             )
-            from argus.engine.agent import observation_prompt
 
             images = [obs.screenshot_png] if (use_vision and obs.screenshot_png) else None
             try:
                 response = provider.chat(
                     system=ROAM_SYSTEM_PROMPT,
-                    user=observation_prompt(obs, goal, history),
+                    user=observation_prompt(obs, goal, history, knowledge_context=knowledge_context),
                     images=images,
                 )
             except ProviderError as exc:
@@ -225,7 +255,7 @@ def roam(
 
             kind = action.get("action", "")
             if kind == "report_bug":
-                _add_finding(session, Finding(
+                finding = Finding(
                     title=str(action.get("title", "Untitled finding")),
                     severity=str(action.get("severity", "medium")),
                     expected=str(action.get("expected", "")),
@@ -233,7 +263,23 @@ def roam(
                     detail=str(action.get("why", "")),
                     at_action=len(session.actions),
                     source="model",
-                ), obs.screenshot_png, shots_dir, emit)
+                )
+                _add_finding(session, finding, obs.screenshot_png, shots_dir, emit)
+                if knowledge_store is not None and current_state_id:
+                    try:
+                        knowledge_store.record_finding(
+                            title=finding.title,
+                            severity=finding.severity,
+                            state_id=current_state_id,
+                            action_sequence=session.actions[-10:],
+                            target=target,
+                            session_id=session_id,
+                            expected=finding.expected,
+                            actual=finding.actual,
+                            detail=finding.detail,
+                        )
+                    except Exception:
+                        pass
                 history.append(f"reported bug: {action.get('title')}")
                 continue
             if kind == "done":  # the model is told not to, but tolerate it
@@ -246,6 +292,14 @@ def roam(
                 why = action.get("why", "")
                 emit(f"#{len(session.actions)} {note}" + (f" — {why}" if why else ""))
                 history.append(note)
+                if knowledge_store is not None and prev_state_id and current_state_id:
+                    try:
+                        knowledge_store.record_transition(
+                            prev_state_id, action, current_state_id,
+                            target, session_id, success=True,
+                        )
+                    except Exception:
+                        pass
             except AdapterError as exc:
                 session.actions.append({"action": action, "error": str(exc)})
                 emit(f"#{len(session.actions)} action failed: {exc}")
@@ -275,6 +329,11 @@ def roam(
     _write_session_json(session, session_dir)
     if memory_dir:
         _save_memory(memory_dir, target, session)
+    if knowledge_store is not None:
+        try:
+            knowledge_store.finalize_session(session_id, target)
+        except Exception:
+            pass
     return session
 
 

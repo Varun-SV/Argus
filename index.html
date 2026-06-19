@@ -303,7 +303,7 @@
 
 <!-- ── Hero ─────────────────────────────────────────────────── -->
 <div class="hero">
-  <div class="hero-badge"><span></span> Now with browser &amp; CLI adapters</div>
+  <div class="hero-badge"><span></span> Now with adaptive learning engine</div>
   <h1>Test any app with<br><em>plain English</em></h1>
   <p class="hero-sub">
     Argus uses multimodal LLMs to test desktop apps, web UIs, and CLI tools —
@@ -367,8 +367,8 @@
       </div>
       <div class="feature-card">
         <div class="feature-icon">🧠</div>
-        <h3>Cross-session memory</h3>
-        <p>Roam sessions remember explored paths. Each run discovers <em>new</em> territory instead of repeating the same clicks. Disable with <code>--no-memory</code>.</p>
+        <h3>Adaptive Learning Engine</h3>
+        <p>Builds a semantic graph of UI states and transitions across sessions. Vector search retrieves similar past experiences to guide the LLM — smarter exploration and targeted bug re-discovery over time.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">🔄</div>
@@ -538,6 +538,53 @@ argus roam "./my-script.sh" \
 <span class="c-muted">           42 actions · </span><span class="c-red">1 finding</span> · 12,480 tokens
 
 report: .argus/roam/20260611-104200/report.md</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Knowledge Engine ──────────────────────────────────────── -->
+<section id="knowledge" style="background:var(--bg2);">
+  <div class="section-inner">
+    <div class="section-label">Knowledge Engine</div>
+    <h2>Learns what to attack — every session</h2>
+    <p class="section-sub">
+      Argus builds a persistent graph of your app's UI surface and uses vector search to recall
+      past observations, so each roam session is smarter than the last.
+    </p>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1.5rem; margin-top:2rem;">
+      <div class="feature-card">
+        <div class="feature-icon">🗺️</div>
+        <h3>State graph</h3>
+        <p>Every unique UI state becomes a node; every action that transitions between states becomes an edge. Bug-prone zones are marked red and re-targeted on the next run.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔎</div>
+        <h3>Semantic recall</h3>
+        <p>Observations are embedded with sentence-transformers and stored in ChromaDB or Qdrant. Before each LLM call, Argus injects the most similar past experiences as context.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Zero-config or Docker</h3>
+        <p>Works out of the box with local ChromaDB + NetworkX. Upgrade to Qdrant in a single command — Argus spins up a container automatically and reuses it across sessions.</p>
+      </div>
+    </div>
+    <div style="margin-top:2.5rem;">
+      <div class="yaml-tabs"><div class="yaml-tab active">.argus/config.yaml</div></div>
+      <div class="yaml-panel" style="max-width:520px;">
+        <pre><span class="c-muted"># Zero-config local backend (default)</span>
+<span class="c-blue">knowledge</span>:
+  <span class="c-blue">enabled</span>: <span class="c-yellow">true</span>
+  <span class="c-blue">type</span>: <span class="c-yellow">local</span>
+  <span class="c-blue">embedding_model</span>: <span class="c-yellow">all-MiniLM-L6-v2</span>
+
+<span class="c-muted"># Docker-managed Qdrant (better at scale)</span>
+<span class="c-muted"># knowledge:</span>
+<span class="c-muted">#   type: docker</span>
+<span class="c-muted">#   vector_backend: qdrant</span>
+
+<span class="c-muted"># Install knowledge extras:</span>
+<span class="c-muted"># pip install argus-app-testing[knowledge]</span></pre>
       </div>
     </div>
   </div>

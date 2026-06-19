@@ -55,8 +55,18 @@ watch = [
 gui = [
     "pywebview>=5.0",
 ]
+# Persistent knowledge engine (graph + vector store)
+knowledge = [
+    "chromadb>=0.5",
+    "networkx>=3.2",
+    "sentence-transformers>=2.7",
+]
+# Remote knowledge backends (Qdrant vector DB)
+knowledge-remote = [
+    "qdrant-client>=1.9",
+]
 all = [
-    "argus-app-testing[windows,linux,browser,serve,watch,gui]",
+    "argus-app-testing[windows,linux,browser,serve,watch,gui,knowledge]",
 ]
 dev = [
     "pytest>=8.0",

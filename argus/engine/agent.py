@@ -48,6 +48,7 @@ class AgentTurn:
     raw_reply: str
     note: str = ""          # adapter's note of what was actually done
     error: Optional[str] = None
+    state_id: str = ""      # knowledge graph node ID for this turn's observation
 
 
 def extract_action(reply: str) -> dict:
@@ -77,7 +78,12 @@ def extract_action(reply: str) -> dict:
     raise AgentParseError(f"unbalanced JSON in model reply: {reply[:200]!r}")
 
 
-def observation_prompt(obs: Observation, goal: str, history: list) -> str:
+def observation_prompt(
+    obs: Observation,
+    goal: str,
+    history: list,
+    knowledge_context: Optional[str] = None,
+) -> str:
     parts = [f"GOAL: {goal}", ""]
     if history:
         parts.append("ACTIONS SO FAR:")
@@ -93,6 +99,10 @@ def observation_prompt(obs: Observation, goal: str, history: list) -> str:
     parts.append(obs.tree_text())
     parts.append("")
     parts.append(ACTION_SCHEMA)
+    if knowledge_context:
+        parts.append("")
+        parts.append("RELEVANT PAST EXPERIENCES:")
+        parts.append(knowledge_context)
     return "\n".join(parts)
 
 
@@ -103,7 +113,11 @@ def run_turn(
     goal: str,
     history: list,
     use_vision: bool,
-) -> AgentTurn:
+    knowledge_store=None,  # Optional[KnowledgeStore] — avoid circular import
+    target: str = "",
+    session_id: str = "",
+    prev_state_id: str = "",
+) -> "AgentTurn":
     """One observe → think → act cycle."""
     obs = adapter.observe(include_screenshot=use_vision)
     if not obs.process_alive:
@@ -113,26 +127,46 @@ def run_turn(
             error=obs.error or "target process exited",
         )
 
+    # Record state and retrieve relevant past experiences
+    state_id = ""
+    knowledge_context: Optional[str] = None
+    if knowledge_store is not None:
+        try:
+            state_id = knowledge_store.record_state(obs, target, session_id, len(history))
+            if prev_state_id:
+                pass  # transition recorded by caller with the action that caused it
+            ctx = knowledge_store.retrieve(obs, target)
+            if not ctx.is_empty():
+                knowledge_context = ctx.format()
+        except Exception:
+            pass
+
     images = [obs.screenshot_png] if (use_vision and obs.screenshot_png) else None
     try:
         response = provider.chat(
             system=system_prompt,
-            user=observation_prompt(obs, goal, history),
+            user=observation_prompt(obs, goal, history, knowledge_context=knowledge_context),
             images=images,
         )
     except ProviderError as exc:
-        return AgentTurn(action={"action": "done", "success": False}, raw_reply="", error=str(exc))
+        return AgentTurn(
+            action={"action": "done", "success": False}, raw_reply="", error=str(exc),
+            state_id=state_id,
+        )
 
     try:
         action = extract_action(response.text)
     except AgentParseError as exc:
-        return AgentTurn(action={"action": "done", "success": False}, raw_reply=response.text, error=str(exc))
+        return AgentTurn(
+            action={"action": "done", "success": False}, raw_reply=response.text, error=str(exc),
+            state_id=state_id,
+        )
 
     if action.get("action") == "done":
-        return AgentTurn(action=action, raw_reply=response.text)
+        return AgentTurn(action=action, raw_reply=response.text, state_id=state_id)
 
     try:
         note = adapter.act(action)
     except AdapterError as exc:
-        return AgentTurn(action=action, raw_reply=response.text, error=str(exc))
-    return AgentTurn(action=action, raw_reply=response.text, note=note)
+        return AgentTurn(action=action, raw_reply=response.text, error=str(exc), state_id=state_id)
+    return AgentTurn(action=action, raw_reply=response.text, note=note, state_id=state_id)

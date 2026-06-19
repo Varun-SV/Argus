@@ -18,6 +18,11 @@ Example ``.argus/config.yaml``::
       time_minutes: 10          # default time budget (all providers)
       max_tokens: null          # optional token budget (ignored for ollama)
 
+    knowledge:
+      enabled: true
+      type: local               # local | docker | external
+      embedding_model: all-MiniLM-L6-v2
+
 Environment overrides: ``ARGUS_PROVIDER``, ``ARGUS_MODEL``, ``ARGUS_API_KEY``,
 ``ARGUS_BASE_URL``.
 """
@@ -67,6 +72,15 @@ budgets:
   time_minutes: 10
   # Optional token budget for paid providers (null = no token cap).
   max_tokens: null
+
+# Knowledge engine — persistent graph + vector learning store.
+# Requires: pip install argus-app-testing[knowledge]
+# knowledge:
+#   enabled: true
+#   type: local          # local | docker | external
+#   vector_backend: chroma   # chroma (local) | qdrant (docker/external)
+#   vector_url: null     # Qdrant URL; auto-set when type: docker
+#   embedding_model: all-MiniLM-L6-v2
 """
 
 
@@ -79,9 +93,20 @@ class ProviderConfig:
 
 
 @dataclass
+class KnowledgeConfig:
+    enabled: bool = True
+    type: str = "local"           # "local" | "docker" | "external"
+    vector_backend: str = "chroma"
+    vector_url: Optional[str] = None
+    persist_dir: Optional[str] = None
+    embedding_model: str = "all-MiniLM-L6-v2"
+
+
+@dataclass
 class ArgusConfig:
     project_dir: Path
     provider: ProviderConfig
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     time_minutes: Optional[float] = 10.0
     max_tokens: Optional[int] = None
     raw: dict = field(default_factory=dict)
@@ -120,6 +145,21 @@ class ArgusConfig:
             tracker=tracker,
         )
 
+    def make_knowledge_store(self):
+        """Return a KnowledgeStore (or None if disabled / unavailable)."""
+        from argus.knowledge import create_knowledge_store
+        kc = self.knowledge
+        persist = Path(kc.persist_dir) if kc.persist_dir else self.argus_dir / "knowledge"
+        return create_knowledge_store(
+            enabled=kc.enabled,
+            store_type=kc.type,
+            vector_backend=kc.vector_backend,
+            vector_url=kc.vector_url,
+            persist_dir=persist,
+            embedding_model=kc.embedding_model,
+            data_dir=self.argus_dir,
+        )
+
 
 def _resolve_api_key(entry: dict) -> str:
     """api_key wins; otherwise read the env var named by api_key_env;
@@ -152,6 +192,16 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
     time_minutes = budgets.get("time_minutes", 10)
     max_tokens = budgets.get("max_tokens")
 
+    kc_raw = raw.get("knowledge") or {}
+    knowledge = KnowledgeConfig(
+        enabled=bool(kc_raw.get("enabled", True)),
+        type=str(kc_raw.get("type", "local")),
+        vector_backend=str(kc_raw.get("vector_backend", "chroma")),
+        vector_url=kc_raw.get("vector_url") or None,
+        persist_dir=kc_raw.get("persist_dir") or None,
+        embedding_model=str(kc_raw.get("embedding_model", "all-MiniLM-L6-v2")),
+    )
+
     return ArgusConfig(
         project_dir=project_dir,
         provider=ProviderConfig(
@@ -160,6 +210,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             api_key=_resolve_api_key(entry),
             base_url=base_url,
         ),
+        knowledge=knowledge,
         time_minutes=float(time_minutes) if time_minutes else None,
         max_tokens=int(max_tokens) if max_tokens else None,
         raw=raw,
