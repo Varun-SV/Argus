@@ -100,12 +100,17 @@ def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]
 
         from argus.engine.runner import run_test
 
+        import time as _time
+        stamp = _time.strftime("%Y%m%d-%H%M%S")
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in path.name)
+        shots_dir = cfg.argus_dir / "runs" / f"{stamp}-{safe}" / "shots"
         ks = cfg.make_knowledge_store()
         result = run_test(
             spec, provider, adapter, budget,
             on_step=_print_step,
             warn=lambda msg: console.print(f"[yellow]![/yellow] {msg}"),
             knowledge_store=ks,
+            shots_dir=shots_dir,
         )
         if ks is not None:
             ks.close()

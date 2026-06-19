@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from argus.adapters.base import Adapter, AdapterError
-from argus.engine.agent import ACTION_SCHEMA, extract_action, observation_prompt
+from argus.engine.agent import ACTION_SCHEMA, extract_actions, observation_prompt
 from argus.providers.base import LLMProvider, ProviderError
 from argus.tokens import Budget
 
@@ -211,6 +211,7 @@ def roam(
             # ---- knowledge: record state + retrieve context ---------------
             prev_state_id = current_state_id
             knowledge_context: Optional[str] = None
+            batch_hint = 1
             if knowledge_store is not None:
                 try:
                     current_state_id = knowledge_store.record_state(
@@ -219,6 +220,7 @@ def roam(
                     ctx = knowledge_store.retrieve(obs, target)
                     if not ctx.is_empty():
                         knowledge_context = ctx.format()
+                    batch_hint = knowledge_store.confidence_for_state(current_state_id)
                 except Exception:
                     pass
 
@@ -238,7 +240,9 @@ def roam(
             try:
                 response = provider.chat(
                     system=ROAM_SYSTEM_PROMPT,
-                    user=observation_prompt(obs, goal, history, knowledge_context=knowledge_context),
+                    user=observation_prompt(obs, goal, history,
+                                           knowledge_context=knowledge_context,
+                                           batch_hint=batch_hint),
                     images=images,
                 )
             except ProviderError as exc:
@@ -247,63 +251,77 @@ def roam(
                 break
 
             try:
-                action = extract_action(response.text)
+                actions = extract_actions(response.text)
             except Exception as exc:
                 emit(f"unparseable model reply ({exc}) — skipping turn")
                 history.append("(model reply was not a valid action)")
                 continue
 
-            kind = action.get("action", "")
-            if kind == "report_bug":
-                finding = Finding(
-                    title=str(action.get("title", "Untitled finding")),
-                    severity=str(action.get("severity", "medium")),
-                    expected=str(action.get("expected", "")),
-                    actual=str(action.get("actual", "")),
-                    detail=str(action.get("why", "")),
-                    at_action=len(session.actions),
-                    source="model",
-                )
-                _add_finding(session, finding, obs.screenshot_png, shots_dir, emit)
-                if knowledge_store is not None and current_state_id:
-                    try:
-                        knowledge_store.record_finding(
-                            title=finding.title,
-                            severity=finding.severity,
-                            state_id=current_state_id,
-                            action_sequence=session.actions[-10:],
-                            target=target,
-                            session_id=session_id,
-                            expected=finding.expected,
-                            actual=finding.actual,
-                            detail=finding.detail,
-                        )
-                    except Exception:
-                        pass
-                history.append(f"reported bug: {action.get('title')}")
-                continue
-            if kind == "done":  # the model is told not to, but tolerate it
-                history.append("(model tried to stop — roaming continues)")
-                continue
+            # ---- execute action(s) — may be a batch ----------------------
+            for action in actions:
+                if stop_flag and stop_flag():
+                    break
+                if budget.exhausted():
+                    break
 
-            try:
-                note = adapter.act(action)
-                session.actions.append({"action": action, "note": note})
-                why = action.get("why", "")
-                emit(f"#{len(session.actions)} {note}" + (f" — {why}" if why else ""))
-                history.append(note)
-                if knowledge_store is not None and prev_state_id and current_state_id:
-                    try:
-                        knowledge_store.record_transition(
-                            prev_state_id, action, current_state_id,
-                            target, session_id, success=True,
-                        )
-                    except Exception:
-                        pass
-            except AdapterError as exc:
-                session.actions.append({"action": action, "error": str(exc)})
-                emit(f"#{len(session.actions)} action failed: {exc}")
-                history.append(f"{kind} FAILED: {exc}")
+                kind = action.get("action", "")
+                if kind == "report_bug":
+                    finding = Finding(
+                        title=str(action.get("title", "Untitled finding")),
+                        severity=str(action.get("severity", "medium")),
+                        expected=str(action.get("expected", "")),
+                        actual=str(action.get("actual", "")),
+                        detail=str(action.get("why", "")),
+                        at_action=len(session.actions),
+                        source="model",
+                    )
+                    _add_finding(session, finding, obs.screenshot_png, shots_dir, emit)
+                    if knowledge_store is not None and current_state_id:
+                        try:
+                            knowledge_store.record_finding(
+                                title=finding.title,
+                                severity=finding.severity,
+                                state_id=current_state_id,
+                                action_sequence=session.actions[-10:],
+                                target=target,
+                                session_id=session_id,
+                                expected=finding.expected,
+                                actual=finding.actual,
+                                detail=finding.detail,
+                            )
+                        except Exception:
+                            pass
+                    history.append(f"reported bug: {action.get('title')}")
+                    continue
+                if kind == "done":
+                    history.append("(model tried to stop — roaming continues)")
+                    continue
+
+                try:
+                    note = adapter.act(action)
+                    session.actions.append({"action": action, "note": note})
+                    why = action.get("why", "")
+                    emit(f"#{len(session.actions)} {note}" + (f" — {why}" if why else ""))
+                    history.append(note)
+                    if knowledge_store is not None and prev_state_id and current_state_id:
+                        try:
+                            knowledge_store.record_transition(
+                                prev_state_id, action, current_state_id,
+                                target, session_id, success=True,
+                            )
+                        except Exception:
+                            pass
+                    # For batched actions: observe between steps to catch crashes
+                    if len(actions) > 1:
+                        obs = adapter.observe(include_screenshot=False)
+                        prev_state_id = current_state_id
+                        if not obs.process_alive:
+                            break  # exit batch, outer crash detector fires next iteration
+                except AdapterError as exc:
+                    session.actions.append({"action": action, "error": str(exc)})
+                    emit(f"#{len(session.actions)} action failed: {exc}")
+                    history.append(f"{kind} FAILED: {exc}")
+                    break  # abort remaining batch on failure
 
             tokens = provider.tracker.snapshot()
             if tokens["calls"] % 10 == 0 and on_event:

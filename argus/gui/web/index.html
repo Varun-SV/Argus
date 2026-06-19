@@ -243,9 +243,10 @@ button { font-family:inherit; cursor:pointer; }
               <div class="hint">Ollama is local &amp; free — time budget only.</div>
             </div>
           </div>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn primary" id="roam-start" onclick="startRoam()">▶ Start roaming</button>
             <button class="btn danger" id="roam-stop" onclick="stopRoam()" disabled>■ Stop</button>
+            <button class="btn secondary" id="live-view-btn" onclick="toggleLiveView()" disabled>Show Live View</button>
           </div>
           <div class="warn-box" id="roam-warn" style="display:none">
             Roaming drives the real desktop on Windows — avoid using the mouse/keyboard while it runs.
@@ -259,6 +260,14 @@ button { font-family:inherit; cursor:pointer; }
           </div>
           <div class="roam-log" id="roam-log">No session yet.</div>
           <div class="kv" id="roam-report" style="margin-top:10px"></div>
+        </div>
+        <div class="card" id="live-view-card" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">Live View</span>
+            <button class="btn secondary" style="height:24px;padding:0 9px;font-size:11px"
+                    onclick="toggleLiveView()">Hide</button>
+          </div>
+          <img id="live-preview" style="width:100%;border-radius:6px;border:1px solid var(--border-subtle);display:block" alt="">
         </div>
       </div>
     </div>
@@ -305,6 +314,26 @@ button { font-family:inherit; cursor:pointer; }
         <p class="sub">Argus builds a semantic graph of UI states and transitions across sessions.
           Past bugs and unexplored paths are injected into the LLM context — every run is smarter
           than the last.</p>
+        <div class="card" id="ks-live-card" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">Session in progress</span>
+            <span class="badge running"><span class="dot"></span>Active</span>
+          </div>
+          <div class="row2" style="grid-template-columns:repeat(3,1fr);gap:10px">
+            <div class="stat-card">
+              <div class="stat-val" id="ks-live-states">0</div>
+              <div class="stat-lbl">states</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-val" id="ks-live-transitions">0</div>
+              <div class="stat-lbl">transitions</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-val" id="ks-live-bugs">0</div>
+              <div class="stat-lbl">bugs found</div>
+            </div>
+          </div>
+        </div>
         <div class="card">
           <div class="field" style="margin-bottom:14px">
             <label>Target</label>

@@ -2,11 +2,29 @@
 from __future__ import annotations
 
 import json
+import time
+import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from argus.config import ArgusConfig
+
+# Module-level live state shared by in-process roam sessions.
+_live_lock = threading.Lock()
+_live_png: Optional[bytes] = None
+_live_log: list = []
+
+
+def set_live_screenshot(png: bytes) -> None:
+    global _live_png
+    with _live_lock:
+        _live_png = png
+
+
+def append_live_event(line: str) -> None:
+    with _live_lock:
+        _live_log.append(line)
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -122,5 +140,61 @@ def create_app(cfg: "ArgusConfig"):
     def api_runs():
         from flask import jsonify
         return jsonify(load_runs(cfg.project_dir, limit=50))
+
+    @flask_app.route("/api/live")
+    def api_live():
+        """Return the latest screenshot as PNG (from in-process session or disk)."""
+        from flask import Response, abort
+        with _live_lock:
+            png = _live_png
+        if png is None:
+            live_file = cfg.argus_dir / "live.png"
+            if live_file.is_file():
+                try:
+                    png = live_file.read_bytes()
+                except OSError:
+                    pass
+        if png is None:
+            abort(404)
+        return Response(png, mimetype="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+    @flask_app.route("/api/events")
+    def api_events():
+        """SSE endpoint streaming live roam/run log lines."""
+        from flask import Response, stream_with_context
+
+        live_events_file = cfg.argus_dir / "live.events"
+
+        def generate():
+            file_seen = 0
+            mem_seen = 0
+            while True:
+                # Stream from in-process log
+                with _live_lock:
+                    log_snapshot = list(_live_log)
+                for line in log_snapshot[mem_seen:]:
+                    yield f"data: {json.dumps(line)}\n\n"
+                mem_seen = len(log_snapshot)
+
+                # Stream from disk events file (written by CLI roam sessions)
+                if live_events_file.is_file():
+                    try:
+                        lines = live_events_file.read_text(encoding="utf-8").splitlines()
+                        for line in lines[file_seen:]:
+                            if line.strip():
+                                yield f"data: {json.dumps(line)}\n\n"
+                        file_seen = len(lines)
+                    except OSError:
+                        pass
+
+                yield ": keepalive\n\n"
+                time.sleep(0.5)
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     return flask_app

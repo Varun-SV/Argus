@@ -2,6 +2,9 @@
 
 let selectedTest = null;
 let polling = null;
+let liveViewActive = false;
+let liveViewInterval = null;
+let liveStatsInterval = null;
 
 const $ = (id) => document.getElementById(id);
 const api = () => window.pywebview.api;
@@ -88,6 +91,7 @@ async function runSelected() {
   $("sb-state").textContent = `running ${selectedTest}…`;
   clearInterval(polling);
   polling = setInterval(pollRun, 700);
+  startLiveStats();
 }
 
 async function pollRun() {
@@ -139,12 +143,14 @@ async function startRoam() {
   if (!res.ok) { alert(res.error); return; }
   $("roam-start").disabled = true;
   $("roam-stop").disabled = false;
+  $("live-view-btn").disabled = false;
   $("roam-state").textContent = "roaming";
   $("roam-log").textContent = "";
   $("roam-report").textContent = "";
   $("sb-state").textContent = "roaming…";
   clearInterval(polling);
   polling = setInterval(pollRoam, 900);
+  startLiveStats();
 }
 
 async function stopRoam() { await api().stop_roam(); }
@@ -162,6 +168,7 @@ async function pollRoam() {
     clearInterval(polling);
     $("roam-start").disabled = false;
     $("roam-stop").disabled = true;
+    $("live-view-btn").disabled = true;
     $("roam-state").textContent = "finished";
     $("sb-state").textContent = "idle";
     if (st.report)
@@ -227,6 +234,57 @@ async function clearKnowledge() {
     $("ks-clear").disabled = true;
   } catch (e) { /* ignore */ }
 }
+
+/* ---- live preview & stats ------------------------------------------------- */
+
+function toggleLiveView() {
+  const card = $("live-view-card");
+  const btn = $("live-view-btn");
+  liveViewActive = !liveViewActive;
+  if (liveViewActive) {
+    card.style.display = "";
+    btn.textContent = "Hide Live View";
+    pollLiveView();
+    liveViewInterval = setInterval(pollLiveView, 600);
+  } else {
+    card.style.display = "none";
+    btn.textContent = "Show Live View";
+    clearInterval(liveViewInterval);
+    liveViewInterval = null;
+  }
+}
+
+async function pollLiveView() {
+  try {
+    const res = await api().capture_live();
+    if (res.b64) $("live-preview").src = "data:image/png;base64," + res.b64;
+  } catch (e) { /* api not ready yet */ }
+}
+
+function startLiveStats() {
+  $("ks-live-card").style.display = "";
+  if (liveStatsInterval) clearInterval(liveStatsInterval);
+  pollLiveStats();
+  liveStatsInterval = setInterval(pollLiveStats, 5000);
+}
+
+function stopLiveStats() {
+  clearInterval(liveStatsInterval);
+  liveStatsInterval = null;
+  $("ks-live-card").style.display = "none";
+}
+
+async function pollLiveStats() {
+  try {
+    const s = await api().live_stats();
+    if (!s.active) { stopLiveStats(); return; }
+    $("ks-live-states").textContent = s.states ?? 0;
+    $("ks-live-transitions").textContent = s.transitions ?? 0;
+    $("ks-live-bugs").textContent = s.bugs ?? 0;
+  } catch (e) { /* ignore */ }
+}
+
+/* ---- utilities ------------------------------------------------------------ */
 
 function badge(status, label) {
   return `<span class="badge ${status}"><span class="dot"></span>${esc(label)}</span>`;

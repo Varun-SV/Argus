@@ -1,17 +1,19 @@
 """Linux GUI adapter — drives X11 applications via python-xlib / xdotool.
 
 Requires `pip install argus-app-testing[linux]` plus an X display (real or
-Xvfb). Set DISPLAY before running, e.g. `Xvfb :99 -screen 0 1920x1080x24 &
-DISPLAY=:99 argus roam "./myapp"`.
+Xvfb). When no DISPLAY is set, Argus auto-starts Xvfb on :99 if available.
 """
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from typing import List, Optional
 
 from argus.adapters.base import Adapter, AdapterError, Observation, UIElement
+
+_XVFB_DISPLAY = ":99"
 
 
 class LinuxGUIAdapter(Adapter):
@@ -19,12 +21,31 @@ class LinuxGUIAdapter(Adapter):
 
     type_name = "linux-gui"
 
-    def __init__(self, display: Optional[str] = None) -> None:
-        self._display = display or os.environ.get("DISPLAY", ":0")
+    def __init__(self, display: Optional[str] = None, auto_xvfb: bool = True) -> None:
+        env_display = display or os.environ.get("DISPLAY", "")
+        self._auto_xvfb = auto_xvfb and not env_display
+        self._display = env_display or ":0"
+        self._xvfb_proc: Optional[subprocess.Popen] = None
         self._pid: Optional[int] = None
         self._proc: Optional[subprocess.Popen] = None
 
+    def _start_xvfb(self) -> None:
+        if not shutil.which("Xvfb"):
+            return
+        try:
+            self._xvfb_proc = subprocess.Popen(
+                ["Xvfb", _XVFB_DISPLAY, "-screen", "0", "1920x1080x24"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._display = _XVFB_DISPLAY
+            time.sleep(0.5)
+        except Exception:
+            self._xvfb_proc = None
+
     def launch(self, target: str) -> None:
+        if self._auto_xvfb:
+            self._start_xvfb()
         env = {**os.environ, "DISPLAY": self._display}
         try:
             self._proc = subprocess.Popen(
@@ -96,6 +117,12 @@ class LinuxGUIAdapter(Adapter):
                 self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._proc.kill()
+        if self._xvfb_proc and self._xvfb_proc.poll() is None:
+            self._xvfb_proc.terminate()
+            try:
+                self._xvfb_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._xvfb_proc.kill()
 
     def _get_active_window_title(self) -> str:
         try:
