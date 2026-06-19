@@ -62,12 +62,29 @@ class LinuxGUIAdapter(Adapter):
         title = self._get_active_window_title()
         elements = self._get_elements()
         screenshot = self._take_screenshot() if include_screenshot else None
+        # Signal a hang when we can neither read the window title nor capture a
+        # screenshot — both failing together is a reliable indicator that the
+        # display or the app is frozen.
+        error: Optional[str] = None
+        if alive and not title and include_screenshot and screenshot is None:
+            error = "no window title and screenshot failed — app may be frozen"
         return Observation(
             window_title=title or "(unknown)",
             elements=elements,
             screenshot_png=screenshot,
             process_alive=alive,
+            error=error,
         )
+
+    def _xdo(self, args: list, env: dict, timeout: int = 10) -> None:
+        """Run an xdotool command; raise AdapterError if it times out or fails."""
+        try:
+            subprocess.run(["xdotool"] + args, env=env, timeout=timeout,
+                           capture_output=True, check=False)
+        except subprocess.TimeoutExpired:
+            raise AdapterError(f"xdotool timed out after {timeout}s: {args}")
+        except FileNotFoundError:
+            raise AdapterError("xdotool not found — install it with: apt install xdotool")
 
     def act(self, action: dict) -> str:
         kind = (action.get("action") or "").lower()
@@ -75,30 +92,29 @@ class LinuxGUIAdapter(Adapter):
 
         if kind == "click":
             x, y = action.get("x", 0), action.get("y", 0)
-            subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"], env=env)
+            self._xdo(["mousemove", str(x), str(y), "click", "1"], env)
             return f"clicked ({x},{y})"
 
         if kind == "double_click":
             x, y = action.get("x", 0), action.get("y", 0)
-            subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "--repeat", "2", "1"], env=env)
+            self._xdo(["mousemove", str(x), str(y), "click", "--repeat", "2", "1"], env)
             return f"double-clicked ({x},{y})"
 
         if kind == "type":
             text = action.get("text", "")
-            subprocess.run(["xdotool", "type", "--clearmodifiers", text], env=env)
+            self._xdo(["type", "--clearmodifiers", text], env)
             return f"typed {text!r}"
 
         if kind == "key":
             keys = action.get("keys", "")
-            xkey = keys.replace("ctrl+", "ctrl+").replace("ctrl", "ctrl")
-            subprocess.run(["xdotool", "key", xkey], env=env)
+            self._xdo(["key", keys], env)
             return f"pressed {keys}"
 
         if kind == "scroll":
             direction = action.get("direction", "down")
             button = "5" if direction == "down" else "4"
             for _ in range(int(action.get("amount", 3))):
-                subprocess.run(["xdotool", "click", button], env=env)
+                self._xdo(["click", button], env)
             return f"scrolled {direction}"
 
         if kind == "wait":

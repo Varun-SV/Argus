@@ -140,13 +140,22 @@ def roam(
     started = time.monotonic()
     history: List[str] = []
     consecutive_failures = 0
+    consecutive_action_failures = 0
     current_state_id = ""
     prev_state_id = ""
+
+    # After this many consecutive observation failures the app is considered
+    # permanently hung and we stop (not just record a finding).
+    _HANG_STOP_AT = 6
+    # After this many consecutive action failures (across turns) we stop.
+    _ACTION_FAIL_STOP_AT = 5
 
     try:
         while True:
             if stop_flag and stop_flag():
                 session.stopped_reason = "stopped by user"
+                break
+            if session.stopped_reason:
                 break
             reason = budget.exhausted()
             if reason:
@@ -195,7 +204,7 @@ def roam(
 
             if obs.error:
                 consecutive_failures += 1
-                if consecutive_failures >= 3 and not _already_reported(session, "unresponsive"):
+                if consecutive_failures == 3 and not _already_reported(session, "unresponsive"):
                     _add_finding(session, Finding(
                         title="Application appears unresponsive",
                         severity="high",
@@ -205,6 +214,10 @@ def roam(
                         at_action=len(session.actions),
                         source="hang",
                     ), obs.screenshot_png, shots_dir, emit)
+                if consecutive_failures >= _HANG_STOP_AT:
+                    session.stopped_reason = "application unresponsive — stopping"
+                    emit(session.stopped_reason)
+                    break
             else:
                 consecutive_failures = 0
 
@@ -300,6 +313,7 @@ def roam(
                 try:
                     note = adapter.act(action)
                     session.actions.append({"action": action, "note": note})
+                    consecutive_action_failures = 0
                     why = action.get("why", "")
                     emit(f"#{len(session.actions)} {note}" + (f" — {why}" if why else ""))
                     history.append(note)
@@ -319,8 +333,15 @@ def roam(
                             break  # exit batch, outer crash detector fires next iteration
                 except AdapterError as exc:
                     session.actions.append({"action": action, "error": str(exc)})
+                    consecutive_action_failures += 1
                     emit(f"#{len(session.actions)} action failed: {exc}")
                     history.append(f"{kind} FAILED: {exc}")
+                    if consecutive_action_failures >= _ACTION_FAIL_STOP_AT:
+                        session.stopped_reason = (
+                            f"stopped after {_ACTION_FAIL_STOP_AT} consecutive action failures"
+                        )
+                        emit(session.stopped_reason)
+                        break  # will trigger the outer loop's stop via stopped_reason check
                     break  # abort remaining batch on failure
 
             tokens = provider.tracker.snapshot()
