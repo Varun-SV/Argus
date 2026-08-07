@@ -99,8 +99,13 @@ def build_action_schema(
     return "\n".join(lines)
 
 
-# Backwards-compatible generic schema for callers that do not yet have an adapter.
-ACTION_SCHEMA = build_action_schema()
+DEFAULT_ACTION_SCHEMA = build_action_schema()
+# Kept for older imports (notably roam.py). The concrete schema now travels
+# with each observation so system prompts cannot accidentally over-advertise.
+ACTION_SCHEMA = (
+    "The exact allowed action schema is provided with each observation. "
+    "Use only actions listed there."
+)
 
 BATCH_ADDENDUM = """\
 
@@ -197,7 +202,19 @@ def observation_prompt(
     parts.append("UI TREE (element_id, type, name, rect):")
     parts.append(obs.tree_text())
     parts.append("")
-    schema = action_schema or ACTION_SCHEMA
+
+    if action_schema is not None:
+        schema = action_schema
+    elif obs.action_capabilities is not None:
+        roam_mode = goal.startswith("Free-roam exploration.")
+        schema = build_action_schema(
+            obs.action_capabilities,
+            include_done=not roam_mode,
+            include_report_bug=roam_mode,
+        )
+    else:
+        schema = DEFAULT_ACTION_SCHEMA
+
     if batch_hint >= 5:
         max_batch = min(batch_hint // 5, 5)
         schema += BATCH_ADDENDUM.format(count=batch_hint, max_batch=max_batch)
