@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import shlex
 import subprocess
+import sys
 import time
 from typing import Optional, Set
 
@@ -160,11 +161,13 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
 
     @staticmethod
     def _foreground_window() -> int:
+        if sys.platform != "win32":
+            return 0
         return int(ctypes.windll.user32.GetForegroundWindow())
 
     @staticmethod
     def _window_pid(hwnd: int) -> int:
-        if not hwnd:
+        if sys.platform != "win32" or not hwnd:
             return 0
         pid = ctypes.c_ulong(0)
         ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -180,7 +183,7 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
         If the user switched to any third-party window in the meantime, Argus
         immediately stops interfering and leaves that window alone.
         """
-        if not previous_hwnd:
+        if sys.platform != "win32" or not previous_hwnd:
             return
         if self._window_pid(previous_hwnd) in self._owned_pids:
             return
