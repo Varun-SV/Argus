@@ -43,8 +43,28 @@ class LinuxGUIAdapter(Adapter):
             "notes": [
                 "Linux GUI currently has no accessibility element discovery; clicks require coordinates.",
                 "Key actions use Argus canonical syntax such as ctrl+s; X11 key names are not accepted.",
+                "Host-session escape chords such as Ctrl+Alt+Fn and Ctrl+Alt+Backspace are blocked.",
             ],
         }
+
+    def validate_action(self, action: dict) -> None:
+        """Block Linux/X11 shortcuts that can escape or terminate the host session."""
+        if action.get("action") != "key":
+            return
+
+        parts = set(str(action.get("keys", "")).split("+"))
+        if not {"ctrl", "alt"}.issubset(parts):
+            return
+
+        if "backspace" in parts:
+            raise AdapterError(
+                "Ctrl+Alt+Backspace is blocked because it can terminate the host X session"
+            )
+
+        if any(f"f{i}" in parts for i in range(1, 13)):
+            raise AdapterError(
+                "Ctrl+Alt+F1..F12 is blocked because it can switch the host virtual terminal"
+            )
 
     def _start_xvfb(self) -> None:
         if not shutil.which("Xvfb"):
