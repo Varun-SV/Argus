@@ -1,8 +1,9 @@
 """Tiny Windows UI target used by the hosted-runner safety regression test."""
+import sys
 import tkinter as tk
 
 root = tk.Tk()
-root.title("Argus UIA Safety Target")
+root.title(sys.argv[1] if len(sys.argv) > 1 else "Argus UIA Safety Target")
 root.geometry("360x160")
 
 value = tk.StringVar()
