@@ -1,32 +1,22 @@
 """Global execution policy for model-generated actions.
 
 Platform adapters may add tighter target-specific checks, but every action
-passes through this policy first.  The default policy blocks system-level key
-combinations that can escape the application under test or interfere with the
-host desktop.
+passes through this policy first. Keyboard syntax is already canonicalized by
+``argus.actions``; this layer blocks canonical chords that can escape the
+application under test or interfere with the host desktop.
 """
 from __future__ import annotations
 
-from typing import Dict, Any, Set
+from typing import Any, Dict
 
 
 class ActionPolicyError(RuntimeError):
     """Raised when a valid action is forbidden by Argus' execution policy."""
 
 
-def _key_parts(keys: str) -> Set[str]:
-    aliases = {
-        "control": "ctrl",
-        "windows": "win",
-        "super": "win",
-        "meta": "win",
-        "escape": "esc",
-    }
-    parts = set()
-    for part in keys.lower().replace(" ", "").split("+"):
-        if part:
-            parts.add(aliases.get(part, part))
-    return parts
+def _key_parts(keys: str) -> set[str]:
+    """Return parts from an already validated canonical Argus key chord."""
+    return {part for part in keys.split("+") if part}
 
 
 def enforce_action_policy(action: Dict[str, Any]) -> None:
@@ -36,15 +26,15 @@ def enforce_action_policy(action: Dict[str, Any]) -> None:
 
     parts = _key_parts(str(action.get("keys", "")))
 
-    # The Windows/Super key intentionally has no use inside the application
-    # boundary: it opens shell surfaces or global OS shortcuts.
-    if "win" in parts:
-        raise ActionPolicyError("system Windows/Super-key shortcuts are blocked")
-
+    # System/window switching and security-shell combinations. Windows/Super
+    # is absent entirely from the canonical grammar, so it can never reach
+    # this layer or a backend-specific translator.
     blocked = (
         {"alt", "tab"},
+        {"alt", "esc"},
         {"alt", "f4"},
         {"ctrl", "esc"},
+        {"ctrl", "shift", "esc"},
         {"ctrl", "alt", "delete"},
     )
     for combo in blocked:
