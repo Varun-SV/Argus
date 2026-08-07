@@ -60,11 +60,15 @@ def test_semantic_actions_do_not_move_cursor_or_steal_foreground():
         assert foreground_before == int(unrelated_window.handle)
 
         target.execute({"action": "type", "element_id": edit_id, "text": "hello"})
-        target.execute({"action": "click", "element_id": button_id})
-        time.sleep(0.3)
+        time.sleep(0.2)
+        assert _cursor_position() == cursor_before, "UIA Value.SetValue moved the physical cursor"
+        assert _foreground_window() == foreground_before, "UIA Value.SetValue changed foreground focus"
 
-        assert _cursor_position() == cursor_before
-        assert _foreground_window() == foreground_before
+        target.execute({"action": "click", "element_id": button_id})
+        time.sleep(0.2)
+        assert _cursor_position() == cursor_before, "UIA Invoke moved the physical cursor"
+        assert _foreground_window() == foreground_before, "UIA Invoke changed foreground focus"
+
         assert target.observe(include_screenshot=False).find_text("hello")
     finally:
         try:
