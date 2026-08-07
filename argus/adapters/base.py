@@ -5,17 +5,18 @@ An adapter knows how to:
   * **observe** it (screenshot + accessibility tree + window state), and
   * **act** on it (click, type, press keys, …).
 
-The first production adapter is ``desktop-gui`` on Windows
-(:mod:`argus.adapters.windows_gui`). Other platforms get a clear error
-message rather than a silent failure.
+All externally supplied actions must enter through :meth:`Adapter.execute`.
+That method validates the model action, applies Argus' global execution
+policy, lets the platform adapter enforce target-specific restrictions, and
+only then dispatches to :meth:`Adapter.act`.
 
-Actions are plain dicts (the LLM emits them as JSON):
+Actions are plain dicts on the model/provider boundary:
 
     {"action": "click",        "element_id": 12}
     {"action": "click",        "x": 100, "y": 200}
     {"action": "double_click", "element_id": 3}
     {"action": "right_click",  "element_id": 3}
-    {"action": "type",         "text": "hello", "element_id": 4}   # element optional
+    {"action": "type",         "text": "hello", "element_id": 4}
     {"action": "key",          "keys": "ctrl+s"}
     {"action": "scroll",       "direction": "down", "amount": 3}
     {"action": "wait",         "seconds": 1.5}
@@ -103,9 +104,36 @@ class Adapter(ABC):
     def observe(self, include_screenshot: bool = True) -> Observation:
         """Capture the current state of the target."""
 
+    def execute(self, action: dict) -> str:
+        """Validate, authorize and execute one model-generated action.
+
+        Engine code should call this method instead of ``act`` so future
+        execution environments (including Argus Capsules) inherit the same
+        safety boundary automatically.
+        """
+        from argus.actions import ActionValidationError, validate_action
+        from argus.policy import ActionPolicyError, enforce_action_policy
+
+        try:
+            normalized = validate_action(action)
+            enforce_action_policy(normalized)
+        except (ActionValidationError, ActionPolicyError) as exc:
+            raise AdapterError(f"action blocked: {exc}") from exc
+
+        # Platform adapters can enforce target/window/origin boundaries here.
+        self.validate_action(normalized)
+        return self.act(normalized)
+
+    def validate_action(self, action: dict) -> None:
+        """Platform-specific policy hook invoked immediately before ``act``.
+
+        The default implementation permits the validated action. Adapters may
+        raise :class:`AdapterError` to deny actions outside their target.
+        """
+
     @abstractmethod
     def act(self, action: dict) -> str:
-        """Execute one action dict; returns a short human-readable note."""
+        """Execute an already validated action; returns a short note."""
 
     @abstractmethod
     def close(self) -> None:
