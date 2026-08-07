@@ -13,6 +13,7 @@ before it reaches platform input APIs.
 
 from __future__ import annotations
 
+import os
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -154,8 +155,16 @@ def create_adapter(adapter_type: str) -> Adapter:
     adapter_type = (adapter_type or "").lower().strip()
     if adapter_type in ("desktop-gui", "desktop", "gui"):
         if sys.platform == "win32":
-            from argus.adapters.windows_gui import WindowsGUIAdapter
-            return _guard(WindowsGUIAdapter())
+            input_mode = (os.environ.get("ARGUS_INPUT_MODE") or "safe").lower().strip()
+            if input_mode in {"physical", "legacy"}:
+                from argus.adapters.windows_gui import WindowsGUIAdapter
+                return _guard(WindowsGUIAdapter())
+            if input_mode not in {"safe", "semantic"}:
+                raise AdapterError(
+                    "ARGUS_INPUT_MODE must be 'safe'/'semantic' or explicit 'physical'"
+                )
+            from argus.adapters.windows_safe import SafeWindowsGUIAdapter
+            return _guard(SafeWindowsGUIAdapter())
         if sys.platform.startswith("linux"):
             from argus.adapters.linux_gui import LinuxGUIAdapter
             return _guard(LinuxGUIAdapter())
