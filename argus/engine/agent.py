@@ -61,14 +61,17 @@ def build_action_schema(
                     f'  {{"action":"{kind}","x":<px>,"y":<px>,"why":"..."}}'
                 )
         elif kind == "type":
-            if spec.get("element_id") == "required":
+            element_mode = spec.get("element_id", "optional")
+            if element_mode == "required":
                 lines.append(
                     '  {"action":"type","text":"...","element_id":<id>,"why":"..."}'
                 )
-            else:
+            elif element_mode == "optional":
                 lines.append(
                     '  {"action":"type","text":"...","element_id":<id optional>,"why":"..."}'
                 )
+            else:
+                lines.append('  {"action":"type","text":"...","why":"..."}')
         elif kind == "key":
             lines.append('  {"action":"key","keys":"ctrl+s","why":"..."}')
         elif kind == "scroll":
