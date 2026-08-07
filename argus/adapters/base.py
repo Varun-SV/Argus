@@ -94,23 +94,17 @@ class Adapter(ABC):
     def capabilities(self) -> dict:
         """Describe model-visible executable actions for this adapter.
 
-        Capabilities are deliberately data, not prompt text, so future remote
-        workers/guest agents can expose the same contract without importing the
-        engine prompt layer.
+        The base contract is intentionally minimal/fail-closed. Concrete
+        adapters must opt into every interactive capability they support so a
+        new adapter can never silently inherit mouse, keyboard, or menu powers
+        that its ``act`` implementation does not actually provide.
         """
         return {
             "actions": {
-                "click": {"element_id": "optional", "coordinates": True},
-                "double_click": {"element_id": "optional", "coordinates": True},
-                "right_click": {"element_id": "optional", "coordinates": True},
-                "type": {"element_id": "optional"},
-                "key": {},
-                "scroll": {},
-                "menu": {},
                 "wait": {},
                 "done": {},
             },
-            "notes": ["Prefer element_id values from the UI tree over coordinates."],
+            "notes": ["This adapter has not declared interactive capabilities."],
         }
 
     def execute(self, action: dict) -> str:
