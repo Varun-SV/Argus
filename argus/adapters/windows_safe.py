@@ -8,6 +8,7 @@ UIA patterns can opt into the legacy Windows adapter explicitly through
 """
 from __future__ import annotations
 
+import ctypes
 import shlex
 import subprocess
 import time
@@ -157,6 +158,61 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
         except Exception:
             return None
 
+    @staticmethod
+    def _foreground_window() -> int:
+        return int(ctypes.windll.user32.GetForegroundWindow())
+
+    @staticmethod
+    def _window_pid(hwnd: int) -> int:
+        if not hwnd:
+            return 0
+        pid = ctypes.c_ulong(0)
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value)
+
+    def _preserve_foreground(self, previous_hwnd: int) -> None:
+        """Undo target-caused activation without fighting a user's new choice.
+
+        Some UIA providers activate their application even for direct
+        ``Value.SetValue``/``Invoke`` calls. We remember the user's foreground
+        window before the action and, for a short settling window, restore it
+        only when the foreground was stolen by a verified target process.
+        If the user switched to any third-party window in the meantime, Argus
+        immediately stops interfering and leaves that window alone.
+        """
+        if not previous_hwnd:
+            return
+        if self._window_pid(previous_hwnd) in self._owned_pids:
+            return
+
+        user32 = ctypes.windll.user32
+        deadline = time.monotonic() + 0.15
+        saw_target_activation = False
+
+        while time.monotonic() < deadline:
+            current = self._foreground_window()
+            if current and current != previous_hwnd:
+                current_pid = self._window_pid(current)
+                if current_pid not in self._owned_pids:
+                    # The user (or another unrelated app) selected a different
+                    # foreground window; never overwrite that newer choice.
+                    return
+                saw_target_activation = True
+                if not user32.IsWindow(previous_hwnd):
+                    raise AdapterError(
+                        "target stole foreground focus and the previous user window no longer exists"
+                    )
+                user32.SetForegroundWindow(previous_hwnd)
+            time.sleep(0.01)
+
+        current = self._foreground_window()
+        if current != previous_hwnd and self._window_pid(current) in self._owned_pids:
+            raise AdapterError(
+                "target stole foreground focus and Argus could not restore the user's window"
+            )
+        if saw_target_activation and current == previous_hwnd:
+            return
+
     def act(self, action: dict) -> str:
         kind = (action.get("action") or "").lower()
 
@@ -176,9 +232,13 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
                 method = getattr(interface, method_name, None)
                 if not callable(method):
                     continue
+                previous_hwnd = self._foreground_window()
                 try:
                     method()
+                    self._preserve_foreground(previous_hwnd)
                     return f"semantic click on element {element_id} via {method_name}"
+                except AdapterError:
+                    raise
                 except Exception as exc:
                     errors.append(f"{method_name}: {exc}")
             detail = "; ".join(errors[-2:]) if errors else "no supported UIA pattern"
@@ -192,8 +252,12 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
             set_value = getattr(value, "SetValue", None) if value is not None else None
             if not callable(set_value):
                 raise AdapterError("element does not expose the UIA Value pattern")
+            previous_hwnd = self._foreground_window()
             try:
                 set_value(text)
+                self._preserve_foreground(previous_hwnd)
+            except AdapterError:
+                raise
             except Exception as exc:
                 raise AdapterError(f"UIA Value.SetValue failed: {exc}") from exc
             return f"semantically set element {element_id} to {text!r} via Value.SetValue"
