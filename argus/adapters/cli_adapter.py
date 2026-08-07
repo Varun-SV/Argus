@@ -22,6 +22,17 @@ class CLIAdapter(Adapter):
         self._shell = shell
         self._last_obs = Observation(window_title="")
 
+    def capabilities(self) -> dict:
+        return {
+            "actions": {
+                "run": {},
+                "execute": {},
+                "wait": {},
+                "done": {},
+            },
+            "notes": ["Use run/execute with an explicit command; there is no GUI input."],
+        }
+
     def launch(self, target: str) -> None:
         self._command = target
         self._run(target)
