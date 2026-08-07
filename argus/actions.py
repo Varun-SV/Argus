@@ -210,8 +210,10 @@ def validate_action(action: Dict[str, Any]) -> Dict[str, Any]:
         normalized["url"] = url.strip()
 
     elif kind in {"run", "execute"}:
-        if "command" in normalized:
-            normalized["command"] = str(normalized["command"])
+        command = normalized.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ActionValidationError(f"{kind} requires a non-empty command")
+        normalized["command"] = command.strip()
 
     elif kind == "done" and "success" in normalized:
         if not isinstance(normalized["success"], bool):
