@@ -5,23 +5,10 @@ An adapter knows how to:
   * **observe** it (screenshot + accessibility tree + window state), and
   * **act** on it (click, type, press keys, …).
 
-All externally supplied actions must enter through :meth:`Adapter.execute`.
-That method validates the model action, applies Argus' global execution
-policy, lets the platform adapter enforce target-specific restrictions, and
-only then dispatches to :meth:`Adapter.act`.
-
-Actions are plain dicts on the model/provider boundary:
-
-    {"action": "click",        "element_id": 12}
-    {"action": "click",        "x": 100, "y": 200}
-    {"action": "double_click", "element_id": 3}
-    {"action": "right_click",  "element_id": 3}
-    {"action": "type",         "text": "hello", "element_id": 4}
-    {"action": "key",          "keys": "ctrl+s"}
-    {"action": "scroll",       "direction": "down", "amount": 3}
-    {"action": "wait",         "seconds": 1.5}
-    {"action": "menu",         "path": "File->Save"}
-    {"action": "done",         "success": true, "note": "..."}
+Adapters created through :func:`create_adapter` are wrapped in
+:class:`PolicyAdapter`. This keeps the current engine API compatible while
+ensuring every model-generated action is schema-validated and policy-checked
+before it reaches platform input APIs.
 """
 
 from __future__ import annotations
@@ -65,13 +52,11 @@ class Observation:
     elements: List[UIElement] = field(default_factory=list)
     screenshot_png: Optional[bytes] = None
     process_alive: bool = True
-    dialogs: List[str] = field(default_factory=list)  # titles of extra/popup windows
+    dialogs: List[str] = field(default_factory=list)
     error: Optional[str] = None
-    # CLI adapter fields
     stdout: Optional[str] = None
     stderr: Optional[str] = None
     exit_code: Optional[int] = None
-    # Browser adapter field
     url: Optional[str] = None
 
     def tree_text(self, max_elements: int = 120) -> str:
@@ -105,12 +90,7 @@ class Adapter(ABC):
         """Capture the current state of the target."""
 
     def execute(self, action: dict) -> str:
-        """Validate, authorize and execute one model-generated action.
-
-        Engine code should call this method instead of ``act`` so future
-        execution environments (including Argus Capsules) inherit the same
-        safety boundary automatically.
-        """
+        """Validate, authorize and execute one model-generated action."""
         from argus.actions import ActionValidationError, validate_action
         from argus.policy import ActionPolicyError, enforce_action_policy
 
@@ -120,16 +100,11 @@ class Adapter(ABC):
         except (ActionValidationError, ActionPolicyError) as exc:
             raise AdapterError(f"action blocked: {exc}") from exc
 
-        # Platform adapters can enforce target/window/origin boundaries here.
         self.validate_action(normalized)
         return self.act(normalized)
 
     def validate_action(self, action: dict) -> None:
-        """Platform-specific policy hook invoked immediately before ``act``.
-
-        The default implementation permits the validated action. Adapters may
-        raise :class:`AdapterError` to deny actions outside their target.
-        """
+        """Platform-specific policy hook invoked immediately before ``act``."""
 
     @abstractmethod
     def act(self, action: dict) -> str:
@@ -140,28 +115,63 @@ class Adapter(ABC):
         """Tear down the target application."""
 
 
+class PolicyAdapter(Adapter):
+    """Compatibility guard around an adapter used by the current engines.
+
+    The runner and roam engine historically call ``adapter.act`` directly.
+    Wrapping adapters here means those calls still pass through the inner
+    adapter's :meth:`execute` safety boundary without a broad engine rewrite.
+    """
+
+    def __init__(self, inner: Adapter) -> None:
+        self.inner = inner
+        self.type_name = inner.type_name
+
+    def launch(self, target: str) -> None:
+        self.inner.launch(target)
+
+    def observe(self, include_screenshot: bool = True) -> Observation:
+        return self.inner.observe(include_screenshot=include_screenshot)
+
+    def act(self, action: dict) -> str:
+        return self.inner.execute(action)
+
+    def validate_action(self, action: dict) -> None:
+        self.inner.validate_action(action)
+
+    def close(self) -> None:
+        self.inner.close()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def _guard(adapter: Adapter) -> Adapter:
+    return adapter if isinstance(adapter, PolicyAdapter) else PolicyAdapter(adapter)
+
+
 def create_adapter(adapter_type: str) -> Adapter:
     adapter_type = (adapter_type or "").lower().strip()
     if adapter_type in ("desktop-gui", "desktop", "gui"):
         if sys.platform == "win32":
             from argus.adapters.windows_gui import WindowsGUIAdapter
-            return WindowsGUIAdapter()
+            return _guard(WindowsGUIAdapter())
         if sys.platform.startswith("linux"):
             from argus.adapters.linux_gui import LinuxGUIAdapter
-            return LinuxGUIAdapter()
+            return _guard(LinuxGUIAdapter())
         raise AdapterError(
             "the desktop-gui adapter supports Windows and Linux "
             f"(this is {sys.platform}). macOS support is on the roadmap."
         )
     if adapter_type in ("cli", "terminal", "shell"):
         from argus.adapters.cli_adapter import CLIAdapter
-        return CLIAdapter()
+        return _guard(CLIAdapter())
     if adapter_type in ("browser", "web", "playwright"):
         from argus.adapters.browser_adapter import BrowserAdapter
-        return BrowserAdapter()
+        return _guard(BrowserAdapter())
     if adapter_type in ("linux-gui", "linux_gui", "x11"):
         from argus.adapters.linux_gui import LinuxGUIAdapter
-        return LinuxGUIAdapter()
+        return _guard(LinuxGUIAdapter())
     raise AdapterError(
         f"unknown adapter '{adapter_type}' — available: desktop-gui, cli, browser"
     )
