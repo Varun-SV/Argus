@@ -59,6 +59,7 @@ class Observation:
     stderr: Optional[str] = None
     exit_code: Optional[int] = None
     url: Optional[str] = None
+    action_capabilities: Optional[dict] = None
 
     def tree_text(self, max_elements: int = 120) -> str:
         lines = [el.describe() for el in self.elements[:max_elements]]
@@ -154,7 +155,9 @@ class PolicyAdapter(Adapter):
         self.inner.launch(target)
 
     def observe(self, include_screenshot: bool = True) -> Observation:
-        return self.inner.observe(include_screenshot=include_screenshot)
+        obs = self.inner.observe(include_screenshot=include_screenshot)
+        obs.action_capabilities = self.capabilities()
+        return obs
 
     def capabilities(self) -> dict:
         return self.inner.capabilities()
