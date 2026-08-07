@@ -208,10 +208,17 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
         f"[dim]· adapter:[/dim] {adapter_type} [dim]· budget:[/dim] {budget.describe()}"
     )
     if sys.platform == "win32" and adapter_type == "desktop-gui":
-        console.print(
-            "[yellow]![/yellow] roaming drives the real desktop on Windows — "
-            "avoid using the mouse/keyboard while it runs."
-        )
+        inner = getattr(adapter, "inner", adapter)
+        if inner.__class__.__name__ == "SafeWindowsGUIAdapter":
+            console.print(
+                "[green]✓[/green] safe semantic Windows input active — "
+                "physical mouse/keyboard injection is disabled."
+            )
+        else:
+            console.print(
+                "[yellow]![/yellow] physical/legacy Windows input is active — roaming may "
+                "move the host mouse, inject keyboard input, and change foreground focus."
+            )
 
     from argus.engine.roam import roam as run_roam
 
