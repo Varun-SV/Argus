@@ -1,20 +1,136 @@
 """Safe Windows UIA adapter.
 
 This adapter deliberately avoids host-wide mouse and keyboard injection. It
-operates only on UI Automation elements discovered from the application under
-test. Applications that do not expose usable UIA patterns can opt into the
-legacy Windows adapter explicitly through ``ARGUS_INPUT_MODE=physical``.
+operates only on UI Automation elements discovered from a process Argus can
+prove belongs to the requested target. Applications that do not expose usable
+UIA patterns can opt into the legacy Windows adapter explicitly through
+``ARGUS_INPUT_MODE=physical``.
 """
 from __future__ import annotations
 
+import shlex
+import subprocess
 import time
+from typing import Optional, Set
 
 from argus.adapters.base import AdapterError
-from argus.adapters.windows_gui import WindowsGUIAdapter
+from argus.adapters.windows_gui import WindowsGUIAdapter, _require_pywinauto
 
 
 class SafeWindowsGUIAdapter(WindowsGUIAdapter):
     """Windows adapter restricted to semantic, target-owned UIA operations."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._owned_pids: Set[int] = set()
+
+    def capabilities(self) -> dict:
+        return {
+            "actions": {
+                "click": {"element_id": "required", "coordinates": False},
+                "type": {"element_id": "required"},
+                "wait": {},
+                "done": {},
+            },
+            "notes": [
+                "Safe Windows mode only permits semantic UIA actions on target-owned elements.",
+                "click and type require an element_id; coordinates and global input are unavailable.",
+            ],
+        }
+
+    def launch(self, target: str) -> None:
+        """Launch and attach only when target ownership can be proven.
+
+        Unlike the legacy adapter, safe mode never scans unrelated desktop
+        windows by title. No PID/process-tree ownership proof means no attach.
+        """
+        Application, _Desktop = _require_pywinauto()
+        exe_name = shlex.split(target, posix=False)[0].lower().split("\\")[-1]
+
+        # A singleton is an explicit attach request by executable identity.
+        if exe_name in self._SINGLETONS:
+            try:
+                self._app = Application(backend="uia").connect(path=exe_name)
+                win = self._top_window()
+                self._owned_pids = {int(win.process_id())}
+                return
+            except Exception as exc:
+                self._app = None
+                raise AdapterError(
+                    f"'{exe_name}' is a system singleton — could not attach safely: {exc}"
+                ) from exc
+
+        try:
+            self._proc = subprocess.Popen(shlex.split(target, posix=False))
+        except OSError as exc:
+            raise AdapterError(f"could not launch '{target}': {exc}") from exc
+
+        root_pid = self._proc.pid
+        self._owned_pids = {root_pid}
+        last_err: Optional[Exception] = None
+
+        # First require a window owned by the exact process Argus launched.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                app = Application(backend="uia").connect(process=root_pid, timeout=1)
+                self._app = app
+                self._verify_owned_top_window({root_pid})
+                return
+            except Exception as exc:
+                self._app = None
+                last_err = exc
+                time.sleep(0.5)
+
+        # Some WinUI/UWP launchers create the real UI in descendant processes.
+        # Descendants are accepted only when psutil proves the relationship.
+        try:
+            import psutil
+
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    parent = psutil.Process(root_pid)
+                    child_pids = {c.pid for c in parent.children(recursive=True)}
+                except psutil.NoSuchProcess:
+                    child_pids = set()
+                self._owned_pids = {root_pid, *child_pids}
+
+                for child_pid in child_pids:
+                    try:
+                        app = Application(backend="uia").connect(process=child_pid, timeout=1)
+                        self._app = app
+                        self._verify_owned_top_window(self._owned_pids)
+                        return
+                    except Exception as exc:
+                        self._app = None
+                        last_err = exc
+                time.sleep(0.5)
+        except ImportError as exc:
+            last_err = exc
+
+        # Fail closed. Safe mode must never fall back to title matching across
+        # the user's desktop because a same-title window may belong to them.
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+        self._app = None
+        self._owned_pids.clear()
+        raise AdapterError(
+            f"launched '{target}' (pid {root_pid}) but could not verify a target-owned "
+            f"window within 15s; refusing title-based desktop fallback. Last error: {last_err}"
+        )
+
+    def _verify_owned_top_window(self, allowed_pids: Set[int]) -> None:
+        win = self._top_window()
+        pid = int(win.process_id())
+        if pid not in allowed_pids:
+            raise AdapterError(
+                f"refusing window owned by pid {pid}; verified target pids are "
+                f"{sorted(allowed_pids)}"
+            )
 
     def validate_action(self, action: dict) -> None:
         kind = action.get("action", "")
@@ -24,9 +140,9 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
                     "coordinate input is disabled in safe Windows mode; use an element_id"
                 )
             self._element(action["element_id"])
-        if kind in {"double_click", "right_click", "key", "scroll"}:
+        if kind in {"double_click", "right_click", "key", "scroll", "menu"}:
             raise AdapterError(
-                f"'{kind}' requires host input and is disabled in safe Windows mode"
+                f"'{kind}' is not guaranteed semantic and is disabled in safe Windows mode"
             )
         if kind == "type" and "element_id" not in action:
             raise AdapterError(
@@ -40,7 +156,7 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
             element_id = action["element_id"]
             el = self._element(element_id)
             errors = []
-            for method in ("invoke", "select", "toggle", "click"):
+            for method in ("invoke", "select", "toggle"):
                 fn = getattr(el, method, None)
                 if not callable(fn):
                     continue
@@ -73,11 +189,6 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
             seconds = min(float(action.get("seconds", 1.0)), 30.0)
             time.sleep(seconds)
             return f"waited {seconds}s"
-
-        if kind == "menu":
-            path = str(action.get("path", ""))
-            self._top_window().menu_select(path)
-            return f"selected menu {path}"
 
         raise AdapterError(
             f"safe Windows mode cannot execute '{kind}' without host-wide input"
