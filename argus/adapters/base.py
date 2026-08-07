@@ -7,8 +7,8 @@ An adapter knows how to:
 
 Adapters created through :func:`create_adapter` are wrapped in
 :class:`PolicyAdapter`. This keeps the current engine API compatible while
-ensuring every model-generated action is schema-validated and policy-checked
-before it reaches platform input APIs.
+ensuring every model-generated action is schema-validated, capability-authorized,
+and policy-checked before it reaches platform input APIs.
 """
 
 from __future__ import annotations
@@ -92,12 +92,12 @@ class Adapter(ABC):
         """Capture the current state of the target."""
 
     def capabilities(self) -> dict:
-        """Describe model-visible executable actions for this adapter.
+        """Describe executable actions authorized for this adapter.
 
         The base contract is intentionally minimal/fail-closed. Concrete
         adapters must opt into every interactive capability they support so a
-        new adapter can never silently inherit mouse, keyboard, or menu powers
-        that its ``act`` implementation does not actually provide.
+        new adapter can never silently inherit mouse, keyboard, menu, or shell
+        powers that its ``act`` implementation happens to provide.
         """
         return {
             "actions": {
@@ -106,6 +106,61 @@ class Adapter(ABC):
             },
             "notes": ["This adapter has not declared interactive capabilities."],
         }
+
+    def _authorize_capability(self, action: dict) -> None:
+        """Enforce this adapter's declared capability contract.
+
+        Capabilities are authorization, not merely prompt metadata. An action
+        kind must be declared before it can dispatch, and common target-shape
+        constraints are checked centrally so an adapter cannot accidentally
+        accept a broader form than it advertised.
+        """
+        capabilities = self.capabilities() or {}
+        actions = capabilities.get("actions") or {}
+        kind = str(action.get("action") or "").lower()
+
+        if kind not in actions:
+            raise AdapterError(
+                f"action blocked: adapter '{self.type_name}' does not declare capability '{kind}'"
+            )
+
+        spec = actions.get(kind) or {}
+
+        if kind in {"click", "double_click", "right_click"}:
+            has_element = "element_id" in action
+            has_coordinates = "x" in action or "y" in action
+            element_mode = spec.get("element_id", "optional")
+
+            if element_mode == "required" and not has_element:
+                raise AdapterError(
+                    f"action blocked: adapter '{self.type_name}' requires element_id for '{kind}'"
+                )
+            if element_mode == "none" and has_element:
+                raise AdapterError(
+                    f"action blocked: adapter '{self.type_name}' forbids element_id for '{kind}'"
+                )
+            if has_coordinates and not bool(spec.get("coordinates", False)):
+                raise AdapterError(
+                    f"action blocked: adapter '{self.type_name}' forbids coordinates for '{kind}'"
+                )
+
+        if kind == "type":
+            has_element = "element_id" in action
+            element_mode = spec.get("element_id", "optional")
+            if element_mode == "required" and not has_element:
+                raise AdapterError(
+                    f"action blocked: adapter '{self.type_name}' requires element_id for 'type'"
+                )
+            if element_mode == "none" and has_element:
+                raise AdapterError(
+                    f"action blocked: adapter '{self.type_name}' forbids element_id for 'type'"
+                )
+
+        if kind in {"run", "execute"} and spec.get("command") == "required":
+            if "command" not in action:
+                raise AdapterError(
+                    f"action blocked: adapter '{self.type_name}' requires command for '{kind}'"
+                )
 
     def execute(self, action: dict) -> str:
         """Validate, authorize and execute one model-generated action."""
@@ -118,6 +173,7 @@ class Adapter(ABC):
         except (ActionValidationError, ActionPolicyError) as exc:
             raise AdapterError(f"action blocked: {exc}") from exc
 
+        self._authorize_capability(normalized)
         self.validate_action(normalized)
         return self.act(normalized)
 
@@ -126,7 +182,7 @@ class Adapter(ABC):
 
     @abstractmethod
     def act(self, action: dict) -> str:
-        """Execute an already validated action; returns a short note."""
+        """Execute an already validated and authorized action; returns a short note."""
 
     @abstractmethod
     def close(self) -> None:
