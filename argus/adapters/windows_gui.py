@@ -9,6 +9,8 @@ Observation:
     roam bug detector.
 
 Action synthesis goes through pywinauto (mouse/keyboard + element methods).
+This is the legacy/physical Windows mode; key actions still arrive through the
+global Argus validator/policy and are translated from canonical Argus syntax.
 
 This module imports pywinauto lazily so the rest of Argus works on any OS;
 install the extra on Windows:  ``pip install argus-app-testing[windows]``.
@@ -46,6 +48,25 @@ class WindowsGUIAdapter(Adapter):
         self._app = None  # pywinauto Application
         self._proc: Optional[subprocess.Popen] = None
         self._elements: List = []  # wrapper objects, index == element_id
+
+    def capabilities(self) -> dict:
+        return {
+            "actions": {
+                "click": {"element_id": "optional", "coordinates": True},
+                "double_click": {"element_id": "optional", "coordinates": True},
+                "right_click": {"element_id": "optional", "coordinates": True},
+                "type": {"element_id": "optional"},
+                "key": {},
+                "scroll": {},
+                "menu": {},
+                "wait": {},
+                "done": {},
+            },
+            "notes": [
+                "Physical Windows mode may move the host mouse, inject keyboard input, and change foreground focus.",
+                "Key actions use Argus canonical syntax such as ctrl+s; backend-specific key syntax is forbidden.",
+            ],
+        }
 
     # ---- lifecycle -----------------------------------------------------
 
@@ -110,6 +131,8 @@ class WindowsGUIAdapter(Adapter):
             pass
 
         # Phase 3: last resort — find a window whose title/class matches the exe.
+        # This exists only in explicit legacy/physical mode. SafeWindowsGUIAdapter
+        # overrides launch and never reaches this title-only fallback.
         deadline2 = time.monotonic() + 5
         while time.monotonic() < deadline2:
             try:
@@ -122,7 +145,6 @@ class WindowsGUIAdapter(Adapter):
                             self._app = Application(backend="uia").connect(process=pid)
                             self._top_window()
                             return
-                        # match by title substring as fallback
                         title = win.window_text() or ""
                         if stem.lower() in title.lower():
                             self._app = Application(backend="uia").connect(handle=win.handle)
@@ -196,7 +218,7 @@ class WindowsGUIAdapter(Adapter):
                 img.save(buf, format="PNG")
                 screenshot = buf.getvalue()
             except Exception:
-                screenshot = None  # screenshot is best-effort
+                screenshot = None
 
         return Observation(
             window_title=title,
@@ -266,7 +288,7 @@ class WindowsGUIAdapter(Adapter):
         from pywinauto import mouse
         from pywinauto.keyboard import send_keys
 
-        if kind == "click" or kind == "double_click" or kind == "right_click":
+        if kind in {"click", "double_click", "right_click"}:
             if "element_id" in action:
                 el = self._element(action["element_id"])
                 if kind == "click":
@@ -289,7 +311,6 @@ class WindowsGUIAdapter(Adapter):
             if "element_id" in action:
                 el = self._element(action["element_id"])
                 el.click_input()
-            # escape pywinauto's special chars, keep literal text literal
             send_keys(
                 text.replace("{", "{{}").replace("}", "{}}")
                 .replace("+", "{+}").replace("^", "{^}")
@@ -325,6 +346,9 @@ class WindowsGUIAdapter(Adapter):
             win.menu_select(path)
             return f"selected menu {path}"
 
+        if kind == "done":
+            return "done"
+
         raise AdapterError(
             f"unknown action '{kind}' — valid: click, double_click, right_click, "
             "type, key, scroll, wait, menu, done"
@@ -332,20 +356,38 @@ class WindowsGUIAdapter(Adapter):
 
 
 def _to_send_keys(combo: str) -> str:
-    """Translate 'ctrl+shift+s' style combos into pywinauto send_keys syntax."""
-    mods = {"ctrl": "^", "control": "^", "alt": "%", "shift": "+", "win": "{VK_LWIN}"}
+    """Translate a validated canonical Argus key chord to pywinauto syntax."""
+    mods = {"ctrl": "^", "alt": "%", "shift": "+"}
     named = {
-        "enter": "{ENTER}", "return": "{ENTER}", "tab": "{TAB}", "esc": "{ESC}",
-        "escape": "{ESC}", "space": " ", "backspace": "{BACKSPACE}", "delete": "{DELETE}",
-        "up": "{UP}", "down": "{DOWN}", "left": "{LEFT}", "right": "{RIGHT}",
-        "home": "{HOME}", "end": "{END}", "pageup": "{PGUP}", "pagedown": "{PGDN}",
+        "enter": "{ENTER}",
+        "tab": "{TAB}",
+        "esc": "{ESC}",
+        "space": " ",
+        "backspace": "{BACKSPACE}",
+        "delete": "{DELETE}",
+        "up": "{UP}",
+        "down": "{DOWN}",
+        "left": "{LEFT}",
+        "right": "{RIGHT}",
+        "home": "{HOME}",
+        "end": "{END}",
+        "pageup": "{PGUP}",
+        "pagedown": "{PGDN}",
+        "insert": "{INSERT}",
+        "minus": "{-}",
+        "equals": "{=}",
+        "comma": "{,}",
+        "period": "{.}",
+        "slash": "{/}",
+        "semicolon": "{;}",
+        "quote": "{'}",
+        "backquote": "{`}",
+        "bracketleft": "{[}",
+        "bracketright": "{]}",
+        "backslash": "{\\}",
         **{f"f{i}": f"{{F{i}}}" for i in range(1, 13)},
     }
-    parts = [p.strip().lower() for p in combo.split("+") if p.strip()]
-    prefix, keys = "", []
-    for part in parts:
-        if part in mods:
-            prefix += mods[part]
-        else:
-            keys.append(named.get(part, part))
-    return prefix + ("".join(keys) or "")
+    parts = combo.split("+")
+    prefix = "".join(mods[part] for part in parts[:-1])
+    key = parts[-1]
+    return prefix + named.get(key, key)
