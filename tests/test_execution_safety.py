@@ -110,13 +110,20 @@ def test_safe_windows_rejects_window_without_target_ownership():
         adapter._verify_owned_top_window({123})
 
 
-def test_safe_windows_semantic_click_without_pywinauto_runtime():
-    class Button:
+def test_safe_windows_semantic_click_uses_direct_invoke_pattern():
+    class InvokePattern:
         def __init__(self):
             self.invoked = False
 
-        def invoke(self):
+        def Invoke(self):
             self.invoked = True
+
+    class Button:
+        def __init__(self):
+            self.iface_invoke = InvokePattern()
+
+        def invoke(self):
+            raise AssertionError("wrapper invoke() must not be used in safe mode")
 
     button = Button()
     adapter = SafeWindowsGUIAdapter()
@@ -124,17 +131,24 @@ def test_safe_windows_semantic_click_without_pywinauto_runtime():
 
     note = adapter.execute({"action": "click", "element_id": 0})
 
-    assert button.invoked is True
-    assert "semantic click" in note
+    assert button.iface_invoke.invoked is True
+    assert "via Invoke" in note
 
 
-def test_safe_windows_semantic_text_without_pywinauto_runtime():
-    class Edit:
+def test_safe_windows_semantic_text_uses_direct_value_pattern():
+    class ValuePattern:
         def __init__(self):
             self.value = None
 
-        def set_edit_text(self, value):
+        def SetValue(self, value):
             self.value = value
+
+    class Edit:
+        def __init__(self):
+            self.iface_value = ValuePattern()
+
+        def set_edit_text(self, _value):
+            raise AssertionError("wrapper set_edit_text() must not be used in safe mode")
 
     edit = Edit()
     adapter = SafeWindowsGUIAdapter()
@@ -142,5 +156,5 @@ def test_safe_windows_semantic_text_without_pywinauto_runtime():
 
     note = adapter.execute({"action": "type", "element_id": 0, "text": "hello"})
 
-    assert edit.value == "hello"
-    assert "semantically set" in note
+    assert edit.iface_value.value == "hello"
+    assert "Value.SetValue" in note
