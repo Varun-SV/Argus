@@ -33,7 +33,7 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
                 "done": {},
             },
             "notes": [
-                "Safe Windows mode only permits semantic UIA actions on target-owned elements.",
+                "Safe Windows mode only permits direct UIA patterns on target-owned elements.",
                 "click and type require an element_id; coordinates and global input are unavailable.",
             ],
         }
@@ -149,41 +149,54 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
                 "unfocused typing is disabled in safe Windows mode; use an element_id"
             )
 
+    @staticmethod
+    def _interface(element, name: str):
+        """Return a UIA pattern interface without invoking wrapper conveniences."""
+        try:
+            return getattr(element, name)
+        except Exception:
+            return None
+
     def act(self, action: dict) -> str:
         kind = (action.get("action") or "").lower()
 
         if kind == "click":
             element_id = action["element_id"]
             el = self._element(element_id)
+            patterns = (
+                ("iface_invoke", "Invoke"),
+                ("iface_selection_item", "Select"),
+                ("iface_toggle", "Toggle"),
+            )
             errors = []
-            for method in ("invoke", "select", "toggle"):
-                fn = getattr(el, method, None)
-                if not callable(fn):
+            for interface_name, method_name in patterns:
+                interface = self._interface(el, interface_name)
+                if interface is None:
+                    continue
+                method = getattr(interface, method_name, None)
+                if not callable(method):
                     continue
                 try:
-                    fn()
-                    return f"semantic click on element {element_id}"
+                    method()
+                    return f"semantic click on element {element_id} via {method_name}"
                 except Exception as exc:
-                    errors.append(f"{method}: {exc}")
+                    errors.append(f"{method_name}: {exc}")
             detail = "; ".join(errors[-2:]) if errors else "no supported UIA pattern"
-            raise AdapterError(f"element has no usable semantic click action ({detail})")
+            raise AdapterError(f"element has no usable direct UIA click pattern ({detail})")
 
         if kind == "type":
             element_id = action["element_id"]
             text = str(action.get("text", ""))
             el = self._element(element_id)
-            errors = []
-            for method in ("set_edit_text", "set_value"):
-                fn = getattr(el, method, None)
-                if not callable(fn):
-                    continue
-                try:
-                    fn(text)
-                    return f"semantically set element {element_id} to {text!r}"
-                except Exception as exc:
-                    errors.append(f"{method}: {exc}")
-            detail = "; ".join(errors[-2:]) if errors else "no Value/Edit UIA pattern"
-            raise AdapterError(f"element cannot accept semantic text input ({detail})")
+            value = self._interface(el, "iface_value")
+            set_value = getattr(value, "SetValue", None) if value is not None else None
+            if not callable(set_value):
+                raise AdapterError("element does not expose the UIA Value pattern")
+            try:
+                set_value(text)
+            except Exception as exc:
+                raise AdapterError(f"UIA Value.SetValue failed: {exc}") from exc
+            return f"semantically set element {element_id} to {text!r} via Value.SetValue"
 
         if kind == "wait":
             seconds = min(float(action.get("seconds", 1.0)), 30.0)
