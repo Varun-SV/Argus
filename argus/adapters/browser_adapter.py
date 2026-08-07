@@ -18,6 +18,20 @@ class BrowserAdapter(Adapter):
         self._browser = None
         self._page = None
 
+    def capabilities(self) -> dict:
+        return {
+            "actions": {
+                "click": {"element_id": "optional", "coordinates": True},
+                "type": {"element_id": "optional"},
+                "key": {},
+                "navigate": {},
+                "scroll": {},
+                "wait": {},
+                "done": {},
+            },
+            "notes": ["Prefer element_id values from the UI tree over coordinates."],
+        }
+
     def launch(self, target: str) -> None:
         try:
             from playwright.sync_api import sync_playwright
