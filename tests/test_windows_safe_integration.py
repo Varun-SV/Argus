@@ -83,6 +83,68 @@ def test_semantic_actions_do_not_move_cursor_or_steal_foreground():
                 unrelated_proc.kill()
 
 
+def test_spawned_target_child_focus_is_verified_and_user_foreground_restored(tmp_path):
+    """A child spawned by a target action may steal focus, but only verified identity earns trust."""
+    from pywinauto import Application
+
+    from argus.adapters.windows_safe import SafeWindowsGUIAdapter
+
+    fixture = Path(__file__).parent / "fixtures" / "windows_uia_target.py"
+    spawn_fixture = Path(__file__).parent / "fixtures" / "windows_uia_spawn_child_target.py"
+    marker = tmp_path / "child-foreground.txt"
+    target = SafeWindowsGUIAdapter()
+    unrelated_proc = None
+
+    try:
+        target.launch(
+            f'{sys.executable} {spawn_fixture} "Argus Spawn Child Parent" "{marker}"'
+        )
+        obs = target.observe(include_screenshot=False)
+        spawn_id = next(
+            el.element_id
+            for el in obs.elements
+            if el.control_type == "Button" and el.name == "Spawn Child"
+        )
+
+        unrelated_proc = subprocess.Popen(
+            [sys.executable, str(fixture), "Argus Child-Focus User Window"]
+        )
+        unrelated = Application(backend="uia").connect(
+            process=unrelated_proc.pid, timeout=10
+        )
+        unrelated_window = unrelated.top_window()
+        unrelated_window.wait("visible", timeout=10)
+        unrelated_window.set_focus()
+        time.sleep(0.3)
+        foreground_before = _foreground_window()
+        assert foreground_before == int(unrelated_window.handle)
+
+        target.execute({"action": "click", "element_id": spawn_id})
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.02)
+        assert marker.exists(), "spawned target child never became foreground during the action"
+
+        child_pid = int(marker.read_text(encoding="utf-8"))
+        assert child_pid != target._attached_pid
+        assert target._is_verified_owned_pid(child_pid) is True
+        assert _foreground_window() == foreground_before, (
+            "verified spawned child stole foreground and Argus did not restore the user's window"
+        )
+    finally:
+        try:
+            target.close()
+        except Exception:
+            pass
+        if unrelated_proc is not None and unrelated_proc.poll() is None:
+            unrelated_proc.terminate()
+            try:
+                unrelated_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                unrelated_proc.kill()
+
+
 def test_descendant_ui_outlives_launcher_and_close_cleans_verified_child():
     """A short-lived launcher must not become the target liveness authority."""
     import psutil
