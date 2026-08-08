@@ -57,7 +57,7 @@ def test_local_environment_delegates_lifecycle_observation_and_actions():
 def test_local_environment_keeps_adapter_execution_policy_for_raw_adapters():
     environment = LocalExecutionEnvironment(FakeAdapter())
 
-    with pytest.raises(AdapterError, match="system shortcut"):
+    with pytest.raises(AdapterError, match="system-level key combination"):
         environment.act({"action": "key", "keys": "alt+f4"})
 
 
