@@ -22,6 +22,17 @@ class CLIAdapter(Adapter):
         self._shell = shell
         self._last_obs = Observation(window_title="")
 
+    def capabilities(self) -> dict:
+        return {
+            "actions": {
+                "run": {"command": "required"},
+                "execute": {"command": "required"},
+                "wait": {},
+                "done": {},
+            },
+            "notes": ["Use run/execute with an explicit command; there is no GUI input."],
+        }
+
     def launch(self, target: str) -> None:
         self._command = target
         self._run(target)
@@ -32,9 +43,7 @@ class CLIAdapter(Adapter):
     def act(self, action: dict) -> str:
         kind = (action.get("action") or "").lower()
         if kind in ("run", "execute"):
-            return self._run(action.get("command", self._command))
-        if kind == "type":
-            return self._run(action.get("text", ""))
+            return self._run(action["command"])
         if kind == "done":
             return "done"
         if kind == "wait":

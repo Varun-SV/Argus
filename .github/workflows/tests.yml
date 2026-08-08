@@ -18,7 +18,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install
+      - name: Install (Windows)
+        if: runner.os == 'Windows'
+        run: pip install -e ".[dev,windows]"
+      - name: Install (non-Windows)
+        if: runner.os != 'Windows'
         run: pip install -e ".[dev]"
       - name: Run tests
         run: pytest -q

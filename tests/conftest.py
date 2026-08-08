@@ -61,6 +61,22 @@ class FakeAdapter(Adapter):
         self._action_count = 0
         self.launched_with: Optional[str] = None
 
+    def capabilities(self) -> dict:
+        return {
+            "actions": {
+                "click": {"element_id": "optional", "coordinates": True},
+                "double_click": {"element_id": "optional", "coordinates": True},
+                "right_click": {"element_id": "optional", "coordinates": True},
+                "type": {"element_id": "optional"},
+                "key": {},
+                "scroll": {},
+                "menu": {},
+                "wait": {},
+                "done": {},
+            },
+            "notes": ["Fake adapter used by the Argus test suite."],
+        }
+
     def launch(self, target: str) -> None:
         self.launched_with = target
 
@@ -109,6 +125,8 @@ class FakeAdapter(Adapter):
             return f"selected menu {action.get('path')}"
         if kind == "scroll":
             return "scrolled"
+        if kind == "done":
+            return "done"
         raise AdapterError(f"unknown action '{kind}'")
 
     def close(self) -> None:

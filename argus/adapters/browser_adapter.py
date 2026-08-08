@@ -18,6 +18,23 @@ class BrowserAdapter(Adapter):
         self._browser = None
         self._page = None
 
+    def capabilities(self) -> dict:
+        return {
+            "actions": {
+                "click": {"element_id": "optional", "coordinates": True},
+                "type": {"element_id": "optional"},
+                "key": {},
+                "navigate": {},
+                "scroll": {},
+                "wait": {},
+                "done": {},
+            },
+            "notes": [
+                "Prefer element_id values from the UI tree over coordinates.",
+                "Key actions use Argus canonical syntax such as ctrl+s; Playwright-specific syntax is not accepted.",
+            ],
+        }
+
     def launch(self, target: str) -> None:
         try:
             from playwright.sync_api import sync_playwright
@@ -117,7 +134,7 @@ class BrowserAdapter(Adapter):
 
         if kind == "key":
             keys = str(action.get("keys", ""))
-            self._page.keyboard.press(keys)
+            self._page.keyboard.press(_to_playwright_key(keys))
             return f"pressed {keys}"
 
         if kind == "navigate":
@@ -152,3 +169,41 @@ class BrowserAdapter(Adapter):
         except Exception:
             pass
         self._page = self._browser = self._pw = None
+
+
+def _to_playwright_key(combo: str) -> str:
+    """Translate a validated canonical Argus key chord to Playwright syntax."""
+    modifiers = {"ctrl": "Control", "alt": "Alt", "shift": "Shift"}
+    named = {
+        "enter": "Enter",
+        "tab": "Tab",
+        "esc": "Escape",
+        "space": "Space",
+        "backspace": "Backspace",
+        "delete": "Delete",
+        "up": "ArrowUp",
+        "down": "ArrowDown",
+        "left": "ArrowLeft",
+        "right": "ArrowRight",
+        "home": "Home",
+        "end": "End",
+        "pageup": "PageUp",
+        "pagedown": "PageDown",
+        "insert": "Insert",
+        "minus": "-",
+        "equals": "=",
+        "comma": ",",
+        "period": ".",
+        "slash": "/",
+        "semicolon": ";",
+        "quote": "'",
+        "backquote": "`",
+        "bracketleft": "[",
+        "bracketright": "]",
+        "backslash": "\\",
+        **{f"f{i}": f"F{i}" for i in range(1, 13)},
+    }
+    parts = combo.split("+")
+    translated = [modifiers[part] for part in parts[:-1]]
+    translated.append(named.get(parts[-1], parts[-1]))
+    return "+".join(translated)

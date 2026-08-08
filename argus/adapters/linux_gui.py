@@ -29,6 +29,43 @@ class LinuxGUIAdapter(Adapter):
         self._pid: Optional[int] = None
         self._proc: Optional[subprocess.Popen] = None
 
+    def capabilities(self) -> dict:
+        return {
+            "actions": {
+                "click": {"element_id": "none", "coordinates": True},
+                "double_click": {"element_id": "none", "coordinates": True},
+                "type": {"element_id": "none"},
+                "key": {},
+                "scroll": {},
+                "wait": {},
+                "done": {},
+            },
+            "notes": [
+                "Linux GUI currently has no accessibility element discovery; clicks require coordinates.",
+                "Key actions use Argus canonical syntax such as ctrl+s; X11 key names are not accepted.",
+                "Host-session escape chords such as Ctrl+Alt+Fn and Ctrl+Alt+Backspace are blocked.",
+            ],
+        }
+
+    def validate_action(self, action: dict) -> None:
+        """Block Linux/X11 shortcuts that can escape or terminate the host session."""
+        if action.get("action") != "key":
+            return
+
+        parts = set(str(action.get("keys", "")).split("+"))
+        if not {"ctrl", "alt"}.issubset(parts):
+            return
+
+        if "backspace" in parts:
+            raise AdapterError(
+                "Ctrl+Alt+Backspace is blocked because it can terminate the host X session"
+            )
+
+        if any(f"f{i}" in parts for i in range(1, 13)):
+            raise AdapterError(
+                "Ctrl+Alt+F1..F12 is blocked because it can switch the host virtual terminal"
+            )
+
     def _start_xvfb(self) -> None:
         if not shutil.which("Xvfb"):
             return
@@ -55,16 +92,13 @@ class LinuxGUIAdapter(Adapter):
             self._pid = self._proc.pid
         except Exception as exc:
             raise AdapterError(f"linux-gui launch failed: {exc}") from exc
-        time.sleep(1.0)  # give the window time to appear
+        time.sleep(1.0)
 
     def observe(self, include_screenshot: bool = True) -> Observation:
         alive = self._proc is None or self._proc.poll() is None
         title = self._get_active_window_title()
         elements = self._get_elements()
         screenshot = self._take_screenshot() if include_screenshot else None
-        # Signal a hang when we can neither read the window title nor capture a
-        # screenshot — both failing together is a reliable indicator that the
-        # display or the app is frozen.
         error: Optional[str] = None
         if alive and not title and include_screenshot and screenshot is None:
             error = "no window title and screenshot failed — app may be frozen"
@@ -106,8 +140,8 @@ class LinuxGUIAdapter(Adapter):
             return f"typed {text!r}"
 
         if kind == "key":
-            keys = action.get("keys", "")
-            self._xdo(["key", keys], env)
+            keys = str(action.get("keys", ""))
+            self._xdo(["key", _to_xdotool_key(keys)], env)
             return f"pressed {keys}"
 
         if kind == "scroll":
@@ -152,7 +186,7 @@ class LinuxGUIAdapter(Adapter):
             return ""
 
     def _get_elements(self) -> List[UIElement]:
-        # Basic element discovery — real impl would use AT-SPI
+        # Basic element discovery — real impl would use AT-SPI.
         return []
 
     def _take_screenshot(self) -> Optional[bytes]:
@@ -167,3 +201,41 @@ class LinuxGUIAdapter(Adapter):
         except Exception:
             pass
         return None
+
+
+def _to_xdotool_key(combo: str) -> str:
+    """Translate a validated canonical Argus key chord to xdotool syntax."""
+    modifiers = {"ctrl": "ctrl", "alt": "alt", "shift": "shift"}
+    named = {
+        "enter": "Return",
+        "tab": "Tab",
+        "esc": "Escape",
+        "space": "space",
+        "backspace": "BackSpace",
+        "delete": "Delete",
+        "up": "Up",
+        "down": "Down",
+        "left": "Left",
+        "right": "Right",
+        "home": "Home",
+        "end": "End",
+        "pageup": "Prior",
+        "pagedown": "Next",
+        "insert": "Insert",
+        "minus": "minus",
+        "equals": "equal",
+        "comma": "comma",
+        "period": "period",
+        "slash": "slash",
+        "semicolon": "semicolon",
+        "quote": "apostrophe",
+        "backquote": "grave",
+        "bracketleft": "bracketleft",
+        "bracketright": "bracketright",
+        "backslash": "backslash",
+        **{f"f{i}": f"F{i}" for i in range(1, 13)},
+    }
+    parts = combo.split("+")
+    translated = [modifiers[part] for part in parts[:-1]]
+    translated.append(named.get(parts[-1], parts[-1]))
+    return "+".join(translated)
