@@ -11,9 +11,14 @@ import win32api
 import win32con
 import win32gui
 
-TITLE = sys.argv[1] if len(sys.argv) > 1 else "Argus Spawn Child Target"
-MARKER = Path(sys.argv[2]) if len(sys.argv) > 2 else None
-IS_CHILD = len(sys.argv) > 3 and sys.argv[3] == "--child"
+
+def _clean_arg(value: str) -> str:
+    return value.strip().strip('"')
+
+
+TITLE = _clean_arg(sys.argv[1]) if len(sys.argv) > 1 else "Argus Spawn Child Target"
+MARKER = Path(_clean_arg(sys.argv[2])) if len(sys.argv) > 2 else None
+IS_CHILD = len(sys.argv) > 3 and _clean_arg(sys.argv[3]) == "--child"
 CLASS_NAME = f"ArgusSpawnChildTarget_{win32api.GetCurrentProcessId()}"
 BUTTON_ID = 2001
 
