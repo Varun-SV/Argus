@@ -81,3 +81,64 @@ def test_semantic_actions_do_not_move_cursor_or_steal_foreground():
                 unrelated_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 unrelated_proc.kill()
+
+
+def test_descendant_ui_outlives_launcher_and_close_cleans_verified_child():
+    """A short-lived launcher must not become the target liveness authority."""
+    import psutil
+
+    from argus.adapters.windows_safe import SafeWindowsGUIAdapter
+
+    launcher = Path(__file__).parent / "fixtures" / "windows_uia_launcher.py"
+    target = SafeWindowsGUIAdapter()
+    attached_pid = None
+    attached_created = None
+
+    try:
+        target.launch(f'{sys.executable} {launcher} "Argus Descendant Lifecycle Target"')
+        assert target._proc is not None
+        launcher_pid = target._proc.pid
+        attached_pid = target._attached_pid
+        attached_created = target._attached_create_time
+
+        assert attached_pid is not None
+        assert attached_created is not None
+        assert attached_pid != launcher_pid, "safe mode attached to the launcher instead of its UI child"
+
+        # The bootstrapper exits, but the verified child UI remains the target.
+        target._proc.wait(timeout=5)
+        assert target._proc.poll() is not None
+
+        obs = target.observe(include_screenshot=False)
+        assert obs.process_alive is True
+        assert "Argus Descendant Lifecycle Target" in obs.window_title
+        assert any(el.control_type == "Edit" for el in obs.elements)
+
+        target.close()
+
+        # close() must clean up the pinned child identity even though the
+        # original launcher Popen has already exited.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                proc = psutil.Process(attached_pid)
+                same_identity = abs(proc.create_time() - attached_created) <= 0.01
+                if not same_identity or not proc.is_running():
+                    break
+            except psutil.NoSuchProcess:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("verified descendant UI process was left running after target.close()")
+    finally:
+        try:
+            target.close()
+        except Exception:
+            pass
+        if attached_pid is not None and attached_created is not None:
+            try:
+                proc = psutil.Process(attached_pid)
+                if abs(proc.create_time() - attached_created) <= 0.01 and proc.is_running():
+                    proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
