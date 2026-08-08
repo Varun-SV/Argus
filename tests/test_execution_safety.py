@@ -110,6 +110,96 @@ def test_safe_windows_rejects_window_without_target_ownership():
         adapter._verify_owned_top_window({123})
 
 
+def _fake_psutil(processes):
+    class NoSuchProcess(Exception):
+        pass
+
+    class AccessDenied(Exception):
+        pass
+
+    class Module:
+        pass
+
+    Module.NoSuchProcess = NoSuchProcess
+    Module.AccessDenied = AccessDenied
+
+    @staticmethod
+    def process(pid):
+        try:
+            return processes[int(pid)]
+        except KeyError as exc:
+            raise NoSuchProcess(pid) from exc
+
+    Module.Process = process
+    return Module
+
+
+class _FakeProcess:
+    def __init__(self, pid, created, children=None):
+        self.pid = pid
+        self._created = created
+        self._children = list(children or [])
+        self.children_calls = 0
+
+    def create_time(self):
+        return self._created
+
+    def is_running(self):
+        return True
+
+    def children(self, recursive=False):
+        self.children_calls += 1
+        assert recursive is True
+        return list(self._children)
+
+
+def test_safe_windows_foreground_ownership_rejects_recycled_pid_identity():
+    recycled = _FakeProcess(42, 200.0)
+    fake_psutil = _fake_psutil({42: recycled})
+    adapter = SafeWindowsGUIAdapter()
+    adapter._owns_lifecycle = True
+    adapter._owned_identities = {42: 100.0}
+    adapter._owned_pids = {42}
+
+    assert adapter._is_verified_owned_pid(
+        42, refresh_if_unknown=True, psutil_module=fake_psutil
+    ) is False
+    assert adapter._owned_identities[42] == 100.0
+
+
+def test_safe_windows_foreground_ownership_can_prove_new_launched_child_once():
+    child = _FakeProcess(11, 11.0)
+    root = _FakeProcess(10, 10.0, children=[child])
+    fake_psutil = _fake_psutil({10: root, 11: child})
+    adapter = SafeWindowsGUIAdapter()
+    adapter._owns_lifecycle = True
+    adapter._owned_identities = {10: 10.0}
+    adapter._owned_pids = {10}
+
+    assert adapter._is_verified_owned_pid(
+        11, refresh_if_unknown=True, psutil_module=fake_psutil
+    ) is True
+    assert adapter._owned_identities[11] == 11.0
+    assert root.children_calls == 1
+
+
+def test_safe_windows_singleton_foreground_trust_does_not_adopt_descendants():
+    unrelated_child = _FakeProcess(21, 21.0)
+    explorer = _FakeProcess(20, 20.0, children=[unrelated_child])
+    fake_psutil = _fake_psutil({20: explorer, 21: unrelated_child})
+    adapter = SafeWindowsGUIAdapter()
+    adapter._owns_lifecycle = False
+    adapter._owned_identities = {20: 20.0}
+    adapter._owned_pids = {20}
+
+    assert adapter._is_verified_owned_pid(
+        21, refresh_if_unknown=True, psutil_module=fake_psutil
+    ) is False
+    assert 21 not in adapter._owned_identities
+    assert 21 not in adapter._owned_pids
+    assert explorer.children_calls == 0
+
+
 def test_safe_windows_semantic_click_uses_direct_invoke_pattern():
     class InvokePattern:
         def __init__(self):
