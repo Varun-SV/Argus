@@ -95,31 +95,69 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return None
 
-    def _pid_identity_is_live(self, pid: int) -> bool:
+    def _pid_identity_is_live(self, pid: int, psutil_module=None) -> bool:
         created = self._owned_identities.get(int(pid))
         if created is None:
             return False
-        return self._process_for_identity(int(pid), created) is not None
+        return self._process_for_identity(int(pid), created, psutil_module) is not None
+
+    def _is_verified_owned_pid(
+        self,
+        pid: int,
+        *,
+        refresh_if_unknown: bool = False,
+        psutil_module=None,
+    ) -> bool:
+        """Return whether *pid* still matches a pinned target process identity.
+
+        Foreground ownership must use the same PID+creation-time proof as UI
+        attachment and lifecycle cleanup. For lifecycle-owned launches only,
+        an unknown PID gets one process-tree refresh so a child spawned during
+        a semantic action can be proven before it is classified as third-party.
+        Singleton attaches deliberately never expand trust to descendants.
+        """
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0:
+            return False
+
+        if self._pid_identity_is_live(pid, psutil_module):
+            return True
+
+        if (
+            refresh_if_unknown
+            and self._owns_lifecycle
+            and pid not in self._owned_identities
+        ):
+            self._refresh_owned_processes(psutil_module)
+            return self._pid_identity_is_live(pid, psutil_module)
+
+        return False
 
     def _refresh_owned_processes(self, psutil_module=None) -> None:
-        """Snapshot descendants while any already-proven ancestor is alive.
+        """Refresh live identities and, for owned launches, prove descendants.
 
-        This runs throughout discovery. Once a descendant relationship has
-        been proven, its PID + creation time remain independently verifiable
-        even after its launcher exits.
+        Lifecycle-owned launches may expand the verified tree because Argus
+        created the root process and can prove ancestry. Explicit singleton
+        attaches (notably Explorer) do *not* recursively adopt descendants:
+        the Windows shell can parent unrelated user-launched applications.
         """
         psutil = psutil_module or _require_psutil()
         known = list(self._owned_identities.items())
-        for pid, created in known:
-            proc = self._process_for_identity(pid, created, psutil)
-            if proc is None:
-                continue
-            try:
-                children = proc.children(recursive=True)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                children = []
-            for child in children:
-                self._record_process(child)
+
+        if self._owns_lifecycle:
+            for pid, created in known:
+                proc = self._process_for_identity(pid, created, psutil)
+                if proc is None:
+                    continue
+                try:
+                    children = proc.children(recursive=True)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    children = []
+                for child in children:
+                    self._record_process(child)
 
         live: Set[int] = set()
         for pid, created in self._owned_identities.items():
@@ -148,7 +186,7 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
     def _attach_verified_window(self, Application, window) -> None:
         """Attach by handle only after the window's process identity is proven."""
         pid = int(window.process_id())
-        if pid not in self._owned_pids or not self._pid_identity_is_live(pid):
+        if not self._is_verified_owned_pid(pid):
             raise AdapterError(
                 f"refusing window owned by pid {pid}; process identity is not verified/live"
             )
@@ -162,7 +200,7 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
         self._app = app
         attached = self._top_window()
         attached_pid = int(attached.process_id())
-        if attached_pid != pid or not self._pid_identity_is_live(attached_pid):
+        if attached_pid != pid or not self._is_verified_owned_pid(attached_pid):
             self._app = None
             raise AdapterError(
                 f"attached window identity changed from verified pid {pid} to {attached_pid}"
@@ -278,7 +316,7 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
                     pid = int(window.process_id())
                 except Exception:
                     continue
-                if pid not in self._owned_pids:
+                if not self._is_verified_owned_pid(pid, psutil_module=psutil):
                     continue
                 try:
                     self._attach_verified_window(Application, window)
@@ -310,7 +348,9 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
                 try:
                     win = self._top_window()
                     pid = int(win.process_id())
-                    if pid == self._attached_pid and self._pid_identity_is_live(pid):
+                    if pid == self._attached_pid and self._is_verified_owned_pid(
+                        pid, psutil_module=psutil
+                    ):
                         win.close()
                         time.sleep(0.3)
                 except Exception:
@@ -335,7 +375,9 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
         try:
             win = self._top_window()
             pid = int(win.process_id())
-            if pid != self._attached_pid or not self._pid_identity_is_live(pid):
+            if pid != self._attached_pid or not self._is_verified_owned_pid(
+                pid, psutil_module=psutil
+            ):
                 raise AdapterError(
                     f"attached window identity changed from verified pid {self._attached_pid} to {pid}"
                 )
@@ -388,7 +430,7 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
             )
         # During ordinary operation, set membership alone is insufficient: pin
         # the creation time too so a recycled PID cannot inherit authority.
-        if self._owned_identities and not self._pid_identity_is_live(pid):
+        if self._owned_identities and not self._is_verified_owned_pid(pid):
             raise AdapterError(f"refusing pid {pid}; verified process identity is no longer live")
 
     # ---- action policy / semantic dispatch -------------------------------
@@ -433,10 +475,19 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
         return int(pid.value)
 
     def _preserve_foreground(self, previous_hwnd: int) -> None:
-        """Undo target-caused activation without fighting a user's new choice."""
+        """Undo target-caused activation without fighting a user's new choice.
+
+        Every target-owned decision is validated against the pinned
+        PID+creation-time identity. If a lifecycle-owned target spawns a new
+        child during the semantic action, an unknown foreground PID gets one
+        ancestry refresh before Argus decides it belongs to the user/another
+        application. Singleton attaches never gain descendant authority.
+        """
         if sys.platform != "win32" or not previous_hwnd:
             return
-        if self._window_pid(previous_hwnd) in self._owned_pids:
+        if self._is_verified_owned_pid(
+            self._window_pid(previous_hwnd), refresh_if_unknown=True
+        ):
             return
 
         user32 = ctypes.windll.user32
@@ -447,7 +498,11 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
             current = self._foreground_window()
             if current and current != previous_hwnd:
                 current_pid = self._window_pid(current)
-                if current_pid not in self._owned_pids:
+                if not self._is_verified_owned_pid(
+                    current_pid, refresh_if_unknown=True
+                ):
+                    # A PID that cannot be proven as the same target identity is
+                    # a user/third-party choice. Never overwrite it.
                     return
                 saw_target_activation = True
                 if not user32.IsWindow(previous_hwnd):
@@ -458,7 +513,9 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
             time.sleep(0.01)
 
         current = self._foreground_window()
-        if current != previous_hwnd and self._window_pid(current) in self._owned_pids:
+        if current != previous_hwnd and self._is_verified_owned_pid(
+            self._window_pid(current), refresh_if_unknown=True
+        ):
             raise AdapterError(
                 "target stole foreground focus and Argus could not restore the user's window"
             )
