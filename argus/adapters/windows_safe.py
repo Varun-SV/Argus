@@ -104,10 +104,9 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
     def _refresh_owned_processes(self, psutil_module=None) -> None:
         """Snapshot descendants while any already-proven ancestor is alive.
 
-        This runs throughout discovery, rather than waiting for a long root-PID
-        UIA timeout first. Once a descendant relationship has been proven, its
-        PID + creation time remain independently verifiable even after its
-        launcher exits.
+        This runs throughout discovery. Once a descendant relationship has
+        been proven, its PID + creation time remain independently verifiable
+        even after its launcher exits.
         """
         psutil = psutil_module or _require_psutil()
         known = list(self._owned_identities.items())
@@ -146,19 +145,29 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
             psutil_module,
         )
 
-    def _attach_candidate(self, Application, pid: int) -> None:
-        if not self._pid_identity_is_live(pid):
-            raise AdapterError(f"verified candidate pid {pid} is no longer the same process")
-        app = Application(backend="uia").connect(process=pid, timeout=0.25)
+    def _attach_verified_window(self, Application, window) -> None:
+        """Attach by handle only after the window's process identity is proven."""
+        pid = int(window.process_id())
+        if pid not in self._owned_pids or not self._pid_identity_is_live(pid):
+            raise AdapterError(
+                f"refusing window owned by pid {pid}; process identity is not verified/live"
+            )
+
+        # Connecting by an already-enumerated handle avoids pywinauto's
+        # process-search wait loop. This matters for short-lived launchers:
+        # descendant snapshots must continue frequently enough to prove the
+        # child relationship before the launcher disappears.
+        handle = int(window.handle)
+        app = Application(backend="uia").connect(handle=handle)
         self._app = app
-        win = self._top_window()
-        window_pid = int(win.process_id())
-        if window_pid not in self._owned_identities or not self._pid_identity_is_live(window_pid):
+        attached = self._top_window()
+        attached_pid = int(attached.process_id())
+        if attached_pid != pid or not self._pid_identity_is_live(attached_pid):
             self._app = None
             raise AdapterError(
-                f"refusing window owned by pid {window_pid}; process identity is not verified"
+                f"attached window identity changed from verified pid {pid} to {attached_pid}"
             )
-        self._set_attached_identity(window_pid)
+        self._set_attached_identity(attached_pid)
 
     def _terminate_owned_processes(self, psutil_module=None) -> None:
         """Terminate only still-matching identities Argus itself launched."""
@@ -210,12 +219,12 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
     def launch(self, target: str) -> None:
         """Launch and attach only when target ownership can be proven.
 
-        Safe mode never scans unrelated desktop windows by title. A launched
+        Safe mode never matches unrelated desktop windows by title. A launched
         process and each accepted descendant are pinned by PID *and process
         creation time*, so launcher exit and later PID reuse cannot transfer
         authority to an unrelated process.
         """
-        Application, _Desktop = _require_pywinauto()
+        Application, Desktop = _require_pywinauto()
         psutil = _require_psutil()
         exe_name = shlex.split(target, posix=False)[0].lower().split("\\")[-1]
 
@@ -252,26 +261,34 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
         except (psutil.NoSuchProcess, psutil.AccessDenied, AdapterError) as exc:
             last_err = exc
 
-        # Discover descendants continuously while also trying UIA attachment.
-        # This avoids losing a short-lived launcher relationship during a
-        # separate 10-second root-only wait.
+        # Keep proving descendants without entering a blocking PID-based UIA
+        # connect. We enumerate desktop windows, but authorization is solely by
+        # pinned PID+creation-time identity — never title/class matching.
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline and self._owned_identities:
             self._refresh_owned_processes(psutil)
-            candidates = sorted(
-                self._owned_pids,
-                key=lambda pid: (pid != root_pid, pid),
-            )
-            for pid in candidates:
+            try:
+                windows = Desktop(backend="uia").windows()
+            except Exception as exc:
+                windows = []
+                last_err = exc
+
+            for window in windows:
                 try:
-                    self._attach_candidate(Application, pid)
+                    pid = int(window.process_id())
+                except Exception:
+                    continue
+                if pid not in self._owned_pids:
+                    continue
+                try:
+                    self._attach_verified_window(Application, window)
                     return
                 except Exception as exc:
                     self._app = None
                     self._attached_pid = None
                     self._attached_create_time = None
                     last_err = exc
-            time.sleep(0.2)
+            time.sleep(0.1)
 
         # Fail closed. Clean up only the identities whose ancestry/creation
         # times were proven before refusing the attach.
