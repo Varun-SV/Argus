@@ -41,6 +41,7 @@ class RunResult:
     steps: List[StepResult] = field(default_factory=list)
     tokens: dict = field(default_factory=dict)
     error: Optional[str] = None
+    failure_capsule: Optional[dict] = None
 
     @property
     def passed(self) -> int:
@@ -100,6 +101,15 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
         f"- **Duration:** {result.duration_s:.1f}s",
         f"- **Tokens:** {result.tokens.get('total_tokens', 0)} "
         f"({result.tokens.get('calls', 0)} LLM calls)",
+    ]
+    if result.failure_capsule:
+        lines += [
+            f"- **Failure Capsule:** `{result.failure_capsule.get('failure_id', 'retained')}`",
+            f"- **Failure VM:** `{result.failure_capsule.get('vm_name', 'unknown')}`",
+            f"- **Failure state:** `{result.failure_capsule.get('vm_state', 'unknown')}`",
+            f"- **Failure storage:** `{result.failure_capsule.get('root_dir', 'unknown')}`",
+        ]
+    lines += [
         "",
         "| # | Step | Kind | Status | Duration |",
         "|---|------|------|--------|----------|",
@@ -114,6 +124,19 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
 
     if result.error:
         lines += [f"**Error:** {result.error}", ""]
+
+    if result.failure_capsule:
+        lines += [
+            "## Failure Capsule",
+            "",
+            "Argus retained the Capsule before teardown so the failed VM state can be inspected or reproduced.",
+            "",
+            f"- **Reason:** {result.failure_capsule.get('reason', 'test failure')}",
+            f"- **VM:** `{result.failure_capsule.get('vm_name', 'unknown')}`",
+            f"- **State:** `{result.failure_capsule.get('vm_state', 'unknown')}`",
+            f"- **Storage:** `{result.failure_capsule.get('root_dir', 'unknown')}`",
+            "",
+        ]
 
     lines.append("## Steps")
     lines.append("")
