@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from argus.adapters.base import Observation
+from argus.adapters.base import AdapterError, Observation
 from argus.capsule.base import (
     CapsuleError,
     CapsuleHandle,
@@ -139,7 +139,7 @@ def test_capsule_host_policy_blocks_escape_before_guest_dispatch(tmp_path):
     environment, _, client = _environment(tmp_path)
     environment.launch("fake.exe")
 
-    with pytest.raises(Exception, match="system-level key combination"):
+    with pytest.raises(AdapterError, match="system-level key combination"):
         environment.act({"action": "key", "keys": "alt+f4"})
 
     assert client.actions == []
@@ -178,13 +178,17 @@ def test_capsule_agent_readiness_failure_rolls_back_vm(tmp_path):
 def test_run_result_records_capsule_isolation_metadata(tmp_path):
     environment, _, _ = _environment(tmp_path)
     spec = parse_spec(
-        """
+        """\
 name: capsule audit
- target: {}
-""".replace(
-            " target: {}",
-            "target:\n  adapter: desktop-gui\n  launch: fake.exe\nsteps:\n  - assert:\n      process_running: true\nteardown:\n  - close",
-        )
+target:
+  adapter: desktop-gui
+  launch: fake.exe
+steps:
+  - assert:
+      process_running: true
+teardown:
+  - close
+"""
     )
     result = run_test(spec, FakeProvider([]), environment)
 
