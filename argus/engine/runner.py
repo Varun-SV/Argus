@@ -131,22 +131,26 @@ def _execution_fields(adapter: Adapter) -> dict:
     }
 
 
-def _record_environment_failure(adapter: Adapter, step: StepResult) -> None:
-    """Notify execution environments before teardown can erase failure state."""
+def _record_environment_failure_reason(adapter: Adapter, reason: str) -> None:
+    """Notify an execution environment before teardown can erase failure state."""
     hook = getattr(adapter, "record_failure", None)
     if not callable(hook):
         return
-    reason = f"step {step.index + 1} {step.status}: {step.text}"
-    if step.note:
-        reason += f" — {step.note}"
-    elif step.actual:
-        reason += f" — {step.actual}"
     try:
         hook(reason)
     except Exception:
         # Failure retention is diagnostic. A test result must never be converted
         # into a different outcome merely because the optional hook failed.
         pass
+
+
+def _record_environment_failure(adapter: Adapter, step: StepResult) -> None:
+    reason = f"step {step.index + 1} {step.status}: {step.text}"
+    if step.note:
+        reason += f" — {step.note}"
+    elif step.actual:
+        reason += f" — {step.actual}"
+    _record_environment_failure_reason(adapter, reason)
 
 
 def _retained_failure(adapter: Adapter):
@@ -220,6 +224,8 @@ def run_test(
         return result
 
     failed = False
+    budget_failure_recorded = False
+    teardown_budget_reason: Optional[str] = None
     try:
         for index, step in enumerate(spec.steps):
             step_started = time.monotonic()
@@ -232,11 +238,20 @@ def run_test(
                     on_step(sr)
                 continue
 
-            # Teardown must remain executable even after the run budget is
-            # exhausted. A budget failure is recorded before teardown so a
-            # retain-on-failure environment can preserve the Capsule first.
-            budget_reason = budget.exhausted() if budget and step.kind != "teardown" else None
-            if budget_reason:
+            # Always check the budget at a step boundary. If it has expired when
+            # entering teardown, record the run failure but still execute teardown
+            # so retention/cleanup reaches a deterministic close point.
+            budget_reason = budget.exhausted() if budget else None
+            if budget_reason and step.kind == "teardown":
+                if not budget_failure_recorded:
+                    failed = True
+                    budget_failure_recorded = True
+                    teardown_budget_reason = budget_reason
+                    _record_environment_failure_reason(
+                        adapter,
+                        f"run budget exhausted before teardown: {budget_reason}",
+                    )
+            elif budget_reason:
                 sr = StepResult(index=index, kind=step.kind, text=_step_text(step),
                                 status="skipped", note=f"skipped: {budget_reason}")
                 result.steps.append(sr)
@@ -244,6 +259,7 @@ def run_test(
                 if on_step:
                     on_step(sr)
                 failed = True
+                budget_failure_recorded = True
                 continue
 
             if isinstance(step, AssertStep):
@@ -279,6 +295,11 @@ def run_test(
                     shots_dir=shots_dir,
                 )
 
+            if step.kind == "teardown" and teardown_budget_reason:
+                budget_note = f"run budget exhausted before teardown: {teardown_budget_reason}"
+                sr.note = f"{sr.note}; {budget_note}" if sr.note else budget_note
+                teardown_budget_reason = None
+
             sr.duration_s = time.monotonic() - step_started
             result.steps.append(sr)
             if sr.status in ("fail", "error"):
@@ -286,6 +307,15 @@ def run_test(
                 _record_environment_failure(adapter, sr)
             if on_step:
                 on_step(sr)
+    except Exception as exc:
+        # Unexpected observation/action/assertion failures must be recorded before
+        # final close; otherwise retain_on_failure would take the ordinary
+        # destructive path and erase the state that caused the exception.
+        _record_environment_failure_reason(
+            adapter,
+            f"run execution error: {type(exc).__name__}: {exc}",
+        )
+        raise
     finally:
         # If explicit teardown already failed to retain a Failure Capsule, do
         # not retry the retention operation or fall through to destructive
