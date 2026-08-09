@@ -1,30 +1,8 @@
 """Project configuration: ``.argus/config.yaml`` + ``ARGUS_*`` env vars.
 
-Example ``.argus/config.yaml``::
-
-    provider: ollama            # active provider
-    providers:
-      ollama:
-        model: gemma3:9b
-        base_url: http://localhost:11434
-      anthropic:
-        model: claude-sonnet-4-6
-        api_key_env: ANTHROPIC_API_KEY
-      openai:
-        model: gpt-4o
-        api_key_env: OPENAI_API_KEY
-
-    budgets:
-      time_minutes: 10          # default time budget (all providers)
-      max_tokens: null          # optional token budget (ignored for ollama)
-
-    knowledge:
-      enabled: true
-      type: local               # local | docker | external
-      embedding_model: all-MiniLM-L6-v2
-
-Environment overrides: ``ARGUS_PROVIDER``, ``ARGUS_MODEL``, ``ARGUS_API_KEY``,
-``ARGUS_BASE_URL``.
+Execution is local by default. A Windows Hyper-V Capsule can be selected with
+``execution.environment: capsule`` once a golden VHDX and in-guest Argus agent
+are configured.
 """
 
 from __future__ import annotations
@@ -67,11 +45,26 @@ providers:
   #   api_key_env: LITELLM_API_KEY
 
 budgets:
-  # Time budget in minutes (applies to every provider; the only budget
-  # used for ollama, which is local and free).
   time_minutes: 10
-  # Optional token budget for paid providers (null = no token cap).
   max_tokens: null
+
+# Execution location. "local" preserves normal host execution.
+execution:
+  environment: local            # local | capsule
+  # capsule:
+  #   provider: hyperv
+  #   image: C:\\Argus\\images\\windows-11-clean.vhdx
+  #   switch_name: Default Switch   # Internal Hyper-V switch recommended
+  #   vm_root: C:\\Argus\\capsules
+  #   memory_mb: 4096
+  #   cpu_count: 2
+  #   guest_port: 8765
+  #   guest_token_env: ARGUS_CAPSULE_GUEST_TOKEN
+  #   guest_input_mode: physical    # physical input is contained inside the VM
+  #   guest_address: null           # optional static guest address
+  #   boot_timeout_seconds: 120
+  #   agent_timeout_seconds: 60
+  #   allow_external_switch: false
 
 # Knowledge engine — persistent graph + vector learning store.
 # Requires: pip install argus-app-testing[knowledge]
@@ -95,7 +88,7 @@ class ProviderConfig:
 @dataclass
 class KnowledgeConfig:
     enabled: bool = True
-    type: str = "auto"            # "auto" | "json" | "local" | "docker" | "external"
+    type: str = "auto"
     vector_backend: str = "chroma"
     vector_url: Optional[str] = None
     persist_dir: Optional[str] = None
@@ -103,10 +96,34 @@ class KnowledgeConfig:
 
 
 @dataclass
+class CapsuleConfig:
+    provider: str = "hyperv"
+    image: str = ""
+    switch_name: str = ""
+    vm_root: str = ""
+    memory_mb: int = 4096
+    cpu_count: int = 2
+    guest_port: int = 8765
+    guest_token_env: str = "ARGUS_CAPSULE_GUEST_TOKEN"
+    guest_input_mode: str = "physical"
+    guest_address: str = ""
+    boot_timeout_seconds: float = 120.0
+    agent_timeout_seconds: float = 60.0
+    allow_external_switch: bool = False
+
+
+@dataclass
+class ExecutionConfig:
+    environment: str = "local"
+    capsule: CapsuleConfig = field(default_factory=CapsuleConfig)
+
+
+@dataclass
 class ArgusConfig:
     project_dir: Path
     provider: ProviderConfig
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     time_minutes: Optional[float] = 10.0
     max_tokens: Optional[int] = None
     raw: dict = field(default_factory=dict)
@@ -124,17 +141,60 @@ class ArgusConfig:
             tracker=tracker,
         )
 
+    def make_execution_environment(
+        self,
+        adapter_type: str,
+        environment_type: Optional[str] = None,
+    ):
+        """Build the configured local or Capsule execution environment."""
+        from argus.execution import create_execution_environment
+
+        kind = (
+            os.environ.get("ARGUS_EXECUTION_ENVIRONMENT")
+            or environment_type
+            or self.execution.environment
+            or "local"
+        )
+        if str(kind).lower().strip() != "capsule":
+            return create_execution_environment(adapter_type, environment_type=str(kind))
+
+        cc = self.execution.capsule
+        token_env = os.environ.get("ARGUS_CAPSULE_GUEST_TOKEN_ENV") or cc.guest_token_env
+        capsule_config = {
+            "provider": os.environ.get("ARGUS_CAPSULE_PROVIDER") or cc.provider,
+            "image": os.environ.get("ARGUS_CAPSULE_IMAGE") or cc.image,
+            "switch_name": os.environ.get("ARGUS_CAPSULE_SWITCH") or cc.switch_name,
+            "vm_root": os.environ.get("ARGUS_CAPSULE_VM_ROOT") or cc.vm_root,
+            "memory_mb": _env_int("ARGUS_CAPSULE_MEMORY_MB", cc.memory_mb),
+            "cpu_count": _env_int("ARGUS_CAPSULE_CPU_COUNT", cc.cpu_count),
+            "guest_port": _env_int("ARGUS_CAPSULE_GUEST_PORT", cc.guest_port),
+            "guest_token": os.environ.get(token_env, ""),
+            "guest_input_mode": (
+                os.environ.get("ARGUS_CAPSULE_GUEST_INPUT_MODE") or cc.guest_input_mode
+            ),
+            "guest_address": os.environ.get("ARGUS_CAPSULE_GUEST_ADDRESS") or cc.guest_address,
+            "boot_timeout_seconds": _env_float(
+                "ARGUS_CAPSULE_BOOT_TIMEOUT_SECONDS", cc.boot_timeout_seconds
+            ),
+            "agent_timeout_seconds": _env_float(
+                "ARGUS_CAPSULE_AGENT_TIMEOUT_SECONDS", cc.agent_timeout_seconds
+            ),
+            "allow_external_switch": _env_bool(
+                "ARGUS_CAPSULE_ALLOW_EXTERNAL_SWITCH", cc.allow_external_switch
+            ),
+        }
+        return create_execution_environment(
+            adapter_type,
+            environment_type="capsule",
+            capsule_config=capsule_config,
+        )
+
     def make_budget(
         self,
         tracker: TokenTracker,
         time_minutes: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> Budget:
-        """Build the session budget honoring the provider rules:
-
-        * ollama  → time budget only (token caps are ignored)
-        * others  → time and/or token budget, whichever the user set
-        """
         minutes = time_minutes if time_minutes is not None else self.time_minutes
         tokens = max_tokens if max_tokens is not None else self.max_tokens
         if self.provider.type == "ollama":
@@ -146,7 +206,6 @@ class ArgusConfig:
         )
 
     def make_knowledge_store(self):
-        """Return a KnowledgeStore (or None if disabled / unavailable)."""
         from argus.knowledge import create_knowledge_store
         kc = self.knowledge
         persist = Path(kc.persist_dir) if kc.persist_dir else self.argus_dir / "knowledge"
@@ -162,8 +221,6 @@ class ArgusConfig:
 
 
 def _resolve_api_key(entry: dict) -> str:
-    """api_key wins; otherwise read the env var named by api_key_env;
-    ARGUS_API_KEY is the universal override."""
     if os.environ.get("ARGUS_API_KEY"):
         return os.environ["ARGUS_API_KEY"]
     if entry.get("api_key"):
@@ -172,6 +229,28 @@ def _resolve_api_key(entry: dict) -> str:
     if env_name:
         return os.environ.get(env_name, "")
     return ""
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    return int(value) if value not in {None, ""} else int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    return float(value) if value not in {None, ""} else float(default)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true/false")
 
 
 def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
@@ -202,6 +281,33 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
         embedding_model=str(kc_raw.get("embedding_model", "all-MiniLM-L6-v2")),
     )
 
+    execution_raw = raw.get("execution") or {}
+    capsule_raw = execution_raw.get("capsule") or {}
+    execution = ExecutionConfig(
+        environment=str(execution_raw.get("environment") or "local"),
+        capsule=CapsuleConfig(
+            provider=str(capsule_raw.get("provider") or "hyperv"),
+            image=str(capsule_raw.get("image") or ""),
+            switch_name=str(capsule_raw.get("switch_name") or ""),
+            vm_root=str(capsule_raw.get("vm_root") or ""),
+            memory_mb=int(capsule_raw.get("memory_mb") or 4096),
+            cpu_count=int(capsule_raw.get("cpu_count") or 2),
+            guest_port=int(capsule_raw.get("guest_port") or 8765),
+            guest_token_env=str(
+                capsule_raw.get("guest_token_env") or "ARGUS_CAPSULE_GUEST_TOKEN"
+            ),
+            guest_input_mode=str(capsule_raw.get("guest_input_mode") or "physical"),
+            guest_address=str(capsule_raw.get("guest_address") or ""),
+            boot_timeout_seconds=float(
+                capsule_raw.get("boot_timeout_seconds") or 120.0
+            ),
+            agent_timeout_seconds=float(
+                capsule_raw.get("agent_timeout_seconds") or 60.0
+            ),
+            allow_external_switch=bool(capsule_raw.get("allow_external_switch", False)),
+        ),
+    )
+
     return ArgusConfig(
         project_dir=project_dir,
         provider=ProviderConfig(
@@ -211,6 +317,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             base_url=base_url,
         ),
         knowledge=knowledge,
+        execution=execution,
         time_minutes=float(time_minutes) if time_minutes else None,
         max_tokens=int(max_tokens) if max_tokens else None,
         raw=raw,
@@ -227,7 +334,6 @@ def _default_model(provider_type: str) -> str:
 
 
 def init_project(project_dir: Optional[Path] = None) -> Path:
-    """Create ``.argus/`` with a starter config and example test. Idempotent."""
     project_dir = (project_dir or Path.cwd()).resolve()
     argus_dir = project_dir / ".argus"
     argus_dir.mkdir(parents=True, exist_ok=True)
