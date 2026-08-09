@@ -10,7 +10,8 @@ Each Argus session:
 1. validates the configured Hyper-V switch and golden VHDX;
 2. creates a per-session **differencing VHDX** whose parent is the golden image;
 3. creates and boots a Generation-2 VM;
-4. discovers the guest IPv4 address (or uses a configured static address);
+4. discovers the guest IPv4 address and attests any configured address against
+   the addresses Hyper-V reports for that exact VM;
 5. waits for the Argus guest agent;
 6. launches/observes/drives the target through the guest agent;
 7. destroys the VM and session disk when the session closes or launch fails.
@@ -40,9 +41,10 @@ For GUI testing, configure a dedicated **non-administrator** test user to log in
 automatically or otherwise reach an interactive unlocked desktop. Disable guest
 sleep and screen locking for that disposable test account.
 
-Hyper-V **Key-Value Pair Exchange** should remain enabled if Argus is expected
-to discover the guest IP automatically. You may instead configure a fixed
-`guest_address`.
+Hyper-V **Key-Value Pair Exchange** should remain enabled because PR3 obtains the
+control endpoint from `Get-VMNetworkAdapter`. If `guest_address` is configured,
+it is only a preferred candidate: Argus refuses it unless Hyper-V reports that
+exact IPv4 address for the newly created VM.
 
 ## 2. Configure the guest-agent credential safely
 
@@ -93,7 +95,7 @@ resulting VHDX as the golden parent and do not modify it while Capsules use it.
 
 PR3's guest-agent protocol uses authenticated **HTTP**, not encrypted transport.
 Therefore Argus accepts only a host-reachable **Internal** Hyper-V switch for
-Capsule control traffic. Hyper-V's Default Switch is normally suitable when it
+Capsule control traffic. Hyper-V's Default Switch is suitable only when it
 reports as Internal on the host.
 
 Argus rejects:
@@ -113,11 +115,17 @@ scheduled for a later isolation-policy PR.
 
 ## 4. Configure Argus on the host
 
-Set the matching token in the **host** environment before launching Argus:
+Set the matching token in the dedicated **host** environment variable before
+launching Argus:
 
 ```powershell
 $env:ARGUS_CAPSULE_GUEST_TOKEN = "replace-with-a-long-random-secret"
 ```
+
+The project configuration cannot select another host environment variable for
+this credential. In particular, `.argus/config.yaml` cannot ask Argus to read
+`AWS_*`, `GITHUB_TOKEN`, or any other arbitrary host secret. The only accepted
+credential source in PR3 is `ARGUS_CAPSULE_GUEST_TOKEN`.
 
 Then configure `.argus/config.yaml`:
 
@@ -132,12 +140,16 @@ execution:
     memory_mb: 4096
     cpu_count: 2
     guest_port: 8765
-    guest_token_env: ARGUS_CAPSULE_GUEST_TOKEN
     guest_input_mode: physical
+    # guest_address: 172.24.16.10  # optional; must be reported by Hyper-V for this VM
     boot_timeout_seconds: 120
     agent_timeout_seconds: 60
     allow_external_switch: false
 ```
+
+A legacy `guest_token_env` entry is accepted only when its value is exactly
+`ARGUS_CAPSULE_GUEST_TOKEN`; any attempt to select another host variable fails
+configuration loading before a Capsule can be created.
 
 `allow_external_switch` is parsed strictly: quoted values such as `"false"` are
 normalized to false rather than becoming truthy through Python's normal string
@@ -160,20 +172,33 @@ The host supports these overrides:
 - `ARGUS_CAPSULE_MEMORY_MB`
 - `ARGUS_CAPSULE_CPU_COUNT`
 - `ARGUS_CAPSULE_GUEST_PORT`
-- `ARGUS_CAPSULE_GUEST_TOKEN_ENV`
 - `ARGUS_CAPSULE_GUEST_INPUT_MODE`
-- `ARGUS_CAPSULE_GUEST_ADDRESS`
+- `ARGUS_CAPSULE_GUEST_ADDRESS` (still provider-attested before use)
 - `ARGUS_CAPSULE_BOOT_TIMEOUT_SECONDS`
 - `ARGUS_CAPSULE_AGENT_TIMEOUT_SECONDS`
 - `ARGUS_CAPSULE_ALLOW_EXTERNAL_SWITCH` (must remain false in PR3)
 
+The guest control token itself is read directly from
+`ARGUS_CAPSULE_GUEST_TOKEN`; there is no indirection variable that chooses a
+second environment-variable name.
+
+## Control-endpoint attestation
+
+Project configuration is not trusted to choose the destination that receives a
+bearer token. Before `GuestAgentClient` is constructed, `HyperVProvider` queries
+`Get-VMNetworkAdapter -VMName <session VM>` and obtains the IPv4 addresses
+reported for that exact VM. If a `guest_address` candidate is supplied, it must
+match one of those addresses exactly. A mismatched or unrelated address aborts
+the Capsule and triggers normal VM cleanup **before any HTTP request or bearer
+credential is sent**.
+
 ## Cleanup and recovery
 
 Argus removes the registered VM before deleting its per-session storage. If VM
-deregistration fails, Argus now **preserves the session directory and child
-VHDX** and reports their path in the cleanup error. This avoids turning a
-recoverable registered/orphaned VM into one whose backing files were already
-deleted. Storage is removed only after VM removal succeeds.
+deregistration fails, Argus **preserves the session directory and child VHDX**
+and reports their path in the cleanup error. This avoids turning a recoverable
+registered/orphaned VM into one whose backing files were already deleted.
+Storage is removed only after VM removal succeeds.
 
 ## Safety model
 
@@ -185,6 +210,8 @@ Agent / Runner / Roam
 CapsuleExecutionEnvironment
         ↓
 host PolicyAdapter
+        ↓
+provider-attested VM endpoint
         ↓
 authenticated guest-agent request
         ↓
