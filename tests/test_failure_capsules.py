@@ -5,6 +5,7 @@ from pathlib import Path
 
 from argus.adapters.base import Observation
 from argus.capsule.base import (
+    CapsuleError,
     CapsuleHandle,
     CapsuleProvider,
     CapsuleRequest,
@@ -62,6 +63,12 @@ class RetentionProvider(CapsuleProvider):
         self.destroyed.append(handle)
 
 
+class FailingRetentionProvider(RetentionProvider):
+    def retain_failure(self, handle: CapsuleHandle, reason: str) -> FailureCapsule:
+        self.retained.append((handle, reason))
+        raise CapsuleError("manifest persistence failed")
+
+
 class RetentionClient:
     def __init__(self):
         self.ready = False
@@ -89,8 +96,13 @@ class RetentionClient:
         self.closed += 1
 
 
-def _environment(tmp_path: Path, *, retain_on_failure: bool):
-    provider = RetentionProvider(tmp_path / "capsule")
+class ExhaustedBudget:
+    def exhausted(self):
+        return "time budget exhausted"
+
+
+def _environment(tmp_path: Path, *, retain_on_failure: bool, provider=None):
+    provider = provider or RetentionProvider(tmp_path / "capsule")
     client = RetentionClient()
     settings = CapsuleSettings(
         provider="hyperv",
@@ -135,6 +147,7 @@ teardown:
     assert result.failure_capsule["failure_id"] == "failure123"
     assert result.failure_capsule["vm_state"] == "Saved"
     assert "process_running" in result.failure_capsule["reason"]
+    assert result.failure_capsule_error is None
 
 
 def test_passing_run_still_destroys_ephemeral_capsule(tmp_path):
@@ -158,6 +171,7 @@ steps:
     assert len(provider.destroyed) == 1
     assert client.closed == 1
     assert result.failure_capsule is None
+    assert result.failure_capsule_error is None
 
 
 def test_disabled_retention_keeps_existing_cleanup_behavior(tmp_path):
@@ -172,15 +186,83 @@ def test_disabled_retention_keeps_existing_cleanup_behavior(tmp_path):
     assert environment.failure_capsule() is None
 
 
-def test_hyperv_retention_saves_vm_and_writes_manifest(tmp_path):
+def test_retention_failure_is_reported_with_recovery_coordinates(tmp_path):
+    provider = FailingRetentionProvider(tmp_path / "capsule")
+    environment, provider, client = _environment(
+        tmp_path,
+        retain_on_failure=True,
+        provider=provider,
+    )
+    spec = parse_spec(
+        """\
+name: retention failure is visible
+target:
+  adapter: desktop-gui
+  launch: fake.exe
+steps:
+  - assert:
+      process_running: false
+"""
+    )
+
+    result = run_test(spec, FakeProvider([]), environment)
+
+    # Retention diagnostics must not change the original test outcome.
+    assert result.status == "fail"
+    assert result.failure_capsule is None
+    assert result.failure_capsule_error is not None
+    assert result.failure_capsule_error["status"] == "retention_failed"
+    assert result.failure_capsule_error["vm_name"] == "Argus-failure-test"
+    assert result.failure_capsule_error["root_dir"] == str(provider.root)
+    assert "manifest persistence failed" in result.failure_capsule_error["error"]
+    assert provider.destroyed == []
+    assert client.closed == 0
+
+    result_path = result.save(tmp_path)
+    report = (result_path.parent / "report.md").read_text(encoding="utf-8")
+    assert "Failure Capsule retention error" in report
+    assert "Argus-failure-test" in report
+    assert str(provider.root) in report
+    assert "preserved" in report
+
+
+def test_budget_exhaustion_records_failure_and_retains_before_teardown(tmp_path):
+    environment, provider, client = _environment(tmp_path, retain_on_failure=True)
+    spec = parse_spec(
+        """\
+name: retain budget failure
+target:
+  adapter: desktop-gui
+  launch: fake.exe
+steps:
+  - assert:
+      process_running: true
+teardown:
+  - close
+"""
+    )
+
+    result = run_test(spec, FakeProvider([]), environment, budget=ExhaustedBudget())
+
+    assert result.status == "fail"
+    assert result.steps[0].status == "skipped"
+    assert "time budget exhausted" in (result.steps[0].note or "")
+    assert len(provider.retained) == 1
+    assert "time budget exhausted" in provider.retained[0][1]
+    assert provider.destroyed == []
+    assert client.closed == 0
+    assert result.failure_capsule is not None
+
+
+def test_hyperv_retention_powers_off_without_persisting_guest_ram(tmp_path):
     root = tmp_path / "session"
     root.mkdir()
     calls = []
 
     def runner(script: str, timeout: float) -> str:
         calls.append(script)
-        if "Get-VM" in script and "Save-VM" in script:
-            return "Saved"
+        if "Get-VM" in script and "Stop-VM" in script:
+            return "Off"
         return ""
 
     provider = HyperVProvider(runner=runner)
@@ -196,11 +278,13 @@ def test_hyperv_retention_saves_vm_and_writes_manifest(tmp_path):
     retained = provider.retain_failure(handle, "assertion failed")
 
     assert retained.failure_id == "retain456"
-    assert retained.vm_state == "Saved"
-    assert any("Save-VM" in call for call in calls)
+    assert retained.vm_state == "Off"
+    assert any("Stop-VM" in call and "-TurnOff" in call for call in calls)
+    assert not any("Save-VM" in call for call in calls)
     manifest = json.loads((root / "failure-capsule.json").read_text(encoding="utf-8"))
     assert manifest["vm_name"] == "Argus-retain456"
     assert manifest["reason"] == "assertion failed"
+    assert manifest["vm_state"] == "Off"
 
 
 def test_retain_on_failure_uses_strict_boolean_parsing():
