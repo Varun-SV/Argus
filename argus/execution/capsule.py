@@ -131,18 +131,27 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         return None
 
     def launch(self, target: str) -> None:
+        # Preparation failures remain PR3-style infrastructure failures: prepare()
+        # owns rollback because no valid guest test state necessarily exists yet.
+        if not self._prepared:
+            self.prepare()
+        if self._adapter is None:
+            raise ExecutionEnvironmentError("Capsule guest adapter was not prepared")
+
         try:
-            if not self._prepared:
-                self.prepare()
-            if self._adapter is None:
-                raise ExecutionEnvironmentError("Capsule guest adapter was not prepared")
             self._adapter.launch(target)
         except Exception as launch_exc:
+            # Once preparation has succeeded, a target-launch failure is part of
+            # the test state. Retain it when explicitly requested instead of
+            # destroying the prepared Capsule before the runner can report it.
+            if self.settings.retain_on_failure:
+                self.record_failure(f"target launch failed: {launch_exc}")
             try:
                 self.close()
             except Exception as cleanup_exc:
+                action = "retention" if self.settings.retain_on_failure else "rollback"
                 raise ExecutionEnvironmentError(
-                    "Capsule target launch failed and rollback also failed: "
+                    f"Capsule target launch failed and {action} also failed: "
                     f"launch={launch_exc}; cleanup={cleanup_exc}"
                 ) from launch_exc
             raise
