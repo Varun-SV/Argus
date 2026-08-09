@@ -42,6 +42,16 @@ class ExecutionEnvironment(Adapter, ABC):
     Keeping that surface lets PR2 insert the execution-location boundary without
     a broad engine rewrite, while PR3 can replace the local implementation with
     a Capsule/guest-agent backed environment.
+
+    Lifecycle contract
+    ------------------
+    The environment owns every resource acquired by :meth:`prepare`. A public
+    launch path must be exception-safe: if preparation succeeds (even only
+    partially) but target launch fails, the environment must release those
+    resources before propagating the failure. Implementations whose ``prepare``
+    method can be called directly must also roll back any partial allocation
+    before raising. This prevents future VM/disk/network allocations from being
+    leaked merely because a guest target failed to start.
     """
 
     environment_type: str = "base"
@@ -53,6 +63,12 @@ class ExecutionEnvironment(Adapter, ABC):
 
         Local execution needs no expensive setup. VM-backed implementations can
         create/restore a guest here before the target is launched.
+
+        Implementations must make direct calls exception-safe: if preparation
+        raises after partially allocating resources, it must release those
+        partial resources before propagating the exception. The normal
+        :meth:`launch` path should additionally roll back the whole environment
+        when either preparation or target launch fails.
         """
 
     def info(self) -> ExecutionEnvironmentInfo:
@@ -85,9 +101,26 @@ class LocalExecutionEnvironment(ExecutionEnvironment):
         self._prepared = True
 
     def launch(self, target: str) -> None:
-        if not self._prepared:
-            self.prepare()
-        self.adapter.launch(target)
+        """Prepare and launch atomically from the caller's point of view.
+
+        Runner/roam historically return immediately when ``launch`` raises, so
+        the execution environment cannot rely on a later caller ``finally`` to
+        release resources. Roll back here instead. This is cheap for ``local``
+        today and establishes the contract Capsule/VM environments need in PR3.
+        """
+        try:
+            if not self._prepared:
+                self.prepare()
+            self.adapter.launch(target)
+        except Exception as launch_exc:
+            try:
+                self.close()
+            except Exception as cleanup_exc:
+                raise ExecutionEnvironmentError(
+                    "environment preparation/target launch failed and rollback "
+                    f"also failed: launch={launch_exc}; cleanup={cleanup_exc}"
+                ) from launch_exc
+            raise
 
     def observe(self, include_screenshot: bool = True) -> Observation:
         obs = self.adapter.observe(include_screenshot=include_screenshot)
