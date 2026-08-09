@@ -131,6 +131,35 @@ def _execution_fields(adapter: Adapter) -> dict:
     }
 
 
+def _record_environment_failure(adapter: Adapter, step: StepResult) -> None:
+    """Notify execution environments before teardown can erase failure state."""
+    hook = getattr(adapter, "record_failure", None)
+    if not callable(hook):
+        return
+    reason = f"step {step.index + 1} {step.status}: {step.text}"
+    if step.note:
+        reason += f" — {step.note}"
+    elif step.actual:
+        reason += f" — {step.actual}"
+    try:
+        hook(reason)
+    except Exception:
+        # Failure retention is diagnostic. A test result must never be converted
+        # into a different outcome merely because the optional hook failed.
+        pass
+
+
+def _retained_failure(adapter: Adapter):
+    hook = getattr(adapter, "failure_capsule", None)
+    if not callable(hook):
+        return None
+    try:
+        value = hook()
+    except Exception:
+        return None
+    return value if isinstance(value, dict) and value else None
+
+
 def run_test(
     spec: TestSpec,
     provider: LLMProvider,
@@ -220,6 +249,7 @@ def run_test(
             result.steps.append(sr)
             if sr.status in ("fail", "error"):
                 failed = True
+                _record_environment_failure(adapter, sr)
             if on_step:
                 on_step(sr)
     finally:
@@ -228,6 +258,7 @@ def run_test(
         except Exception:
             pass
 
+    result.failure_capsule = _retained_failure(adapter)
     result.duration_s = time.monotonic() - started
     if any(s.status == "error" for s in result.steps):
         result.status = "error"
