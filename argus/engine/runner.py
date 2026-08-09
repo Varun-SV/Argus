@@ -160,6 +160,17 @@ def _retained_failure(adapter: Adapter):
     return value if isinstance(value, dict) and value else None
 
 
+def _retention_failure(adapter: Adapter):
+    hook = getattr(adapter, "failure_capsule_error", None)
+    if not callable(hook):
+        return None
+    try:
+        value = hook()
+    except Exception:
+        return None
+    return value if isinstance(value, dict) and value else None
+
+
 def run_test(
     spec: TestSpec,
     provider: LLMProvider,
@@ -215,11 +226,15 @@ def run_test(
                     on_step(sr)
                 continue
 
-            budget_reason = budget.exhausted() if budget else None
+            # Teardown must remain executable even after the run budget is
+            # exhausted. A budget failure is recorded before teardown so a
+            # retain-on-failure environment can preserve the Capsule first.
+            budget_reason = budget.exhausted() if budget and step.kind != "teardown" else None
             if budget_reason:
                 sr = StepResult(index=index, kind=step.kind, text=_step_text(step),
                                 status="skipped", note=f"skipped: {budget_reason}")
                 result.steps.append(sr)
+                _record_environment_failure(adapter, sr)
                 if on_step:
                     on_step(sr)
                 failed = True
@@ -256,9 +271,12 @@ def run_test(
         try:
             adapter.close()
         except Exception:
+            # Preserve original test semantics, but collect structured retention
+            # recovery metadata below instead of silently losing that failure.
             pass
 
     result.failure_capsule = _retained_failure(adapter)
+    result.failure_capsule_error = _retention_failure(adapter)
     result.duration_s = time.monotonic() - started
     if any(s.status == "error" for s in result.steps):
         result.status = "error"
