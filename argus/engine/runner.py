@@ -310,7 +310,8 @@ def run_test(
     except Exception as exc:
         # Unexpected observation/action/assertion failures must be recorded before
         # final close; otherwise retain_on_failure would take the ordinary
-        # destructive path and erase the state that caused the exception.
+        # destructive path and erase the state that caused the exception. The
+        # original exception is then re-raised unchanged after the finally block.
         _record_environment_failure_reason(
             adapter,
             f"run execution error: {type(exc).__name__}: {exc}",
