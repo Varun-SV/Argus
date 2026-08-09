@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from argus.adapters.base import Observation
 from argus.capsule.base import (
     CapsuleError,
@@ -251,8 +249,9 @@ steps:
 
 
 def test_unexpected_execution_exception_retains_before_final_close(tmp_path):
-    # Regression for review P1: no StepResult exists when observe() raises, so
-    # the runner itself must arm retention before its final close executes.
+    # Regression for review P1/P2: no StepResult exists when observe() raises,
+    # so the runner must arm retention before final close and return the retained
+    # metadata through RunResult rather than throwing past the reporting layer.
     client = FailingObserveClient()
     environment, provider, client = _environment(
         tmp_path,
@@ -271,17 +270,18 @@ steps:
 """
     )
 
-    with pytest.raises(CapsuleError, match="guest observation failed"):
-        run_test(spec, FakeProvider([]), environment)
+    result = run_test(spec, FakeProvider([]), environment)
 
+    assert result.status == "error"
+    assert "CapsuleError: guest observation failed" in (result.error or "")
     assert len(provider.retained) == 1
     assert "run execution error" in provider.retained[0][1]
     assert "guest observation failed" in provider.retained[0][1]
     assert provider.destroyed == []
     assert client.closed == 0
-    retained = environment.failure_capsule()
-    assert retained is not None
-    assert retained["failure_id"] == "failure123"
+    assert result.failure_capsule is not None
+    assert result.failure_capsule["failure_id"] == "failure123"
+    assert result.failure_capsule_error is None
 
 
 def test_passing_run_still_destroys_ephemeral_capsule(tmp_path):
