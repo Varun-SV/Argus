@@ -280,7 +280,15 @@ class HyperVProvider(CapsuleProvider):
         )
 
     def retain_failure(self, handle: CapsuleHandle, reason: str) -> FailureCapsule:
-        """Save VM runtime state and retain its session storage for reproduction."""
+        """Power off a failed VM and retain its writable disk/configuration.
+
+        PR4 intentionally does not use ``Save-VM``. The guest agent still uses
+        the shared PR3 bootstrap/control token while the VM is live, and saving
+        guest RAM would make that cross-session credential durable at rest.
+        Until Argus has per-session host-bound credentials, failure retention is
+        disk/configuration-only: power off the VM without serializing RAM, then
+        keep the registered VM and session differencing VHDX for reproduction.
+        """
         if handle.provider != self.provider_name:
             raise CapsuleError(
                 f"HyperVProvider cannot retain handle owned by {handle.provider!r}"
@@ -291,7 +299,7 @@ class HyperVProvider(CapsuleProvider):
 
         vm_state = self._run_ps(
             "$vm=Get-VM -Name " + _ps_quote(handle.vm_name) + " -ErrorAction Stop; "
-            "if ($vm.State -eq 'Running') { Save-VM -VM $vm -ErrorAction Stop | Out-Null; "
+            "if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force -ErrorAction Stop; "
             "$vm=Get-VM -Name $vm.Name -ErrorAction Stop }; $vm.State.ToString()",
             60,
         ).strip().splitlines()[-1]
@@ -304,7 +312,7 @@ class HyperVProvider(CapsuleProvider):
             root_dir=str(root),
             reason=(reason or "test failure")[:2000],
             retained_at=retained_at,
-            vm_state=vm_state or "Saved",
+            vm_state=vm_state or "Off",
         )
         manifest = root / "failure-capsule.json"
         manifest.write_text(
