@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from argus.adapters.base import Observation
 from argus.capsule.base import (
     CapsuleError,
@@ -102,8 +104,24 @@ class FailingLaunchClient(RetentionClient):
         raise CapsuleError("guest application launch failed")
 
 
+class FailingObserveClient(RetentionClient):
+    def observe(self, include_screenshot: bool = True) -> Observation:
+        raise CapsuleError("guest observation failed")
+
+
 class ExhaustedBudget:
     def exhausted(self):
+        return "time budget exhausted"
+
+
+class ExhaustsOnTeardownBudget:
+    def __init__(self):
+        self.calls = 0
+
+    def exhausted(self):
+        self.calls += 1
+        if self.calls == 1:
+            return None
         return "time budget exhausted"
 
 
@@ -232,6 +250,38 @@ steps:
     assert "manifest persistence failed" in result.failure_capsule_error["error"]
 
 
+def test_unexpected_execution_exception_retains_before_final_close(tmp_path):
+    client = FailingObserveClient()
+    environment, provider, client = _environment(
+        tmp_path,
+        retain_on_failure=True,
+        client=client,
+    )
+    spec = parse_spec(
+        """\
+name: retain unexpected observation failure
+target:
+  adapter: desktop-gui
+  launch: fake.exe
+steps:
+  - assert:
+      process_running: true
+"""
+    )
+
+    with pytest.raises(CapsuleError, match="guest observation failed"):
+        run_test(spec, FakeProvider([]), environment)
+
+    assert len(provider.retained) == 1
+    assert "run execution error" in provider.retained[0][1]
+    assert "guest observation failed" in provider.retained[0][1]
+    assert provider.destroyed == []
+    assert client.closed == 0
+    retained = environment.failure_capsule()
+    assert retained is not None
+    assert retained["failure_id"] == "failure123"
+
+
 def test_passing_run_still_destroys_ephemeral_capsule(tmp_path):
     environment, provider, client = _environment(tmp_path, retain_on_failure=True)
     spec = parse_spec(
@@ -335,6 +385,37 @@ teardown:
     assert "time budget exhausted" in (result.steps[0].note or "")
     assert len(provider.retained) == 1
     assert "time budget exhausted" in provider.retained[0][1]
+    assert provider.destroyed == []
+    assert client.closed == 0
+    assert result.failure_capsule is not None
+
+
+def test_budget_exhaustion_detected_when_entering_teardown(tmp_path):
+    environment, provider, client = _environment(tmp_path, retain_on_failure=True)
+    budget = ExhaustsOnTeardownBudget()
+    spec = parse_spec(
+        """\
+name: terminal budget failure
+target:
+  adapter: desktop-gui
+  launch: fake.exe
+steps:
+  - assert:
+      process_running: true
+teardown:
+  - close
+"""
+    )
+
+    result = run_test(spec, FakeProvider([]), environment, budget=budget)
+
+    assert budget.calls >= 2
+    assert result.status == "fail"
+    assert result.steps[0].status == "pass"
+    assert result.steps[1].status == "pass"
+    assert "time budget exhausted" in (result.steps[1].note or "")
+    assert len(provider.retained) == 1
+    assert "run budget exhausted before teardown" in provider.retained[0][1]
     assert provider.destroyed == []
     assert client.closed == 0
     assert result.failure_capsule is not None
