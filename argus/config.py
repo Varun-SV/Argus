@@ -17,6 +17,8 @@ import yaml
 from argus.providers import LLMProvider, create_provider
 from argus.tokens import Budget, TokenTracker
 
+CAPSULE_GUEST_TOKEN_ENV = "ARGUS_CAPSULE_GUEST_TOKEN"
+
 DEFAULT_CONFIG = """\
 # Argus configuration
 # Active provider: ollama | anthropic | openai | azure | gemini | litellm
@@ -59,9 +61,8 @@ execution:
   #   memory_mb: 4096
   #   cpu_count: 2
   #   guest_port: 8765
-  #   guest_token_env: ARGUS_CAPSULE_GUEST_TOKEN
   #   guest_input_mode: physical    # physical input is contained inside the VM
-  #   guest_address: null           # optional static guest address
+  #   guest_address: null           # optional candidate; Hyper-V must attest it belongs to the VM
   #   boot_timeout_seconds: 120
   #   agent_timeout_seconds: 60
   #   allow_external_switch: false  # reserved; true is rejected until transport is confidential
@@ -104,7 +105,7 @@ class CapsuleConfig:
     memory_mb: int = 4096
     cpu_count: int = 2
     guest_port: int = 8765
-    guest_token_env: str = "ARGUS_CAPSULE_GUEST_TOKEN"
+    guest_token_env: str = CAPSULE_GUEST_TOKEN_ENV
     guest_input_mode: str = "physical"
     guest_address: str = ""
     boot_timeout_seconds: float = 120.0
@@ -146,7 +147,12 @@ class ArgusConfig:
         adapter_type: str,
         environment_type: Optional[str] = None,
     ):
-        """Build the configured local or Capsule execution environment."""
+        """Build the configured local or Capsule execution environment.
+
+        Capsule control credentials always come from the dedicated host variable
+        ``ARGUS_CAPSULE_GUEST_TOKEN``. Project configuration is intentionally not
+        allowed to select an arbitrary host environment variable.
+        """
         from argus.execution import create_execution_environment
 
         kind = (
@@ -159,7 +165,11 @@ class ArgusConfig:
             return create_execution_environment(adapter_type, environment_type=str(kind))
 
         cc = self.execution.capsule
-        token_env = os.environ.get("ARGUS_CAPSULE_GUEST_TOKEN_ENV") or cc.guest_token_env
+        if cc.guest_token_env != CAPSULE_GUEST_TOKEN_ENV:
+            raise ValueError(
+                "execution.capsule.guest_token_env cannot select a host secret; "
+                f"Capsule credentials are read only from {CAPSULE_GUEST_TOKEN_ENV}"
+            )
         capsule_config = {
             "provider": os.environ.get("ARGUS_CAPSULE_PROVIDER") or cc.provider,
             "image": os.environ.get("ARGUS_CAPSULE_IMAGE") or cc.image,
@@ -168,7 +178,7 @@ class ArgusConfig:
             "memory_mb": _env_int("ARGUS_CAPSULE_MEMORY_MB", cc.memory_mb),
             "cpu_count": _env_int("ARGUS_CAPSULE_CPU_COUNT", cc.cpu_count),
             "guest_port": _env_int("ARGUS_CAPSULE_GUEST_PORT", cc.guest_port),
-            "guest_token": os.environ.get(token_env, ""),
+            "guest_token": os.environ.get(CAPSULE_GUEST_TOKEN_ENV, ""),
             "guest_input_mode": (
                 os.environ.get("ARGUS_CAPSULE_GUEST_INPUT_MODE") or cc.guest_input_mode
             ),
@@ -290,6 +300,14 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
 
     execution_raw = raw.get("execution") or {}
     capsule_raw = execution_raw.get("capsule") or {}
+    configured_token_env = str(
+        capsule_raw.get("guest_token_env") or CAPSULE_GUEST_TOKEN_ENV
+    )
+    if configured_token_env != CAPSULE_GUEST_TOKEN_ENV:
+        raise ValueError(
+            "execution.capsule.guest_token_env cannot select arbitrary host "
+            f"environment variables; only {CAPSULE_GUEST_TOKEN_ENV} is allowed"
+        )
     execution = ExecutionConfig(
         environment=str(execution_raw.get("environment") or "local"),
         capsule=CapsuleConfig(
@@ -300,9 +318,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             memory_mb=int(capsule_raw.get("memory_mb") or 4096),
             cpu_count=int(capsule_raw.get("cpu_count") or 2),
             guest_port=int(capsule_raw.get("guest_port") or 8765),
-            guest_token_env=str(
-                capsule_raw.get("guest_token_env") or "ARGUS_CAPSULE_GUEST_TOKEN"
-            ),
+            guest_token_env=CAPSULE_GUEST_TOKEN_ENV,
             guest_input_mode=str(capsule_raw.get("guest_input_mode") or "physical"),
             guest_address=str(capsule_raw.get("guest_address") or ""),
             boot_timeout_seconds=float(
