@@ -15,8 +15,8 @@ Each Argus session:
 5. waits for the Argus guest agent;
 6. launches/observes/drives the target through the guest agent;
 7. normally destroys the VM and session disk when the session closes;
-8. optionally saves and retains the VM on a test failure when
-   `retain_on_failure: true` is configured.
+8. optionally powers off and retains the failed VM's writable disk/configuration
+   when `retain_on_failure: true` is configured.
 
 The golden image is never booted directly by Argus.
 
@@ -84,6 +84,20 @@ environment variable at agent startup. The agent immediately removes that
 variable from `os.environ` before any adapter or target can be created. Do not
 use a User- or Machine-persistent environment variable for this purpose.
 
+### Retained-memory credential boundary
+
+The current guest agent still keeps the authenticated control token in live
+process memory while a Capsule is running. For that reason PR4 deliberately
+**does not use Hyper-V `Save-VM` for Failure Capsules**. Saving guest RAM would
+serialize that shared cross-session credential to disk and make compromise of a
+retained Capsule relevant to other sessions.
+
+Until Argus has per-session host-bound guest credentials, retention is therefore
+**disk/configuration-only**: Hyper-V powers the failed VM off without saving RAM
+and preserves the registered VM plus its differencing VHDX. A later transport/
+credential phase can safely reintroduce memory-preserving checkpoints once one
+Capsule's retained memory cannot reveal credentials usable by another Capsule.
+
 ## 3. Use an Internal Hyper-V switch only
 
 The guest-agent protocol uses authenticated **HTTP**, not encrypted transport.
@@ -135,11 +149,16 @@ value is exactly `ARGUS_CAPSULE_GUEST_TOKEN`.
 successful tests both keep the disposable behavior from PR3: the VM is removed
 and the per-session differencing disk is deleted during teardown.
 
-When `retain_on_failure: true` is enabled, the runner records the first failed or
-error step **before teardown**. When the Capsule closes, Argus asks Hyper-V to
-save the VM before it calls the guest-session close path. This preserves the
-application and guest runtime state that produced the failure instead of first
-closing the target and then attempting to reconstruct it.
+When `retain_on_failure: true` is enabled, the runner records the first condition
+that makes the run fail **before teardown**. That includes normal failed/error
+steps and budget exhaustion. Teardown steps are still permitted to run after the
+budget is exhausted so the environment has a deterministic close point.
+
+When the Capsule closes after a recorded failure, Argus powers the VM off with
+`Stop-VM -TurnOff` and keeps the registered VM plus the per-session differencing
+VHDX. It does not serialize guest RAM. This preserves writable filesystem and VM
+configuration state while avoiding durable storage of the shared guest-control
+credential.
 
 A retained session stays registered in Hyper-V and its session directory stays
 under `vm_root/<session-id>`. Argus writes:
@@ -152,9 +171,17 @@ The manifest contains the failure/session id, Hyper-V VM name, retained state,
 reason, timestamp, provider, and storage path. The same metadata is copied into
 the normal Argus `RunResult` JSON and Markdown report under `failure_capsule`.
 
-Retention is intentionally conservative: if saving the VM fails, Argus does
-**not** fall through to destructive guest teardown or VM deletion. The provider
-handle remains available for operator recovery instead.
+### Retention failures and operator recovery
+
+Retention is fail-safe. If powering off the VM or writing the retention manifest
+fails, Argus does **not** fall through to destructive guest teardown or VM
+deletion. The provider handle and session storage remain preserved.
+
+The run keeps its original test status (`fail`/`error`) and adds structured
+`failure_capsule_error` metadata containing the VM name, session storage path,
+provider, underlying retention error, and recovery guidance. The Markdown report
+surfaces the same information so an operator is not left with an unexplained
+registered VM or hidden storage leak.
 
 Retained Capsules consume disk space and remain registered VMs. PR4 does not yet
 add automatic retention expiry, a resume UI, or export/import tooling; those can
@@ -209,7 +236,8 @@ removal succeeds.
 
 A Failure Capsule is different: its VM/storage is retained deliberately, and
 `failure-capsule.json` is the marker that distinguishes intentional retention
-from a cleanup failure.
+from a cleanup failure. A failed retention attempt may not have that manifest;
+in that case `failure_capsule_error` in the run result is the recovery record.
 
 ## Safety model
 
