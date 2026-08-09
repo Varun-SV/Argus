@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Callable, Mapping, Optional
 
-from argus.adapters.base import AdapterError, Observation, PolicyAdapter
+from argus.adapters.base import Observation, PolicyAdapter
 from argus.capsule.base import (
     CapsuleError,
     CapsuleHandle,
@@ -112,14 +112,18 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
     def _rollback_handle(self, handle: Optional[CapsuleHandle]) -> Optional[Exception]:
         self._adapter = None
         self._client = None
-        self._handle = None
         self._prepared = False
         if handle is None:
+            self._handle = None
             return None
         try:
             self.provider.destroy(handle)
         except Exception as exc:
+            # Retain the handle so launch()'s outer rollback or a later close()
+            # can retry a transient provider cleanup failure.
+            self._handle = handle
             return exc
+        self._handle = None
         return None
 
     def launch(self, target: str) -> None:
@@ -162,8 +166,6 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
     def act(self, action: dict) -> str:
         if self._adapter is None:
             raise ExecutionEnvironmentError("Capsule target is not launched")
-        # PolicyAdapter performs host-side schema/global/capability checks. The
-        # guest agent's platform adapter independently performs them again.
         return self._adapter.act(action)
 
     def close(self) -> None:
@@ -171,7 +173,6 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         handle = self._handle
         self._adapter = None
         self._client = None
-        self._handle = None
         self._prepared = False
 
         errors = []
@@ -180,10 +181,18 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
                 adapter.close()
             except Exception as exc:
                 errors.append(f"guest session close failed: {exc}")
+
         if handle is not None:
             try:
                 self.provider.destroy(handle)
             except Exception as exc:
+                # Keep the provider handle so a second close() can retry.
+                self._handle = handle
                 errors.append(f"Capsule destroy failed: {exc}")
+            else:
+                self._handle = None
+        else:
+            self._handle = None
+
         if errors:
             raise CapsuleError("; ".join(errors))
