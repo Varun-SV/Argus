@@ -54,6 +54,80 @@ def test_local_environment_delegates_lifecycle_observation_and_actions():
     assert raw.app.alive is False
 
 
+def test_local_environment_rolls_back_when_target_launch_fails():
+    class FailingLaunchAdapter(FakeAdapter):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = 0
+
+        def launch(self, target: str) -> None:
+            self.launched_with = target
+            raise AdapterError("guest target refused to start")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+    raw = FailingLaunchAdapter()
+    environment = LocalExecutionEnvironment(raw)
+
+    with pytest.raises(AdapterError, match="guest target refused to start"):
+        environment.launch("broken.exe")
+
+    assert raw.launched_with == "broken.exe"
+    assert raw.close_calls == 1
+    assert environment._prepared is False
+    assert raw.app.alive is False
+
+
+def test_local_environment_rolls_back_when_prepare_fails_during_launch():
+    class PartialPrepareEnvironment(LocalExecutionEnvironment):
+        def __init__(self, adapter):
+            super().__init__(adapter)
+            self.allocated = False
+            self.close_calls = 0
+
+        def prepare(self) -> None:
+            self.allocated = True
+            self._prepared = True
+            raise ExecutionEnvironmentError("partial allocation failed")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            self.allocated = False
+            super().close()
+
+    environment = PartialPrepareEnvironment(FakeAdapter())
+
+    with pytest.raises(ExecutionEnvironmentError, match="partial allocation failed"):
+        environment.launch("fake.exe")
+
+    assert environment.close_calls == 1
+    assert environment.allocated is False
+    assert environment._prepared is False
+
+
+def test_local_environment_surfaces_cleanup_failure_without_hiding_launch_context():
+    class BrokenCleanupAdapter(FakeAdapter):
+        def launch(self, target: str) -> None:
+            raise AdapterError("target launch failed")
+
+        def close(self) -> None:
+            raise AdapterError("cleanup failed")
+
+    environment = LocalExecutionEnvironment(BrokenCleanupAdapter())
+
+    with pytest.raises(ExecutionEnvironmentError) as exc_info:
+        environment.launch("broken.exe")
+
+    message = str(exc_info.value)
+    assert "target launch failed" in message
+    assert "cleanup failed" in message
+    # close() resets preparation state in its finally even when adapter cleanup
+    # itself fails.
+    assert environment._prepared is False
+
+
 def test_local_environment_keeps_adapter_execution_policy_for_raw_adapters():
     environment = LocalExecutionEnvironment(FakeAdapter())
 
