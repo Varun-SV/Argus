@@ -226,6 +226,7 @@ def run_test(
     failed = False
     budget_failure_recorded = False
     teardown_budget_reason: Optional[str] = None
+    execution_error: Optional[str] = None
     try:
         for index, step in enumerate(spec.steps):
             step_started = time.monotonic()
@@ -308,15 +309,18 @@ def run_test(
             if on_step:
                 on_step(sr)
     except Exception as exc:
-        # Unexpected observation/action/assertion failures must be recorded before
-        # final close; otherwise retain_on_failure would take the ordinary
-        # destructive path and erase the state that caused the exception. The
-        # original exception is then re-raised unchanged after the finally block.
+        # Unexpected observation/action/assertion/callback failures must be
+        # recorded before final close; otherwise retain_on_failure would erase
+        # the state that caused the exception. Keep the failure inside the
+        # structured RunResult so callers can persist the retained/recovery
+        # metadata instead of losing it across an exception boundary.
+        execution_error = f"{type(exc).__name__}: {exc}"
         _record_environment_failure_reason(
             adapter,
-            f"run execution error: {type(exc).__name__}: {exc}",
+            f"run execution error: {execution_error}",
         )
-        raise
+        failed = True
+        result.error = f"execution failed: {execution_error}"
     finally:
         # If explicit teardown already failed to retain a Failure Capsule, do
         # not retry the retention operation or fall through to destructive
@@ -332,7 +336,7 @@ def run_test(
     result.failure_capsule = _retained_failure(adapter)
     result.failure_capsule_error = _retention_failure(adapter)
     result.duration_s = time.monotonic() - started
-    if any(s.status == "error" for s in result.steps):
+    if execution_error is not None or any(s.status == "error" for s in result.steps):
         result.status = "error"
     elif failed:
         result.status = "fail"
