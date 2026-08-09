@@ -251,6 +251,8 @@ steps:
 
 
 def test_unexpected_execution_exception_retains_before_final_close(tmp_path):
+    # Regression for review P1: no StepResult exists when observe() raises, so
+    # the runner itself must arm retention before its final close executes.
     client = FailingObserveClient()
     environment, provider, client = _environment(
         tmp_path,
@@ -391,6 +393,8 @@ teardown:
 
 
 def test_budget_exhaustion_detected_when_entering_teardown(tmp_path):
+    # Regression for review P2: the real step starts within budget and passes,
+    # then the budget reports exhaustion only at the teardown boundary.
     environment, provider, client = _environment(tmp_path, retain_on_failure=True)
     budget = ExhaustsOnTeardownBudget()
     spec = parse_spec(
