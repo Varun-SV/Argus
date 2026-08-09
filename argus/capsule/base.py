@@ -14,6 +14,19 @@ class CapsuleError(AdapterError):
     """Raised when a Capsule cannot be created, reached, or destroyed safely."""
 
 
+def _strict_bool(value: Any, name: str) -> bool:
+    """Parse a security-sensitive boolean without Python truthiness surprises."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise CapsuleError(f"{name} must be a boolean (true/false)")
+
+
 @dataclass(frozen=True)
 class CapsuleSettings:
     """Host-side settings for one family of disposable Capsule sessions.
@@ -45,6 +58,10 @@ class CapsuleSettings:
             raise CapsuleError(
                 "unknown capsule setting(s): " + ", ".join(unknown)
             )
+        if "allow_external_switch" in raw:
+            raw["allow_external_switch"] = _strict_bool(
+                raw["allow_external_switch"], "allow_external_switch"
+            )
         return cls(**raw)
 
     @property
@@ -74,6 +91,9 @@ class CapsuleHandle:
 
     @property
     def endpoint(self) -> str:
+        # PR3 intentionally permits only host-reachable Internal Hyper-V
+        # switches. This HTTP endpoint must not be exposed to an External switch
+        # until a confidential transport is implemented.
         return f"http://{self.address}:{self.guest_port}"
 
 
