@@ -36,58 +36,84 @@ Create a Windows 10/11 or Windows Server Generation-2 VHDX and install:
   `pip install -e .[windows]` or an installed Argus package;
 - the application(s) you want to test during the PR3 MVP.
 
-For GUI testing, configure a dedicated test user to log in automatically or
-otherwise reach an interactive unlocked desktop. Disable guest sleep and screen
-locking for that disposable test account.
+For GUI testing, configure a dedicated **non-administrator** test user to log in
+automatically or otherwise reach an interactive unlocked desktop. Disable guest
+sleep and screen locking for that disposable test account.
 
 Hyper-V **Key-Value Pair Exchange** should remain enabled if Argus is expected
 to discover the guest IP automatically. You may instead configure a fixed
 `guest_address`.
 
-## 2. Configure the guest agent
+## 2. Configure the guest-agent credential safely
 
-Set a strong token in the guest test-user environment, for example:
+Do **not** store `ARGUS_CAPSULE_GUEST_TOKEN` in the interactive test user's
+persistent environment. Targets launched by normal Windows/CLI adapters inherit
+the guest-agent process environment, so a persistent control-plane credential
+would be visible to the application under test.
+
+For the PR3 MVP, place the shared bootstrap token in a one-time file in the
+golden image, for example:
 
 ```powershell
-[Environment]::SetEnvironmentVariable(
-  "ARGUS_CAPSULE_GUEST_TOKEN",
-  "replace-with-a-long-random-secret",
-  "User"
-)
+New-Item -ItemType Directory -Force C:\ProgramData\Argus | Out-Null
+Set-Content -NoNewline `
+  -Path C:\ProgramData\Argus\guest-token.once `
+  -Value "replace-with-a-long-random-secret"
 ```
 
-Start the guest agent in that same interactive user session at logon:
+Start the guest agent in the interactive test-user session at logon:
 
 ```powershell
 python -m argus.capsule.guest_agent `
   --host 0.0.0.0 `
   --port 8765 `
-  --token-env ARGUS_CAPSULE_GUEST_TOKEN
+  --token-file C:\ProgramData\Argus\guest-token.once
 ```
 
-The service refuses a non-loopback bind without a token. For the MVP the host
-and golden image share this token; later bootstrap work can replace that with a
-per-session credential.
+The agent reads and **deletes the token file before it starts serving requests**.
+Because Argus boots a differencing child disk, that deletion occurs only in the
+per-session child; the golden parent retains its bootstrap file for the next
+Capsule. The target is launched only after the guest agent is ready, so the
+ordinary application-under-test cannot read the consumed file through the test
+user's normal filesystem view.
+
+`--token-env` remains supported for supervisors that inject a **process-scoped**
+environment variable at agent startup. The agent immediately removes that
+variable from `os.environ` before any adapter or target can be created. Do not
+use a User- or Machine-persistent environment variable for this purpose.
+
+The service refuses a non-loopback bind without a token. The PR3 MVP still uses
+a shared host/golden-image secret; a future bootstrap layer should replace this
+with a per-session credential delivered over a host-bound channel.
 
 After verifying the agent starts correctly, shut the VM down cleanly. Treat the
 resulting VHDX as the golden parent and do not modify it while Capsules use it.
 
-## 3. Use a host-reachable Hyper-V switch
+## 3. Use an Internal Hyper-V switch only
 
-An **Internal** Hyper-V switch is recommended. It lets the Windows management OS
-reach the guest agent without directly bridging the guest onto the physical LAN.
-Hyper-V's Default Switch is normally suitable when present.
+PR3's guest-agent protocol uses authenticated **HTTP**, not encrypted transport.
+Therefore Argus accepts only a host-reachable **Internal** Hyper-V switch for
+Capsule control traffic. Hyper-V's Default Switch is normally suitable when it
+reports as Internal on the host.
 
-Argus rejects a Private switch because the host cannot reach the guest agent.
-It also rejects an External switch by default. External networking requires
-`allow_external_switch: true` and should be an explicit decision.
+Argus rejects:
 
-Network egress policy/isolation beyond this guard is intentionally scheduled for
-a later isolation-policy PR.
+- **Private** switches, because the management OS cannot reach the guest agent;
+- **External** switches, unconditionally, because sending the bearer credential
+  over a LAN-visible plaintext HTTP channel would violate the control-plane
+  boundary.
+
+`allow_external_switch` is retained only as a reserved compatibility setting;
+setting it to `true` is rejected in PR3. External networking must remain disabled
+until Argus has a confidential host↔guest transport such as Hyper-V sockets or
+TLS with appropriate authentication.
+
+Network egress policy/isolation beyond this control-plane guard is intentionally
+scheduled for a later isolation-policy PR.
 
 ## 4. Configure Argus on the host
 
-Set the same token in the host environment:
+Set the matching token in the **host** environment before launching Argus:
 
 ```powershell
 $env:ARGUS_CAPSULE_GUEST_TOKEN = "replace-with-a-long-random-secret"
@@ -113,6 +139,10 @@ execution:
     allow_external_switch: false
 ```
 
+`allow_external_switch` is parsed strictly: quoted values such as `"false"` are
+normalized to false rather than becoming truthy through Python's normal string
+truthiness. Any true value is rejected by the PR3 Hyper-V provider.
+
 `guest_input_mode: physical` is intentional for Capsule mode: any synthetic
 mouse/keyboard input occurs inside the VM, not on the host desktop. Set it to
 `safe`/`semantic` if the guest application is fully accessible through UIA and
@@ -135,7 +165,15 @@ The host supports these overrides:
 - `ARGUS_CAPSULE_GUEST_ADDRESS`
 - `ARGUS_CAPSULE_BOOT_TIMEOUT_SECONDS`
 - `ARGUS_CAPSULE_AGENT_TIMEOUT_SECONDS`
-- `ARGUS_CAPSULE_ALLOW_EXTERNAL_SWITCH`
+- `ARGUS_CAPSULE_ALLOW_EXTERNAL_SWITCH` (must remain false in PR3)
+
+## Cleanup and recovery
+
+Argus removes the registered VM before deleting its per-session storage. If VM
+deregistration fails, Argus now **preserves the session directory and child
+VHDX** and reports their path in the cleanup error. This avoids turning a
+recoverable registered/orphaned VM into one whose backing files were already
+deleted. Storage is removed only after VM removal succeeds.
 
 ## Safety model
 
