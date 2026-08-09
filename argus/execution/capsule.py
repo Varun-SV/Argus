@@ -49,6 +49,7 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         self._prepared = False
         self._failure_reason = ""
         self._retained_failure: Optional[FailureCapsule] = None
+        self._retention_error: Optional[dict] = None
 
     @staticmethod
     def _make_provider(name: str) -> CapsuleProvider:
@@ -182,6 +183,12 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             return None
         return self._retained_failure.to_dict()
 
+    def failure_capsule_error(self):
+        """Return structured recovery data when requested retention failed."""
+        if self._retention_error is None:
+            return None
+        return dict(self._retention_error)
+
     def _retain_failure_before_teardown(self) -> bool:
         if not (
             self.settings.retain_on_failure
@@ -194,13 +201,27 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             retained = self.provider.retain_failure(handle, self._failure_reason)
         except Exception as exc:
             # Never destroy evidence after a retention failure. Keep the handle
-            # so an operator can inspect or retry cleanup manually.
+            # and expose exact recovery coordinates to the run result.
             self._handle = handle
+            self._retention_error = {
+                "status": "retention_failed",
+                "session_id": handle.session_id,
+                "provider": handle.provider,
+                "vm_name": handle.vm_name,
+                "root_dir": handle.root_dir,
+                "error": str(exc),
+                "recovery": (
+                    "Capsule was preserved instead of destroyed. Inspect the registered VM "
+                    "and session storage, then retry retention or clean it up manually."
+                ),
+            }
             raise CapsuleError(
-                f"Failure Capsule retention failed; live Capsule preserved for recovery: {exc}"
+                "Failure Capsule retention failed; Capsule preserved for recovery at "
+                f"{handle.root_dir}: {exc}"
             ) from exc
 
         self._retained_failure = retained
+        self._retention_error = None
         self._adapter = None
         self._client = None
         self._prepared = False
@@ -208,8 +229,8 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         return True
 
     def close(self) -> None:
-        # Failure retention happens before guest-session close so the saved VM
-        # captures the exact application/runtime state that produced the failure.
+        # Failure retention happens before guest-session close so the retained
+        # disk represents the failure state before ordinary destructive cleanup.
         if self._retain_failure_before_teardown():
             return
 
