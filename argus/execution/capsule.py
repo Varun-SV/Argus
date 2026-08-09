@@ -12,6 +12,7 @@ from argus.capsule.base import (
     CapsuleProvider,
     CapsuleRequest,
     CapsuleSettings,
+    FailureCapsule,
 )
 from argus.capsule.guest import GuestAdapterProxy, GuestAgentClient
 from argus.execution.base import (
@@ -46,6 +47,8 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         self._client: Optional[GuestAgentClient] = None
         self._adapter: Optional[PolicyAdapter] = None
         self._prepared = False
+        self._failure_reason = ""
+        self._retained_failure: Optional[FailureCapsule] = None
 
     @staticmethod
     def _make_provider(name: str) -> CapsuleProvider:
@@ -168,7 +171,48 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             raise ExecutionEnvironmentError("Capsule target is not launched")
         return self._adapter.act(action)
 
+    def record_failure(self, reason: str) -> None:
+        if not self.settings.retain_on_failure:
+            return
+        if not self._failure_reason:
+            self._failure_reason = (reason or "test failure")[:2000]
+
+    def failure_capsule(self):
+        if self._retained_failure is None:
+            return None
+        return self._retained_failure.to_dict()
+
+    def _retain_failure_before_teardown(self) -> bool:
+        if not (
+            self.settings.retain_on_failure
+            and self._failure_reason
+            and self._handle is not None
+        ):
+            return False
+        handle = self._handle
+        try:
+            retained = self.provider.retain_failure(handle, self._failure_reason)
+        except Exception as exc:
+            # Never destroy evidence after a retention failure. Keep the handle
+            # so an operator can inspect or retry cleanup manually.
+            self._handle = handle
+            raise CapsuleError(
+                f"Failure Capsule retention failed; live Capsule preserved for recovery: {exc}"
+            ) from exc
+
+        self._retained_failure = retained
+        self._adapter = None
+        self._client = None
+        self._prepared = False
+        self._handle = None
+        return True
+
     def close(self) -> None:
+        # Failure retention happens before guest-session close so the saved VM
+        # captures the exact application/runtime state that produced the failure.
+        if self._retain_failure_before_teardown():
+            return
+
         adapter = self._adapter
         handle = self._handle
         self._adapter = None
