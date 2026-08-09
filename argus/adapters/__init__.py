@@ -1,24 +1,19 @@
 """Target adapter API.
 
-``create_adapter`` remains as a compatibility entry point, but session-level
-callers now receive a LocalExecutionEnvironment. Low-level adapter
-implementations still live under :mod:`argus.adapters.base` and are used by the
-execution layer internally.
+``create_adapter`` is the session-level compatibility factory. It now honors the
+project's configured execution location, returning either a local environment or
+a disposable Capsule. Low-level platform adapter construction remains available
+from :mod:`argus.adapters.base` for the execution layer and guest agent.
 """
 
 from argus.adapters.base import Adapter, AdapterError, Observation, UIElement
 
 
 def create_adapter(adapter_type: str):
-    """Backward-compatible session factory returning a local environment.
+    """Create the configured execution environment for ``adapter_type``."""
+    from argus.config import load_config
 
-    New code should prefer :func:`argus.execution.create_execution_environment`.
-    Keeping this name prevents the CLI/GUI/dashboard and third-party callers
-    from needing an all-at-once migration in PR2.
-    """
-    from argus.execution import create_execution_environment
-
-    return create_execution_environment(adapter_type, environment_type="local")
+    return load_config().make_execution_environment(adapter_type)
 
 
 __all__ = ["Adapter", "AdapterError", "Observation", "UIElement", "create_adapter"]

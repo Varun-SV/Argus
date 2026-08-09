@@ -3,15 +3,15 @@
 An execution environment owns *where* a target runs. Adapters still own *how*
 Argus observes and drives a target inside that environment.
 
-PR2 deliberately ships only the local-host implementation. Future Capsule/VM
-providers can implement this interface without changing the runner/roam/agent
-callers that already consume the adapter-compatible surface.
+Local execution and disposable Capsule execution share this adapter-compatible
+surface so runner/roam/agent code does not need hypervisor-specific branches.
 """
 
 from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass
+from typing import Mapping, Optional
 
 from argus.adapters.base import Adapter, AdapterError, Observation
 
@@ -39,9 +39,9 @@ class ExecutionEnvironment(Adapter, ABC):
 
     The compatibility with :class:`Adapter` is intentional: current Argus
     engines already consume ``launch / observe / act / close / capabilities``.
-    Keeping that surface lets PR2 insert the execution-location boundary without
-    a broad engine rewrite, while PR3 can replace the local implementation with
-    a Capsule/guest-agent backed environment.
+    Keeping that surface lets the execution-location boundary wrap either the
+    local host or a Capsule/guest-agent implementation without rewriting the
+    agent loop.
 
     Lifecycle contract
     ------------------
@@ -50,8 +50,8 @@ class ExecutionEnvironment(Adapter, ABC):
     partially) but target launch fails, the environment must release those
     resources before propagating the failure. Implementations whose ``prepare``
     method can be called directly must also roll back any partial allocation
-    before raising. This prevents future VM/disk/network allocations from being
-    leaked merely because a guest target failed to start.
+    before raising. This prevents VM/disk/network allocations from being leaked
+    merely because a guest target failed to start.
     """
 
     environment_type: str = "base"
@@ -60,9 +60,6 @@ class ExecutionEnvironment(Adapter, ABC):
 
     def prepare(self) -> None:
         """Prepare resources required by this environment.
-
-        Local execution needs no expensive setup. VM-backed implementations can
-        create/restore a guest here before the target is launched.
 
         Implementations must make direct calls exception-safe: if preparation
         raises after partially allocating resources, it must release those
@@ -101,13 +98,7 @@ class LocalExecutionEnvironment(ExecutionEnvironment):
         self._prepared = True
 
     def launch(self, target: str) -> None:
-        """Prepare and launch atomically from the caller's point of view.
-
-        Runner/roam historically return immediately when ``launch`` raises, so
-        the execution environment cannot rely on a later caller ``finally`` to
-        release resources. Roll back here instead. This is cheap for ``local``
-        today and establishes the contract Capsule/VM environments need in PR3.
-        """
+        """Prepare and launch atomically from the caller's point of view."""
         try:
             if not self._prepared:
                 self.prepare()
@@ -124,9 +115,6 @@ class LocalExecutionEnvironment(ExecutionEnvironment):
 
     def observe(self, include_screenshot: bool = True) -> Observation:
         obs = self.adapter.observe(include_screenshot=include_screenshot)
-        # The environment is the model-facing execution boundary, so always
-        # carry its current capabilities even when a raw/testing adapter did
-        # not populate them itself.
         obs.action_capabilities = self.capabilities()
         return obs
 
@@ -137,10 +125,6 @@ class LocalExecutionEnvironment(ExecutionEnvironment):
         self.adapter.validate_action(action)
 
     def act(self, action: dict) -> str:
-        # Public adapters created by Argus are PolicyAdapter-guarded, therefore
-        # their ``act`` method crosses the existing validation/policy boundary.
-        # Raw adapters supplied by tests/embedding code still get the same hard
-        # boundary through ``execute``.
         from argus.adapters.base import PolicyAdapter
 
         if isinstance(self.adapter, PolicyAdapter):
@@ -154,30 +138,30 @@ class LocalExecutionEnvironment(ExecutionEnvironment):
             self._prepared = False
 
     def __getattr__(self, name):
-        # Compatibility escape hatch for existing UI code that inspects the
-        # guarded adapter (for example safe-vs-physical Windows messaging).
-        # Execution code should prefer the explicit environment surface above.
         return getattr(self.adapter, name)
 
 
 def create_execution_environment(
     adapter_type: str,
     environment_type: str = "local",
+    capsule_config: Optional[Mapping] = None,
 ) -> ExecutionEnvironment:
-    """Create an execution environment for one Argus session.
+    """Create the requested session execution location.
 
-    PR2 supports only ``local``. The explicit environment selector exists now
-    so Capsule/VM providers can be added without changing the engine API.
+    ``local`` preserves the current host behavior. ``capsule`` creates a
+    disposable VM-backed environment; PR3 initially supports Hyper-V through
+    its Capsule provider configuration.
     """
     kind = (environment_type or "local").lower().strip()
+    if kind == "capsule":
+        from argus.execution.capsule import CapsuleExecutionEnvironment
+
+        return CapsuleExecutionEnvironment.from_mapping(adapter_type, capsule_config)
     if kind != "local":
         raise ExecutionEnvironmentError(
-            f"unknown execution environment '{environment_type}' — available: local"
+            f"unknown execution environment '{environment_type}' — available: local, capsule"
         )
 
-    # Import from the implementation module, not ``argus.adapters``: the
-    # package-level create_adapter is intentionally a backward-compatible alias
-    # that now returns an ExecutionEnvironment.
     from argus.adapters.base import create_adapter as create_platform_adapter
 
     try:

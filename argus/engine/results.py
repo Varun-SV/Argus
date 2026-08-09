@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import time
 from dataclasses import asdict, dataclass, field
@@ -15,7 +14,7 @@ STATUSES = ("pass", "fail", "error", "running", "skipped")
 @dataclass
 class StepResult:
     index: int
-    kind: str          # setup | step | assert | teardown
+    kind: str
     text: str
     status: str = "pending"
     duration_s: float = 0.0
@@ -24,7 +23,7 @@ class StepResult:
     actual: Optional[str] = None
     note: Optional[str] = None
     flaky: bool = False
-    screenshot_path: Optional[str] = None  # relative path inside run dir
+    screenshot_path: Optional[str] = None
 
 
 @dataclass
@@ -33,6 +32,9 @@ class RunResult:
     test_file: str
     adapter: str
     provider: str
+    environment_type: str = "direct"
+    isolated: bool = False
+    location: str = "unknown"
     status: str = "running"
     started_at: float = field(default_factory=time.time)
     duration_s: float = 0.0
@@ -76,11 +78,8 @@ class RunResult:
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
         run_dir = runs_dir / f"{stamp}-{safe}"
         run_dir.mkdir(exist_ok=True)
-        # Write result JSON
         (run_dir / "result.json").write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        # Write markdown report
         write_report(self, run_dir)
-        # Legacy flat JSON for load_runs backward compat
         flat = runs_dir / f"{stamp}-{safe}.json"
         flat.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return run_dir / "result.json"
@@ -93,6 +92,9 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
         "",
         f"- **Test:** `{result.test_name}`",
         f"- **Adapter:** `{result.adapter}`",
+        f"- **Environment:** `{result.environment_type}`",
+        f"- **Isolated:** {'yes' if result.isolated else 'no'}",
+        f"- **Location:** `{result.location}`",
         f"- **Provider:** `{result.provider}`",
         f"- **Status:** {result.status.upper()}",
         f"- **Duration:** {result.duration_s:.1f}s",

@@ -115,6 +115,22 @@ def check_assertion(
     return result
 
 
+def _execution_fields(adapter: Adapter) -> dict:
+    try:
+        info = adapter.info()
+    except Exception:
+        return {
+            "environment_type": "direct",
+            "isolated": False,
+            "location": "unknown",
+        }
+    return {
+        "environment_type": str(info.environment_type),
+        "isolated": bool(info.isolated),
+        "location": str(info.location),
+    }
+
+
 def run_test(
     spec: TestSpec,
     provider: LLMProvider,
@@ -122,7 +138,7 @@ def run_test(
     budget: Optional[Budget] = None,
     on_step: Optional[ProgressFn] = None,
     warn: Optional[Callable[[str], None]] = None,
-    knowledge_store=None,  # Optional[KnowledgeStore]
+    knowledge_store=None,
     shots_dir: Optional[Path] = None,
 ) -> RunResult:
     result = RunResult(
@@ -130,12 +146,12 @@ def run_test(
         test_file=spec.file_name,
         adapter=spec.adapter,
         provider=provider.describe(),
+        **_execution_fields(adapter),
     )
     started = time.monotonic()
     session_id = str(_uuid.uuid4())[:8]
     target = spec.launch or spec.name
 
-    # Vision capability: ask once; degrade gracefully.
     try:
         use_vision = provider.supports_vision()
     except ProviderError as exc:
@@ -308,7 +324,6 @@ def _run_nl_step(
             session_id=session_id,
             prev_state_id=prev_state_id,
         )
-        # record transition from previous state
         if knowledge_store is not None and prev_state_id and turn.state_id and prev_action:
             try:
                 knowledge_store.record_transition(
