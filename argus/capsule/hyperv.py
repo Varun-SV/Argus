@@ -28,11 +28,11 @@ class HyperVProvider(CapsuleProvider):
     The golden image is never attached directly. A session child disk and VM
     configuration live under ``vm_root/<session_id>`` and are removed on close.
 
-    Argus reaches the guest agent over an existing Hyper-V virtual switch.
-    Internal switches are accepted by default because the management OS can
-    reach them without placing the guest directly on the physical LAN. External
-    switches require explicit opt-in; private switches cannot carry host-to-
-    guest HTTP traffic and are rejected.
+    The PR3 guest-agent transport is authenticated HTTP, not a confidential
+    channel. Therefore only host-reachable **Internal** Hyper-V switches are
+    accepted. External switches are rejected unconditionally until Argus gains
+    a confidential host↔guest transport (for example Hyper-V sockets or TLS).
+    Private switches cannot carry host-to-guest traffic and are also rejected.
     """
 
     provider_name = "hyperv"
@@ -88,7 +88,7 @@ class HyperVProvider(CapsuleProvider):
             raise CapsuleError(f"Hyper-V command failed: {detail[:800]}")
         return completed.stdout.strip()
 
-    def _validate_switch(self, name: str, allow_external: bool) -> None:
+    def _validate_switch(self, name: str) -> None:
         if not name:
             raise CapsuleError(
                 "capsule.switch_name is required; use a Hyper-V Internal switch "
@@ -104,12 +104,12 @@ class HyperVProvider(CapsuleProvider):
             raise CapsuleError(
                 f"Hyper-V switch {name!r} is Private; the host cannot reach the guest agent"
             )
-        if lowered == "external" and not allow_external:
+        if lowered == "external":
             raise CapsuleError(
-                f"Hyper-V switch {name!r} is External; set allow_external_switch: true "
-                "only if exposing the Capsule to that network is intentional"
+                f"Hyper-V switch {name!r} is External; PR3 forbids External switches "
+                "because the guest-agent bearer protocol is not transport-encrypted"
             )
-        if lowered not in {"internal", "external"}:
+        if lowered != "internal":
             raise CapsuleError(f"unsupported Hyper-V switch type for {name!r}: {switch_type!r}")
 
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
@@ -120,6 +120,11 @@ class HyperVProvider(CapsuleProvider):
         if not settings.guest_token:
             raise CapsuleError(
                 "Capsule guest token is missing; set the configured guest_token_env on the host"
+            )
+        if settings.allow_external_switch:
+            raise CapsuleError(
+                "allow_external_switch is not supported in PR3; External Hyper-V switches "
+                "remain disabled until the guest transport is confidential"
             )
         if settings.guest_input_mode not in {"safe", "semantic", "physical", "legacy"}:
             raise CapsuleError("guest_input_mode must be safe/semantic or physical/legacy")
@@ -135,7 +140,7 @@ class HyperVProvider(CapsuleProvider):
             raise CapsuleError(f"Capsule golden image not found: {settings.image!r}")
         image = image.resolve()
 
-        self._validate_switch(settings.switch_name, settings.allow_external_switch)
+        self._validate_switch(settings.switch_name)
 
         root_parent = settings.resolved_vm_root
         root_parent.mkdir(parents=True, exist_ok=True)
@@ -219,21 +224,23 @@ class HyperVProvider(CapsuleProvider):
         )
 
     def _cleanup_partial(self, vm_name: str, root: Path) -> Optional[Exception]:
-        errors = []
         try:
             # Always query by name. New-VM may have succeeded even if the next
             # setup command failed before create() could record that fact.
             self._remove_vm(vm_name)
         except Exception as exc:
-            errors.append(f"VM removal failed: {exc}")
+            # Preserve recovery/configuration files whenever VM deregistration
+            # fails. Removing storage first can turn a recoverable orphaned VM
+            # into a broken registered VM with missing backing files.
+            return CapsuleError(
+                f"VM removal failed: {exc}; session storage preserved at {root}"
+            )
         try:
             shutil.rmtree(root)
         except FileNotFoundError:
             pass
         except OSError as exc:
-            errors.append(f"session storage removal failed: {exc}")
-        if errors:
-            return CapsuleError("; ".join(errors))
+            return CapsuleError(f"session storage removal failed: {exc}")
         return None
 
     def destroy(self, handle: CapsuleHandle) -> None:
@@ -242,16 +249,15 @@ class HyperVProvider(CapsuleProvider):
                 f"HyperVProvider cannot destroy handle owned by {handle.provider!r}"
             )
         root = Path(handle.root_dir)
-        errors = []
         try:
             self._remove_vm(handle.vm_name)
         except Exception as exc:
-            errors.append(f"VM removal failed: {exc}")
+            raise CapsuleError(
+                f"VM removal failed: {exc}; session storage preserved at {root}"
+            ) from exc
         try:
             shutil.rmtree(root)
         except FileNotFoundError:
             pass
         except OSError as exc:
-            errors.append(f"session storage removal failed: {exc}")
-        if errors:
-            raise CapsuleError("; ".join(errors))
+            raise CapsuleError(f"session storage removal failed: {exc}") from exc
