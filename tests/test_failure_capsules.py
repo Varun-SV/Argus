@@ -202,13 +202,17 @@ target:
 steps:
   - assert:
       process_running: false
+teardown:
+  - close
 """
     )
 
     result = run_test(spec, FakeProvider([]), environment)
 
-    # Retention diagnostics must not change the original test outcome.
+    # Retention diagnostics must not change the original test outcome, even
+    # when the retention failure happens during an explicit teardown: close.
     assert result.status == "fail"
+    assert len(provider.retained) == 1
     assert result.failure_capsule is None
     assert result.failure_capsule_error is not None
     assert result.failure_capsule_error["status"] == "retention_failed"
