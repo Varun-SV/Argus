@@ -6,6 +6,7 @@ from argus.capsule.base import (
     CapsuleProvider,
     CapsuleRequest,
     CapsuleSettings,
+    FailureCapsule,
 )
 from argus.capsule.guest import CapsuleGuestError, GuestAdapterProxy, GuestAgentClient
 
@@ -16,6 +17,7 @@ __all__ = [
     "CapsuleProvider",
     "CapsuleRequest",
     "CapsuleSettings",
+    "FailureCapsule",
     "GuestAdapterProxy",
     "GuestAgentClient",
 ]
