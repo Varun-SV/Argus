@@ -81,6 +81,17 @@ class ExecutionEnvironment(Adapter, ABC):
         isolation = "isolated" if info.isolated else "shared"
         return f"{info.environment_type}:{info.adapter_type} ({info.location}, {isolation})"
 
+    def record_failure(self, reason: str) -> None:
+        """Record a failure before teardown.
+
+        Local environments intentionally ignore this. VM-backed environments may
+        use it to retain reproducible failure state when explicitly configured.
+        """
+
+    def failure_capsule(self):
+        """Return retained failure metadata, if this environment produced any."""
+        return None
+
 
 class LocalExecutionEnvironment(ExecutionEnvironment):
     """Run a guarded Argus adapter directly on the current host/session."""
