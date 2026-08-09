@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,10 @@ class HyperVProvider(CapsuleProvider):
     accepted. External switches are rejected unconditionally until Argus gains
     a confidential host↔guest transport (for example Hyper-V sockets or TLS).
     Private switches cannot carry host-to-guest traffic and are also rejected.
+
+    The control endpoint is provider-attested. Even when a caller supplies a
+    preferred ``guest_address``, Argus will use it only if Hyper-V reports that
+    exact IPv4 address for the VM created for this Capsule session.
     """
 
     provider_name = "hyperv"
@@ -119,7 +124,7 @@ class HyperVProvider(CapsuleProvider):
             raise CapsuleError(f"HyperVProvider cannot handle provider {settings.provider!r}")
         if not settings.guest_token:
             raise CapsuleError(
-                "Capsule guest token is missing; set the configured guest_token_env on the host"
+                "Capsule guest token is missing; set ARGUS_CAPSULE_GUEST_TOKEN on the host"
             )
         if settings.allow_external_switch:
             raise CapsuleError(
@@ -176,8 +181,10 @@ class HyperVProvider(CapsuleProvider):
                 60,
             )
 
-            address = settings.guest_address.strip() or self._wait_for_guest_address(
-                vm_name, settings.boot_timeout_seconds
+            address = self._wait_for_guest_address(
+                vm_name,
+                settings.boot_timeout_seconds,
+                requested_address=settings.guest_address,
             )
             return CapsuleHandle(
                 session_id=request.session_id,
@@ -196,23 +203,77 @@ class HyperVProvider(CapsuleProvider):
                 ) from create_exc
             raise
 
-    def _wait_for_guest_address(self, vm_name: str, timeout_seconds: float) -> str:
-        deadline = self._clock() + max(1.0, float(timeout_seconds))
+    @staticmethod
+    def _validate_requested_address(value: str) -> str:
+        requested = (value or "").strip()
+        if not requested:
+            return ""
+        try:
+            address = ipaddress.ip_address(requested)
+        except ValueError as exc:
+            raise CapsuleError(f"capsule.guest_address must be a valid IPv4 address: {requested!r}") from exc
+        if address.version != 4 or address.is_link_local or address.is_loopback or address.is_unspecified:
+            raise CapsuleError(
+                f"capsule.guest_address is not a usable guest control IPv4 address: {requested!r}"
+            )
+        return str(address)
+
+    def _reported_guest_ipv4s(self, vm_name: str) -> list[str]:
         query = (
             "$ips=(Get-VMNetworkAdapter -VMName " + _ps_quote(vm_name) + ").IPAddresses; "
-            "$ip=$ips | Where-Object { $_ -match '^([0-9]{1,3}\\.){3}[0-9]{1,3}$' "
-            "-and $_ -notlike '169.254.*' } | Select-Object -First 1; "
-            "if ($ip) { $ip }"
+            "$ips | Where-Object { $_ -match '^([0-9]{1,3}\\.){3}[0-9]{1,3}$' "
+            "-and $_ -notlike '169.254.*' }"
         )
+        raw = self._run_ps(query, 15).strip()
+        addresses: list[str] = []
+        for line in raw.splitlines():
+            candidate = line.strip()
+            if not candidate:
+                continue
+            try:
+                address = ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            if (
+                address.version == 4
+                and not address.is_link_local
+                and not address.is_loopback
+                and not address.is_unspecified
+            ):
+                normalized = str(address)
+                if normalized not in addresses:
+                    addresses.append(normalized)
+        return addresses
+
+    def _wait_for_guest_address(
+        self,
+        vm_name: str,
+        timeout_seconds: float,
+        *,
+        requested_address: str = "",
+    ) -> str:
+        requested = self._validate_requested_address(requested_address)
+        deadline = self._clock() + max(1.0, float(timeout_seconds))
         while self._clock() < deadline:
-            address = self._run_ps(query, 15).strip()
-            if address:
-                return address.splitlines()[-1].strip()
+            addresses = self._reported_guest_ipv4s(vm_name)
+            if addresses:
+                if requested:
+                    if requested in addresses:
+                        return requested
+                    raise CapsuleError(
+                        f"configured guest_address {requested!r} is not reported by Hyper-V "
+                        f"for Capsule {vm_name!r}; reported: {', '.join(addresses)}"
+                    )
+                return addresses[0]
             self._sleeper(1.0)
+        if requested:
+            raise CapsuleError(
+                f"configured guest_address {requested!r} could not be attested to Capsule "
+                f"{vm_name!r} within {timeout_seconds:.0f}s"
+            )
         raise CapsuleError(
             f"Capsule {vm_name!r} did not report an IPv4 address within "
-            f"{timeout_seconds:.0f}s. Ensure Hyper-V Key-Value Pair Exchange is enabled "
-            "in the golden image, or configure capsule.guest_address explicitly."
+            f"{timeout_seconds:.0f}s. Ensure Hyper-V Key-Value Pair Exchange is enabled."
         )
 
     def _remove_vm(self, vm_name: str) -> None:
