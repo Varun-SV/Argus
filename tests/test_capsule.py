@@ -215,11 +215,10 @@ execution:
     switch_name: Argus Internal
     memory_mb: 6144
     cpu_count: 3
-    guest_token_env: TEST_ARGUS_CAPSULE_TOKEN
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("TEST_ARGUS_CAPSULE_TOKEN", "super-secret")
+    monkeypatch.setenv("ARGUS_CAPSULE_GUEST_TOKEN", "super-secret")
 
     cfg = load_config(tmp_path)
     environment = cfg.make_execution_environment("cli")
@@ -245,6 +244,8 @@ def test_hyperv_provider_uses_differencing_disk_and_internal_switch(tmp_path):
         calls.append(script)
         if "Get-VMSwitch" in script:
             return "Internal"
+        if "Get-VMNetworkAdapter" in script:
+            return "10.0.0.8"
         return ""
 
     provider = HyperVProvider(runner=runner)
@@ -261,6 +262,7 @@ def test_hyperv_provider_uses_differencing_disk_and_internal_switch(tmp_path):
     assert any("New-VHD" in call and "-Differencing" in call and "-ParentPath" in call for call in calls)
     assert any("New-VM" in call and "-Generation 2" in call for call in calls)
     assert any("AutomaticCheckpointsEnabled $false" in call for call in calls)
+    assert any("Get-VMNetworkAdapter" in call for call in calls)
     assert Path(handle.root_dir).exists()
 
     provider.destroy(handle)
@@ -333,7 +335,6 @@ def test_hyperv_partial_setup_failure_removes_vm_and_session_storage(tmp_path):
         switch_name="Argus Internal",
         vm_root=str(tmp_path / "sessions"),
         guest_token="secret",
-        guest_address="10.0.0.8",
     )
 
     with pytest.raises(CapsuleError, match="processor configuration failed"):
