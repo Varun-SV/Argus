@@ -42,6 +42,7 @@ class RunResult:
     tokens: dict = field(default_factory=dict)
     error: Optional[str] = None
     failure_capsule: Optional[dict] = None
+    failure_capsule_error: Optional[dict] = None
 
     @property
     def passed(self) -> int:
@@ -109,6 +110,12 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
             f"- **Failure state:** `{result.failure_capsule.get('vm_state', 'unknown')}`",
             f"- **Failure storage:** `{result.failure_capsule.get('root_dir', 'unknown')}`",
         ]
+    if result.failure_capsule_error:
+        lines += [
+            "- **Failure Capsule retention:** ⚠️ retention failed; Capsule preserved for recovery",
+            f"- **Recovery VM:** `{result.failure_capsule_error.get('vm_name', 'unknown')}`",
+            f"- **Recovery storage:** `{result.failure_capsule_error.get('root_dir', 'unknown')}`",
+        ]
     lines += [
         "",
         "| # | Step | Kind | Status | Duration |",
@@ -129,12 +136,25 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
         lines += [
             "## Failure Capsule",
             "",
-            "Argus retained the Capsule before teardown so the failed VM state can be inspected or reproduced.",
+            "Argus retained the Capsule before teardown so the failed VM disk/configuration can be inspected or reproduced.",
             "",
             f"- **Reason:** {result.failure_capsule.get('reason', 'test failure')}",
             f"- **VM:** `{result.failure_capsule.get('vm_name', 'unknown')}`",
             f"- **State:** `{result.failure_capsule.get('vm_state', 'unknown')}`",
             f"- **Storage:** `{result.failure_capsule.get('root_dir', 'unknown')}`",
+            "",
+        ]
+
+    if result.failure_capsule_error:
+        lines += [
+            "## Failure Capsule retention error",
+            "",
+            "Argus could not complete the requested retention operation. To avoid destroying evidence, the Capsule was left registered and its session storage was preserved.",
+            "",
+            f"- **Error:** {result.failure_capsule_error.get('error', 'unknown retention error')}",
+            f"- **VM:** `{result.failure_capsule_error.get('vm_name', 'unknown')}`",
+            f"- **Storage:** `{result.failure_capsule_error.get('root_dir', 'unknown')}`",
+            f"- **Recovery:** {result.failure_capsule_error.get('recovery', 'inspect the preserved Capsule manually')}",
             "",
         ]
 
