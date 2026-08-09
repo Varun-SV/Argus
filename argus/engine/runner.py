@@ -210,7 +210,13 @@ def run_test(
     except AdapterError as exc:
         result.status = "error"
         result.error = f"launch failed: {exc}"
+        # A prepared Capsule may have retained the failed guest launch before
+        # re-raising. Capture both success and recovery metadata before this
+        # early return; preparation failures simply leave both fields empty.
+        result.failure_capsule = _retained_failure(adapter)
+        result.failure_capsule_error = _retention_failure(adapter)
         result.duration_s = time.monotonic() - started
+        result.tokens = provider.tracker.snapshot()
         return result
 
     failed = False
