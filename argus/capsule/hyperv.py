@@ -28,11 +28,11 @@ class HyperVProvider(CapsuleProvider):
     The golden image is never attached directly. A session child disk and VM
     configuration live under ``vm_root/<session_id>`` and are removed on close.
 
-    Argus currently reaches the guest agent over an existing Hyper-V virtual
-    switch. Internal switches are accepted by default because the management OS
-    can reach them without placing the guest directly on the physical LAN.
-    External switches require an explicit opt-in; private switches cannot carry
-    host-to-guest HTTP traffic and are rejected.
+    Argus reaches the guest agent over an existing Hyper-V virtual switch.
+    Internal switches are accepted by default because the management OS can
+    reach them without placing the guest directly on the physical LAN. External
+    switches require explicit opt-in; private switches cannot carry host-to-
+    guest HTTP traffic and are rejected.
     """
 
     provider_name = "hyperv"
@@ -99,16 +99,17 @@ class HyperVProvider(CapsuleProvider):
             "$s.SwitchType.ToString()",
             15,
         ).strip()
-        if switch_type.lower() == "private":
+        lowered = switch_type.lower()
+        if lowered == "private":
             raise CapsuleError(
                 f"Hyper-V switch {name!r} is Private; the host cannot reach the guest agent"
             )
-        if switch_type.lower() == "external" and not allow_external:
+        if lowered == "external" and not allow_external:
             raise CapsuleError(
                 f"Hyper-V switch {name!r} is External; set allow_external_switch: true "
                 "only if exposing the Capsule to that network is intentional"
             )
-        if switch_type.lower() not in {"internal", "external"}:
+        if lowered not in {"internal", "external"}:
             raise CapsuleError(f"unsupported Hyper-V switch type for {name!r}: {switch_type!r}")
 
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
@@ -121,9 +122,7 @@ class HyperVProvider(CapsuleProvider):
                 "Capsule guest token is missing; set the configured guest_token_env on the host"
             )
         if settings.guest_input_mode not in {"safe", "semantic", "physical", "legacy"}:
-            raise CapsuleError(
-                "guest_input_mode must be safe/semantic or physical/legacy"
-            )
+            raise CapsuleError("guest_input_mode must be safe/semantic or physical/legacy")
         if settings.memory_mb < 1024:
             raise CapsuleError("capsule.memory_mb must be at least 1024")
         if settings.cpu_count < 1:
@@ -148,25 +147,29 @@ class HyperVProvider(CapsuleProvider):
         vm_name = f"Argus-{request.session_id[:12]}"
         child_vhd = root / "session.vhdx"
         vm_path = root / "vm"
-        created_vm = False
         try:
-            create_script = "\n".join(
-                [
-                    "$ErrorActionPreference='Stop'",
-                    f"New-VHD -Path {_ps_quote(str(child_vhd))} -ParentPath {_ps_quote(str(image))} -Differencing | Out-Null",
-                    "New-VM "
-                    f"-Name {_ps_quote(vm_name)} -Generation 2 "
-                    f"-MemoryStartupBytes {int(settings.memory_mb)}MB "
-                    f"-VHDPath {_ps_quote(str(child_vhd))} "
-                    f"-Path {_ps_quote(str(vm_path))} "
-                    f"-SwitchName {_ps_quote(settings.switch_name)} | Out-Null",
-                    f"Set-VMProcessor -VMName {_ps_quote(vm_name)} -Count {int(settings.cpu_count)}",
-                    f"Set-VM -Name {_ps_quote(vm_name)} -AutomaticCheckpointsEnabled $false -AutomaticStartAction Nothing -AutomaticStopAction TurnOff",
-                    f"Start-VM -Name {_ps_quote(vm_name)} | Out-Null",
-                ]
+            self._run_ps(
+                f"New-VHD -Path {_ps_quote(str(child_vhd))} "
+                f"-ParentPath {_ps_quote(str(image))} -Differencing | Out-Null",
+                45,
             )
-            self._run_ps(create_script, 60)
-            created_vm = True
+            self._run_ps(
+                "New-VM "
+                f"-Name {_ps_quote(vm_name)} -Generation 2 "
+                f"-MemoryStartupBytes {int(settings.memory_mb)}MB "
+                f"-VHDPath {_ps_quote(str(child_vhd))} "
+                f"-Path {_ps_quote(str(vm_path))} "
+                f"-SwitchName {_ps_quote(settings.switch_name)} | Out-Null",
+                45,
+            )
+            self._run_ps(
+                "$ErrorActionPreference='Stop'; "
+                f"Set-VMProcessor -VMName {_ps_quote(vm_name)} -Count {int(settings.cpu_count)}; "
+                f"Set-VM -Name {_ps_quote(vm_name)} -AutomaticCheckpointsEnabled $false "
+                "-AutomaticStartAction Nothing -AutomaticStopAction TurnOff; "
+                f"Start-VM -Name {_ps_quote(vm_name)} | Out-Null",
+                60,
+            )
 
             address = settings.guest_address.strip() or self._wait_for_guest_address(
                 vm_name, settings.boot_timeout_seconds
@@ -179,8 +182,13 @@ class HyperVProvider(CapsuleProvider):
                 address=address,
                 guest_port=settings.guest_port,
             )
-        except Exception:
-            self._cleanup_partial(vm_name, root, created_vm=created_vm)
+        except Exception as create_exc:
+            cleanup_exc = self._cleanup_partial(vm_name, root)
+            if cleanup_exc is not None:
+                raise CapsuleError(
+                    "Hyper-V Capsule creation failed and partial cleanup also failed: "
+                    f"create={create_exc}; cleanup={cleanup_exc}"
+                ) from create_exc
             raise
 
     def _wait_for_guest_address(self, vm_name: str, timeout_seconds: float) -> str:
@@ -202,26 +210,31 @@ class HyperVProvider(CapsuleProvider):
             "in the golden image, or configure capsule.guest_address explicitly."
         )
 
-    def _cleanup_partial(self, vm_name: str, root: Path, *, created_vm: bool) -> None:
-        if created_vm:
-            try:
-                self._run_ps(
-                    "$vm=Get-VM -Name " + _ps_quote(vm_name) + " -ErrorAction SilentlyContinue; "
-                    "if ($vm) { if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }; "
-                    "Remove-VM -VM $vm -Force }",
-                    45,
-                )
-            except Exception:
-                # Preserve the original create failure; the environment cannot
-                # receive a handle for a failed create. Best-effort filesystem
-                # cleanup below still removes anything not held by Hyper-V.
-                pass
+    def _remove_vm(self, vm_name: str) -> None:
+        self._run_ps(
+            "$vm=Get-VM -Name " + _ps_quote(vm_name) + " -ErrorAction SilentlyContinue; "
+            "if ($vm) { if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }; "
+            "Remove-VM -VM $vm -Force }",
+            45,
+        )
+
+    def _cleanup_partial(self, vm_name: str, root: Path) -> Optional[Exception]:
+        errors = []
+        try:
+            # Always query by name. New-VM may have succeeded even if the next
+            # setup command failed before create() could record that fact.
+            self._remove_vm(vm_name)
+        except Exception as exc:
+            errors.append(f"VM removal failed: {exc}")
         try:
             shutil.rmtree(root)
         except FileNotFoundError:
             pass
-        except OSError:
-            pass
+        except OSError as exc:
+            errors.append(f"session storage removal failed: {exc}")
+        if errors:
+            return CapsuleError("; ".join(errors))
+        return None
 
     def destroy(self, handle: CapsuleHandle) -> None:
         if handle.provider != self.provider_name:
@@ -231,12 +244,7 @@ class HyperVProvider(CapsuleProvider):
         root = Path(handle.root_dir)
         errors = []
         try:
-            self._run_ps(
-                "$vm=Get-VM -Name " + _ps_quote(handle.vm_name) + " -ErrorAction SilentlyContinue; "
-                "if ($vm) { if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }; "
-                "Remove-VM -VM $vm -Force }",
-                45,
-            )
+            self._remove_vm(handle.vm_name)
         except Exception as exc:
             errors.append(f"VM removal failed: {exc}")
         try:
