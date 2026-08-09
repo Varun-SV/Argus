@@ -3,6 +3,7 @@ import pytest
 from argus.adapters import create_adapter
 from argus.adapters.base import AdapterError, create_adapter as create_platform_adapter
 from argus.execution import (
+    CapsuleExecutionEnvironment,
     ExecutionEnvironmentError,
     LocalExecutionEnvironment,
     create_execution_environment,
@@ -18,8 +19,6 @@ def test_public_adapter_factory_routes_sessions_through_local_environment():
     assert environment.type_name == "cli"
     assert environment.isolated is False
     assert environment.location == "host"
-    # Existing callers that inspect PolicyAdapter.inner still work through the
-    # environment compatibility delegation.
     assert environment.inner.type_name == "cli"
 
 
@@ -123,8 +122,6 @@ def test_local_environment_surfaces_cleanup_failure_without_hiding_launch_contex
     message = str(exc_info.value)
     assert "target launch failed" in message
     assert "cleanup failed" in message
-    # close() resets preparation state in its finally even when adapter cleanup
-    # itself fails.
     assert environment._prepared is False
 
 
@@ -146,6 +143,20 @@ def test_environment_metadata_describes_shared_local_execution():
     assert environment.describe_environment() == "local:fake (host, shared)"
 
 
-def test_environment_factory_rejects_unimplemented_execution_location():
-    with pytest.raises(ExecutionEnvironmentError, match="available: local"):
-        create_execution_environment("cli", environment_type="capsule")
+def test_environment_factory_creates_capsule_without_allocating_it():
+    environment = create_execution_environment(
+        "cli",
+        environment_type="capsule",
+        capsule_config={"guest_token": "test-token"},
+    )
+
+    assert isinstance(environment, CapsuleExecutionEnvironment)
+    assert environment.environment_type == "capsule"
+    assert environment.type_name == "cli"
+    assert environment.isolated is True
+    assert environment._prepared is False
+
+
+def test_environment_factory_rejects_unknown_execution_location():
+    with pytest.raises(ExecutionEnvironmentError, match="available: local, capsule"):
+        create_execution_environment("cli", environment_type="spaceship")
