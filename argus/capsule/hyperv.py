@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -15,6 +17,7 @@ from argus.capsule.base import (
     CapsuleHandle,
     CapsuleProvider,
     CapsuleRequest,
+    FailureCapsule,
 )
 
 
@@ -275,6 +278,40 @@ class HyperVProvider(CapsuleProvider):
             f"Capsule {vm_name!r} did not report an IPv4 address within "
             f"{timeout_seconds:.0f}s. Ensure Hyper-V Key-Value Pair Exchange is enabled."
         )
+
+    def retain_failure(self, handle: CapsuleHandle, reason: str) -> FailureCapsule:
+        """Save VM runtime state and retain its session storage for reproduction."""
+        if handle.provider != self.provider_name:
+            raise CapsuleError(
+                f"HyperVProvider cannot retain handle owned by {handle.provider!r}"
+            )
+        root = Path(handle.root_dir)
+        if not root.is_dir():
+            raise CapsuleError(f"Capsule session storage is missing: {root}")
+
+        vm_state = self._run_ps(
+            "$vm=Get-VM -Name " + _ps_quote(handle.vm_name) + " -ErrorAction Stop; "
+            "if ($vm.State -eq 'Running') { Save-VM -VM $vm -ErrorAction Stop | Out-Null; "
+            "$vm=Get-VM -Name $vm.Name -ErrorAction Stop }; $vm.State.ToString()",
+            60,
+        ).strip().splitlines()[-1]
+        retained_at = datetime.now(timezone.utc).isoformat()
+        failure = FailureCapsule(
+            failure_id=handle.session_id,
+            session_id=handle.session_id,
+            provider=self.provider_name,
+            vm_name=handle.vm_name,
+            root_dir=str(root),
+            reason=(reason or "test failure")[:2000],
+            retained_at=retained_at,
+            vm_state=vm_state or "Saved",
+        )
+        manifest = root / "failure-capsule.json"
+        manifest.write_text(
+            json.dumps(failure.to_dict(), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return failure
 
     def _remove_vm(self, vm_name: str) -> None:
         self._run_ps(
