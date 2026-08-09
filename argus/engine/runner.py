@@ -251,8 +251,21 @@ def run_test(
                 sr.index = index
                 _attach_screenshot(sr, adapter, index, shots_dir)
             elif step.text == "close" and step.kind == "teardown":
-                adapter.close()
-                sr = StepResult(index=index, kind="teardown", text="close target", status="pass")
+                try:
+                    adapter.close()
+                except Exception as exc:
+                    retention_error = _retention_failure(adapter)
+                    if retention_error is None:
+                        raise
+                    sr = StepResult(
+                        index=index,
+                        kind="teardown",
+                        text="close target",
+                        status="pass",
+                        note=f"Failure Capsule retention warning: {exc}",
+                    )
+                else:
+                    sr = StepResult(index=index, kind="teardown", text="close target", status="pass")
             else:
                 sr = _run_nl_step_with_retries(
                     step, index, provider, adapter, use_vision, spec.retries,
@@ -268,12 +281,16 @@ def run_test(
             if on_step:
                 on_step(sr)
     finally:
-        try:
-            adapter.close()
-        except Exception:
-            # Preserve original test semantics, but collect structured retention
-            # recovery metadata below instead of silently losing that failure.
-            pass
+        # If explicit teardown already failed to retain a Failure Capsule, do
+        # not retry the retention operation or fall through to destructive
+        # cleanup. The environment has preserved the handle for recovery.
+        if _retention_failure(adapter) is None:
+            try:
+                adapter.close()
+            except Exception:
+                # Preserve original test semantics, but collect structured
+                # retention recovery metadata below instead of hiding it.
+                pass
 
     result.failure_capsule = _retained_failure(adapter)
     result.failure_capsule_error = _retention_failure(adapter)
