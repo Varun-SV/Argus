@@ -96,14 +96,26 @@ class RetentionClient:
         self.closed += 1
 
 
+class FailingLaunchClient(RetentionClient):
+    def launch(self, adapter_type: str, target: str, input_mode: str) -> dict:
+        self.launched = (adapter_type, target, input_mode)
+        raise CapsuleError("guest application launch failed")
+
+
 class ExhaustedBudget:
     def exhausted(self):
         return "time budget exhausted"
 
 
-def _environment(tmp_path: Path, *, retain_on_failure: bool, provider=None):
+def _environment(
+    tmp_path: Path,
+    *,
+    retain_on_failure: bool,
+    provider=None,
+    client=None,
+):
     provider = provider or RetentionProvider(tmp_path / "capsule")
-    client = RetentionClient()
+    client = client or RetentionClient()
     settings = CapsuleSettings(
         provider="hyperv",
         image="unused.vhdx",
@@ -148,6 +160,76 @@ teardown:
     assert result.failure_capsule["vm_state"] == "Saved"
     assert "process_running" in result.failure_capsule["reason"]
     assert result.failure_capsule_error is None
+
+
+def test_target_launch_error_retains_prepared_capsule(tmp_path):
+    client = FailingLaunchClient()
+    environment, provider, client = _environment(
+        tmp_path,
+        retain_on_failure=True,
+        client=client,
+    )
+    spec = parse_spec(
+        """\
+name: retain target launch failure
+target:
+  adapter: desktop-gui
+  launch: missing.exe
+steps:
+  - assert:
+      process_running: true
+"""
+    )
+
+    result = run_test(spec, FakeProvider([]), environment)
+
+    assert result.status == "error"
+    assert "guest application launch failed" in (result.error or "")
+    assert client.ready is True
+    assert client.launched == ("desktop-gui", "missing.exe", "physical")
+    assert client.closed == 0
+    assert len(provider.retained) == 1
+    assert "target launch failed" in provider.retained[0][1]
+    assert provider.destroyed == []
+    assert result.failure_capsule is not None
+    assert result.failure_capsule["failure_id"] == "failure123"
+    assert result.failure_capsule_error is None
+
+
+def test_target_launch_retention_failure_reports_recovery_without_destroy(tmp_path):
+    provider = FailingRetentionProvider(tmp_path / "capsule")
+    client = FailingLaunchClient()
+    environment, provider, client = _environment(
+        tmp_path,
+        retain_on_failure=True,
+        provider=provider,
+        client=client,
+    )
+    spec = parse_spec(
+        """\
+name: target launch retention failure
+target:
+  adapter: desktop-gui
+  launch: missing.exe
+steps:
+  - assert:
+      process_running: true
+"""
+    )
+
+    result = run_test(spec, FakeProvider([]), environment)
+
+    assert result.status == "error"
+    assert "guest application launch failed" in (result.error or "")
+    assert len(provider.retained) == 1
+    assert provider.destroyed == []
+    assert client.closed == 0
+    assert result.failure_capsule is None
+    assert result.failure_capsule_error is not None
+    assert result.failure_capsule_error["status"] == "retention_failed"
+    assert result.failure_capsule_error["vm_name"] == "Argus-failure-test"
+    assert result.failure_capsule_error["root_dir"] == str(provider.root)
+    assert "manifest persistence failed" in result.failure_capsule_error["error"]
 
 
 def test_passing_run_still_destroys_ephemeral_capsule(tmp_path):
