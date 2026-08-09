@@ -4,12 +4,17 @@ The host never sends mouse/keyboard input to its own desktop. It sends Argus
 adapter actions to this service; the service creates the normal platform adapter
 *inside the guest* and therefore all physical/semantic input stays in the VM.
 
-Golden images should start this module in the interactive test-user session::
+Golden images should start this module in the interactive test-user session.
+For the MVP, prefer a one-time token file that exists in the golden image and is
+consumed from the per-session differencing disk before the server starts::
 
     python -m argus.capsule.guest_agent --host 0.0.0.0 --port 8765 \
-        --token-env ARGUS_CAPSULE_GUEST_TOKEN
+        --token-file C:\\ProgramData\\Argus\\guest-token.once
 
-A token is mandatory when binding to a non-loopback address.
+``--token-env`` remains available for process-scoped bootstrap environments, but
+the variable is removed from ``os.environ`` immediately after startup. Do not
+store the control-plane secret in the interactive test user's persistent
+environment. A token is mandatory when binding to a non-loopback address.
 """
 
 from __future__ import annotations
@@ -22,10 +27,44 @@ import os
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from argus.adapters.base import Adapter, AdapterError, Observation, create_adapter as create_platform_adapter
+
+
+def _consume_control_token(*, token_file: str = "", token_env: str = "") -> str:
+    """Load the guest control-plane token and remove bootstrap material.
+
+    The application under test is launched as a child of this process through a
+    normal platform adapter. Any secret left in ``os.environ`` would therefore
+    be inherited by that workload. Token bootstrap must be one-shot: a token
+    file is deleted before the server starts, and environment-backed bootstrap
+    values are popped immediately after reading.
+    """
+    token = ""
+    path = Path(token_file).expanduser() if token_file else None
+    if path is not None:
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise AdapterError(f"cannot read guest token file {path}: {exc}") from exc
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise AdapterError(
+                f"guest token file {path} could not be consumed/deleted safely: {exc}"
+            ) from exc
+    elif token_env:
+        token = os.environ.pop(token_env, "").strip()
+
+    # Always scrub the conventional name as well as the configured bootstrap
+    # name. This is intentionally done even when token_file supplied the token.
+    for name in {token_env, "ARGUS_CAPSULE_GUEST_TOKEN"}:
+        if name:
+            os.environ.pop(name, None)
+    return token
 
 
 def _observation_to_dict(obs: Observation) -> dict:
@@ -224,11 +263,18 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Argus Capsule guest agent")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--token", default="")
+    parser.add_argument("--token-file", default="")
     parser.add_argument("--token-env", default="ARGUS_CAPSULE_GUEST_TOKEN")
     args = parser.parse_args(argv)
 
-    token = args.token or os.environ.get(args.token_env, "")
+    try:
+        token = _consume_control_token(
+            token_file=args.token_file,
+            token_env=args.token_env,
+        )
+    except AdapterError as exc:
+        parser.error(str(exc))
+
     loopback_hosts = {"127.0.0.1", "localhost", "::1"}
     if args.host not in loopback_hosts and not token:
         parser.error("a guest token is required when binding outside loopback")
