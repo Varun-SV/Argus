@@ -54,7 +54,7 @@ execution:
   # capsule:
   #   provider: hyperv
   #   image: C:\\Argus\\images\\windows-11-clean.vhdx
-  #   switch_name: Default Switch   # Internal Hyper-V switch recommended
+  #   switch_name: Default Switch   # must be an Internal Hyper-V switch in PR3
   #   vm_root: C:\\Argus\\capsules
   #   memory_mb: 4096
   #   cpu_count: 2
@@ -64,7 +64,7 @@ execution:
   #   guest_address: null           # optional static guest address
   #   boot_timeout_seconds: 120
   #   agent_timeout_seconds: 60
-  #   allow_external_switch: false
+  #   allow_external_switch: false  # reserved; true is rejected until transport is confidential
 
 # Knowledge engine — persistent graph + vector learning store.
 # Requires: pip install argus-app-testing[knowledge]
@@ -241,16 +241,23 @@ def _env_float(name: str, default: float) -> float:
     return float(value) if value not in {None, ""} else float(default)
 
 
+def _strict_bool(value, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean (true/false)")
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None:
-        return bool(default)
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be true/false")
+        return _strict_bool(default, name)
+    return _strict_bool(value, name)
 
 
 def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
@@ -304,7 +311,10 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             agent_timeout_seconds=float(
                 capsule_raw.get("agent_timeout_seconds") or 60.0
             ),
-            allow_external_switch=bool(capsule_raw.get("allow_external_switch", False)),
+            allow_external_switch=_strict_bool(
+                capsule_raw.get("allow_external_switch", False),
+                "execution.capsule.allow_external_switch",
+            ),
         ),
     )
 
