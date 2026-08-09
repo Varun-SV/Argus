@@ -66,6 +66,7 @@ execution:
   #   boot_timeout_seconds: 120
   #   agent_timeout_seconds: 60
   #   allow_external_switch: false  # reserved; true is rejected until transport is confidential
+  #   retain_on_failure: false      # save failed VM state instead of deleting the Capsule
 
 # Knowledge engine — persistent graph + vector learning store.
 # Requires: pip install argus-app-testing[knowledge]
@@ -111,6 +112,7 @@ class CapsuleConfig:
     boot_timeout_seconds: float = 120.0
     agent_timeout_seconds: float = 60.0
     allow_external_switch: bool = False
+    retain_on_failure: bool = False
 
 
 @dataclass
@@ -191,6 +193,9 @@ class ArgusConfig:
             ),
             "allow_external_switch": _env_bool(
                 "ARGUS_CAPSULE_ALLOW_EXTERNAL_SWITCH", cc.allow_external_switch
+            ),
+            "retain_on_failure": _env_bool(
+                "ARGUS_CAPSULE_RETAIN_ON_FAILURE", cc.retain_on_failure
             ),
         }
         return create_execution_environment(
@@ -330,6 +335,10 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             allow_external_switch=_strict_bool(
                 capsule_raw.get("allow_external_switch", False),
                 "execution.capsule.allow_external_switch",
+            ),
+            retain_on_failure=_strict_bool(
+                capsule_raw.get("retain_on_failure", False),
+                "execution.capsule.retain_on_failure",
             ),
         ),
     )
