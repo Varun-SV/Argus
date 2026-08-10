@@ -244,6 +244,26 @@ All existing transfer properties remain in force:
 - host output-tree pinning;
 - transactional collection rollback.
 
+### POSIX artifact output authority
+
+An open POSIX directory descriptor does not prevent another process with sufficient directory permissions from renaming that directory and replacing its old pathname. PR7 therefore does not treat an end-of-transaction inode comparison as the write barrier.
+
+For Linux Capsule collection, Argus first creates/opens every output-directory component relative to an already pinned parent descriptor. The production `GuestAgentClient` path—including `SecureGuestAgentClient`, which subclasses it—then performs every mutable artifact operation relative to those opened descriptors:
+
+```text
+pinned parent directory fd
+        ↓
+os.open(temp, O_EXCL|O_NOFOLLOW, dir_fd=parent_fd)
+        ↓
+stream + checksum + snapshot recheck
+        ↓
+os.rename(temp, final, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+```
+
+Failed temporary writes use `os.unlink(..., dir_fd=parent_fd)`, and transaction rollback removes already committed artifacts through the same pinned parent descriptor. A same-user rename/replacement can therefore make the lexical path fail the final identity check, but it cannot redirect artifact bytes or rollback operations into the replacement tree.
+
+Windows keeps its existing rename-denying handle strategy. Injected non-`GuestAgentClient` compatibility clients retain the historical `Path` API; the secure built-in Linux path never relies on that compatibility fallback.
+
 ## Provider capabilities
 
 `CapsuleProviderCapabilities` makes provider differences explicit rather than encoding them in scattered platform conditionals. A provider advertises:
@@ -264,7 +284,7 @@ The secure environment also uses the provider contract to resolve `guest_os: aut
 
 ## Validation boundary
 
-Hosted CI can validate provider selection, XML generation, ordering, rollback behavior, path semantics, network-pool and host-route allocation, same-process concurrent allocation, ambiguous-create reconciliation, capability enforcement, staged POSIX execute authorization, aarch64 NVRAM teardown, and simulated libvirt command flows on Ubuntu and Windows runners. It cannot create a real nested KVM/libvirt Capsule in GitHub-hosted CI.
+Hosted CI can validate provider selection, XML generation, ordering, rollback behavior, path semantics, network-pool and host-route allocation, same-process concurrent allocation, ambiguous-create reconciliation, capability enforcement, staged POSIX execute authorization, descriptor-relative POSIX collection/rollback under directory replacement, aarch64 NVRAM teardown, and simulated libvirt command flows on Ubuntu and Windows runners. It cannot create a real nested KVM/libvirt Capsule in GitHub-hosted CI.
 
 Before claiming hardware-backed Linux isolation, run a manual/on-prem smoke test that verifies:
 
@@ -278,13 +298,14 @@ Before claiming hardware-backed Linux isolation, run a manual/on-prem smoke test
 8. the nwfilter blocks arbitrary guest → host and guest → LAN traffic;
 9. only the host can reach the secure guest-agent control port;
 10. staging/collection work through the existing guest protocol and staged Linux targets execute after bounded `u+x` authorization;
-11. Linux CLI and Xvfb desktop tests execute inside the guest;
-12. an aarch64 golden image boots through libvirt-selected EFI firmware on an aarch64 host;
-13. aarch64 teardown removes managed NVRAM with the domain;
-14. a mismatched `libvirt_arch` pin fails before VM allocation;
-15. normal teardown removes domain/network/filter/session storage;
-16. a forced mid-create response loss is reconciled by exact resource name and cleaned up;
-17. failed ownership reconciliation preserves session storage for manual recovery;
-18. a forced mid-create failure never deletes a pre-existing domain/network/filter;
-19. path-like or traversal session IDs are rejected before storage creation;
-20. failure retention powers off and preserves forensic disk/config state.
+11. renaming/replacing a Linux artifact parent during collection cannot redirect bytes or rollback into the replacement tree;
+12. Linux CLI and Xvfb desktop tests execute inside the guest;
+13. an aarch64 golden image boots through libvirt-selected EFI firmware on an aarch64 host;
+14. aarch64 teardown removes managed NVRAM with the domain;
+15. a mismatched `libvirt_arch` pin fails before VM allocation;
+16. normal teardown removes domain/network/filter/session storage;
+17. a forced mid-create response loss is reconciled by exact resource name and cleaned up;
+18. failed ownership reconciliation preserves session storage for manual recovery;
+19. a forced mid-create failure never deletes a pre-existing domain/network/filter;
+20. path-like or traversal session IDs are rejected before storage creation;
+21. failure retention powers off and preserves forensic disk/config state.
