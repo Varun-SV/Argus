@@ -20,6 +20,7 @@ from argus.capsule.files import (
     enforce_total_bytes,
     normalize_relative_path,
     project_source_path,
+    workspace_path,
 )
 from argus.capsule.guest import GuestAdapterProxy, GuestAgentClient
 from argus.execution.base import (
@@ -230,6 +231,19 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         """Fail closed on invalid collection declarations before target launch."""
         return self._normalize_artifact_paths(paths)
 
+    @staticmethod
+    def _rollback_collected_artifacts(output_dir: Path, collected: list[dict]) -> list[str]:
+        """Remove already committed artifacts when a later member of the set fails."""
+        errors = []
+        for item in reversed(collected):
+            relative = str(item.get("path") or "")
+            try:
+                committed = workspace_path(output_dir, relative, must_exist=True)
+                committed.unlink()
+            except Exception as exc:
+                errors.append(f"{relative}: {exc}")
+        return errors
+
     def collect_artifacts(self, paths, output_dir: Path) -> list[dict]:
         if not self._workspace_ready or self._client is None:
             raise ExecutionEnvironmentError("Capsule artifact workspace is not available")
@@ -242,11 +256,11 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             try:
                 data = self._client.collect_file(relative, output_dir, info=info)
             except Exception as exc:
-                error = ExecutionEnvironmentError(
-                    f"Capsule artifact collection failed for {relative}: {exc}"
-                )
-                error.collected = list(collected)
-                raise error from exc
+                rollback_errors = self._rollback_collected_artifacts(output_dir, collected)
+                detail = f"Capsule artifact collection failed for {relative}: {exc}"
+                if rollback_errors:
+                    detail += "; artifact rollback also failed: " + "; ".join(rollback_errors)
+                raise ExecutionEnvironmentError(detail) from exc
             collected.append(
                 {
                     "path": relative,
