@@ -152,20 +152,28 @@ class IsolatedHyperVProvider(HyperVProvider):
         )
         self._run_ps("; ".join(commands), 45)
 
-    def _disable_host_file_copy(self, vm_name: str) -> None:
-        # Fail closed if the expected integration service cannot be identified,
-        # or if Hyper-V reports it still enabled after the disable command.
+    def _disable_and_verify_integration_service(self, vm_name: str, service_name: str) -> None:
+        quoted_name = _ps_quote(service_name)
         self._run_ps(
             "$ErrorActionPreference='Stop'; "
             "$svc=Get-VMIntegrationService -VMName " + _ps_quote(vm_name) +
-            " | Where-Object { $_.Name -eq 'Guest Service Interface' }; "
-            "if (-not $svc) { throw 'Guest Service Interface integration service not found' }; "
+            " | Where-Object { $_.Name -eq " + quoted_name + " }; "
+            "if (-not $svc) { throw (" + quoted_name + " + ' integration service not found') }; "
             "if ($svc.Enabled) { Disable-VMIntegrationService -VMIntegrationService $svc -ErrorAction Stop }; "
             "$verify=Get-VMIntegrationService -VMName " + _ps_quote(vm_name) +
-            " | Where-Object { $_.Name -eq 'Guest Service Interface' }; "
-            "if (-not $verify -or $verify.Enabled) { throw 'Guest Service Interface remains enabled' }",
+            " | Where-Object { $_.Name -eq " + quoted_name + " }; "
+            "if (-not $verify -or $verify.Enabled) { throw (" + quoted_name + " + ' remains enabled') }",
             20,
         )
+
+    def _disable_host_file_copy(self, vm_name: str) -> None:
+        self._disable_and_verify_integration_service(vm_name, "Guest Service Interface")
+
+    def _disable_host_kvp(self, vm_name: str) -> None:
+        # KVP is needed briefly so Hyper-V can report the guest address. Once the
+        # address is attested, disable it before returning the live Capsule so
+        # custom host↔guest key/value data cannot bypass PR5 staging/collection.
+        self._disable_and_verify_integration_service(vm_name, "Key-Value Pair Exchange")
 
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
         self._ensure_host()
@@ -251,6 +259,7 @@ class IsolatedHyperVProvider(HyperVProvider):
                 settings.boot_timeout_seconds,
                 requested_address=settings.guest_address,
             )
+            self._disable_host_kvp(vm_name)
             return CapsuleHandle(
                 session_id=request.session_id,
                 provider=self.provider_name,
