@@ -56,6 +56,13 @@ class LibvirtProvider(CapsuleProvider):
         egress_allowlist=False,
     )
     _DEFAULT_SYSTEM_VM_ROOT = Path("/var/lib/libvirt/images/argus-capsules")
+    _DEFAULT_NETWORK_POOL = ipaddress.ip_network("10.240.0.0/12")
+    _RFC1918_POOLS = (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+    )
+    _SESSION_PREFIXLEN = 24
 
     def __init__(
         self,
@@ -142,34 +149,110 @@ class LibvirtProvider(CapsuleProvider):
         digest = hashlib.sha256(("mac:" + session_id).encode("utf-8")).digest()
         return f"52:54:00:{digest[0]:02x}:{digest[1]:02x}:{digest[2]:02x}"
 
-    @staticmethod
-    def _default_network(session_id: str) -> ipaddress.IPv4Network:
-        # 10.240.0.0/12 provides 4096 private /24 candidates. A session hash
-        # makes simultaneous test collisions unlikely; a site can pin an
-        # explicit CIDR when its host routing layout requires it.
-        digest = hashlib.sha256(("network:" + session_id).encode("utf-8")).digest()
-        slot = int.from_bytes(digest[:2], "big") % 4096
-        second = 240 + (slot // 256)
-        third = slot % 256
-        return ipaddress.ip_network(f"10.{second}.{third}.0/24")
-
     @classmethod
-    def _network_for(cls, session_id: str, configured: str) -> ipaddress.IPv4Network:
-        if not str(configured or "").strip():
-            return cls._default_network(session_id)
+    def _network_pool(cls, configured: str) -> ipaddress.IPv4Network:
+        """Validate and return the RFC1918 pool used for /24 session networks."""
+        raw = str(configured or "").strip()
+        if not raw:
+            return cls._DEFAULT_NETWORK_POOL
         try:
-            network = ipaddress.ip_network(str(configured).strip(), strict=True)
+            network = ipaddress.ip_network(raw, strict=True)
         except ValueError as exc:
             raise CapsuleError(
                 f"capsule.libvirt_network_cidr must be a canonical IPv4 network: {configured!r}"
             ) from exc
         if not isinstance(network, ipaddress.IPv4Network):
             raise CapsuleError("capsule.libvirt_network_cidr must be IPv4")
-        if not network.is_private or network.is_link_local or network.is_multicast:
-            raise CapsuleError("capsule.libvirt_network_cidr must be a private non-link-local network")
-        if network.num_addresses < 4:
-            raise CapsuleError("capsule.libvirt_network_cidr needs at least four IPv4 addresses")
+        if not any(network.subnet_of(private) for private in cls._RFC1918_POOLS):
+            raise CapsuleError(
+                "capsule.libvirt_network_cidr must be contained in RFC1918 private space "
+                "(10/8, 172.16/12, or 192.168/16)"
+            )
+        if network.prefixlen > cls._SESSION_PREFIXLEN:
+            raise CapsuleError(
+                "capsule.libvirt_network_cidr must contain at least one /24 session subnet"
+            )
         return network
+
+    @classmethod
+    def _candidate_networks(
+        cls,
+        session_id: str,
+        pool: ipaddress.IPv4Network,
+    ):
+        slots = 1 << (cls._SESSION_PREFIXLEN - pool.prefixlen)
+        digest = hashlib.sha256(("network:" + session_id).encode("utf-8")).digest()
+        start = int.from_bytes(digest[:8], "big") % slots
+        base = int(pool.network_address)
+        for offset in range(slots):
+            slot = (start + offset) % slots
+            yield ipaddress.ip_network(
+                (base + (slot << (32 - cls._SESSION_PREFIXLEN)), cls._SESSION_PREFIXLEN)
+            )
+
+    @classmethod
+    def _default_network(cls, session_id: str) -> ipaddress.IPv4Network:
+        return next(cls._candidate_networks(session_id, cls._DEFAULT_NETWORK_POOL))
+
+    @classmethod
+    def _network_for(cls, session_id: str, configured: str) -> ipaddress.IPv4Network:
+        """Compatibility helper returning the deterministic first /24 in a pool.
+
+        Real allocation uses :meth:`_allocate_network`, which also rejects
+        overlap with every currently defined libvirt network.
+        """
+        return next(cls._candidate_networks(session_id, cls._network_pool(configured)))
+
+    @staticmethod
+    def _network_from_xml(raw: str, name: str) -> list[ipaddress.IPv4Network]:
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError as exc:
+            raise CapsuleError(f"libvirt returned invalid XML for network {name!r}") from exc
+        result: list[ipaddress.IPv4Network] = []
+        for ip_node in root.findall("ip"):
+            address = str(ip_node.attrib.get("address") or "").strip()
+            if not address:
+                continue
+            prefix = str(ip_node.attrib.get("prefix") or "").strip()
+            netmask = str(ip_node.attrib.get("netmask") or "").strip()
+            suffix = prefix or netmask
+            if not suffix:
+                continue
+            try:
+                interface = ipaddress.ip_interface(f"{address}/{suffix}")
+            except ValueError as exc:
+                raise CapsuleError(
+                    f"libvirt network {name!r} reported invalid IPv4 configuration"
+                ) from exc
+            if isinstance(interface, ipaddress.IPv4Interface):
+                result.append(interface.network)
+        return result
+
+    def _defined_networks(self, uri: str) -> list[ipaddress.IPv4Network]:
+        names = self._list_names(
+            self._virsh_cmd(uri, "net-list", "--all", "--name", timeout=15)
+        )
+        occupied: list[ipaddress.IPv4Network] = []
+        for name in sorted(names):
+            raw = self._virsh_cmd(uri, "net-dumpxml", name, timeout=15)
+            occupied.extend(self._network_from_xml(raw, name))
+        return occupied
+
+    def _allocate_network(
+        self,
+        uri: str,
+        session_id: str,
+        configured: str,
+    ) -> ipaddress.IPv4Network:
+        pool = self._network_pool(configured)
+        occupied = self._defined_networks(uri)
+        for candidate in self._candidate_networks(session_id, pool):
+            if not any(candidate.overlaps(existing) for existing in occupied):
+                return candidate
+        raise CapsuleError(
+            f"no free /24 Capsule subnet remains in libvirt_network_cidr pool {pool}"
+        )
 
     @staticmethod
     def _host_arch(configured: str) -> str:
@@ -298,10 +381,13 @@ class LibvirtProvider(CapsuleProvider):
         ET.SubElement(root, "currentMemory", {"unit": "MiB"}).text = str(int(memory_mb))
         ET.SubElement(root, "vcpu", {"placement": "static"}).text = str(int(cpu_count))
 
-        os_node = ET.SubElement(root, "os")
+        os_attrs = {"firmware": "efi"} if arch == "aarch64" else {}
+        os_node = ET.SubElement(root, "os", os_attrs)
         type_attrs = {"arch": arch}
         if machine:
             type_attrs["machine"] = machine
+        elif arch == "aarch64":
+            type_attrs["machine"] = "virt"
         ET.SubElement(os_node, "type", type_attrs).text = "hvm"
         ET.SubElement(os_node, "boot", {"dev": "hd"})
 
@@ -407,9 +493,12 @@ class LibvirtProvider(CapsuleProvider):
         if not requested:
             return
         try:
-            normalized = str(ipaddress.ip_address(requested))
+            normalized_address = ipaddress.ip_address(requested)
         except ValueError as exc:
             raise CapsuleError(f"capsule.guest_address must be a valid IPv4 address: {requested!r}") from exc
+        if not isinstance(normalized_address, ipaddress.IPv4Address):
+            raise CapsuleError("capsule.guest_address must be IPv4 for the PR7 libvirt provider")
+        normalized = str(normalized_address)
         if normalized != expected:
             raise CapsuleError(
                 "libvirt guest_address must match the fixed per-session DHCP lease "
@@ -591,10 +680,10 @@ class LibvirtProvider(CapsuleProvider):
             raise CapsuleError(f"Capsule golden image not found: {settings.image!r}")
         image = image.resolve()
 
-        # Validate every caller-controlled session parameter before creating the
-        # session directory so a bad config is retryable with the same session id.
+        # Validate caller-controlled session parameters and provider state before
+        # creating the session directory so a bad config is retryable.
         vm_name, network_name, filter_name, bridge_name = self._resource_names(request.session_id)
-        network = self._network_for(request.session_id, settings.libvirt_network_cidr)
+        network = self._allocate_network(uri, request.session_id, settings.libvirt_network_cidr)
         host_ip = str(network.network_address + 1)
         guest_ip = str(network.network_address + 2)
         self._validate_requested_address(settings.guest_address, guest_ip)
@@ -666,9 +755,14 @@ class LibvirtProvider(CapsuleProvider):
                 ),
             )
 
-            # Recheck immediately before provider creation so an object that
-            # appeared while the overlay/XML were prepared is never redefined.
+            # Recheck both object names and subnet occupancy immediately before
+            # provider creation. This catches another Capsule created while the
+            # overlay/XML were being prepared.
             self._assert_resources_available(uri, vm_name, network_name, filter_name)
+            if any(network.overlaps(existing) for existing in self._defined_networks(uri)):
+                raise CapsuleError(
+                    f"libvirt Capsule subnet {network} became occupied during allocation"
+                )
 
             # Define all policy/resources before the first guest CPU executes.
             self._virsh_cmd(uri, "nwfilter-define", str(filter_xml), timeout=30)
