@@ -15,6 +15,7 @@ import argparse
 import ssl
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
+from urllib.parse import urlparse
 
 from argus.adapters.base import AdapterError
 from argus.capsule.files import validate_session_id
@@ -57,15 +58,50 @@ class SecureGuestAgentHandler(GuestAgentHandler):
         self.server.auth_session_id = session_id
         self._send(HTTPStatus.OK, {"ok": True, "session_id": session_id})
 
-    def _dispatch(self) -> None:
-        from urllib.parse import urlparse
+    def _secure_health(self) -> None:
+        if not self._authorized():
+            self._send(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
+            return
+        self._send(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "service": "argus-guest-agent",
+                "secure": True,
+                # This is a non-secret binding identifier. It lets the host
+                # recover if the rotation response is lost without exposing the
+                # active or bootstrap bearer.
+                "auth_session_id": self.server.auth_session_id,
+            },
+        )
 
+    def _begin_bound_files(self) -> None:
+        if not self._authorized():
+            self._send(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
+            return
+        body = self._payload()
+        session_id = validate_session_id(str(body.get("session_id") or ""))
+        if self.server.auth_session_id and session_id != self.server.auth_session_id:
+            raise AdapterError(
+                "file workspace session does not match the rotated Capsule auth session"
+            )
+        data = self.server.state.begin_files(session_id)
+        self._send(HTTPStatus.OK, {"ok": True, **data})
+
+    def _dispatch(self) -> None:
         parsed = urlparse(self.path)
-        if self.command == "POST" and parsed.path == "/v1/auth/rotate":
-            try:
+        try:
+            if self.command == "GET" and parsed.path == "/v1/health":
+                self._secure_health()
+                return
+            if self.command == "POST" and parsed.path == "/v1/auth/rotate":
                 self._rotate_auth()
-            except (AdapterError, ValueError) as exc:
-                self._send(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+            if self.command == "POST" and parsed.path == "/v1/files/begin":
+                self._begin_bound_files()
+                return
+        except (AdapterError, ValueError) as exc:
+            self._send(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
         super()._dispatch()
 
