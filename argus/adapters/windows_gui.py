@@ -41,6 +41,16 @@ def _require_pywinauto():
         ) from exc
 
 
+def _windows_launch_args(target: str, *, literal: bool = False) -> List[str]:
+    """Return Windows subprocess argv without reparsing a staged literal path."""
+    if literal:
+        return [str(target)]
+    args = shlex.split(str(target), posix=False)
+    if not args:
+        raise AdapterError("Windows launch target cannot be empty")
+    return args
+
+
 class WindowsGUIAdapter(Adapter):
     type_name = "desktop-gui"
 
@@ -74,8 +84,16 @@ class WindowsGUIAdapter(Adapter):
     _SINGLETONS = {"explorer.exe", "explorer"}
 
     def launch(self, target: str) -> None:
+        self._launch_target(target, literal=False)
+
+    def launch_literal(self, target: str) -> None:
+        """Launch one exact staged executable path as a single argv element."""
+        self._launch_target(target, literal=True)
+
+    def _launch_target(self, target: str, *, literal: bool = False) -> None:
         Application, Desktop = _require_pywinauto()
-        exe_name = shlex.split(target, posix=False)[0].lower().split("\\")[-1]
+        args = _windows_launch_args(target, literal=literal)
+        exe_name = args[0].lower().split("\\")[-1]
 
         # Phase 0: system singleton — attach to existing process, don't spawn.
         if exe_name in self._SINGLETONS:
@@ -90,7 +108,7 @@ class WindowsGUIAdapter(Adapter):
                 ) from exc
 
         try:
-            self._proc = subprocess.Popen(shlex.split(target, posix=False))
+            self._proc = subprocess.Popen(args)
         except OSError as exc:
             raise AdapterError(f"could not launch '{target}': {exc}") from exc
 
@@ -132,7 +150,7 @@ class WindowsGUIAdapter(Adapter):
 
         # Phase 3: last resort — find a window whose title/class matches the exe.
         # This exists only in explicit legacy/physical mode. SafeWindowsGUIAdapter
-        # overrides launch and never reaches this title-only fallback.
+        # overrides _launch_target and never reaches this title-only fallback.
         deadline2 = time.monotonic() + 5
         while time.monotonic() < deadline2:
             try:
