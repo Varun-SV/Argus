@@ -19,12 +19,16 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -37,6 +41,7 @@ from argus.capsule.base import (
     CapsuleRequest,
     FailureCapsule,
 )
+from argus.capsule.files import validate_session_id
 
 
 class LibvirtProvider(CapsuleProvider):
@@ -63,6 +68,7 @@ class LibvirtProvider(CapsuleProvider):
         ipaddress.ip_network("192.168.0.0/16"),
     )
     _SESSION_PREFIXLEN = 24
+    _PROCESS_NETWORK_ALLOCATION_LOCK = threading.Lock()
 
     def __init__(
         self,
@@ -126,6 +132,16 @@ class LibvirtProvider(CapsuleProvider):
         return self._run([binary, *args], timeout)
 
     # ---- deterministic provider resources -----------------------------
+
+    @staticmethod
+    def _validated_session_id(value: str) -> str:
+        raw = str(value or "")
+        session_id = validate_session_id(raw)
+        if session_id != raw:
+            raise CapsuleError(
+                "Capsule session id must already be canonical and contain no surrounding whitespace"
+            )
+        return session_id
 
     @staticmethod
     def _resource_suffix(session_id: str) -> str:
@@ -254,20 +270,86 @@ class LibvirtProvider(CapsuleProvider):
             f"no free /24 Capsule subnet remains in libvirt_network_cidr pool {pool}"
         )
 
+    @contextmanager
+    def _network_allocation_lock(self, uri: str):
+        """Serialize Argus subnet selection through successful ``net-create``.
+
+        The process-local lock prevents thread races. On Linux, an advisory
+        ``flock`` on a well-known URI-derived file extends that boundary across
+        Argus processes. The lock is intentionally held until libvirt has
+        created the selected network, at which point the network itself is the
+        durable reservation visible to later allocators. A crashed process
+        releases the file lock automatically and leaves no stale reservation.
+        """
+        with self._PROCESS_NETWORK_ALLOCATION_LOCK:
+            if not sys.platform.startswith("linux"):
+                yield
+                return
+
+            try:
+                import fcntl
+            except ImportError as exc:  # pragma: no cover - Linux always ships fcntl.
+                raise CapsuleError("Linux libvirt subnet allocation requires fcntl flock") from exc
+
+            lock_hash = hashlib.sha256(uri.encode("utf-8")).hexdigest()[:20]
+            lock_path = Path("/tmp") / f"argus-libvirt-{lock_hash}.network.lock"
+            flags = os.O_RDWR | os.O_CREAT
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                fd = os.open(lock_path, flags, 0o600)
+            except OSError as exc:
+                raise CapsuleError(
+                    f"cannot open libvirt subnet allocation lock {lock_path}: {exc}"
+                ) from exc
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise CapsuleError(
+                        f"libvirt subnet allocation lock is not a regular file: {lock_path}"
+                    )
+                if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+                    raise CapsuleError(
+                        f"libvirt subnet allocation lock is owned by another user: {lock_path}"
+                    )
+                if stat.S_IMODE(info.st_mode) & 0o022:
+                    raise CapsuleError(
+                        f"libvirt subnet allocation lock is writable by group/other: {lock_path}"
+                    )
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
     @staticmethod
-    def _host_arch(configured: str) -> str:
-        value = str(configured or platform.machine() or "").strip().lower()
+    def _normalize_arch(value: str) -> str:
+        normalized = str(value or "").strip().lower()
         aliases = {
             "amd64": "x86_64",
             "x64": "x86_64",
             "arm64": "aarch64",
         }
-        value = aliases.get(value, value)
-        if value not in {"x86_64", "aarch64"}:
+        normalized = aliases.get(normalized, normalized)
+        if normalized not in {"x86_64", "aarch64"}:
             raise CapsuleError(
-                f"PR7 libvirt Capsules support same-architecture x86_64/aarch64 guests, got {value!r}"
+                f"PR7 libvirt Capsules support same-architecture x86_64/aarch64 guests, got {normalized!r}"
             )
-        return value
+        return normalized
+
+    @classmethod
+    def _host_arch(cls, configured: str) -> str:
+        actual = cls._normalize_arch(platform.machine())
+        raw = str(configured or "").strip()
+        requested = actual if not raw else cls._normalize_arch(raw)
+        if requested != actual:
+            raise CapsuleError(
+                "PR7 libvirt Capsules use KVM and require guest architecture to match the host; "
+                f"host={actual!r}, requested={requested!r}"
+            )
+        return actual
 
     @classmethod
     def _resolved_vm_root(cls, configured: str) -> Path:
@@ -674,20 +756,18 @@ class LibvirtProvider(CapsuleProvider):
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
         transport, uri = self._validate_settings(request)
         settings = request.settings
+        session_id = self._validated_session_id(request.session_id)
 
         image = Path(settings.image).expanduser()
         if not settings.image or not image.is_file():
             raise CapsuleError(f"Capsule golden image not found: {settings.image!r}")
         image = image.resolve()
 
-        # Validate caller-controlled session parameters and provider state before
-        # creating the session directory so a bad config is retryable.
-        vm_name, network_name, filter_name, bridge_name = self._resource_names(request.session_id)
-        network = self._allocate_network(uri, request.session_id, settings.libvirt_network_cidr)
-        host_ip = str(network.network_address + 1)
-        guest_ip = str(network.network_address + 2)
-        self._validate_requested_address(settings.guest_address, guest_ip)
-        mac = self._mac_for(request.session_id)
+        # Validate deterministic caller-controlled values before storage is
+        # allocated. Dynamic subnet occupancy is handled atomically below.
+        self._network_pool(settings.libvirt_network_cidr)
+        vm_name, network_name, filter_name, bridge_name = self._resource_names(session_id)
+        mac = self._mac_for(session_id)
         arch = self._host_arch(settings.libvirt_arch)
         base_format = self._base_image_format(image)
 
@@ -705,7 +785,7 @@ class LibvirtProvider(CapsuleProvider):
                 "use a system-accessible directory writable by the Argus host process and "
                 "traversable by the libvirt QEMU account."
             ) from exc
-        root = root_parent / request.session_id
+        root = root_parent / session_id
         if root.exists():
             raise CapsuleError(f"Capsule session directory already exists: {root}")
         try:
@@ -732,43 +812,64 @@ class LibvirtProvider(CapsuleProvider):
                 timeout=45,
             )
 
-            self._write_xml(
-                network_xml,
-                self._network_xml(network_name, bridge_name, network, mac, guest_ip, vm_name),
-            )
-            self._write_xml(
-                filter_xml,
-                self._filter_xml(filter_name, host_ip, guest_ip, settings.guest_port),
-            )
-            self._write_xml(
-                domain_xml,
-                self._domain_xml(
-                    vm_name,
-                    overlay,
-                    network_name,
-                    filter_name,
-                    mac,
-                    settings.memory_mb,
-                    settings.cpu_count,
-                    arch,
-                    str(settings.libvirt_machine or "").strip(),
-                ),
-            )
+            # The lock spans subnet selection through successful net-create.
+            # Another Argus process therefore cannot observe the same subnet as
+            # free before this network becomes visible in libvirt.
+            with self._network_allocation_lock(uri):
+                network = self._allocate_network(
+                    uri, session_id, settings.libvirt_network_cidr
+                )
+                host_ip = str(network.network_address + 1)
+                guest_ip = str(network.network_address + 2)
+                self._validate_requested_address(settings.guest_address, guest_ip)
 
-            # Recheck both object names and subnet occupancy immediately before
-            # provider creation. This catches another Capsule created while the
-            # overlay/XML were being prepared.
-            self._assert_resources_available(uri, vm_name, network_name, filter_name)
-            if any(network.overlaps(existing) for existing in self._defined_networks(uri)):
-                raise CapsuleError(
-                    f"libvirt Capsule subnet {network} became occupied during allocation"
+                self._write_xml(
+                    network_xml,
+                    self._network_xml(
+                        network_name, bridge_name, network, mac, guest_ip, vm_name
+                    ),
+                )
+                self._write_xml(
+                    filter_xml,
+                    self._filter_xml(
+                        filter_name, host_ip, guest_ip, settings.guest_port
+                    ),
+                )
+                self._write_xml(
+                    domain_xml,
+                    self._domain_xml(
+                        vm_name,
+                        overlay,
+                        network_name,
+                        filter_name,
+                        mac,
+                        settings.memory_mb,
+                        settings.cpu_count,
+                        arch,
+                        str(settings.libvirt_machine or "").strip(),
+                    ),
                 )
 
-            # Define all policy/resources before the first guest CPU executes.
-            self._virsh_cmd(uri, "nwfilter-define", str(filter_xml), timeout=30)
-            owned_resources.add("filter")
-            self._virsh_cmd(uri, "net-create", str(network_xml), timeout=30)
-            owned_resources.add("network")
+                # Recheck object names immediately before provider creation. The
+                # global allocation lock serializes Argus subnet users; this
+                # occupancy check also catches an external libvirt actor that
+                # created an overlapping network after initial selection.
+                self._assert_resources_available(uri, vm_name, network_name, filter_name)
+                if any(
+                    network.overlaps(existing)
+                    for existing in self._defined_networks(uri)
+                ):
+                    raise CapsuleError(
+                        f"libvirt Capsule subnet {network} became occupied during allocation"
+                    )
+
+                self._virsh_cmd(uri, "nwfilter-define", str(filter_xml), timeout=30)
+                owned_resources.add("filter")
+                self._virsh_cmd(uri, "net-create", str(network_xml), timeout=30)
+                owned_resources.add("network")
+
+            # Domain definition/start no longer needs the subnet allocator lock:
+            # the live libvirt network is now the durable reservation.
             self._virsh_cmd(uri, "define", str(domain_xml), timeout=30)
             owned_resources.add("domain")
             self._virsh_cmd(uri, "start", vm_name, timeout=60)
@@ -780,7 +881,7 @@ class LibvirtProvider(CapsuleProvider):
                 settings.boot_timeout_seconds,
             )
             return CapsuleHandle(
-                session_id=request.session_id,
+                session_id=session_id,
                 provider=self.provider_name,
                 vm_name=vm_name,
                 root_dir=str(root),
