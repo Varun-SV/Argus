@@ -7,6 +7,11 @@ properties around it:
   opted into for disposable development; and
 * the reusable bootstrap bearer can be rotated exactly once to a random
   session-specific bearer over the authenticated TLS channel.
+
+Runtime bootstrap material is consumed from the session disk. When Argus
+explicitly retains a failed Capsule, the secure host may arm fresh one-time
+restart credentials after the target session has been closed and immediately
+before the VM is powered off.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import ssl
+import uuid
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -29,17 +35,65 @@ from argus.capsule.guest_agent import (
 )
 
 
-def _consume_tls_private_key(path: str) -> None:
-    """Remove session-visible TLS private-key material after SSLContext loads it."""
+def _consume_tls_private_key(path: str) -> bytes:
+    """Load then remove session-visible TLS private-key material.
+
+    The returned bytes remain process-local so a retained Capsule can restore
+    the key only after its target has been terminated. Normal runs never write
+    the key back to the session disk.
+    """
     key_path = Path(path).expanduser()
     if key_path.is_symlink():
         raise AdapterError("Capsule TLS private key cannot be a symlink")
+    try:
+        material = key_path.read_bytes()
+    except OSError as exc:
+        raise AdapterError(f"cannot read Capsule TLS private key {key_path}: {exc}") from exc
+    if not material:
+        raise AdapterError("Capsule TLS private key cannot be empty")
     try:
         key_path.unlink()
     except OSError as exc:
         raise AdapterError(
             f"Capsule TLS private key could not be consumed/deleted safely: {exc}"
         ) from exc
+    return material
+
+
+def _atomic_recovery_write(path: str, data: bytes) -> None:
+    """Restore one fixed startup credential without following a final symlink."""
+    destination = Path(path).expanduser()
+    if not path:
+        raise AdapterError("retained Capsule recovery path is not configured")
+    if destination.is_symlink():
+        raise AdapterError(f"retained Capsule recovery path cannot be a symlink: {destination}")
+    try:
+        parent = destination.parent.resolve(strict=True)
+    except OSError as exc:
+        raise AdapterError(
+            f"retained Capsule recovery parent cannot be resolved: {destination.parent}: {exc}"
+        ) from exc
+    if destination.exists():
+        raise AdapterError(
+            f"retained Capsule recovery credential unexpectedly already exists: {destination}"
+        )
+    temp = parent / f".{destination.name}.argus-recovery-{uuid.uuid4().hex}.tmp"
+    try:
+        with temp.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.chmod(temp, 0o600)
+        except OSError:
+            pass
+        os.replace(temp, destination)
+    except Exception:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _require_disabled_service_start(service_name: str, start_value: int) -> None:
@@ -51,12 +105,7 @@ def _require_disabled_service_start(service_name: str, start_value: int) -> None
 
 
 def _assert_powershell_direct_disabled() -> None:
-    """Fail closed if the guest can still accept network-bypassing PowerShell Direct.
-
-    ``vmicvmsession`` provides Hyper-V PowerShell Direct over VMbus, so virtual
-    switch ACLs do not constrain it. A production golden image must set this
-    Windows service to Disabled before it is captured.
-    """
+    """Fail closed if the guest can still accept network-bypassing PowerShell Direct."""
     if os.name != "nt":
         return
     try:
@@ -75,11 +124,61 @@ def _assert_powershell_direct_disabled() -> None:
 
 
 class SecureGuestAgentServer(GuestAgentServer):
-    def __init__(self, address, token: str, state=None):
+    def __init__(
+        self,
+        address,
+        token: str,
+        state=None,
+        *,
+        recovery_token_file: str = "",
+        recovery_tls_key_path: str = "",
+    ):
         self.token = token
         self.state = state or GuestAgentState()
         self.auth_session_id = ""
+        self.recovery_token_file = str(recovery_token_file or "")
+        self.recovery_tls_key_path = str(recovery_tls_key_path or "")
+        self.recovery_tls_key_material = b""
+        self.recovery_armed = False
         ThreadingHTTPServer.__init__(self, address, SecureGuestAgentHandler)
+
+    def arm_recovery(self, session_id: str, token: str) -> None:
+        """Persist fresh one-time startup credentials for a retained Capsule."""
+        if self.recovery_armed:
+            raise AdapterError("retained Capsule recovery credentials are already armed")
+        if self.state.adapter is not None:
+            raise AdapterError("target session must be closed before recovery credentials are armed")
+        if session_id != self.auth_session_id:
+            raise AdapterError("recovery session does not match rotated Capsule auth session")
+        if not self.recovery_tls_key_material:
+            raise AdapterError("TLS private-key material is unavailable for retained recovery")
+        recovery_token = str(token or "").strip()
+        if len(recovery_token) < 32:
+            raise AdapterError("retained Capsule recovery token is too short")
+
+        key_written = False
+        try:
+            _atomic_recovery_write(
+                self.recovery_tls_key_path,
+                bytes(self.recovery_tls_key_material),
+            )
+            key_written = True
+            _atomic_recovery_write(
+                self.recovery_token_file,
+                (recovery_token + "\n").encode("utf-8"),
+            )
+        except Exception:
+            if key_written:
+                try:
+                    Path(self.recovery_tls_key_path).expanduser().unlink()
+                except OSError:
+                    pass
+            raise
+
+        # Do not persist the live session bearer. The recovery bearer is fresh,
+        # one-time startup authority used only after a retained Capsule reboots.
+        self.recovery_armed = True
+        self.recovery_tls_key_material = b""
 
 
 class SecureGuestAgentHandler(GuestAgentHandler):
@@ -130,6 +229,16 @@ class SecureGuestAgentHandler(GuestAgentHandler):
         data = self.server.state.begin_files(session_id)
         self._send(HTTPStatus.OK, {"ok": True, **data})
 
+    def _arm_recovery(self) -> None:
+        if not self._authorized():
+            self._send(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
+            return
+        body = self._payload()
+        session_id = validate_session_id(str(body.get("session_id") or ""))
+        token = str(body.get("token") or "").strip()
+        self.server.arm_recovery(session_id, token)
+        self._send(HTTPStatus.OK, {"ok": True, "session_id": session_id, "armed": True})
+
     def _dispatch(self) -> None:
         parsed = urlparse(self.path)
         try:
@@ -141,6 +250,9 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                 return
             if self.command == "POST" and parsed.path == "/v1/files/begin":
                 self._begin_bound_files()
+                return
+            if self.command == "POST" and parsed.path == "/v1/recovery/arm":
+                self._arm_recovery()
                 return
         except (AdapterError, ValueError) as exc:
             self._send(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -191,12 +303,17 @@ def main(argv=None) -> None:
             "or explicitly opt into --allow-insecure-http for legacy development"
         )
 
-    server = SecureGuestAgentServer((args.host, args.port), token)
+    server = SecureGuestAgentServer(
+        (args.host, args.port),
+        token,
+        recovery_token_file=args.token_file,
+        recovery_tls_key_path=args.tls_key,
+    )
     if has_cert:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         try:
             context.load_cert_chain(args.tls_cert, args.tls_key)
-            _consume_tls_private_key(args.tls_key)
+            server.recovery_tls_key_material = _consume_tls_private_key(args.tls_key)
         except (OSError, ssl.SSLError, AdapterError) as exc:
             server.server_close()
             parser.error(f"cannot initialize Capsule TLS identity: {exc}")
