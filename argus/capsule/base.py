@@ -129,7 +129,7 @@ class CapsuleHandle:
 
 @dataclass(frozen=True)
 class FailureCapsule:
-    """Durable reference to a VM retained at the point of test failure."""
+    """Durable reference to VM/disk evidence retained at test failure."""
 
     failure_id: str
     session_id: str
@@ -139,7 +139,6 @@ class FailureCapsule:
     reason: str
     retained_at: str
     vm_state: str
-    recovery_credentials_path: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -159,7 +158,7 @@ class CapsuleProvider(ABC):
         """
 
     def retain_failure(self, handle: CapsuleHandle, reason: str) -> FailureCapsule:
-        """Freeze a live Capsule for later reproduction instead of destroying it."""
+        """Freeze a live Capsule for later forensic inspection instead of destroying it."""
         raise CapsuleError(
             f"Capsule provider {self.provider_name!r} does not support failure retention"
         )
