@@ -12,6 +12,7 @@ properties around it:
 from __future__ import annotations
 
 import argparse
+import os
 import ssl
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
@@ -29,12 +30,7 @@ from argus.capsule.guest_agent import (
 
 
 def _consume_tls_private_key(path: str) -> None:
-    """Remove session-visible TLS private-key material after SSLContext loads it.
-
-    The golden parent image remains unchanged because a Capsule boots a
-    differencing disk. The live TLS context keeps the key in process memory,
-    while the application under test can no longer copy it from the filesystem.
-    """
+    """Remove session-visible TLS private-key material after SSLContext loads it."""
     key_path = Path(path).expanduser()
     if key_path.is_symlink():
         raise AdapterError("Capsule TLS private key cannot be a symlink")
@@ -44,6 +40,38 @@ def _consume_tls_private_key(path: str) -> None:
         raise AdapterError(
             f"Capsule TLS private key could not be consumed/deleted safely: {exc}"
         ) from exc
+
+
+def _require_disabled_service_start(service_name: str, start_value: int) -> None:
+    """Require a Windows service registry Start value of 4 (Disabled)."""
+    if int(start_value) != 4:
+        raise AdapterError(
+            f"Windows service {service_name!r} must be Disabled in the Capsule golden image"
+        )
+
+
+def _assert_powershell_direct_disabled() -> None:
+    """Fail closed if the guest can still accept network-bypassing PowerShell Direct.
+
+    ``vmicvmsession`` provides Hyper-V PowerShell Direct over VMbus, so virtual
+    switch ACLs do not constrain it. A production golden image must set this
+    Windows service to Disabled before it is captured.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Services\vmicvmsession",
+        ) as key:
+            start_value, _kind = winreg.QueryValueEx(key, "Start")
+    except OSError as exc:
+        raise AdapterError(
+            "cannot attest Hyper-V PowerShell Direct service policy (vmicvmsession)"
+        ) from exc
+    _require_disabled_service_start("vmicvmsession", int(start_value))
 
 
 class SecureGuestAgentServer(GuestAgentServer):
@@ -131,6 +159,17 @@ def main(argv=None) -> None:
     parser.add_argument("--allow-insecure-http", action="store_true")
     args = parser.parse_args(argv)
 
+    if not (1 <= args.port <= 65535):
+        parser.error("port must be between 1 and 65535")
+
+    loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+    remote_binding = args.host not in loopback_hosts
+    if remote_binding:
+        try:
+            _assert_powershell_direct_disabled()
+        except AdapterError as exc:
+            parser.error(str(exc))
+
     try:
         token = _consume_control_token(
             token_file=args.token_file,
@@ -139,11 +178,6 @@ def main(argv=None) -> None:
     except AdapterError as exc:
         parser.error(str(exc))
 
-    if not (1 <= args.port <= 65535):
-        parser.error("port must be between 1 and 65535")
-
-    loopback_hosts = {"127.0.0.1", "localhost", "::1"}
-    remote_binding = args.host not in loopback_hosts
     if remote_binding and not token:
         parser.error("a guest token is required when binding outside loopback")
 
