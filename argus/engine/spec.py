@@ -34,7 +34,11 @@ from typing import List, Optional, Union
 import yaml
 
 from argus.capsule.base import CapsuleError
-from argus.capsule.files import normalize_relative_path
+from argus.capsule.files import (
+    guest_path_key,
+    normalize_guest_relative_path,
+    normalize_relative_path,
+)
 
 ASSERTION_KINDS = (
     # desktop-gui
@@ -103,12 +107,15 @@ def _normalize_collect_entries(raw) -> List[str]:
         if not isinstance(item, str) or not item.strip():
             raise SpecError(f"collect[{index}] must be a non-empty path string")
         try:
-            relative = normalize_relative_path(item)
+            relative = normalize_guest_relative_path(item)
+            key = guest_path_key(relative)
         except CapsuleError as exc:
             raise SpecError(f"collect[{index}] is invalid: {exc}") from exc
-        if relative in seen:
-            raise SpecError(f"collect[{index}] duplicates artifact path: {relative}")
-        seen.add(relative)
+        if key in seen:
+            raise SpecError(
+                f"collect[{index}] duplicates artifact path under Windows semantics: {relative}"
+            )
+        seen.add(key)
         out.append(relative)
     return out
 
@@ -127,7 +134,7 @@ class TestSpec:
 
     def __post_init__(self) -> None:
         # Enforce collection policy on programmatically-created specs as well as
-        # YAML-loaded specs, so invalid declarations cannot reach run_test().
+        # YAML-loaded specs, so invalid/aliased declarations cannot reach run_test().
         self.collect = _normalize_collect_entries(self.collect)
 
     @property
@@ -161,6 +168,7 @@ def _parse_staging(raw) -> List[StageFile]:
     if not isinstance(raw, list):
         raise SpecError("staging must be a list")
     out: List[StageFile] = []
+    destinations = set()
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise SpecError(f"staging[{index}] must be a mapping")
@@ -174,6 +182,17 @@ def _parse_staging(raw) -> List[StageFile]:
             raise SpecError(f"staging[{index}] requires source and destination")
         if digest and (len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)):
             raise SpecError(f"staging[{index}].sha256 must be a 64-character hex digest")
+        try:
+            source = normalize_relative_path(source)
+            destination = normalize_guest_relative_path(destination)
+            destination_key = guest_path_key(destination)
+        except CapsuleError as exc:
+            raise SpecError(f"staging[{index}] is invalid: {exc}") from exc
+        if destination_key in destinations:
+            raise SpecError(
+                f"staging[{index}] duplicates destination under Windows semantics: {destination}"
+            )
+        destinations.add(destination_key)
         out.append(StageFile(source=source, destination=destination, sha256=digest))
     return out
 
