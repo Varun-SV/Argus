@@ -3,11 +3,14 @@
 All host→guest staging and guest→host collection paths are expressed as
 POSIX-style relative paths rooted in a per-session workspace. Absolute paths,
 drive-qualified paths, traversal, and symlink/reparse escapes are rejected.
+Guest alias rules are selected explicitly by guest OS: Windows keeps strict
+Win32/NTFS collision handling, while POSIX guests keep case-sensitive names.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 from typing import Iterable
@@ -50,28 +53,43 @@ def normalize_relative_path(value: str) -> str:
     return "/".join(parts)
 
 
-def normalize_guest_relative_path(value: str) -> str:
-    """Normalize a path that will exist in the current Windows Hyper-V guest.
+def _guest_os_kind(value: str = "") -> str:
+    requested = str(value or "").strip().lower()
+    if requested in {"windows", "win", "win32", "nt"}:
+        return "windows"
+    if requested in {"linux", "posix", "unix"}:
+        return "posix"
+    if requested not in {"", "auto"}:
+        raise CapsuleError(f"unsupported Capsule guest OS path semantics: {value!r}")
+    return "windows" if os.name == "nt" else "posix"
 
-    NTFS/Win32 aliases trailing spaces/dots and reserved device names. Reject
-    those spellings up front so one declarative path always names one guest
-    object and cannot collide with a differently-spelled manifest entry.
+
+def normalize_guest_relative_path(value: str, guest_os: str = "") -> str:
+    """Normalize one guest-workspace path using the guest filesystem semantics.
+
+    Windows rejects Win32 aliases (trailing spaces/dots and reserved device
+    names). POSIX/Linux keeps the platform-neutral traversal/NUL rules but is
+    otherwise case-sensitive and permits names such as ``con``.
     """
     relative = normalize_relative_path(value)
-    for part in relative.split("/"):
-        if part.rstrip(" .") != part:
-            raise CapsuleError(
-                "Capsule guest path segments cannot end in a space or dot"
-            )
-        stem = part.split(".", 1)[0].casefold()
-        if stem in _WINDOWS_RESERVED:
-            raise CapsuleError(f"Capsule guest path uses reserved Windows name: {part}")
+    if _guest_os_kind(guest_os) == "windows":
+        for part in relative.split("/"):
+            if part.rstrip(" .") != part:
+                raise CapsuleError(
+                    "Capsule guest path segments cannot end in a space or dot"
+                )
+            stem = part.split(".", 1)[0].casefold()
+            if stem in _WINDOWS_RESERVED:
+                raise CapsuleError(f"Capsule guest path uses reserved Windows name: {part}")
     return relative
 
 
-def guest_path_key(value: str) -> str:
-    """Return the alias key used by the current Windows Hyper-V guest."""
-    return normalize_guest_relative_path(value).casefold()
+def guest_path_key(value: str, guest_os: str = "") -> str:
+    """Return the filesystem-alias key for one guest path."""
+    relative = normalize_guest_relative_path(value, guest_os=guest_os)
+    if _guest_os_kind(guest_os) == "windows":
+        return relative.casefold()
+    return relative
 
 
 def workspace_path(root: Path, relative: str, *, must_exist: bool = False) -> Path:
