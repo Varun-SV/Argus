@@ -14,13 +14,29 @@ STATUSES = ("pass", "fail", "error", "running", "skipped")
 def _runs_root(project_dir: Path) -> Path:
     """Return the canonical runs root and reject project-boundary escapes."""
     project_root = Path(project_dir).resolve(strict=True)
-    runs_dir = project_root / ".argus" / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Attest .argus before creating anything beneath it. If a pre-existing
+    # symlink/junction redirects .argus outside the project, fail without first
+    # creating a runs directory through that redirect.
+    argus_dir = project_root / ".argus"
+    if argus_dir.is_symlink():
+        raise OSError(f".argus cannot be a symlink: {argus_dir}")
+    argus_dir.mkdir(exist_ok=True)
+    resolved_argus = argus_dir.resolve(strict=True)
+    try:
+        resolved_argus.relative_to(project_root)
+    except ValueError as exc:
+        raise OSError(f".argus escapes the project root: {argus_dir}") from exc
+
+    runs_dir = resolved_argus / "runs"
+    if runs_dir.is_symlink():
+        raise OSError(f".argus/runs cannot be a symlink: {runs_dir}")
+    runs_dir.mkdir(exist_ok=True)
     resolved = runs_dir.resolve(strict=True)
     try:
-        resolved.relative_to(project_root)
+        resolved.relative_to(resolved_argus)
     except ValueError as exc:
-        raise OSError(f".argus/runs escapes the project root: {runs_dir}") from exc
+        raise OSError(f".argus/runs escapes .argus: {runs_dir}") from exc
     return resolved
 
 
