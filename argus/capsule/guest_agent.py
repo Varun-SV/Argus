@@ -349,12 +349,18 @@ class GuestAgentState:
             return bytes(data)
 
     def _authorize_literal_target(self, target: str) -> None:
-        """Grant only owner-execute to a staged POSIX launch target.
+        """Grant only owner-execute to an existing staged POSIX launch target.
 
         The transfer protocol intentionally does not copy arbitrary host mode
         bits into the guest. A literal launch is the authenticated authorization
-        boundary for ``stage://`` targets, so POSIX guests add only ``u+x`` after
-        proving the file is a regular object contained by the bound workspace.
+        boundary for real ``stage://`` targets, so POSIX guests add only ``u+x``
+        after proving an existing file is contained by the bound workspace.
+
+        Literal launch is also a generic adapter API used by tests/integrations
+        with platform-native target strings. If the target does not exist on this
+        host, leave it untouched and let the selected adapter validate it. An
+        existing file, however, must satisfy the workspace boundary before Argus
+        changes any permission bit.
         """
         if os.name == "nt":
             return
@@ -364,8 +370,8 @@ class GuestAgentState:
             candidate = root / candidate
         try:
             resolved = candidate.resolve(strict=True)
-        except OSError as exc:
-            raise AdapterError(f"staged launch target cannot be resolved: {target}") from exc
+        except OSError:
+            return
         try:
             resolved.relative_to(root)
         except ValueError as exc:
