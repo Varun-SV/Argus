@@ -35,7 +35,9 @@ class ForensicProvider(CapsuleProvider):
     provider_name = "hyperv"
     provider_capabilities = CapsuleProviderCapabilities(
         provider="hyperv",
-        host_platforms=("windows",),
+        # This is a pure lifecycle test double exercised on both CI hosts; it
+        # does not invoke Hyper-V. Production Hyper-V still advertises Windows only.
+        host_platforms=("windows", "linux"),
         guest_os=("windows",),
         secure_transport=True,
         network_isolation=True,
