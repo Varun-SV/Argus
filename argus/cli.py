@@ -30,9 +30,6 @@ def main() -> None:
     """Argus — universal application testing driven by multimodal LLMs."""
 
 
-# ---------------------------------------------------------------- init ----
-
-
 @main.command()
 def init() -> None:
     """Create .argus/ with a starter config and example test."""
@@ -41,9 +38,6 @@ def init() -> None:
     console.print("  edit [cyan].argus/config.yaml[/cyan] to pick your provider/model")
     console.print("  example test: [cyan].argus/notepad.test.yaml[/cyan]")
     console.print("  then: [bold]argus run[/bold]")
-
-
-# ----------------------------------------------------------------- run ----
 
 
 @main.command()
@@ -111,6 +105,7 @@ def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]
             warn=lambda msg: console.print(f"[yellow]![/yellow] {msg}"),
             knowledge_store=ks,
             shots_dir=shots_dir,
+            project_dir=cfg.project_dir,
         )
         if ks is not None:
             ks.close()
@@ -161,9 +156,6 @@ def _resolve_tests(test: Optional[str], project_dir: Path) -> list:
     return paths
 
 
-# ---------------------------------------------------------------- roam ----
-
-
 @main.command()
 @click.argument("target")
 @click.option("--minutes", type=float, default=None,
@@ -178,12 +170,7 @@ def _resolve_tests(test: Optional[str], project_dir: Path) -> list:
               help="Persist explored paths across sessions for this target.")
 def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
          no_regressions: bool, adapter_type: str, memory: bool) -> None:
-    """Let the LLM free-roam TARGET to find bugs and write a report.
-
-    Example:  argus roam "notepad.exe" --minutes 5
-              argus roam "http://localhost:3000" --adapter browser
-              argus roam "my-script.sh" --adapter cli
-    """
+    """Let the LLM free-roam TARGET to find bugs and write a report."""
     cfg = load_config()
     tracker = TokenTracker()
     try:
@@ -248,9 +235,6 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
     sys.exit(0 if not session.findings else 1)
 
 
-# ---------------------------------------------------------------- watch ----
-
-
 @main.command()
 @click.argument("test", required=False)
 @click.option("--minutes", type=float, default=None)
@@ -312,13 +296,17 @@ def _run_all(test: Optional[str], cfg, minutes, max_tokens) -> None:
             console.print(f"[red]✗[/red] {path.name}: {exc}")
             continue
         budget = cfg.make_budget(tracker, minutes, max_tokens)
-        result = run_test(spec, provider, adapter, budget, on_step=_print_step,
-                          warn=lambda m: console.print(f"[yellow]![/yellow] {m}"))
+        result = run_test(
+            spec,
+            provider,
+            adapter,
+            budget,
+            on_step=_print_step,
+            warn=lambda m: console.print(f"[yellow]![/yellow] {m}"),
+            project_dir=cfg.project_dir,
+        )
         result.save(cfg.project_dir)
         _print_summary(result)
-
-
-# ---------------------------------------------------------------- serve ----
 
 
 @main.command()
@@ -340,9 +328,6 @@ def serve(host: str, port: int, debug: bool) -> None:
         f"[green]✓[/green] Argus dashboard at [cyan]http://{host}:{port}[/cyan]"
     )
     app.run(host=host, port=port, debug=debug)
-
-
-# ----------------------------------------------------------- providers ----
 
 
 @main.command()
@@ -369,9 +354,6 @@ def providers() -> None:
     sys.exit(0 if status["ok"] else 1)
 
 
-# --------------------------------------------------------------- tokens ----
-
-
 @main.command()
 def tokens() -> None:
     """Show cumulative token usage for this project."""
@@ -383,9 +365,6 @@ def tokens() -> None:
     table.add_row("total tokens", f"[bold]{data['total_tokens']:,}[/bold]")
     table.add_row("LLM calls", f"[bold]{data['calls']:,}[/bold]")
     console.print(table)
-
-
-# --------------------------------------------------------------- report ----
 
 
 @main.command()
@@ -420,9 +399,6 @@ def report(limit: int) -> None:
     console.print(table)
 
 
-# ------------------------------------------------------------------ gui ----
-
-
 @main.command()
 def gui() -> None:
     """Open the Argus desktop app."""
@@ -439,9 +415,6 @@ def gui() -> None:
 def _die(message: str) -> None:
     console.print(f"[red]✗[/red] {message}")
     sys.exit(2)
-
-
-# --------------------------------------------------------- knowledge ----
 
 
 @main.group()
