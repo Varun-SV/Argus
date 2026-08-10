@@ -62,6 +62,17 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         self._session_token_rotated = False
 
     @staticmethod
+    def _normalize_host_platform(value: str) -> str:
+        raw = str(value or "").strip().lower()
+        if raw.startswith("win") or raw == "windows":
+            return "windows"
+        if raw.startswith("linux"):
+            return "linux"
+        if raw in {"darwin", "mac", "macos", "osx"}:
+            return "macos"
+        return raw
+
+    @staticmethod
     def _make_secure_provider(name: str, platform_name: str = "") -> CapsuleProvider:
         kind = (name or "auto").lower().strip()
         host = str(platform_name or sys.platform).lower()
@@ -100,8 +111,9 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             f"unknown Capsule provider {name!r} — available: auto, hyperv, libvirt"
         )
 
-    @staticmethod
+    @classmethod
     def _validate_provider_capabilities(
+        cls,
         provider: CapsuleProvider,
         settings: CapsuleSettings,
     ) -> None:
@@ -113,6 +125,19 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             raise ExecutionEnvironmentError(
                 f"Capsule provider {provider_name!r} advertises mismatched capabilities "
                 f"for {advertised!r}"
+            )
+
+        current_host = cls._normalize_host_platform(sys.platform)
+        advertised_hosts = {
+            cls._normalize_host_platform(item)
+            for item in capabilities.host_platforms
+            if str(item or "").strip()
+        }
+        if not advertised_hosts or current_host not in advertised_hosts:
+            supported = ", ".join(sorted(advertised_hosts)) or "none"
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} does not support the current host "
+                f"platform {current_host!r}; advertised hosts: {supported}"
             )
 
         missing: list[str] = []
