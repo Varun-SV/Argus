@@ -9,14 +9,17 @@ UIA patterns can opt into the legacy Windows adapter explicitly through
 from __future__ import annotations
 
 import ctypes
-import shlex
 import subprocess
 import sys
 import time
 from typing import Dict, List, Optional, Set
 
 from argus.adapters.base import AdapterError, Observation, UIElement
-from argus.adapters.windows_gui import WindowsGUIAdapter, _require_pywinauto
+from argus.adapters.windows_gui import (
+    WindowsGUIAdapter,
+    _require_pywinauto,
+    _windows_launch_args,
+)
 
 
 def _require_psutil():
@@ -254,17 +257,19 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
         self._attached_create_time = None
         self._owns_lifecycle = False
 
-    def launch(self, target: str) -> None:
+    def _launch_target(self, target: str, *, literal: bool = False) -> None:
         """Launch and attach only when target ownership can be proven.
 
         Safe mode never matches unrelated desktop windows by title. A launched
         process and each accepted descendant are pinned by PID *and process
         creation time*, so launcher exit and later PID reuse cannot transfer
-        authority to an unrelated process.
+        authority to an unrelated process. Literal staged paths bypass command
+        string parsing but keep the same ownership proof and cleanup lifecycle.
         """
         Application, Desktop = _require_pywinauto()
         psutil = _require_psutil()
-        exe_name = shlex.split(target, posix=False)[0].lower().split("\\")[-1]
+        args = _windows_launch_args(target, literal=literal)
+        exe_name = args[0].lower().split("\\")[-1]
 
         # A singleton is an explicit attach request by executable identity. It
         # is not lifecycle-owned: close() detaches rather than killing it.
@@ -285,7 +290,7 @@ class SafeWindowsGUIAdapter(WindowsGUIAdapter):
                 ) from exc
 
         try:
-            self._proc = subprocess.Popen(shlex.split(target, posix=False))
+            self._proc = subprocess.Popen(args)
         except OSError as exc:
             raise AdapterError(f"could not launch '{target}': {exc}") from exc
 
