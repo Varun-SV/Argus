@@ -184,13 +184,13 @@ def _isolated_runner(
         calls.append(script)
         if "SwitchType.ToString()" in script:
             return "Internal"
-        if "Get-NetIPAddress" in script:
+        if "Get-VMNetworkAdapter -ManagementOS -SwitchName" in script:
             return host_ip
         if "Add-VMNetworkAdapterExtendedAcl" in script:
             if fail_acl:
                 raise CapsuleError("ACL install failed")
             return ""
-        if "Get-VMNetworkAdapter" in script and ".IPAddresses" in script:
+        if "Get-VMNetworkAdapter -VMName" in script and ".IPAddresses" in script:
             return "192.168.100.20"
         if "Key-Value Pair Exchange" in script and fail_kvp:
             raise CapsuleError("KVP disable failed")
@@ -215,8 +215,14 @@ def test_hyperv_isolation_is_installed_before_vm_boot(tmp_path):
     start_index = next(i for i, script in enumerate(calls) if "Start-VM -Name" in script)
     gsi_index = next(i for i, script in enumerate(calls) if "Guest Service Interface" in script)
     kvp_index = next(i for i, script in enumerate(calls) if "Key-Value Pair Exchange" in script)
-    address_index = next(i for i, script in enumerate(calls) if ".IPAddresses" in script)
+    address_index = next(i for i, script in enumerate(calls) if "Get-VMNetworkAdapter -VMName" in script and ".IPAddresses" in script)
     assert gsi_index < acl_index < start_index < address_index < kvp_index
+
+    management_query = next(
+        script for script in calls if "Get-VMNetworkAdapter -ManagementOS -SwitchName" in script
+    )
+    assert "Get-NetIPAddress -InterfaceAlias" not in management_query
+    assert "vEthernet (" not in management_query
 
     acl = calls[acl_index]
     assert "192.168.100.1" in acl
@@ -227,7 +233,25 @@ def test_hyperv_isolation_is_installed_before_vm_boot(tmp_path):
     assert "-Action Deny" in acl
     assert "-LocalPort 68" in acl
     assert "-RemotePort 67" in acl
-    assert "-Stateful $true" in acl
+
+    # Microsoft Hyper-V extended ACLs explicitly support stateful inbound rules;
+    # the stateful control allow supplies only the matching outbound return flow.
+    parts = [part.strip() for part in acl.split("; ")]
+    control_allow = next(
+        part
+        for part in parts
+        if "Add-VMNetworkAdapterExtendedAcl" in part
+        and "-Direction Inbound" in part
+        and "-Protocol TCP" in part
+        and "8765" in part
+    )
+    assert "-Stateful $true" in control_allow
+    assert not any(
+        "-Direction Outbound" in part
+        and "-Protocol TCP" in part
+        and "8765" in part
+        for part in parts
+    )
 
     provider.destroy(handle)
 
