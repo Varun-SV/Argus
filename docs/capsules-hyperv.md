@@ -16,9 +16,8 @@ Each Argus session:
 6. optionally initializes a per-session transfer workspace and stages explicitly
    declared project files into it;
 7. launches/observes/drives the target through the guest agent;
-8. runs any non-close teardown preparation, then explicitly collects declared
-   workspace artifacts immediately before a declared close (or before implicit
-   final cleanup when no close is reached);
+8. runs non-close teardown preparation, snapshots explicitly declared artifacts,
+   then collects those snapshots immediately before close;
 9. normally destroys the VM and session disk when the session closes;
 10. optionally powers off and retains the failed VM's writable disk/configuration
     when `retain_on_failure: true` is configured.
@@ -73,28 +72,38 @@ teardown:
 - `stage://path` can launch only a destination that was successfully committed in
   the current session. An undeclared or failed staged target causes pre-launch
   rollback rather than Failure Capsule retention.
+- For Capsule CLI targets, staged Windows executable paths are forwarded as one
+  command argument so backslashes survive the CLI parser.
 
 The guest transfer workspace becomes the target process's inherited working
-directory. Applications that write relative paths therefore naturally produce
-outputs inside the only guest tree Argus is willing to collect.
+directory. For the CLI adapter, the same workspace is also pinned explicitly as
+the `cwd` for every later `run`/`execute` subprocess, so relative inputs and
+outputs remain inside the only guest tree Argus is willing to collect.
 
 ### Collection rules
 
 - `collect` paths are relative to the same per-session workspace and are fixed by
   the test spec, not by the model or application under test.
+- Invalid, absolute, drive-qualified, traversal, and duplicate collection paths
+  are rejected when the test spec is constructed, before execution can begin.
 - Each artifact must resolve to a regular file inside the workspace. Symlink or
   reparse/junction escapes are rejected by resolving containment before reads.
-- Argus first obtains size/SHA-256 metadata for every requested artifact and
-  enforces the aggregate limit before downloading any of them.
+- Collection preflight creates a stable guest-side snapshot for each declared
+  artifact and records that snapshot's size/SHA-256. Chunk reads are served from
+  the snapshot rather than the still-running application's live file, so later
+  log appends cannot silently change the collected byte set.
+- Argus enforces the aggregate limit before downloading the declared set.
 - Downloads use bounded chunks into a temporary host file under that run's
   `.argus/runs/.../artifacts/` directory. The host recomputes SHA-256 and uses an
   atomic replace only after the digest matches.
-- Non-close teardown steps run first so they may flush/export requested output.
-  Collection then runs at the last safe point immediately before a declared
-  `close`; if execution raises or no close is reached, collection runs before
-  implicit final cleanup. A collection failure is a run error. When
-  `retain_on_failure: true`, that error is recorded before close so PR4 can
-  preserve the Capsule instead of deleting the evidence.
+- Collection of a declared set is transactional at the host boundary: if a later
+  artifact fails, earlier files committed for that same set are removed instead
+  of leaving files on disk that are absent from the result manifest.
+- Collection happens after non-close teardown steps and immediately before an
+  explicit close. On exception/no-close paths it happens before implicit final
+  cleanup. A collection failure is a run error. When `retain_on_failure: true`,
+  that error is recorded before close so PR4 can preserve the Capsule instead of
+  deleting the evidence.
 
 Current hard limits are:
 
@@ -110,15 +119,14 @@ agent as a general-purpose file-sharing service.
 
 ### Transfer confidentiality
 
-The current guest-agent channel uses bearer-token authenticated HTTP on an
-Internal Hyper-V switch. Argus performs end-to-end size and SHA-256 consistency
-checks, but plain HTTP provides **neither transport confidentiality nor
-cryptographic tamper protection against an active network observer**. An actor
-able to observe and modify that channel may also observe the bearer credential.
-Staging/collection therefore does not make the channel suitable for secrets that
-require protection from a sufficiently privileged host/local-network observer.
-Confidential host↔guest transport and per-session host-bound credentials remain
-follow-up isolation work.
+The current guest-agent channel is authenticated HTTP on an Internal Hyper-V
+switch. SHA-256 checks bind the bytes Argus sends/receives to its own manifests,
+but plain HTTP does **not** provide transport confidentiality or cryptographic
+protection against an active observer who can also obtain/alter the bearer-token
+traffic. Staging/collection therefore does not make the channel suitable for
+secrets that must be protected from a sufficiently privileged host/local-network
+observer. Confidential host↔guest transport and per-session host-bound
+credentials remain follow-up isolation work.
 
 The host may be locked while a Capsule runs. Host sleep, hibernate, shutdown, or
 loss of Hyper-V still interrupts the VM. The **guest** interactive test user must
@@ -363,7 +371,7 @@ host path + size + SHA-256 policy
         ↓
 authenticated bounded transfer
         ↓
-per-session guest workspace
+per-session guest workspace / stable collection snapshots
 ```
 
 Model actions are schema/policy/capability checked before crossing into the VM
