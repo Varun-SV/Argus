@@ -47,14 +47,7 @@ from argus.capsule.files import (
 
 
 def _consume_control_token(*, token_file: str = "", token_env: str = "") -> str:
-    """Load the guest control-plane token and remove bootstrap material.
-
-    The application under test is launched as a child of this process through a
-    normal platform adapter. Any secret left in ``os.environ`` would therefore
-    be inherited by that workload. Token bootstrap must be one-shot: a token
-    file is deleted before the server starts, and environment-backed bootstrap
-    values are popped immediately after reading.
-    """
+    """Load the guest control-plane token and remove bootstrap material."""
     token = ""
     path = Path(token_file).expanduser() if token_file else None
     if path is not None:
@@ -116,8 +109,6 @@ class GuestAgentState:
         self._uploads: dict[str, dict] = {}
         self._staged_total = 0
 
-    # ---- per-session workspace -----------------------------------------
-
     def begin_files(self, session_id: str) -> dict:
         session_id = validate_session_id(session_id)
         with self._lock:
@@ -157,8 +148,6 @@ class GuestAgentState:
         digest = str(sha256 or "").strip().lower()
         if size < 0 or size > TRANSFER_MAX_FILE_BYTES:
             raise AdapterError(f"invalid staged file size for {relative}: {size}")
-        if self._staged_total + size > TRANSFER_MAX_TOTAL_BYTES:
-            raise AdapterError("staged files exceed the Capsule session byte limit")
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise AdapterError(f"invalid staged file checksum for {relative}")
         with self._lock:
@@ -166,6 +155,9 @@ class GuestAgentState:
                 raise AdapterError("files cannot be staged after target launch")
             if relative in self._uploads:
                 raise AdapterError(f"upload already in progress for {relative}")
+            pending_total = sum(int(upload["size"]) for upload in self._uploads.values())
+            if self._staged_total + pending_total + size > TRANSFER_MAX_TOTAL_BYTES:
+                raise AdapterError("staged files exceed the Capsule session byte limit")
             root = self._workspace()
             destination = workspace_path(root, relative, must_exist=False)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -208,6 +200,13 @@ class GuestAgentState:
                 handle.write(chunk)
             upload["received"] += len(chunk)
 
+    def _discard_upload(self, relative: str, upload: dict) -> None:
+        try:
+            upload["temp"].unlink()
+        except OSError:
+            pass
+        self._uploads.pop(relative, None)
+
     def stage_commit(self, relative: str, size: int, sha256: str) -> dict:
         relative = normalize_relative_path(relative)
         with self._lock:
@@ -217,6 +216,7 @@ class GuestAgentState:
             expected_size = upload["size"]
             expected_hash = upload["sha256"]
             if int(size) != expected_size or str(sha256 or "").lower() != expected_hash:
+                self._discard_upload(relative, upload)
                 raise AdapterError(f"staging manifest changed during upload for {relative}")
             if upload["received"] != expected_size:
                 raise AdapterError(
@@ -225,11 +225,7 @@ class GuestAgentState:
                 )
             actual = sha256_file(upload["temp"])
             if actual != expected_hash:
-                try:
-                    upload["temp"].unlink()
-                except OSError:
-                    pass
-                self._uploads.pop(relative, None)
+                self._discard_upload(relative, upload)
                 raise AdapterError(
                     f"staged file checksum mismatch for {relative}: "
                     f"expected {expected_hash}, got {actual}"
@@ -278,8 +274,6 @@ class GuestAgentState:
                 raise AdapterError(f"artifact changed while being collected: {relative}")
             return data
 
-    # ---- target lifecycle ----------------------------------------------
-
     def start(self, adapter_type: str, target: str, input_mode: str) -> dict:
         input_mode = (input_mode or "safe").lower().strip()
         if input_mode not in {"safe", "semantic", "physical", "legacy"}:
@@ -291,9 +285,6 @@ class GuestAgentState:
             try:
                 os.environ["ARGUS_INPUT_MODE"] = input_mode
                 adapter = create_platform_adapter(adapter_type)
-                # A prepared workspace becomes the target's inherited working
-                # directory. This lets declared relative outputs remain inside
-                # the only guest tree that collection is allowed to read.
                 if self.workspace_root is not None:
                     os.chdir(self.workspace_root)
                 adapter.launch(target)
@@ -494,10 +485,10 @@ class GuestAgentHandler(BaseHTTPRequestHandler):
                 {"ok": False, "error": f"guest operation failed: {exc}"},
             )
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_GET(self) -> None:
         self._dispatch()
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_POST(self) -> None:
         self._dispatch()
 
 
