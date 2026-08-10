@@ -765,10 +765,21 @@ class LibvirtProvider(CapsuleProvider):
 
         # Validate deterministic caller-controlled values before storage is
         # allocated. Dynamic subnet occupancy is handled atomically below.
-        self._network_pool(settings.libvirt_network_cidr)
+        pool = self._network_pool(settings.libvirt_network_cidr)
         vm_name, network_name, filter_name, bridge_name = self._resource_names(session_id)
         mac = self._mac_for(session_id)
         arch = self._host_arch(settings.libvirt_arch)
+
+        # An explicit guest_address is a pin to this session's deterministic
+        # first pool slot. Reject a mismatched pin before image inspection or
+        # storage allocation; if that slot is occupied later, the under-lock
+        # validation below refuses to silently move the pinned endpoint.
+        if str(settings.guest_address or "").strip():
+            pinned_network = next(self._candidate_networks(session_id, pool))
+            self._validate_requested_address(
+                settings.guest_address, str(pinned_network.network_address + 2)
+            )
+
         base_format = self._base_image_format(image)
 
         # A collision is a hard boundary: never redefine or clean up a provider
