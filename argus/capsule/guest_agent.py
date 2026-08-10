@@ -24,6 +24,7 @@ import base64
 import hmac
 import json
 import os
+import shutil
 import tempfile
 import threading
 import uuid
@@ -108,6 +109,7 @@ class GuestAgentState:
         self.workspace_session_id: str = ""
         self._uploads: dict[str, dict] = {}
         self._staged_total = 0
+        self._collection_snapshots: dict[str, dict] = {}
 
     def begin_files(self, session_id: str) -> dict:
         session_id = validate_session_id(session_id)
@@ -135,12 +137,45 @@ class GuestAgentState:
             self.workspace_session_id = session_id
             self._uploads.clear()
             self._staged_total = 0
+            self._clear_collection_snapshots()
             return {"workspace": str(resolved)}
 
     def _workspace(self) -> Path:
         if self.workspace_root is None:
             raise AdapterError("guest file workspace is not initialized")
         return self.workspace_root
+
+    def _snapshot_root(self) -> Path:
+        if not self.workspace_session_id:
+            raise AdapterError("guest file workspace is not initialized")
+        base = Path(tempfile.gettempdir()) / "argus-capsule-collection-snapshots"
+        if base.is_symlink():
+            raise AdapterError("guest collection snapshot base cannot be a symlink")
+        base.mkdir(parents=True, exist_ok=True)
+        base_resolved = base.resolve(strict=True)
+        root = base / self.workspace_session_id
+        if root.is_symlink():
+            raise AdapterError("guest collection snapshot root cannot be a symlink")
+        root.mkdir(parents=True, exist_ok=True)
+        resolved = root.resolve(strict=True)
+        try:
+            resolved.relative_to(base_resolved)
+        except ValueError as exc:
+            raise AdapterError("guest collection snapshot root escaped its base") from exc
+        return resolved
+
+    def _discard_collection_snapshot(self, relative: str) -> None:
+        snapshot = self._collection_snapshots.pop(relative, None)
+        if snapshot is None:
+            return
+        try:
+            Path(snapshot["path"]).unlink()
+        except OSError:
+            pass
+
+    def _clear_collection_snapshots(self) -> None:
+        for relative in list(self._collection_snapshots):
+            self._discard_collection_snapshot(relative)
 
     def stage_begin(self, relative: str, size: int, sha256: str) -> None:
         relative = normalize_relative_path(relative)
@@ -242,15 +277,45 @@ class GuestAgentState:
     def collect_info(self, relative: str) -> dict:
         relative = normalize_relative_path(relative)
         with self._lock:
-            path = workspace_path(self._workspace(), relative, must_exist=True)
-            if not path.is_file():
+            existing = self._collection_snapshots.get(relative)
+            if existing is not None:
+                return {"size": existing["size"], "sha256": existing["sha256"]}
+
+            source = workspace_path(self._workspace(), relative, must_exist=True)
+            if not source.is_file():
                 raise AdapterError(f"requested artifact is not a regular file: {relative}")
-            size = path.stat().st_size
-            if size > TRANSFER_MAX_FILE_BYTES:
+            before = source.stat()
+            if before.st_size > TRANSFER_MAX_FILE_BYTES:
                 raise AdapterError(
                     f"artifact exceeds {TRANSFER_MAX_FILE_BYTES} byte limit: {relative}"
                 )
-            return {"size": size, "sha256": sha256_file(path)}
+
+            snapshot = self._snapshot_root() / f"{uuid.uuid4().hex}.snapshot"
+            try:
+                with source.open("rb") as src, snapshot.open("xb") as dst:
+                    shutil.copyfileobj(src, dst, length=1024 * 1024)
+                after = source.stat()
+                snapshot_size = snapshot.stat().st_size
+                if (
+                    before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns
+                    or snapshot_size != before.st_size
+                ):
+                    raise AdapterError(f"artifact changed while being snapshotted: {relative}")
+                digest = sha256_file(snapshot)
+            except Exception:
+                try:
+                    snapshot.unlink()
+                except OSError:
+                    pass
+                raise
+
+            self._collection_snapshots[relative] = {
+                "path": snapshot,
+                "size": snapshot_size,
+                "sha256": digest,
+            }
+            return {"size": snapshot_size, "sha256": digest}
 
     def collect_chunk(self, relative: str, offset: int, limit: int) -> bytes:
         relative = normalize_relative_path(relative)
@@ -259,19 +324,20 @@ class GuestAgentState:
         if offset < 0 or limit <= 0 or limit > TRANSFER_CHUNK_BYTES:
             raise AdapterError("invalid artifact chunk range")
         with self._lock:
-            path = workspace_path(self._workspace(), relative, must_exist=True)
+            snapshot = self._collection_snapshots.get(relative)
+            if snapshot is None:
+                raise AdapterError(f"artifact must be preflighted before collection: {relative}")
+            path = Path(snapshot["path"])
             if not path.is_file():
-                raise AdapterError(f"requested artifact is not a regular file: {relative}")
-            size = path.stat().st_size
-            if size > TRANSFER_MAX_FILE_BYTES:
-                raise AdapterError(f"artifact exceeds the per-file transfer limit: {relative}")
+                raise AdapterError(f"artifact snapshot is unavailable: {relative}")
+            size = int(snapshot["size"])
             if offset + limit > size:
-                raise AdapterError(f"artifact chunk exceeds file bounds: {relative}")
+                raise AdapterError(f"artifact chunk exceeds snapshot bounds: {relative}")
             with path.open("rb") as handle:
                 handle.seek(offset)
                 data = handle.read(limit)
             if len(data) != limit:
-                raise AdapterError(f"artifact changed while being collected: {relative}")
+                raise AdapterError(f"artifact snapshot changed while being collected: {relative}")
             return data
 
     def start(self, adapter_type: str, target: str, input_mode: str) -> dict:
@@ -323,8 +389,11 @@ class GuestAgentState:
         with self._lock:
             adapter = self.adapter
             self.adapter = None
-            if adapter is not None:
-                adapter.close()
+            try:
+                if adapter is not None:
+                    adapter.close()
+            finally:
+                self._clear_collection_snapshots()
 
 
 class GuestAgentServer(ThreadingHTTPServer):
