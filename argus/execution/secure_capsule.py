@@ -1,27 +1,33 @@
-"""Secure Capsule execution environment introduced by PR6."""
+"""Secure multi-provider Capsule execution environment."""
 
 from __future__ import annotations
 
 import secrets
+import sys
+from dataclasses import replace
 from typing import Callable, Mapping, Optional
 
 from argus.adapters.base import PolicyAdapter
 from argus.capsule.base import CapsuleHandle, CapsuleProvider, CapsuleRequest, CapsuleSettings
 from argus.capsule.guest import GuestAdapterProxy
-from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
 from argus.capsule.secure_client import SecureGuestAgentClient
 from argus.execution.base import ExecutionEnvironmentError
 from argus.execution.capsule import CapsuleExecutionEnvironment
 
 
 class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
-    """Capsule environment with isolated networking and secure control auth.
+    """Capsule environment with provider-enforced isolation and secure auth.
 
-    Secure retained Capsules intentionally reuse the base PR4 disk/config-only
-    retention path. Runtime bootstrap/TLS material has already been consumed,
-    and no replacement control credential is persisted into a guest that may
-    have been influenced by the application under test. Retention is therefore
-    forensic evidence preservation rather than a promise of remote restart.
+    PR7 keeps Hyper-V/Windows as the reference implementation and adds a Linux
+    libvirt/QEMU provider behind the same lifecycle. Provider-specific security
+    capabilities stay below this boundary; runner/agent code continues to see
+    one Capsule execution environment.
+
+    Secure retained Capsules intentionally reuse the disk/config-only retention
+    path. Runtime bootstrap/TLS material has already been consumed, and no
+    replacement control credential is persisted into a guest that may have been
+    influenced by the application under test. Retention is forensic evidence
+    preservation rather than a promise of remote restart.
     """
 
     def __init__(
@@ -38,22 +44,41 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 "secure Capsules require per-session bearer rotation; "
                 "rotate_session_token cannot be disabled"
             )
+        selected = provider or self._make_secure_provider(settings.provider)
         super().__init__(
             adapter_type,
             settings,
-            provider=provider or self._make_secure_provider(settings.provider),
+            provider=selected,
             client_factory=client_factory,
             session_id=session_id,
         )
         self._session_token_rotated = False
 
     @staticmethod
-    def _make_secure_provider(name: str) -> CapsuleProvider:
-        kind = (name or "hyperv").lower().strip()
+    def _make_secure_provider(name: str, platform_name: str = "") -> CapsuleProvider:
+        kind = (name or "auto").lower().strip()
+        host = str(platform_name or sys.platform).lower()
+        if kind == "auto":
+            if host == "win32":
+                kind = "hyperv"
+            elif host.startswith("linux"):
+                kind = "libvirt"
+            else:
+                raise ExecutionEnvironmentError(
+                    "automatic Capsule provider selection currently supports Windows "
+                    "(Hyper-V) and Linux (libvirt/QEMU) hosts"
+                )
+
         if kind == "hyperv":
+            from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
+
             return IsolatedHyperVProvider()
+        if kind in {"libvirt", "qemu", "kvm"}:
+            from argus.capsule.libvirt import LibvirtProvider
+
+            return LibvirtProvider()
         raise ExecutionEnvironmentError(
-            f"unknown Capsule provider {name!r} — available: hyperv"
+            f"unknown Capsule provider {name!r} — available: auto, hyperv, libvirt"
         )
 
     @classmethod
@@ -64,15 +89,43 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
     ) -> "SecureCapsuleExecutionEnvironment":
         return cls(adapter_type, CapsuleSettings.from_mapping(config))
 
+    def _resolved_guest_os(self) -> str:
+        configured = (self.settings.guest_os or "auto").lower().strip()
+        capabilities = self.provider.capabilities()
+        if configured == "auto":
+            if capabilities.guest_os:
+                return capabilities.guest_os[0]
+            if self.provider.provider_name == "hyperv":
+                return "windows"
+            if self.provider.provider_name == "libvirt":
+                return "linux"
+            return "unknown"
+        if capabilities.guest_os and not capabilities.supports_guest_os(configured):
+            supported = ", ".join(capabilities.guest_os)
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {self.provider.provider_name!r} does not support "
+                f"guest_os={configured!r}; supported: {supported}"
+            )
+        return configured
+
     def prepare(self) -> None:
         if self._prepared:
             return
         handle: Optional[CapsuleHandle] = None
         try:
+            guest_os = self._resolved_guest_os()
+            # Resolve aliases before crossing the provider boundary. This keeps
+            # existing Hyper-V/libvirt providers strict about their own names
+            # while allowing user configuration to say provider: auto.
+            request_settings = replace(
+                self.settings,
+                provider=self.provider.provider_name,
+                guest_os=guest_os,
+            )
             request = CapsuleRequest(
                 session_id=self.session_id,
                 adapter_type=self.type_name,
-                settings=self.settings,
+                settings=request_settings,
             )
             handle = self.provider.create(request)
             self._handle = handle
