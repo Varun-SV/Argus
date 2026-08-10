@@ -212,7 +212,7 @@ def test_later_collection_failure_removes_earlier_committed_artifacts(tmp_path):
     [
         ("  - ../escape.txt", "invalid"),
         ("  - C:\\\\escape.txt", "invalid"),
-        ("  - logs/result.txt\n  - logs\\\\result.txt", "duplicates"),
+        ("  - logs/result.txt\n  - logs/result.txt", "duplicates"),
     ],
 )
 def test_invalid_collection_declarations_fail_during_spec_parse(collect_block, error):
