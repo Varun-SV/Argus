@@ -26,6 +26,11 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         client_factory: Callable[..., SecureGuestAgentClient] = SecureGuestAgentClient,
         session_id: Optional[str] = None,
     ) -> None:
+        if not settings.rotate_session_token:
+            raise ExecutionEnvironmentError(
+                "secure Capsules require per-session bearer rotation; "
+                "rotate_session_token cannot be disabled"
+            )
         super().__init__(
             adapter_type,
             settings,
@@ -74,15 +79,14 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             self._client = client
             client.wait_until_ready(self.settings.agent_timeout_seconds)
 
-            if self.settings.rotate_session_token:
-                rotate = getattr(client, "rotate_session_token", None)
-                if not callable(rotate):
-                    raise ExecutionEnvironmentError(
-                        "secure Capsule client does not support per-session bearer rotation"
-                    )
-                session_token = secrets.token_urlsafe(48)
-                rotate(self.session_id, session_token)
-                self._session_token_rotated = True
+            rotate = getattr(client, "rotate_session_token", None)
+            if not callable(rotate):
+                raise ExecutionEnvironmentError(
+                    "secure Capsule client does not support per-session bearer rotation"
+                )
+            session_token = secrets.token_urlsafe(48)
+            rotate(self.session_id, session_token)
+            self._session_token_rotated = True
 
             proxy = GuestAdapterProxy(
                 client,
