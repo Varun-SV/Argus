@@ -78,15 +78,25 @@ class RunResult:
 
     def run_dir(self, project_dir: Path) -> Path:
         runs_dir = project_dir / ".argus" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        runs_root = runs_dir.resolve(strict=True)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        return runs_dir / f"{stamp}-{safe}"
+        candidate = runs_dir / f"{stamp}-{safe}"
+        if candidate.is_symlink():
+            raise OSError(f"run directory cannot be a symlink: {candidate}")
+        candidate.mkdir(exist_ok=True)
+        resolved = candidate.resolve(strict=True)
+        try:
+            resolved.relative_to(runs_root)
+        except ValueError as exc:
+            raise OSError(f"run directory escapes .argus/runs: {candidate}") from exc
+        return resolved
 
     def save(self, project_dir: Path) -> Path:
         runs_dir = project_dir / ".argus" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_dir = self.run_dir(project_dir)
-        run_dir.mkdir(exist_ok=True)
         (run_dir / "result.json").write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         write_report(self, run_dir)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
