@@ -41,6 +41,9 @@ class RunResult:
     steps: List[StepResult] = field(default_factory=list)
     tokens: dict = field(default_factory=dict)
     error: Optional[str] = None
+    staged_files: List[dict] = field(default_factory=list)
+    artifacts: List[dict] = field(default_factory=list)
+    transfer_error: Optional[str] = None
     failure_capsule: Optional[dict] = None
     failure_capsule_error: Optional[dict] = None
 
@@ -73,22 +76,28 @@ class RunResult:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    def run_dir(self, project_dir: Path) -> Path:
+        runs_dir = project_dir / ".argus" / "runs"
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
+        return runs_dir / f"{stamp}-{safe}"
+
     def save(self, project_dir: Path) -> Path:
         runs_dir = project_dir / ".argus" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        run_dir = runs_dir / f"{stamp}-{safe}"
+        run_dir = self.run_dir(project_dir)
         run_dir.mkdir(exist_ok=True)
         (run_dir / "result.json").write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         write_report(self, run_dir)
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
         flat = runs_dir / f"{stamp}-{safe}.json"
         flat.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return run_dir / "result.json"
 
 
 def write_report(result: RunResult, run_dir: Path) -> Path:
-    """Write a markdown report with per-step screenshots."""
+    """Write a markdown report with per-step screenshots and transfer provenance."""
     lines = [
         "# Argus Test Report",
         "",
@@ -102,6 +111,8 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
         f"- **Duration:** {result.duration_s:.1f}s",
         f"- **Tokens:** {result.tokens.get('total_tokens', 0)} "
         f"({result.tokens.get('calls', 0)} LLM calls)",
+        f"- **Staged files:** {len(result.staged_files)}",
+        f"- **Collected artifacts:** {len(result.artifacts)}",
     ]
     if result.failure_capsule:
         lines += [
@@ -131,6 +142,26 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
 
     if result.error:
         lines += [f"**Error:** {result.error}", ""]
+    if result.transfer_error:
+        lines += [f"**Transfer error:** {result.transfer_error}", ""]
+
+    if result.staged_files:
+        lines += ["## Staged files", "", "| Source | Guest destination | Size | SHA-256 |", "|---|---|---:|---|"]
+        for item in result.staged_files:
+            lines.append(
+                f"| `{item.get('source', '')}` | `{item.get('destination', '')}` | "
+                f"{item.get('size', 0)} | `{item.get('sha256', '')}` |"
+            )
+        lines.append("")
+
+    if result.artifacts:
+        lines += ["## Collected artifacts", "", "| Guest path | Host artifact | Size | SHA-256 |", "|---|---|---:|---|"]
+        for item in result.artifacts:
+            lines.append(
+                f"| `{item.get('path', '')}` | `{item.get('host_path', '')}` | "
+                f"{item.get('size', 0)} | `{item.get('sha256', '')}` |"
+            )
+        lines.append("")
 
     if result.failure_capsule:
         lines += [
