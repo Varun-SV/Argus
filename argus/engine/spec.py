@@ -1,4 +1,29 @@
-"""Test spec — parse ``.argus/*.test.yaml`` files."""
+"""Test spec — parse ``.argus/*.test.yaml`` files.
+
+Hybrid-agentic format: natural-language steps (the LLM fills in the
+ambiguity) interleaved with structured ``assert`` blocks (always
+authoritative, executed deterministically — never by the model).
+
+Supported assertions (desktop-gui):
+
+    - assert:
+        text_visible: "hello"               # any element/window text contains it
+    - assert:
+        window_title_contains: "Notepad"
+    - assert:
+        element_exists:
+          name: "Save"                      # substring match on element name
+          control_type: MenuItem            # optional
+    - assert:
+        process_running: true
+    - assert:
+        dialog_open: "Error"                # a popup window whose title contains
+
+Capsule file movement is also declarative and deterministic. ``staging`` lists
+host-project files and guest-workspace destinations, while ``collect`` lists
+workspace-relative artifacts that may be copied back after execution. Neither
+surface is generated or widened by the LLM at run time.
+"""
 
 from __future__ import annotations
 
@@ -9,14 +34,17 @@ from typing import List, Optional, Union
 import yaml
 
 ASSERTION_KINDS = (
+    # desktop-gui
     "text_visible",
     "window_title_contains",
     "element_exists",
     "process_running",
     "dialog_open",
+    # cli
     "stdout_contains",
     "stderr_contains",
     "exit_code_is",
+    # browser
     "url_contains",
     "page_title_contains",
 )
@@ -28,12 +56,16 @@ class SpecError(ValueError):
 
 @dataclass
 class NLStep:
+    """A natural-language step, resolved by the LLM at run time."""
+
     text: str
-    kind: str = "step"
+    kind: str = "step"  # step | setup | teardown
 
 
 @dataclass
 class AssertStep:
+    """A structured assertion, executed deterministically."""
+
     assertion: str
     expected: Union[str, bool, dict]
     kind: str = "assert"
@@ -47,6 +79,8 @@ class AssertStep:
 
 @dataclass(frozen=True)
 class StageFile:
+    """One explicitly authorized project file copied into the Capsule workspace."""
+
     source: str
     destination: str
     sha256: str = ""
@@ -172,6 +206,7 @@ def load_spec(path: Path) -> TestSpec:
 
 
 def discover_tests(project_dir: Path) -> List[Path]:
+    """All ``*.test.yaml`` files under ``.argus/`` (sorted)."""
     argus_dir = project_dir / ".argus"
     if not argus_dir.is_dir():
         return []
