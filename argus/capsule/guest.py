@@ -133,8 +133,6 @@ class GuestAgentClient:
             f"guest agent did not become ready within {timeout_seconds:.0f}s: {last_error}"
         )
 
-    # ---- deterministic workspace file transfer -------------------------
-
     def begin_files(self, session_id: str) -> dict:
         return self._request("POST", "/v1/files/begin", {"session_id": session_id})
 
@@ -213,11 +211,15 @@ class GuestAgentClient:
         size = int(metadata["size"])
         expected = str(metadata["sha256"]).lower()
 
+        # The runner has already authenticated the parent run directory. Do not
+        # let a pre-created artifacts symlink/junction redefine this write root.
+        if output_root.is_symlink():
+            raise CapsuleGuestError(f"artifact output root cannot be a symlink: {output_root}")
         output_root.mkdir(parents=True, exist_ok=True)
+        if output_root.is_symlink():
+            raise CapsuleGuestError(f"artifact output root became a symlink: {output_root}")
         destination = workspace_path(output_root, relative, must_exist=False)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        # Resolve again after creating parents so a pre-existing symlink/junction
-        # cannot become a host-write escape between validation and the write.
         destination = workspace_path(output_root, relative, must_exist=False)
         temp = destination.with_name(f".{destination.name}.argus-{uuid.uuid4().hex}.part")
         digest = hashlib.sha256()
@@ -262,8 +264,6 @@ class GuestAgentClient:
             "sha256": expected,
             "host_path": str(destination),
         }
-
-    # ---- target session -------------------------------------------------
 
     def launch(self, adapter_type: str, target: str, input_mode: str) -> dict:
         return self._request(
@@ -319,8 +319,6 @@ class GuestAdapterProxy(Adapter):
         return self._capabilities
 
     def validate_action(self, action: dict) -> None:
-        # Host-side PolicyAdapter enforces generic/global policy. The guest's
-        # actual platform adapter performs platform-specific validation again.
         return None
 
     def act(self, action: dict) -> str:
