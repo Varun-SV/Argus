@@ -249,8 +249,17 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             raise ExecutionEnvironmentError("Capsule artifact workspace is not available")
         normalized = self._normalize_artifact_paths(paths)
 
-        infos = [(relative, self._client.collect_info(relative)) for relative in normalized]
-        enforce_total_bytes(info["size"] for _, info in infos)
+        # The guest enforces the aggregate snapshot cap before reading each
+        # artifact. Mirror the same running bound host-side so a bad/mismatched
+        # guest cannot make the preflight set exceed policy unnoticed.
+        infos = []
+        preflight_sizes = []
+        for relative in normalized:
+            info = self._client.collect_info(relative)
+            preflight_sizes.append(int(info["size"]))
+            enforce_total_bytes(preflight_sizes)
+            infos.append((relative, info))
+
         collected = []
         for relative, info in infos:
             try:
@@ -283,6 +292,7 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         try:
             resolved_target = target
             staged_target = str(target).startswith("stage://")
+            literal_gui_target = False
             if staged_target:
                 relative = normalize_relative_path(str(target)[len("stage://"):])
                 resolved_target = self._staged_targets.get(relative, "")
@@ -295,8 +305,22 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
                     # strings. Quote the staged executable so Windows backslashes
                     # survive that parser and become one subprocess argv element.
                     resolved_target = shlex.quote(resolved_target)
-            target_attempted = True
-            self._adapter.launch(resolved_target)
+                elif self.type_name in {"desktop-gui", "desktop", "gui"}:
+                    # Staged GUI executables are already one committed path.
+                    # Never send them back through Windows command-string parsing.
+                    literal_gui_target = True
+
+            if literal_gui_target:
+                launch_literal = getattr(self._adapter, "launch_literal", None)
+                if not callable(launch_literal):
+                    raise ExecutionEnvironmentError(
+                        "Capsule guest adapter does not support literal staged GUI launches"
+                    )
+                target_attempted = True
+                launch_literal(resolved_target)
+            else:
+                target_attempted = True
+                self._adapter.launch(resolved_target)
         except Exception as launch_exc:
             # A missing/invalid stage reference is a pre-launch configuration
             # error and should roll back. Once the guest target was actually
