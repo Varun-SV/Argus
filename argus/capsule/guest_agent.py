@@ -40,12 +40,12 @@ from argus.capsule.files import (
     TRANSFER_CHUNK_BYTES,
     TRANSFER_MAX_FILE_BYTES,
     TRANSFER_MAX_TOTAL_BYTES,
-    normalize_relative_path,
+    normalize_guest_relative_path,
     sha256_file,
     validate_session_id,
     workspace_path,
 )
-from argus.capsule.safe_open import open_workspace_regular_file
+from argus.capsule.safe_open import open_workspace_regular_file, stabilize_snapshot_read
 
 
 def _consume_control_token(*, token_file: str = "", token_env: str = "") -> str:
@@ -153,7 +153,7 @@ class GuestAgentState:
         self._collection_snapshots.clear()
 
     def stage_begin(self, relative: str, size: int, sha256: str) -> None:
-        relative = normalize_relative_path(relative)
+        relative = normalize_guest_relative_path(relative)
         size = int(size)
         digest = str(sha256 or "").strip().lower()
         if size < 0 or size > TRANSFER_MAX_FILE_BYTES:
@@ -187,7 +187,7 @@ class GuestAgentState:
             }
 
     def stage_chunk(self, relative: str, offset: int, data_b64: str) -> None:
-        relative = normalize_relative_path(relative)
+        relative = normalize_guest_relative_path(relative)
         try:
             chunk = base64.b64decode(str(data_b64 or ""), validate=True)
         except Exception as exc:
@@ -218,7 +218,7 @@ class GuestAgentState:
         self._uploads.pop(relative, None)
 
     def stage_commit(self, relative: str, size: int, sha256: str) -> dict:
-        relative = normalize_relative_path(relative)
+        relative = normalize_guest_relative_path(relative)
         with self._lock:
             upload = self._uploads.get(relative)
             if upload is None:
@@ -249,68 +249,88 @@ class GuestAgentState:
                 "sha256": expected_hash,
             }
 
+    @staticmethod
+    def _read_exact_digest(source, size: int, *, capture: bool) -> tuple[bytearray | None, str]:
+        digest = hashlib.sha256()
+        snapshot = bytearray() if capture else None
+        remaining = int(size)
+        while remaining:
+            chunk = source.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise AdapterError("artifact changed while being snapshotted")
+            digest.update(chunk)
+            if snapshot is not None:
+                snapshot.extend(chunk)
+            remaining -= len(chunk)
+        if source.read(1):
+            raise AdapterError("artifact changed while being snapshotted")
+        return snapshot, digest.hexdigest()
+
     def collect_info(self, relative: str) -> dict:
-        relative = normalize_relative_path(relative)
+        relative = normalize_guest_relative_path(relative)
         with self._lock:
             existing = self._collection_snapshots.get(relative)
             if existing is not None:
                 return {"size": existing["size"], "sha256": existing["sha256"]}
 
             with open_workspace_regular_file(self._workspace(), relative) as source:
-                before = os.fstat(source.fileno())
-                if before.st_size < 0 or before.st_size > TRANSFER_MAX_FILE_BYTES:
-                    raise AdapterError(
-                        f"artifact exceeds {TRANSFER_MAX_FILE_BYTES} byte limit: {relative}"
-                    )
+                with stabilize_snapshot_read(source, relative):
+                    before = os.fstat(source.fileno())
+                    if before.st_size < 0 or before.st_size > TRANSFER_MAX_FILE_BYTES:
+                        raise AdapterError(
+                            f"artifact exceeds {TRANSFER_MAX_FILE_BYTES} byte limit: {relative}"
+                        )
 
-                snapshot_total = sum(
-                    int(snapshot["size"])
-                    for snapshot in self._collection_snapshots.values()
-                )
-                if snapshot_total + before.st_size > TRANSFER_MAX_TOTAL_BYTES:
-                    raise AdapterError(
-                        f"artifact snapshots exceed the {TRANSFER_MAX_TOTAL_BYTES} byte session limit"
+                    snapshot_total = sum(
+                        int(snapshot["size"])
+                        for snapshot in self._collection_snapshots.values()
                     )
+                    if snapshot_total + before.st_size > TRANSFER_MAX_TOTAL_BYTES:
+                        raise AdapterError(
+                            f"artifact snapshots exceed the {TRANSFER_MAX_TOTAL_BYTES} byte session limit"
+                        )
 
-                snapshot = bytearray()
-                remaining = int(before.st_size)
-                while remaining:
-                    chunk = source.read(min(1024 * 1024, remaining))
-                    if not chunk:
+                    source.seek(0)
+                    try:
+                        snapshot, first_digest = self._read_exact_digest(
+                            source,
+                            int(before.st_size),
+                            capture=True,
+                        )
+                        source.seek(0)
+                        _discarded, second_digest = self._read_exact_digest(
+                            source,
+                            int(before.st_size),
+                            capture=False,
+                        )
+                    except AdapterError as exc:
+                        raise AdapterError(
+                            f"artifact changed while being snapshotted: {relative}"
+                        ) from exc
+
+                    after = os.fstat(source.fileno())
+                    if (
+                        first_digest != second_digest
+                        or before.st_size != after.st_size
+                        or before.st_mtime_ns != after.st_mtime_ns
+                        or getattr(before, "st_ctime_ns", 0)
+                        != getattr(after, "st_ctime_ns", 0)
+                        or snapshot is None
+                        or len(snapshot) != before.st_size
+                    ):
                         raise AdapterError(
                             f"artifact changed while being snapshotted: {relative}"
                         )
-                    snapshot.extend(chunk)
-                    remaining -= len(chunk)
 
-                # Never read an unbounded growing source. One extra byte is
-                # sufficient to prove that the live object grew beyond the
-                # size pinned before snapshotting.
-                if source.read(1):
-                    raise AdapterError(
-                        f"artifact changed while being snapshotted: {relative}"
-                    )
-
-                after = os.fstat(source.fileno())
-                if (
-                    before.st_size != after.st_size
-                    or before.st_mtime_ns != after.st_mtime_ns
-                    or len(snapshot) != before.st_size
-                ):
-                    raise AdapterError(
-                        f"artifact changed while being snapshotted: {relative}"
-                    )
-
-            digest = hashlib.sha256(snapshot).hexdigest()
             self._collection_snapshots[relative] = {
                 "data": snapshot,
                 "size": len(snapshot),
-                "sha256": digest,
+                "sha256": first_digest,
             }
-            return {"size": len(snapshot), "sha256": digest}
+            return {"size": len(snapshot), "sha256": first_digest}
 
     def collect_chunk(self, relative: str, offset: int, limit: int) -> bytes:
-        relative = normalize_relative_path(relative)
+        relative = normalize_guest_relative_path(relative)
         offset = int(offset)
         limit = int(limit)
         if offset < 0 or limit <= 0 or limit > TRANSFER_CHUNK_BYTES:
