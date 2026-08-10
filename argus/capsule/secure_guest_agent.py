@@ -15,6 +15,7 @@ import argparse
 import ssl
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 
 from argus.adapters.base import AdapterError
@@ -25,6 +26,24 @@ from argus.capsule.guest_agent import (
     GuestAgentState,
     _consume_control_token,
 )
+
+
+def _consume_tls_private_key(path: str) -> None:
+    """Remove session-visible TLS private-key material after SSLContext loads it.
+
+    The golden parent image remains unchanged because a Capsule boots a
+    differencing disk. The live TLS context keeps the key in process memory,
+    while the application under test can no longer copy it from the filesystem.
+    """
+    key_path = Path(path).expanduser()
+    if key_path.is_symlink():
+        raise AdapterError("Capsule TLS private key cannot be a symlink")
+    try:
+        key_path.unlink()
+    except OSError as exc:
+        raise AdapterError(
+            f"Capsule TLS private key could not be consumed/deleted safely: {exc}"
+        ) from exc
 
 
 class SecureGuestAgentServer(GuestAgentServer):
@@ -52,8 +71,6 @@ class SecureGuestAgentHandler(GuestAgentHandler):
         if self.server.auth_session_id == session_id:
             raise AdapterError("guest auth has already been rotated for this Capsule session")
 
-        # Replace the only server-held bearer after authenticating this request.
-        # The old reusable bootstrap value is no longer accepted after response.
         self.server.token = token
         self.server.auth_session_id = session_id
         self._send(HTTPStatus.OK, {"ok": True, "session_id": session_id})
@@ -68,9 +85,6 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                 "ok": True,
                 "service": "argus-guest-agent",
                 "secure": True,
-                # This is a non-secret binding identifier. It lets the host
-                # recover if the rotation response is lost without exposing the
-                # active or bootstrap bearer.
                 "auth_session_id": self.server.auth_session_id,
             },
         )
@@ -148,9 +162,10 @@ def main(argv=None) -> None:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         try:
             context.load_cert_chain(args.tls_cert, args.tls_key)
-        except (OSError, ssl.SSLError) as exc:
+            _consume_tls_private_key(args.tls_key)
+        except (OSError, ssl.SSLError, AdapterError) as exc:
             server.server_close()
-            parser.error(f"cannot load Capsule TLS certificate/key: {exc}")
+            parser.error(f"cannot initialize Capsule TLS identity: {exc}")
         server.socket = context.wrap_socket(server.socket, server_side=True)
 
     try:
