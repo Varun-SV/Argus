@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Optional
 
 from argus.adapters.base import Adapter, AdapterError, Observation
@@ -57,6 +58,15 @@ class ExecutionEnvironment(Adapter, ABC):
     no valid test state necessarily exists yet to retain. This prevents
     VM/disk/network allocations from being leaked accidentally while allowing
     deliberately retained failure state to remain available for reproduction.
+
+    File-transfer contract
+    ----------------------
+    Staging and collection are explicit execution-environment operations. Local
+    execution does not implicitly copy files. Capsule implementations may expose
+    a bounded per-session workspace; paths crossing that boundary must be
+    deterministic policy inputs rather than agent/model-generated destinations.
+    Transfer preparation/staging occurs before target launch, while collection
+    must finish before the environment is closed, retained, or destroyed.
     """
 
     environment_type: str = "base"
@@ -98,6 +108,28 @@ class ExecutionEnvironment(Adapter, ABC):
     def failure_capsule(self):
         """Return retained failure metadata, if this environment produced any."""
         return None
+
+    def failure_capsule_error(self):
+        """Return retention recovery metadata, if retention itself failed."""
+        return None
+
+    def prepare_transfers(self) -> None:
+        """Prepare an explicit staging/collection workspace."""
+        raise ExecutionEnvironmentError(
+            "file staging/collection is only supported by a transfer-capable execution environment"
+        )
+
+    def stage_files(self, entries, project_dir: Path) -> list[dict]:
+        """Stage explicit project files into the execution workspace."""
+        raise ExecutionEnvironmentError(
+            "file staging is not supported by this execution environment"
+        )
+
+    def collect_artifacts(self, paths, output_dir: Path) -> list[dict]:
+        """Collect explicit workspace files into ``output_dir``."""
+        raise ExecutionEnvironmentError(
+            "artifact collection is not supported by this execution environment"
+        )
 
 
 class LocalExecutionEnvironment(ExecutionEnvironment):

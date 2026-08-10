@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import hmac
 import json
 import os
+import tempfile
 import threading
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,17 +35,21 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from argus.adapters.base import Adapter, AdapterError, Observation, create_adapter as create_platform_adapter
+from argus.capsule.base import CapsuleError
+from argus.capsule.files import (
+    TRANSFER_CHUNK_BYTES,
+    TRANSFER_MAX_FILE_BYTES,
+    TRANSFER_MAX_TOTAL_BYTES,
+    normalize_guest_relative_path,
+    sha256_file,
+    validate_session_id,
+    workspace_path,
+)
+from argus.capsule.safe_open import open_workspace_regular_file, stabilize_snapshot_read
 
 
 def _consume_control_token(*, token_file: str = "", token_env: str = "") -> str:
-    """Load the guest control-plane token and remove bootstrap material.
-
-    The application under test is launched as a child of this process through a
-    normal platform adapter. Any secret left in ``os.environ`` would therefore
-    be inherited by that workload. Token bootstrap must be one-shot: a token
-    file is deleted before the server starts, and environment-backed bootstrap
-    values are popped immediately after reading.
-    """
+    """Load the guest control-plane token and remove bootstrap material."""
     token = ""
     path = Path(token_file).expanduser() if token_file else None
     if path is not None:
@@ -59,8 +66,6 @@ def _consume_control_token(*, token_file: str = "", token_env: str = "") -> str:
     elif token_env:
         token = os.environ.pop(token_env, "").strip()
 
-    # Always scrub the conventional name as well as the configured bootstrap
-    # name. This is intentionally done even when token_file supplied the token.
     for name in {token_env, "ARGUS_CAPSULE_GUEST_TOKEN"}:
         if name:
             os.environ.pop(name, None)
@@ -101,30 +106,292 @@ class GuestAgentState:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self.adapter: Optional[Adapter] = None
+        self.workspace_root: Optional[Path] = None
+        self.workspace_session_id: str = ""
+        self._uploads: dict[str, dict] = {}
+        self._staged_total = 0
+        self._collection_snapshots: dict[str, dict] = {}
 
-    def start(self, adapter_type: str, target: str, input_mode: str) -> dict:
+    def begin_files(self, session_id: str) -> dict:
+        session_id = validate_session_id(session_id)
+        with self._lock:
+            if self.adapter is not None:
+                raise AdapterError("file workspace must be initialized before target launch")
+            if self.workspace_root is not None:
+                if session_id != self.workspace_session_id:
+                    raise AdapterError("guest file workspace is already bound to another session")
+                return {"workspace": str(self.workspace_root)}
+
+            base = Path(tempfile.gettempdir()) / "argus-capsule-workspaces"
+            base.mkdir(parents=True, exist_ok=True)
+            base_resolved = base.resolve(strict=True)
+            root = base / session_id
+            if root.is_symlink():
+                raise AdapterError("guest workspace root cannot be a symlink")
+            root.mkdir(parents=True, exist_ok=True)
+            resolved = root.resolve(strict=True)
+            try:
+                resolved.relative_to(base_resolved)
+            except ValueError as exc:
+                raise AdapterError("guest workspace escaped the Argus workspace base") from exc
+            self.workspace_root = resolved
+            self.workspace_session_id = session_id
+            self._uploads.clear()
+            self._staged_total = 0
+            self._clear_collection_snapshots()
+            return {"workspace": str(resolved)}
+
+    def _workspace(self) -> Path:
+        if self.workspace_root is None:
+            raise AdapterError("guest file workspace is not initialized")
+        return self.workspace_root
+
+    def _discard_collection_snapshot(self, relative: str) -> None:
+        self._collection_snapshots.pop(relative, None)
+
+    def _clear_collection_snapshots(self) -> None:
+        self._collection_snapshots.clear()
+
+    def stage_begin(self, relative: str, size: int, sha256: str) -> None:
+        relative = normalize_guest_relative_path(relative)
+        size = int(size)
+        digest = str(sha256 or "").strip().lower()
+        if size < 0 or size > TRANSFER_MAX_FILE_BYTES:
+            raise AdapterError(f"invalid staged file size for {relative}: {size}")
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise AdapterError(f"invalid staged file checksum for {relative}")
+        with self._lock:
+            if self.adapter is not None:
+                raise AdapterError("files cannot be staged after target launch")
+            if relative in self._uploads:
+                raise AdapterError(f"upload already in progress for {relative}")
+            pending_total = sum(int(upload["size"]) for upload in self._uploads.values())
+            if self._staged_total + pending_total + size > TRANSFER_MAX_TOTAL_BYTES:
+                raise AdapterError("staged files exceed the Capsule session byte limit")
+            root = self._workspace()
+            destination = workspace_path(root, relative, must_exist=False)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination = workspace_path(root, relative, must_exist=False)
+            if destination.exists():
+                raise AdapterError(f"staging destination already exists: {relative}")
+            temp = destination.with_name(
+                f".{destination.name}.argus-{uuid.uuid4().hex}.part"
+            )
+            temp.touch(exist_ok=False)
+            self._uploads[relative] = {
+                "destination": destination,
+                "temp": temp,
+                "size": size,
+                "sha256": digest,
+                "received": 0,
+            }
+
+    def stage_chunk(self, relative: str, offset: int, data_b64: str) -> None:
+        relative = normalize_guest_relative_path(relative)
+        try:
+            chunk = base64.b64decode(str(data_b64 or ""), validate=True)
+        except Exception as exc:
+            raise AdapterError(f"invalid base64 upload chunk for {relative}") from exc
+        if not chunk or len(chunk) > TRANSFER_CHUNK_BYTES:
+            raise AdapterError(f"invalid upload chunk size for {relative}")
+        with self._lock:
+            upload = self._uploads.get(relative)
+            if upload is None:
+                raise AdapterError(f"no upload is active for {relative}")
+            offset = int(offset)
+            if offset != upload["received"]:
+                raise AdapterError(
+                    f"non-sequential upload offset for {relative}: "
+                    f"expected {upload['received']}, got {offset}"
+                )
+            if offset + len(chunk) > upload["size"]:
+                raise AdapterError(f"upload exceeds declared size for {relative}")
+            with upload["temp"].open("ab") as handle:
+                handle.write(chunk)
+            upload["received"] += len(chunk)
+
+    def _discard_upload(self, relative: str, upload: dict) -> None:
+        try:
+            upload["temp"].unlink()
+        except OSError:
+            pass
+        self._uploads.pop(relative, None)
+
+    def stage_commit(self, relative: str, size: int, sha256: str) -> dict:
+        relative = normalize_guest_relative_path(relative)
+        with self._lock:
+            upload = self._uploads.get(relative)
+            if upload is None:
+                raise AdapterError(f"no upload is active for {relative}")
+            expected_size = upload["size"]
+            expected_hash = upload["sha256"]
+            if int(size) != expected_size or str(sha256 or "").lower() != expected_hash:
+                self._discard_upload(relative, upload)
+                raise AdapterError(f"staging manifest changed during upload for {relative}")
+            if upload["received"] != expected_size:
+                raise AdapterError(
+                    f"staged file is incomplete for {relative}: "
+                    f"{upload['received']} of {expected_size} bytes"
+                )
+            actual = sha256_file(upload["temp"])
+            if actual != expected_hash:
+                self._discard_upload(relative, upload)
+                raise AdapterError(
+                    f"staged file checksum mismatch for {relative}: "
+                    f"expected {expected_hash}, got {actual}"
+                )
+            os.replace(upload["temp"], upload["destination"])
+            self._uploads.pop(relative, None)
+            self._staged_total += expected_size
+            return {
+                "guest_path": str(upload["destination"]),
+                "size": expected_size,
+                "sha256": expected_hash,
+            }
+
+    @staticmethod
+    def _read_exact_digest(source, size: int, *, capture: bool) -> tuple[bytearray | None, str]:
+        digest = hashlib.sha256()
+        snapshot = bytearray() if capture else None
+        remaining = int(size)
+        while remaining:
+            chunk = source.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise AdapterError("artifact changed while being snapshotted")
+            digest.update(chunk)
+            if snapshot is not None:
+                snapshot.extend(chunk)
+            remaining -= len(chunk)
+        if source.read(1):
+            raise AdapterError("artifact changed while being snapshotted")
+        return snapshot, digest.hexdigest()
+
+    def collect_info(self, relative: str) -> dict:
+        relative = normalize_guest_relative_path(relative)
+        with self._lock:
+            existing = self._collection_snapshots.get(relative)
+            if existing is not None:
+                return {"size": existing["size"], "sha256": existing["sha256"]}
+
+            with open_workspace_regular_file(self._workspace(), relative) as source:
+                with stabilize_snapshot_read(source, relative):
+                    before = os.fstat(source.fileno())
+                    if before.st_size < 0 or before.st_size > TRANSFER_MAX_FILE_BYTES:
+                        raise AdapterError(
+                            f"artifact exceeds {TRANSFER_MAX_FILE_BYTES} byte limit: {relative}"
+                        )
+
+                    snapshot_total = sum(
+                        int(snapshot["size"])
+                        for snapshot in self._collection_snapshots.values()
+                    )
+                    if snapshot_total + before.st_size > TRANSFER_MAX_TOTAL_BYTES:
+                        raise AdapterError(
+                            f"artifact snapshots exceed the {TRANSFER_MAX_TOTAL_BYTES} byte session limit"
+                        )
+
+                    source.seek(0)
+                    try:
+                        snapshot, first_digest = self._read_exact_digest(
+                            source,
+                            int(before.st_size),
+                            capture=True,
+                        )
+                        source.seek(0)
+                        _discarded, second_digest = self._read_exact_digest(
+                            source,
+                            int(before.st_size),
+                            capture=False,
+                        )
+                    except AdapterError as exc:
+                        raise AdapterError(
+                            f"artifact changed while being snapshotted: {relative}"
+                        ) from exc
+
+                    after = os.fstat(source.fileno())
+                    if (
+                        first_digest != second_digest
+                        or before.st_size != after.st_size
+                        or before.st_mtime_ns != after.st_mtime_ns
+                        or getattr(before, "st_ctime_ns", 0)
+                        != getattr(after, "st_ctime_ns", 0)
+                        or snapshot is None
+                        or len(snapshot) != before.st_size
+                    ):
+                        raise AdapterError(
+                            f"artifact changed while being snapshotted: {relative}"
+                        )
+
+            self._collection_snapshots[relative] = {
+                "data": snapshot,
+                "size": len(snapshot),
+                "sha256": first_digest,
+            }
+            return {"size": len(snapshot), "sha256": first_digest}
+
+    def collect_chunk(self, relative: str, offset: int, limit: int) -> bytes:
+        relative = normalize_guest_relative_path(relative)
+        offset = int(offset)
+        limit = int(limit)
+        if offset < 0 or limit <= 0 or limit > TRANSFER_CHUNK_BYTES:
+            raise AdapterError("invalid artifact chunk range")
+        with self._lock:
+            snapshot = self._collection_snapshots.get(relative)
+            if snapshot is None:
+                raise AdapterError(f"artifact must be preflighted before collection: {relative}")
+            size = int(snapshot["size"])
+            if offset + limit > size:
+                raise AdapterError(f"artifact chunk exceeds snapshot bounds: {relative}")
+            data = snapshot["data"][offset:offset + limit]
+            if len(data) != limit:
+                raise AdapterError(f"artifact snapshot changed while being collected: {relative}")
+            return bytes(data)
+
+    def start(
+        self,
+        adapter_type: str,
+        target: str,
+        input_mode: str,
+        *,
+        literal_target: bool = False,
+    ) -> dict:
         input_mode = (input_mode or "safe").lower().strip()
         if input_mode not in {"safe", "semantic", "physical", "legacy"}:
             raise AdapterError("invalid guest input_mode")
         with self._lock:
             self.close()
-            previous = os.environ.get("ARGUS_INPUT_MODE")
+            previous_input = os.environ.get("ARGUS_INPUT_MODE")
+            previous_cwd = Path.cwd()
             try:
                 os.environ["ARGUS_INPUT_MODE"] = input_mode
                 adapter = create_platform_adapter(adapter_type)
-            finally:
-                if previous is None:
-                    os.environ.pop("ARGUS_INPUT_MODE", None)
+                if self.workspace_root is not None:
+                    setter = getattr(adapter, "set_working_directory", None)
+                    if callable(setter):
+                        setter(str(self.workspace_root))
+                    os.chdir(self.workspace_root)
+                if literal_target:
+                    launch_literal = getattr(adapter, "launch_literal", None)
+                    if not callable(launch_literal):
+                        raise AdapterError(
+                            f"adapter '{adapter_type}' does not support literal staged launches"
+                        )
+                    launch_literal(target)
                 else:
-                    os.environ["ARGUS_INPUT_MODE"] = previous
-            try:
-                adapter.launch(target)
+                    adapter.launch(target)
             except Exception:
                 try:
-                    adapter.close()
+                    if "adapter" in locals():
+                        adapter.close()
                 except Exception:
                     pass
                 raise
+            finally:
+                os.chdir(previous_cwd)
+                if previous_input is None:
+                    os.environ.pop("ARGUS_INPUT_MODE", None)
+                else:
+                    os.environ["ARGUS_INPUT_MODE"] = previous_input
             self.adapter = adapter
             return adapter.capabilities()
 
@@ -138,16 +405,17 @@ class GuestAgentState:
         with self._lock:
             if self.adapter is None:
                 raise AdapterError("no guest target session is active")
-            # create_platform_adapter returns PolicyAdapter, so this traverses
-            # the same PR1 safety boundary again inside the guest.
             return self.adapter.act(action)
 
     def close(self) -> None:
         with self._lock:
             adapter = self.adapter
             self.adapter = None
-            if adapter is not None:
-                adapter.close()
+            try:
+                if adapter is not None:
+                    adapter.close()
+            finally:
+                self._clear_collection_snapshots()
 
 
 class GuestAgentServer(ThreadingHTTPServer):
@@ -163,8 +431,6 @@ class GuestAgentHandler(BaseHTTPRequestHandler):
     server: GuestAgentServer
 
     def log_message(self, format: str, *args) -> None:
-        # Golden-image agents should be quiet by default; supervisors may still
-        # capture stderr for unexpected crashes.
         return None
 
     def _authorized(self) -> bool:
@@ -200,6 +466,16 @@ class GuestAgentHandler(BaseHTTPRequestHandler):
             raise AdapterError("request body must be a JSON object")
         return value
 
+    @staticmethod
+    def _query_int(query: dict, name: str) -> int:
+        raw = (query.get(name) or [None])[0]
+        if raw is None:
+            raise AdapterError(f"missing query parameter: {name}")
+        try:
+            return int(raw)
+        except (TypeError, ValueError) as exc:
+            raise AdapterError(f"invalid integer query parameter: {name}") from exc
+
     def _dispatch(self) -> None:
         if not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
@@ -209,16 +485,71 @@ class GuestAgentHandler(BaseHTTPRequestHandler):
             if self.command == "GET" and parsed.path == "/v1/health":
                 self._send(HTTPStatus.OK, {"ok": True, "service": "argus-guest-agent"})
                 return
+            if self.command == "POST" and parsed.path == "/v1/files/begin":
+                body = self._payload()
+                data = self.server.state.begin_files(str(body.get("session_id") or ""))
+                self._send(HTTPStatus.OK, {"ok": True, **data})
+                return
+            if self.command == "POST" and parsed.path == "/v1/files/stage/begin":
+                body = self._payload()
+                self.server.state.stage_begin(
+                    str(body.get("path") or ""),
+                    int(body.get("size", -1)),
+                    str(body.get("sha256") or ""),
+                )
+                self._send(HTTPStatus.OK, {"ok": True})
+                return
+            if self.command == "POST" and parsed.path == "/v1/files/stage/chunk":
+                body = self._payload()
+                self.server.state.stage_chunk(
+                    str(body.get("path") or ""),
+                    int(body.get("offset", -1)),
+                    str(body.get("data_b64") or ""),
+                )
+                self._send(HTTPStatus.OK, {"ok": True})
+                return
+            if self.command == "POST" and parsed.path == "/v1/files/stage/commit":
+                body = self._payload()
+                data = self.server.state.stage_commit(
+                    str(body.get("path") or ""),
+                    int(body.get("size", -1)),
+                    str(body.get("sha256") or ""),
+                )
+                self._send(HTTPStatus.OK, {"ok": True, **data})
+                return
+            if self.command == "GET" and parsed.path == "/v1/files/collect/info":
+                query = parse_qs(parsed.query)
+                relative = (query.get("path") or [""])[0]
+                data = self.server.state.collect_info(relative)
+                self._send(HTTPStatus.OK, {"ok": True, **data})
+                return
+            if self.command == "GET" and parsed.path == "/v1/files/collect/chunk":
+                query = parse_qs(parsed.query)
+                relative = (query.get("path") or [""])[0]
+                data = self.server.state.collect_chunk(
+                    relative,
+                    self._query_int(query, "offset"),
+                    self._query_int(query, "limit"),
+                )
+                self._send(
+                    HTTPStatus.OK,
+                    {"ok": True, "data_b64": base64.b64encode(data).decode("ascii")},
+                )
+                return
             if self.command == "POST" and parsed.path == "/v1/session/start":
                 body = self._payload()
                 adapter_type = str(body.get("adapter_type") or "").strip()
                 target = str(body.get("target") or "").strip()
+                literal_target = body.get("literal_target", False)
+                if not isinstance(literal_target, bool):
+                    raise AdapterError("literal_target must be a JSON boolean")
                 if not adapter_type or not target:
                     raise AdapterError("adapter_type and target are required")
                 capabilities = self.server.state.start(
                     adapter_type,
                     target,
                     str(body.get("input_mode") or "safe"),
+                    literal_target=literal_target,
                 )
                 self._send(HTTPStatus.OK, {"ok": True, "capabilities": capabilities})
                 return
@@ -244,7 +575,7 @@ class GuestAgentHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, {"ok": True})
                 return
             self._send(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
-        except AdapterError as exc:
+        except (AdapterError, CapsuleError, ValueError) as exc:
             self._send(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
         except Exception as exc:
             self._send(
@@ -252,10 +583,10 @@ class GuestAgentHandler(BaseHTTPRequestHandler):
                 {"ok": False, "error": f"guest operation failed: {exc}"},
             )
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_GET(self) -> None:
         self._dispatch()
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_POST(self) -> None:
         self._dispatch()
 
 

@@ -114,6 +114,7 @@ class ArgusAPI:
                 ),
                 knowledge_store=ks,
                 shots_dir=shots_dir,
+                project_dir=cfg.project_dir,
             )
             result.save(cfg.project_dir)
             state["result"] = result.to_dict()

@@ -18,6 +18,11 @@ Supported assertions (desktop-gui):
         process_running: true
     - assert:
         dialog_open: "Error"                # a popup window whose title contains
+
+Capsule file movement is also declarative and deterministic. ``staging`` lists
+host-project files and guest-workspace destinations, while ``collect`` lists
+workspace-relative artifacts that may be copied back after execution. Neither
+surface is generated or widened by the LLM at run time.
 """
 
 from __future__ import annotations
@@ -27,6 +32,13 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 import yaml
+
+from argus.capsule.base import CapsuleError
+from argus.capsule.files import (
+    guest_path_key,
+    normalize_guest_relative_path,
+    normalize_relative_path,
+)
 
 ASSERTION_KINDS = (
     # desktop-gui
@@ -72,7 +84,40 @@ class AssertStep:
         return f"{self.assertion}: {self.expected!r}"
 
 
+@dataclass(frozen=True)
+class StageFile:
+    """One explicitly authorized project file copied into the Capsule workspace."""
+
+    source: str
+    destination: str
+    sha256: str = ""
+
+
 Step = Union[NLStep, AssertStep]
+
+
+def _normalize_collect_entries(raw) -> List[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SpecError("collect must be a list")
+    out: List[str] = []
+    seen = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, str) or not item.strip():
+            raise SpecError(f"collect[{index}] must be a non-empty path string")
+        try:
+            relative = normalize_guest_relative_path(item)
+            key = guest_path_key(relative)
+        except CapsuleError as exc:
+            raise SpecError(f"collect[{index}] is invalid: {exc}") from exc
+        if key in seen:
+            raise SpecError(
+                f"collect[{index}] duplicates artifact path under Windows semantics: {relative}"
+            )
+        seen.add(key)
+        out.append(relative)
+    return out
 
 
 @dataclass
@@ -84,6 +129,13 @@ class TestSpec:
     path: Optional[Path] = None
     continue_on_failure: bool = False
     retries: int = 0
+    staging: List[StageFile] = field(default_factory=list)
+    collect: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Enforce collection policy on programmatically-created specs as well as
+        # YAML-loaded specs, so invalid/aliased declarations cannot reach run_test().
+        self.collect = _normalize_collect_entries(self.collect)
 
     @property
     def file_name(self) -> str:
@@ -108,6 +160,45 @@ def _parse_step(raw, kind: str) -> Step:
             )
         return AssertStep(assertion=assertion, expected=expected)
     raise SpecError(f"step must be a string or an assert block, got: {raw!r}")
+
+
+def _parse_staging(raw) -> List[StageFile]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SpecError("staging must be a list")
+    out: List[StageFile] = []
+    destinations = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise SpecError(f"staging[{index}] must be a mapping")
+        unknown = sorted(set(item) - {"source", "destination", "sha256"})
+        if unknown:
+            raise SpecError(f"staging[{index}] has unknown field(s): {', '.join(unknown)}")
+        source = str(item.get("source") or "").strip()
+        destination = str(item.get("destination") or "").strip()
+        digest = str(item.get("sha256") or "").strip().lower()
+        if not source or not destination:
+            raise SpecError(f"staging[{index}] requires source and destination")
+        if digest and (len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)):
+            raise SpecError(f"staging[{index}].sha256 must be a 64-character hex digest")
+        try:
+            source = normalize_relative_path(source)
+            destination = normalize_guest_relative_path(destination)
+            destination_key = guest_path_key(destination)
+        except CapsuleError as exc:
+            raise SpecError(f"staging[{index}] is invalid: {exc}") from exc
+        if destination_key in destinations:
+            raise SpecError(
+                f"staging[{index}] duplicates destination under Windows semantics: {destination}"
+            )
+        destinations.add(destination_key)
+        out.append(StageFile(source=source, destination=destination, sha256=digest))
+    return out
+
+
+def _parse_collect(raw) -> List[str]:
+    return _normalize_collect_entries(raw)
 
 
 def parse_spec(text: str, path: Optional[Path] = None) -> TestSpec:
@@ -140,6 +231,8 @@ def parse_spec(text: str, path: Optional[Path] = None) -> TestSpec:
         path=path,
         continue_on_failure=bool(data.get("continue_on_failure", False)),
         retries=int(data.get("retries", 0)),
+        staging=_parse_staging(data.get("staging")),
+        collect=_parse_collect(data.get("collect")),
     )
 
 

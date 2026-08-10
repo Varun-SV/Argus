@@ -111,6 +111,7 @@ def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]
             warn=lambda msg: console.print(f"[yellow]![/yellow] {msg}"),
             knowledge_store=ks,
             shots_dir=shots_dir,
+            project_dir=cfg.project_dir,
         )
         if ks is not None:
             ks.close()
@@ -312,8 +313,11 @@ def _run_all(test: Optional[str], cfg, minutes, max_tokens) -> None:
             console.print(f"[red]✗[/red] {path.name}: {exc}")
             continue
         budget = cfg.make_budget(tracker, minutes, max_tokens)
-        result = run_test(spec, provider, adapter, budget, on_step=_print_step,
-                          warn=lambda m: console.print(f"[yellow]![/yellow] {m}"))
+        result = run_test(
+            spec, provider, adapter, budget, on_step=_print_step,
+            warn=lambda m: console.print(f"[yellow]![/yellow] {m}"),
+            project_dir=cfg.project_dir,
+        )
         result.save(cfg.project_dir)
         _print_summary(result)
 
