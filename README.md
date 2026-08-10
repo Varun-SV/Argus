@@ -61,7 +61,7 @@ Current Capsule architecture includes:
 - bootstrap-to-random per-session bearer rotation;
 - isolated networking and fail-closed provider capabilities;
 - explicit host-to-guest staging and guest-to-host artifact collection;
-- optional forensic **Failure Capsule** retention;
+- optional forensic **Failure Capsule** retention on supported scripted `argus run` failure paths;
 - no silent fallback to local execution when Capsule requirements cannot be met;
 - Hyper-V and Linux libvirt/QEMU/KVM providers.
 
@@ -243,6 +243,8 @@ The model explores the application without a pre-authored interaction script. Ar
 
 For invasive roaming, **Capsule execution is the recommended production boundary**.
 
+> **Current retention limitation:** roam findings do not currently invoke the Capsule failure-retention hook before teardown. `retain_on_failure: true` must therefore not be relied on to preserve a Failure Capsule for `argus roam` findings yet. Failure Capsule retention described below applies to the scripted `argus run` failure paths that call the execution environment's failure-recording lifecycle.
+
 ---
 
 ## Safe Windows local input
@@ -257,11 +259,11 @@ Some actions that require unrestricted coordinate/global input are intentionally
 
 ## Failure Capsules
 
-Capsule runs can opt into retaining a failed VM as a **forensic Failure Capsule**.
+Supported scripted `argus run` Capsule failure paths can opt into retaining the failed VM as a **forensic Failure Capsule**.
 
 Retention preserves disk/config evidence, not a resumable authenticated live session. Secure Failure Capsules do **not** write active recovery bearer tokens or TLS private keys back into the retained evidence simply to make the VM remotely controllable later.
 
-Successful runs and failures without retention remain ephemeral.
+Successful scripted runs and failures without retention remain ephemeral. Capsule-backed `argus roam` findings are also currently torn down without invoking failure retention; wiring roam findings into the retention lifecycle is future runtime work rather than behavior claimed by this documentation PR.
 
 See [Hyper-V Capsules](docs/capsules-hyperv.md) for configuration and lifecycle details.
 
@@ -317,9 +319,9 @@ Argus auto-detects model vision capability. Text-only models can fall back to st
 
 **Planned / specification stage.**
 
-[ATES](docs/ates.md) defines the next documentation foundation for Argus: an always-on canonical evidence stream for every run, with stable run/step/action/observation/assertion identities, failure and explicit-checkpoint evidence, provenance, artifact hashes, requirement traceability, append-oriented audit history, and optional approvals.
+[ATES](docs/ates.md) defines the next documentation foundation for Argus: an always-on canonical evidence stream for every run, with stable run/step/action/observation/assertion identities, stable event IDs and monotonic per-run sequencing, failure and explicit-checkpoint evidence, provenance, artifact hashes, requirement traceability, append-oriented audit history, and optional approvals.
 
-Reports will be derived from that evidence rather than becoming the source of truth themselves.
+Reports will be derived from that evidence rather than becoming the source of truth themselves. Hashes provide integrity/corruption detection; a package is only described as tamper-evident when its final manifest is independently bound by a signature, trusted external digest, immutable storage boundary, or equivalent mechanism.
 
 ATES is designed as an Argus-native open standard. Future ISO/IEC/IEEE or regulated-industry mappings are optional compatibility layers and will not be required for normal Argus operation.
 
