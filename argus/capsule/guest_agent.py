@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import hmac
 import json
 import os
-import shutil
 import tempfile
 import threading
 import uuid
@@ -45,6 +45,7 @@ from argus.capsule.files import (
     validate_session_id,
     workspace_path,
 )
+from argus.capsule.safe_open import open_workspace_regular_file
 
 
 def _consume_control_token(*, token_file: str = "", token_env: str = "") -> str:
@@ -145,37 +146,11 @@ class GuestAgentState:
             raise AdapterError("guest file workspace is not initialized")
         return self.workspace_root
 
-    def _snapshot_root(self) -> Path:
-        if not self.workspace_session_id:
-            raise AdapterError("guest file workspace is not initialized")
-        base = Path(tempfile.gettempdir()) / "argus-capsule-collection-snapshots"
-        if base.is_symlink():
-            raise AdapterError("guest collection snapshot base cannot be a symlink")
-        base.mkdir(parents=True, exist_ok=True)
-        base_resolved = base.resolve(strict=True)
-        root = base / self.workspace_session_id
-        if root.is_symlink():
-            raise AdapterError("guest collection snapshot root cannot be a symlink")
-        root.mkdir(parents=True, exist_ok=True)
-        resolved = root.resolve(strict=True)
-        try:
-            resolved.relative_to(base_resolved)
-        except ValueError as exc:
-            raise AdapterError("guest collection snapshot root escaped its base") from exc
-        return resolved
-
     def _discard_collection_snapshot(self, relative: str) -> None:
-        snapshot = self._collection_snapshots.pop(relative, None)
-        if snapshot is None:
-            return
-        try:
-            Path(snapshot["path"]).unlink()
-        except OSError:
-            pass
+        self._collection_snapshots.pop(relative, None)
 
     def _clear_collection_snapshots(self) -> None:
-        for relative in list(self._collection_snapshots):
-            self._discard_collection_snapshot(relative)
+        self._collection_snapshots.clear()
 
     def stage_begin(self, relative: str, size: int, sha256: str) -> None:
         relative = normalize_relative_path(relative)
@@ -281,41 +256,58 @@ class GuestAgentState:
             if existing is not None:
                 return {"size": existing["size"], "sha256": existing["sha256"]}
 
-            source = workspace_path(self._workspace(), relative, must_exist=True)
-            if not source.is_file():
-                raise AdapterError(f"requested artifact is not a regular file: {relative}")
-            before = source.stat()
-            if before.st_size > TRANSFER_MAX_FILE_BYTES:
-                raise AdapterError(
-                    f"artifact exceeds {TRANSFER_MAX_FILE_BYTES} byte limit: {relative}"
-                )
+            with open_workspace_regular_file(self._workspace(), relative) as source:
+                before = os.fstat(source.fileno())
+                if before.st_size < 0 or before.st_size > TRANSFER_MAX_FILE_BYTES:
+                    raise AdapterError(
+                        f"artifact exceeds {TRANSFER_MAX_FILE_BYTES} byte limit: {relative}"
+                    )
 
-            snapshot = self._snapshot_root() / f"{uuid.uuid4().hex}.snapshot"
-            try:
-                with source.open("rb") as src, snapshot.open("xb") as dst:
-                    shutil.copyfileobj(src, dst, length=1024 * 1024)
-                after = source.stat()
-                snapshot_size = snapshot.stat().st_size
+                snapshot_total = sum(
+                    int(snapshot["size"])
+                    for snapshot in self._collection_snapshots.values()
+                )
+                if snapshot_total + before.st_size > TRANSFER_MAX_TOTAL_BYTES:
+                    raise AdapterError(
+                        f"artifact snapshots exceed the {TRANSFER_MAX_TOTAL_BYTES} byte session limit"
+                    )
+
+                snapshot = bytearray()
+                remaining = int(before.st_size)
+                while remaining:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise AdapterError(
+                            f"artifact changed while being snapshotted: {relative}"
+                        )
+                    snapshot.extend(chunk)
+                    remaining -= len(chunk)
+
+                # Never read an unbounded growing source. One extra byte is
+                # sufficient to prove that the live object grew beyond the
+                # size pinned before snapshotting.
+                if source.read(1):
+                    raise AdapterError(
+                        f"artifact changed while being snapshotted: {relative}"
+                    )
+
+                after = os.fstat(source.fileno())
                 if (
                     before.st_size != after.st_size
                     or before.st_mtime_ns != after.st_mtime_ns
-                    or snapshot_size != before.st_size
+                    or len(snapshot) != before.st_size
                 ):
-                    raise AdapterError(f"artifact changed while being snapshotted: {relative}")
-                digest = sha256_file(snapshot)
-            except Exception:
-                try:
-                    snapshot.unlink()
-                except OSError:
-                    pass
-                raise
+                    raise AdapterError(
+                        f"artifact changed while being snapshotted: {relative}"
+                    )
 
+            digest = hashlib.sha256(snapshot).hexdigest()
             self._collection_snapshots[relative] = {
-                "path": snapshot,
-                "size": snapshot_size,
+                "data": snapshot,
+                "size": len(snapshot),
                 "sha256": digest,
             }
-            return {"size": snapshot_size, "sha256": digest}
+            return {"size": len(snapshot), "sha256": digest}
 
     def collect_chunk(self, relative: str, offset: int, limit: int) -> bytes:
         relative = normalize_relative_path(relative)
@@ -327,20 +319,22 @@ class GuestAgentState:
             snapshot = self._collection_snapshots.get(relative)
             if snapshot is None:
                 raise AdapterError(f"artifact must be preflighted before collection: {relative}")
-            path = Path(snapshot["path"])
-            if not path.is_file():
-                raise AdapterError(f"artifact snapshot is unavailable: {relative}")
             size = int(snapshot["size"])
             if offset + limit > size:
                 raise AdapterError(f"artifact chunk exceeds snapshot bounds: {relative}")
-            with path.open("rb") as handle:
-                handle.seek(offset)
-                data = handle.read(limit)
+            data = snapshot["data"][offset:offset + limit]
             if len(data) != limit:
                 raise AdapterError(f"artifact snapshot changed while being collected: {relative}")
-            return data
+            return bytes(data)
 
-    def start(self, adapter_type: str, target: str, input_mode: str) -> dict:
+    def start(
+        self,
+        adapter_type: str,
+        target: str,
+        input_mode: str,
+        *,
+        literal_target: bool = False,
+    ) -> dict:
         input_mode = (input_mode or "safe").lower().strip()
         if input_mode not in {"safe", "semantic", "physical", "legacy"}:
             raise AdapterError("invalid guest input_mode")
@@ -356,7 +350,15 @@ class GuestAgentState:
                     if callable(setter):
                         setter(str(self.workspace_root))
                     os.chdir(self.workspace_root)
-                adapter.launch(target)
+                if literal_target:
+                    launch_literal = getattr(adapter, "launch_literal", None)
+                    if not callable(launch_literal):
+                        raise AdapterError(
+                            f"adapter '{adapter_type}' does not support literal staged launches"
+                        )
+                    launch_literal(target)
+                else:
+                    adapter.launch(target)
             except Exception:
                 try:
                     if "adapter" in locals():
@@ -518,12 +520,16 @@ class GuestAgentHandler(BaseHTTPRequestHandler):
                 body = self._payload()
                 adapter_type = str(body.get("adapter_type") or "").strip()
                 target = str(body.get("target") or "").strip()
+                literal_target = body.get("literal_target", False)
+                if not isinstance(literal_target, bool):
+                    raise AdapterError("literal_target must be a JSON boolean")
                 if not adapter_type or not target:
                     raise AdapterError("adapter_type and target are required")
                 capabilities = self.server.state.start(
                     adapter_type,
                     target,
                     str(body.get("input_mode") or "safe"),
+                    literal_target=literal_target,
                 )
                 self._send(HTTPStatus.OK, {"ok": True, "capabilities": capabilities})
                 return
