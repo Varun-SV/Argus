@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Callable, Mapping, Optional
 
@@ -17,12 +19,16 @@ from argus.capsule.base import (
     FailureCapsule,
 )
 from argus.capsule.files import (
+    TRANSFER_MAX_FILE_BYTES,
     enforce_total_bytes,
+    guest_path_key,
+    normalize_guest_relative_path,
     normalize_relative_path,
-    project_source_path,
     workspace_path,
 )
 from argus.capsule.guest import GuestAdapterProxy, GuestAgentClient
+from argus.capsule.safe_open import open_project_regular_file
+from argus.capsule.safe_output import pin_artifact_tree
 from argus.execution.base import (
     ExecutionEnvironment,
     ExecutionEnvironmentError,
@@ -168,41 +174,69 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             raise ExecutionEnvironmentError("Capsule guest client was not prepared")
 
         try:
-            prepared = []
-            destinations = set()
-            for entry in entries:
-                source_name = str(getattr(entry, "source", "") or "")
-                destination = normalize_relative_path(
-                    str(getattr(entry, "destination", "") or "")
-                )
-                if destination in destinations:
-                    raise ExecutionEnvironmentError(
-                        f"duplicate Capsule staging destination: {destination}"
+            # Bind every declared source before any upload begins. A watcher or
+            # build process can replace the pathname later, but authority remains
+            # attached to the already-open project-contained object.
+            with ExitStack() as stack:
+                prepared = []
+                destinations = set()
+                for entry in entries:
+                    source_name = normalize_relative_path(
+                        str(getattr(entry, "source", "") or "")
                     )
-                destinations.add(destination)
-                source = project_source_path(project_dir, source_name)
-                prepared.append(
-                    (entry, source, destination, source.stat().st_size)
-                )
-            enforce_total_bytes(item[3] for item in prepared)
+                    destination = normalize_guest_relative_path(
+                        str(getattr(entry, "destination", "") or "")
+                    )
+                    destination_key = guest_path_key(destination)
+                    if destination_key in destinations:
+                        raise ExecutionEnvironmentError(
+                            f"duplicate Capsule staging destination under Windows semantics: {destination}"
+                        )
+                    destinations.add(destination_key)
 
-            staged = []
-            for entry, source, destination, _size in prepared:
-                data = self._client.stage_file(
-                    source,
-                    destination,
-                    expected_sha256=str(getattr(entry, "sha256", "") or ""),
-                )
-                self._staged_targets[destination] = str(data["guest_path"])
-                staged.append(
-                    {
-                        "source": str(getattr(entry, "source", "")),
-                        "destination": destination,
-                        "size": int(data["size"]),
-                        "sha256": str(data["sha256"]),
-                    }
-                )
-            return staged
+                    source_handle = stack.enter_context(
+                        open_project_regular_file(project_dir, source_name)
+                    )
+                    size = int(os.fstat(source_handle.fileno()).st_size)
+                    if size < 0 or size > TRANSFER_MAX_FILE_BYTES:
+                        raise ExecutionEnvironmentError(
+                            f"staging source exceeds {TRANSFER_MAX_FILE_BYTES} byte per-file limit: "
+                            f"{source_name}"
+                        )
+                    prepared.append(
+                        (entry, source_name, source_handle, destination, size)
+                    )
+
+                enforce_total_bytes(item[4] for item in prepared)
+
+                staged = []
+                for entry, source_name, source_handle, destination, _size in prepared:
+                    stage_open = getattr(self._client, "stage_open_file", None)
+                    if callable(stage_open):
+                        data = stage_open(
+                            source_handle,
+                            source_name,
+                            destination,
+                            expected_sha256=str(getattr(entry, "sha256", "") or ""),
+                        )
+                    else:
+                        # Compatibility for injected test clients. Production
+                        # GuestAgentClient always uses the bound-handle method.
+                        data = self._client.stage_file(
+                            project_dir.joinpath(*source_name.split("/")),
+                            destination,
+                            expected_sha256=str(getattr(entry, "sha256", "") or ""),
+                        )
+                    self._staged_targets[guest_path_key(destination)] = str(data["guest_path"])
+                    staged.append(
+                        {
+                            "source": str(getattr(entry, "source", "")),
+                            "destination": destination,
+                            "size": int(data["size"]),
+                            "sha256": str(data["sha256"]),
+                        }
+                    )
+                return staged
         except Exception as stage_exc:
             try:
                 self.close()
@@ -218,12 +252,13 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         normalized = []
         seen = set()
         for value in paths:
-            relative = normalize_relative_path(str(value or ""))
-            if relative in seen:
+            relative = normalize_guest_relative_path(str(value or ""))
+            key = guest_path_key(relative)
+            if key in seen:
                 raise ExecutionEnvironmentError(
-                    f"duplicate Capsule artifact path: {relative}"
+                    f"duplicate Capsule artifact path under Windows semantics: {relative}"
                 )
-            seen.add(relative)
+            seen.add(key)
             normalized.append(relative)
         return normalized
 
@@ -249,36 +284,43 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             raise ExecutionEnvironmentError("Capsule artifact workspace is not available")
         normalized = self._normalize_artifact_paths(paths)
 
-        # The guest enforces the aggregate snapshot cap before reading each
-        # artifact. Mirror the same running bound host-side so a bad/mismatched
-        # guest cannot make the preflight set exceed policy unnoticed.
-        infos = []
-        preflight_sizes = []
-        for relative in normalized:
-            info = self._client.collect_info(relative)
-            preflight_sizes.append(int(info["size"]))
-            enforce_total_bytes(preflight_sizes)
-            infos.append((relative, info))
+        # Pin the host runs/run/artifacts/parent directory tree for the entire
+        # transaction. On the supported Windows Hyper-V host, these handles deny
+        # delete/rename sharing so a validated run path cannot later become a
+        # junction to an arbitrary host directory.
+        with pin_artifact_tree(output_dir, normalized) as pinned_output:
+            # The guest enforces the aggregate snapshot cap before reading each
+            # artifact. Mirror the same running bound host-side so a bad/mismatched
+            # guest cannot make the preflight set exceed policy unnoticed.
+            infos = []
+            preflight_sizes = []
+            for relative in normalized:
+                info = self._client.collect_info(relative)
+                preflight_sizes.append(int(info["size"]))
+                enforce_total_bytes(preflight_sizes)
+                infos.append((relative, info))
 
-        collected = []
-        for relative, info in infos:
-            try:
-                data = self._client.collect_file(relative, output_dir, info=info)
-            except Exception as exc:
-                rollback_errors = self._rollback_collected_artifacts(output_dir, collected)
-                detail = f"Capsule artifact collection failed for {relative}: {exc}"
-                if rollback_errors:
-                    detail += "; artifact rollback also failed: " + "; ".join(rollback_errors)
-                raise ExecutionEnvironmentError(detail) from exc
-            collected.append(
-                {
-                    "path": relative,
-                    "size": int(data["size"]),
-                    "sha256": str(data["sha256"]),
-                    "host_path": f"artifacts/{relative}",
-                }
-            )
-        return collected
+            collected = []
+            for relative, info in infos:
+                try:
+                    data = self._client.collect_file(relative, pinned_output, info=info)
+                except Exception as exc:
+                    rollback_errors = self._rollback_collected_artifacts(
+                        pinned_output, collected
+                    )
+                    detail = f"Capsule artifact collection failed for {relative}: {exc}"
+                    if rollback_errors:
+                        detail += "; artifact rollback also failed: " + "; ".join(rollback_errors)
+                    raise ExecutionEnvironmentError(detail) from exc
+                collected.append(
+                    {
+                        "path": relative,
+                        "size": int(data["size"]),
+                        "sha256": str(data["sha256"]),
+                        "host_path": f"artifacts/{relative}",
+                    }
+                )
+            return collected
 
     # ---- target lifecycle ----------------------------------------------
 
@@ -294,8 +336,8 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             staged_target = str(target).startswith("stage://")
             literal_gui_target = False
             if staged_target:
-                relative = normalize_relative_path(str(target)[len("stage://"):])
-                resolved_target = self._staged_targets.get(relative, "")
+                relative = normalize_guest_relative_path(str(target)[len("stage://"):])
+                resolved_target = self._staged_targets.get(guest_path_key(relative), "")
                 if not resolved_target:
                     raise ExecutionEnvironmentError(
                         f"staged launch target was not declared/committed: {relative}"
