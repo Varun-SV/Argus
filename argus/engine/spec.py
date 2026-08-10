@@ -92,6 +92,27 @@ class StageFile:
 Step = Union[NLStep, AssertStep]
 
 
+def _normalize_collect_entries(raw) -> List[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SpecError("collect must be a list")
+    out: List[str] = []
+    seen = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, str) or not item.strip():
+            raise SpecError(f"collect[{index}] must be a non-empty path string")
+        try:
+            relative = normalize_relative_path(item)
+        except CapsuleError as exc:
+            raise SpecError(f"collect[{index}] is invalid: {exc}") from exc
+        if relative in seen:
+            raise SpecError(f"collect[{index}] duplicates artifact path: {relative}")
+        seen.add(relative)
+        out.append(relative)
+    return out
+
+
 @dataclass
 class TestSpec:
     name: str
@@ -103,6 +124,11 @@ class TestSpec:
     retries: int = 0
     staging: List[StageFile] = field(default_factory=list)
     collect: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Enforce collection policy on programmatically-created specs as well as
+        # YAML-loaded specs, so invalid declarations cannot reach run_test().
+        self.collect = _normalize_collect_entries(self.collect)
 
     @property
     def file_name(self) -> str:
@@ -153,24 +179,7 @@ def _parse_staging(raw) -> List[StageFile]:
 
 
 def _parse_collect(raw) -> List[str]:
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise SpecError("collect must be a list")
-    out: List[str] = []
-    seen = set()
-    for index, item in enumerate(raw):
-        if not isinstance(item, str) or not item.strip():
-            raise SpecError(f"collect[{index}] must be a non-empty path string")
-        try:
-            relative = normalize_relative_path(item)
-        except CapsuleError as exc:
-            raise SpecError(f"collect[{index}] is invalid: {exc}") from exc
-        if relative in seen:
-            raise SpecError(f"collect[{index}] duplicates artifact path: {relative}")
-        seen.add(relative)
-        out.append(relative)
-    return out
+    return _normalize_collect_entries(raw)
 
 
 def parse_spec(text: str, path: Optional[Path] = None) -> TestSpec:
