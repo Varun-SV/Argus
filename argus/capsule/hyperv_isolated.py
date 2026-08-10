@@ -25,6 +25,11 @@ class IsolatedHyperVProvider(HyperVProvider):
 
     def _validate_isolation_settings(self, request: CapsuleRequest) -> tuple[str, tuple[str, ...]]:
         settings = request.settings
+        if not settings.disable_guest_file_copy:
+            raise CapsuleError(
+                "secure Hyper-V Capsules require Guest Service Interface file-copy isolation; "
+                "disable_guest_file_copy cannot be false"
+            )
         transport = (settings.guest_transport or "https").lower().strip()
         if transport not in {"https", "http"}:
             raise CapsuleError("capsule.guest_transport must be https or http")
@@ -170,9 +175,6 @@ class IsolatedHyperVProvider(HyperVProvider):
         self._disable_and_verify_integration_service(vm_name, "Guest Service Interface")
 
     def _disable_host_kvp(self, vm_name: str) -> None:
-        # KVP is needed briefly so Hyper-V can report the guest address. Once the
-        # address is attested, disable it before returning the live Capsule so
-        # custom host↔guest key/value data cannot bypass PR5 staging/collection.
         self._disable_and_verify_integration_service(vm_name, "Key-Value Pair Exchange")
 
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
@@ -240,8 +242,7 @@ class IsolatedHyperVProvider(HyperVProvider):
                 30,
             )
 
-            if settings.disable_guest_file_copy:
-                self._disable_host_file_copy(vm_name)
+            self._disable_host_file_copy(vm_name)
             self._apply_network_isolation(
                 vm_name,
                 settings.switch_name,
