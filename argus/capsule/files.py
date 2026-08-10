@@ -3,8 +3,10 @@
 All host→guest staging and guest→host collection paths are expressed as
 POSIX-style relative paths rooted in a per-session workspace. Absolute paths,
 drive-qualified paths, traversal, and symlink/reparse escapes are rejected.
-Guest alias rules are selected explicitly by guest OS: Windows keeps strict
-Win32/NTFS collision handling, while POSIX guests keep case-sensitive names.
+
+Declarative test specs use a conservative ``portable`` guest-path subset so one
+spec cannot become ambiguous when moved between Windows and Linux. Runtime
+provider/guest code can opt into exact Windows or POSIX semantics explicitly.
 """
 
 from __future__ import annotations
@@ -53,26 +55,28 @@ def normalize_relative_path(value: str) -> str:
     return "/".join(parts)
 
 
-def _guest_os_kind(value: str = "") -> str:
-    requested = str(value or "").strip().lower()
+def _guest_os_kind(value: str = "portable") -> str:
+    requested = str(value or "portable").strip().lower()
+    if requested in {"portable", "cross-platform"}:
+        return "portable"
     if requested in {"windows", "win", "win32", "nt"}:
         return "windows"
     if requested in {"linux", "posix", "unix"}:
         return "posix"
-    if requested not in {"", "auto"}:
-        raise CapsuleError(f"unsupported Capsule guest OS path semantics: {value!r}")
-    return "windows" if os.name == "nt" else "posix"
+    if requested == "auto":
+        return "windows" if os.name == "nt" else "posix"
+    raise CapsuleError(f"unsupported Capsule guest OS path semantics: {value!r}")
 
 
-def normalize_guest_relative_path(value: str, guest_os: str = "") -> str:
-    """Normalize one guest-workspace path using the guest filesystem semantics.
+def normalize_guest_relative_path(value: str, guest_os: str = "portable") -> str:
+    """Normalize one guest-workspace path using declared guest semantics.
 
-    Windows rejects Win32 aliases (trailing spaces/dots and reserved device
-    names). POSIX/Linux keeps the platform-neutral traversal/NUL rules but is
-    otherwise case-sensitive and permits names such as ``con``.
+    ``portable`` deliberately applies the Windows alias restrictions because
+    they are the stricter cross-platform subset. Runtime Linux code can pass
+    ``guest_os='linux'`` to retain POSIX case sensitivity and legal POSIX names.
     """
     relative = normalize_relative_path(value)
-    if _guest_os_kind(guest_os) == "windows":
+    if _guest_os_kind(guest_os) in {"portable", "windows"}:
         for part in relative.split("/"):
             if part.rstrip(" .") != part:
                 raise CapsuleError(
@@ -84,10 +88,10 @@ def normalize_guest_relative_path(value: str, guest_os: str = "") -> str:
     return relative
 
 
-def guest_path_key(value: str, guest_os: str = "") -> str:
+def guest_path_key(value: str, guest_os: str = "portable") -> str:
     """Return the filesystem-alias key for one guest path."""
     relative = normalize_guest_relative_path(value, guest_os=guest_os)
-    if _guest_os_kind(guest_os) == "windows":
+    if _guest_os_kind(guest_os) in {"portable", "windows"}:
         return relative.casefold()
     return relative
 
