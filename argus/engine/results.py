@@ -11,6 +11,19 @@ from typing import List, Optional
 STATUSES = ("pass", "fail", "error", "running", "skipped")
 
 
+def _runs_root(project_dir: Path) -> Path:
+    """Return the canonical runs root and reject project-boundary escapes."""
+    project_root = Path(project_dir).resolve(strict=True)
+    runs_dir = project_root / ".argus" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    resolved = runs_dir.resolve(strict=True)
+    try:
+        resolved.relative_to(project_root)
+    except ValueError as exc:
+        raise OSError(f".argus/runs escapes the project root: {runs_dir}") from exc
+    return resolved
+
+
 @dataclass
 class StepResult:
     index: int
@@ -77,12 +90,10 @@ class RunResult:
         return asdict(self)
 
     def run_dir(self, project_dir: Path) -> Path:
-        runs_dir = project_dir / ".argus" / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        runs_root = runs_dir.resolve(strict=True)
+        runs_root = _runs_root(project_dir)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        candidate = runs_dir / f"{stamp}-{safe}"
+        candidate = runs_root / f"{stamp}-{safe}"
         if candidate.is_symlink():
             raise OSError(f"run directory cannot be a symlink: {candidate}")
         candidate.mkdir(exist_ok=True)
@@ -94,14 +105,13 @@ class RunResult:
         return resolved
 
     def save(self, project_dir: Path) -> Path:
-        runs_dir = project_dir / ".argus" / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
+        runs_root = _runs_root(project_dir)
         run_dir = self.run_dir(project_dir)
         (run_dir / "result.json").write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         write_report(self, run_dir)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        flat = runs_dir / f"{stamp}-{safe}.json"
+        flat = runs_root / f"{stamp}-{safe}.json"
         flat.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return run_dir / "result.json"
 
