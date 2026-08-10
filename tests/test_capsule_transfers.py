@@ -263,6 +263,56 @@ teardown:
     assert len(provider.destroyed) == 1
 
 
+def test_runner_collects_after_non_close_teardown_before_close(tmp_path):
+    source = tmp_path / "app.exe"
+    source.write_bytes(b"binary")
+    environment, provider, client = _environment(tmp_path)
+    spec = parse_spec(
+        """\
+name: teardown flush ordering
+staging:
+  - source: app.exe
+    destination: app.exe
+target:
+  adapter: desktop-gui
+  launch: stage://app.exe
+steps:
+  - assert:
+      process_running: true
+collect:
+  - logs/result.txt
+teardown:
+  - flush logs
+  - close
+"""
+    )
+
+    def on_step(step):
+        client.events.append(("step-result", step.text))
+        if step.text == "flush logs":
+            client.artifact_data = b"flushed-artifact"
+
+    result = run_test(
+        spec,
+        FakeProvider([]),
+        environment,
+        on_step=on_step,
+        project_dir=tmp_path,
+    )
+
+    assert result.status == "pass"
+    artifact = result.run_dir(tmp_path) / "artifacts" / "logs" / "result.txt"
+    assert artifact.read_bytes() == b"flushed-artifact"
+    flush_index = next(
+        i for i, event in enumerate(client.events)
+        if event == ("step-result", "flush logs")
+    )
+    collect_index = next(i for i, event in enumerate(client.events) if event[0] == "collect")
+    close_index = next(i for i, event in enumerate(client.events) if event[0] == "close")
+    assert flush_index < collect_index < close_index
+    assert len(provider.destroyed) == 1
+
+
 def test_collection_failure_arms_failure_capsule_before_teardown(tmp_path):
     source = tmp_path / "app.exe"
     source.write_bytes(b"binary")
