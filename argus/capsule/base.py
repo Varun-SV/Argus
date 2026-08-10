@@ -28,14 +28,41 @@ def _strict_bool(value: Any, name: str) -> bool:
 
 
 @dataclass(frozen=True)
+class CapsuleProviderCapabilities:
+    """Security/capability contract advertised by one Capsule provider.
+
+    Provider selection must not silently downgrade these properties. A provider
+    that cannot satisfy a requested capability should fail closed during
+    configuration/prepare rather than emulate it on the host.
+    """
+
+    provider: str
+    host_platforms: tuple[str, ...]
+    guest_os: tuple[str, ...]
+    secure_transport: bool
+    network_isolation: bool
+    explicit_transfers: bool
+    failure_retention: bool
+    egress_allowlist: bool = False
+
+    def supports_guest_os(self, value: str) -> bool:
+        wanted = str(value or "auto").strip().lower()
+        return wanted == "auto" or wanted in self.guest_os
+
+
+@dataclass(frozen=True)
 class CapsuleSettings:
     """Host-side settings for one family of disposable Capsule sessions.
 
-    ``image`` is a read-only/golden virtual disk. Every session receives a
-    differencing child disk; Argus never boots the golden disk writable.
+    ``image`` is a read-only/golden virtual disk. Every supported provider must
+    create a writable per-session child/overlay; Argus never boots the golden
+    disk writable.
     """
 
-    provider: str = "hyperv"
+    # ``auto`` selects Hyper-V on Windows and libvirt/QEMU on Linux. Explicit
+    # provider names remain supported for deterministic deployments.
+    provider: str = "auto"
+    guest_os: str = "auto"
     image: str = ""
     switch_name: str = ""
     vm_root: str = ""
@@ -57,6 +84,14 @@ class CapsuleSettings:
     egress_allowlist: tuple[str, ...] = ()
     allow_dhcp: bool = True
     disable_guest_file_copy: bool = True
+
+    # PR7 libvirt/QEMU settings. ``qemu:///system`` is intentionally the only
+    # production URI accepted by the first Linux provider because its network
+    # isolation relies on libvirt's system networking/nwfilter boundary.
+    libvirt_uri: str = "qemu:///system"
+    libvirt_network_cidr: str = ""
+    libvirt_arch: str = ""
+    libvirt_machine: str = ""
 
     @classmethod
     def from_mapping(cls, value: Optional[Mapping[str, Any]] = None) -> "CapsuleSettings":
@@ -118,6 +153,8 @@ class CapsuleHandle:
     address: str
     guest_port: int
     transport: str = "http"
+    guest_os: str = "unknown"
+    architecture: str = "unknown"
 
     @property
     def endpoint(self) -> str:
@@ -148,6 +185,19 @@ class CapsuleProvider(ABC):
     """Hypervisor/provider boundary used by :class:`CapsuleExecutionEnvironment`."""
 
     provider_name: str = "base"
+    provider_capabilities = CapsuleProviderCapabilities(
+        provider="base",
+        host_platforms=(),
+        guest_os=(),
+        secure_transport=False,
+        network_isolation=False,
+        explicit_transfers=False,
+        failure_retention=False,
+        egress_allowlist=False,
+    )
+
+    def capabilities(self) -> CapsuleProviderCapabilities:
+        return self.provider_capabilities
 
     @abstractmethod
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
