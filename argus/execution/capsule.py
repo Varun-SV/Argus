@@ -145,41 +145,47 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             self.prepare()
         if self._client is None:
             raise ExecutionEnvironmentError("Capsule guest client was not prepared")
-        if not self._workspace_ready:
+        if self._workspace_ready:
+            return
+        try:
             self._client.begin_files(self.session_id)
-            self._workspace_ready = True
+        except Exception as transfer_exc:
+            try:
+                self.close()
+            except Exception as cleanup_exc:
+                raise ExecutionEnvironmentError(
+                    "Capsule transfer workspace preparation failed and rollback also failed: "
+                    f"transfer={transfer_exc}; cleanup={cleanup_exc}"
+                ) from transfer_exc
+            raise
+        self._workspace_ready = True
 
     def stage_files(self, entries, project_dir: Path) -> list[dict]:
         self.prepare_transfers()
         if self._client is None:
             raise ExecutionEnvironmentError("Capsule guest client was not prepared")
 
-        prepared = []
-        destinations = set()
-        for entry in entries:
-            source_name = str(getattr(entry, "source", "") or "")
-            destination = normalize_relative_path(
-                str(getattr(entry, "destination", "") or "")
-            )
-            if destination in destinations:
-                raise ExecutionEnvironmentError(
-                    f"duplicate Capsule staging destination: {destination}"
-                )
-            destinations.add(destination)
-            source = project_source_path(project_dir, source_name)
-            prepared.append(
-                (
-                    entry,
-                    source,
-                    destination,
-                    source.stat().st_size,
-                )
-            )
-        enforce_total_bytes(item[3] for item in prepared)
-
-        staged = []
         try:
-            for entry, source, destination, _, in prepared:
+            prepared = []
+            destinations = set()
+            for entry in entries:
+                source_name = str(getattr(entry, "source", "") or "")
+                destination = normalize_relative_path(
+                    str(getattr(entry, "destination", "") or "")
+                )
+                if destination in destinations:
+                    raise ExecutionEnvironmentError(
+                        f"duplicate Capsule staging destination: {destination}"
+                    )
+                destinations.add(destination)
+                source = project_source_path(project_dir, source_name)
+                prepared.append(
+                    (entry, source, destination, source.stat().st_size)
+                )
+            enforce_total_bytes(item[3] for item in prepared)
+
+            staged = []
+            for entry, source, destination, _size in prepared:
                 data = self._client.stage_file(
                     source,
                     destination,
@@ -194,9 +200,8 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
                         "sha256": str(data["sha256"]),
                     }
                 )
+            return staged
         except Exception as stage_exc:
-            # Staging happens before target launch. A staging failure is an input
-            # or infrastructure failure, not retainable application state.
             try:
                 self.close()
             except Exception as cleanup_exc:
@@ -205,7 +210,6 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
                     f"staging={stage_exc}; cleanup={cleanup_exc}"
                 ) from stage_exc
             raise
-        return staged
 
     def collect_artifacts(self, paths, output_dir: Path) -> list[dict]:
         if not self._workspace_ready or self._client is None:
@@ -244,24 +248,32 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         if self._adapter is None:
             raise ExecutionEnvironmentError("Capsule guest adapter was not prepared")
 
-        resolved_target = target
-        if str(target).startswith("stage://"):
-            relative = normalize_relative_path(str(target)[len("stage://"):])
-            resolved_target = self._staged_targets.get(relative, "")
-            if not resolved_target:
-                raise ExecutionEnvironmentError(
-                    f"staged launch target was not declared/committed: {relative}"
-                )
-
+        target_attempted = False
         try:
+            resolved_target = target
+            if str(target).startswith("stage://"):
+                relative = normalize_relative_path(str(target)[len("stage://"):])
+                resolved_target = self._staged_targets.get(relative, "")
+                if not resolved_target:
+                    raise ExecutionEnvironmentError(
+                        f"staged launch target was not declared/committed: {relative}"
+                    )
+            target_attempted = True
             self._adapter.launch(resolved_target)
         except Exception as launch_exc:
-            if self.settings.retain_on_failure:
+            # A missing/invalid stage reference is a pre-launch configuration
+            # error and should roll back. Once the guest target was actually
+            # attempted, PR4 retention semantics apply.
+            if target_attempted and self.settings.retain_on_failure:
                 self.record_failure(f"target launch failed: {launch_exc}")
             try:
                 self.close()
             except Exception as cleanup_exc:
-                action = "retention" if self.settings.retain_on_failure else "rollback"
+                action = (
+                    "retention"
+                    if target_attempted and self.settings.retain_on_failure
+                    else "rollback"
+                )
                 raise ExecutionEnvironmentError(
                     f"Capsule target launch failed and {action} also failed: "
                     f"launch={launch_exc}; cleanup={cleanup_exc}"
@@ -344,6 +356,7 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         self._client = None
         self._prepared = False
         self._workspace_ready = False
+        self._staged_targets.clear()
         self._handle = None
         return True
 
