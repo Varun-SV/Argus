@@ -33,10 +33,6 @@ class CapsuleSettings:
 
     ``image`` is a read-only/golden virtual disk. Every session receives a
     differencing child disk; Argus never boots the golden disk writable.
-
-    PR6 makes isolation explicit. The control channel is HTTPS by default,
-    the active bearer rotates per Capsule session, and Hyper-V networking is
-    host-only unless explicit egress CIDRs are declared.
     """
 
     provider: str = "hyperv"
@@ -53,8 +49,6 @@ class CapsuleSettings:
     agent_timeout_seconds: float = 60.0
     allow_external_switch: bool = False
     retain_on_failure: bool = False
-
-    # PR6 isolation/control-plane policy.
     guest_transport: str = "https"
     guest_ca_cert: str = ""
     allow_insecure_http: bool = False
@@ -145,6 +139,7 @@ class FailureCapsule:
     reason: str
     retained_at: str
     vm_state: str
+    recovery_credentials_path: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
