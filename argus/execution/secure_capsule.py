@@ -165,6 +165,13 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             missing.append("network isolation")
         if not capabilities.explicit_transfers:
             missing.append("explicit staging/collection")
+        advertised_guest_os = tuple(
+            str(item or "").strip().lower()
+            for item in capabilities.guest_os
+            if str(item or "").strip()
+        )
+        if not advertised_guest_os:
+            missing.append("supported guest OS")
         if missing:
             raise ExecutionEnvironmentError(
                 f"secure Capsule provider {provider_name!r} lacks required capability: "
@@ -194,19 +201,21 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
     def _resolved_guest_os(self) -> str:
         configured = (self.settings.guest_os or "auto").lower().strip()
         capabilities = self.provider.capabilities()
+        supported = tuple(
+            str(item or "").strip().lower()
+            for item in capabilities.guest_os
+            if str(item or "").strip()
+        )
+        if not supported:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {self.provider.provider_name!r} advertises no supported guest OS"
+            )
         if configured == "auto":
-            if capabilities.guest_os:
-                return capabilities.guest_os[0]
-            if self.provider.provider_name == "hyperv":
-                return "windows"
-            if self.provider.provider_name == "libvirt":
-                return "linux"
-            return "unknown"
-        if capabilities.guest_os and not capabilities.supports_guest_os(configured):
-            supported = ", ".join(capabilities.guest_os)
+            return supported[0]
+        if configured not in supported:
             raise ExecutionEnvironmentError(
                 f"Capsule provider {self.provider.provider_name!r} does not support "
-                f"guest_os={configured!r}; supported: {supported}"
+                f"guest_os={configured!r}; supported: {', '.join(supported)}"
             )
         return configured
 
