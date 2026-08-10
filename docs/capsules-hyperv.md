@@ -16,7 +16,9 @@ Each Argus session:
 6. optionally initializes a per-session transfer workspace and stages explicitly
    declared project files into it;
 7. launches/observes/drives the target through the guest agent;
-8. explicitly collects declared workspace artifacts before teardown;
+8. runs any non-close teardown preparation, then explicitly collects declared
+   workspace artifacts immediately before a declared close (or before implicit
+   final cleanup when no close is reached);
 9. normally destroys the VM and session disk when the session closes;
 10. optionally powers off and retains the failed VM's writable disk/configuration
     when `retain_on_failure: true` is configured.
@@ -87,8 +89,10 @@ outputs inside the only guest tree Argus is willing to collect.
 - Downloads use bounded chunks into a temporary host file under that run's
   `.argus/runs/.../artifacts/` directory. The host recomputes SHA-256 and uses an
   atomic replace only after the digest matches.
-- Collection happens before explicit teardown, and before final cleanup on
-  exception paths. A collection failure is a run error. When
+- Non-close teardown steps run first so they may flush/export requested output.
+  Collection then runs at the last safe point immediately before a declared
+  `close`; if execution raises or no close is reached, collection runs before
+  implicit final cleanup. A collection failure is a run error. When
   `retain_on_failure: true`, that error is recorded before close so PR4 can
   preserve the Capsule instead of deleting the evidence.
 
