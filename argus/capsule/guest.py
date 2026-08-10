@@ -12,15 +12,15 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Callable, Optional
+from typing import BinaryIO, Callable, Optional
 
 from argus.adapters.base import Adapter, Observation, UIElement
 from argus.capsule.base import CapsuleError
 from argus.capsule.files import (
     TRANSFER_CHUNK_BYTES,
     TRANSFER_MAX_FILE_BYTES,
+    normalize_guest_relative_path,
     normalize_relative_path,
-    sha256_file,
     workspace_path,
 )
 
@@ -55,6 +55,22 @@ def _observation_from_dict(data: dict) -> Observation:
         url=data.get("url"),
         action_capabilities=data.get("action_capabilities"),
     )
+
+
+def _hash_bound_file(handle: BinaryIO, size: int, label: str) -> str:
+    """Hash exactly one pinned-size view and reject growth/shrinkage."""
+    digest = hashlib.sha256()
+    handle.seek(0)
+    remaining = int(size)
+    while remaining:
+        chunk = handle.read(min(1024 * 1024, remaining))
+        if not chunk:
+            raise CapsuleGuestError(f"staging source changed while hashing: {label}")
+        digest.update(chunk)
+        remaining -= len(chunk)
+    if handle.read(1):
+        raise CapsuleGuestError(f"staging source grew while hashing: {label}")
+    return digest.hexdigest()
 
 
 class GuestAgentClient:
@@ -136,47 +152,77 @@ class GuestAgentClient:
     def begin_files(self, session_id: str) -> dict:
         return self._request("POST", "/v1/files/begin", {"session_id": session_id})
 
-    def stage_file(
+    def stage_open_file(
         self,
-        source: Path,
+        source_handle: BinaryIO,
+        source_name: str,
         destination: str,
         *,
         expected_sha256: str = "",
     ) -> dict:
-        destination = normalize_relative_path(destination)
-        size = source.stat().st_size
-        if size > TRANSFER_MAX_FILE_BYTES:
+        """Upload exactly the object already opened/authorized by the environment."""
+        destination = normalize_guest_relative_path(destination)
+        before = os.fstat(source_handle.fileno())
+        size = int(before.st_size)
+        if size < 0 or size > TRANSFER_MAX_FILE_BYTES:
             raise CapsuleGuestError(
                 f"staged file exceeds {TRANSFER_MAX_FILE_BYTES} byte limit: {destination}"
             )
-        digest = sha256_file(source)
+
+        digest = _hash_bound_file(source_handle, size, source_name)
+        after_hash = os.fstat(source_handle.fileno())
+        if (
+            after_hash.st_size != before.st_size
+            or after_hash.st_mtime_ns != before.st_mtime_ns
+            or getattr(after_hash, "st_ctime_ns", 0) != getattr(before, "st_ctime_ns", 0)
+        ):
+            raise CapsuleGuestError(f"staging source changed while hashing: {source_name}")
+
         expected = str(expected_sha256 or "").strip().lower()
         if expected and expected != digest:
             raise CapsuleGuestError(
                 f"staging checksum mismatch before upload for {destination}: "
                 f"expected {expected}, got {digest}"
             )
+
         self._request(
             "POST",
             "/v1/files/stage/begin",
             {"path": destination, "size": size, "sha256": digest},
         )
+
+        upload_digest = hashlib.sha256()
         offset = 0
-        with source.open("rb") as handle:
-            while True:
-                chunk = handle.read(TRANSFER_CHUNK_BYTES)
-                if not chunk:
-                    break
-                self._request(
-                    "POST",
-                    "/v1/files/stage/chunk",
-                    {
-                        "path": destination,
-                        "offset": offset,
-                        "data_b64": base64.b64encode(chunk).decode("ascii"),
-                    },
+        source_handle.seek(0)
+        while offset < size:
+            chunk = source_handle.read(min(TRANSFER_CHUNK_BYTES, size - offset))
+            if not chunk:
+                raise CapsuleGuestError(
+                    f"staging source changed while uploading: {source_name}"
                 )
-                offset += len(chunk)
+            upload_digest.update(chunk)
+            self._request(
+                "POST",
+                "/v1/files/stage/chunk",
+                {
+                    "path": destination,
+                    "offset": offset,
+                    "data_b64": base64.b64encode(chunk).decode("ascii"),
+                },
+            )
+            offset += len(chunk)
+
+        if source_handle.read(1):
+            raise CapsuleGuestError(f"staging source grew while uploading: {source_name}")
+        after_upload = os.fstat(source_handle.fileno())
+        if (
+            upload_digest.hexdigest() != digest
+            or after_upload.st_size != before.st_size
+            or after_upload.st_mtime_ns != before.st_mtime_ns
+            or getattr(after_upload, "st_ctime_ns", 0) != getattr(before, "st_ctime_ns", 0)
+        ):
+            raise CapsuleGuestError(f"staging source changed while uploading: {source_name}")
+
         data = self._request(
             "POST",
             "/v1/files/stage/commit",
@@ -186,15 +232,31 @@ class GuestAgentClient:
         if not guest_path:
             raise CapsuleGuestError("guest did not return the committed staged path")
         return {
-            "source": str(source),
+            "source": source_name,
             "destination": destination,
             "size": size,
             "sha256": digest,
             "guest_path": guest_path,
         }
 
+    def stage_file(
+        self,
+        source: Path,
+        destination: str,
+        *,
+        expected_sha256: str = "",
+    ) -> dict:
+        """Compatibility wrapper; production Capsule staging passes a bound handle."""
+        with Path(source).open("rb") as handle:
+            return self.stage_open_file(
+                handle,
+                str(source),
+                destination,
+                expected_sha256=expected_sha256,
+            )
+
     def collect_info(self, relative: str) -> dict:
-        relative = normalize_relative_path(relative)
+        relative = normalize_guest_relative_path(relative)
         query = urllib.parse.urlencode({"path": relative})
         data = self._request("GET", f"/v1/files/collect/info?{query}")
         size = int(data.get("size", -1))
@@ -206,7 +268,7 @@ class GuestAgentClient:
         return {"path": relative, "size": size, "sha256": digest}
 
     def collect_file(self, relative: str, output_root: Path, *, info: Optional[dict] = None) -> dict:
-        relative = normalize_relative_path(relative)
+        relative = normalize_guest_relative_path(relative)
         metadata = dict(info or self.collect_info(relative))
         size = int(metadata["size"])
         expected = str(metadata["sha256"]).lower()
