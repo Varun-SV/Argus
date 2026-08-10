@@ -67,17 +67,33 @@ class SecureGuestAgentClient(GuestAgentClient):
         self.transport_secure = scheme == "https"
 
     def rotate_session_token(self, session_id: str, new_token: str) -> None:
-        """Atomically replace the bootstrap bearer with a session-only bearer."""
+        """Replace the bootstrap bearer with a session-only bearer.
+
+        If the guest commits the rotation but the response is lost, probe with
+        the proposed token before declaring failure. This prevents a transient
+        transport error from permanently desynchronizing host and guest auth.
+        """
         session_id = validate_session_id(session_id)
         token = str(new_token or "").strip()
         if len(token) < 32:
             raise CapsuleGuestError("rotated Capsule session token is too short")
-        self._request(
-            "POST",
-            "/v1/auth/rotate",
-            {"session_id": session_id, "token": token},
-        )
-        # Only switch locally after the guest confirmed the rotation under the
-        # previous bearer. A failed response leaves bootstrap auth usable for
-        # cleanup/retry instead of desynchronizing both ends.
-        self.token = token
+
+        previous = self.token
+        try:
+            self._request(
+                "POST",
+                "/v1/auth/rotate",
+                {"session_id": session_id, "token": token},
+            )
+        except Exception as rotate_exc:
+            self.token = token
+            try:
+                health = self.health()
+                if health.get("auth_session_id") == session_id:
+                    return
+            except Exception:
+                pass
+            self.token = previous
+            raise rotate_exc
+        else:
+            self.token = token
