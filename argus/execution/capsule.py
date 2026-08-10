@@ -238,23 +238,39 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         return True
 
     def close(self) -> None:
-        # Failure retention happens before guest-session close so the retained
-        # disk represents the failure state before ordinary destructive cleanup.
+        # An already-recorded failure must be retained before any guest teardown.
         if self._retain_failure_before_teardown():
             return
 
         adapter = self._adapter
         handle = self._handle
-        self._adapter = None
-        self._client = None
-        self._prepared = False
-
         errors = []
+
         if adapter is not None:
             try:
                 adapter.close()
             except Exception as exc:
-                errors.append(f"guest session close failed: {exc}")
+                guest_close_error = f"guest session close failed: {exc}"
+
+                # Teardown can itself be the first failure of an otherwise
+                # passing run. When retention is enabled, arm retention while
+                # the provider handle is still intact and before destroy().
+                if self.settings.retain_on_failure and handle is not None:
+                    self.record_failure(guest_close_error)
+                    if self._retain_failure_before_teardown():
+                        # Retention succeeded, but guest teardown still failed;
+                        # surface that run error to the caller rather than
+                        # converting the run into a false pass.
+                        raise CapsuleError(guest_close_error) from exc
+
+                errors.append(guest_close_error)
+
+        # If retention succeeded or failed, control has already returned/raised
+        # above and the provider handle was deliberately preserved. Reaching this
+        # point means normal cleanup should proceed.
+        self._adapter = None
+        self._client = None
+        self._prepared = False
 
         if handle is not None:
             try:
