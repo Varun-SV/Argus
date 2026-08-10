@@ -51,6 +51,7 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 "rotate_session_token cannot be disabled"
             )
         selected = provider or self._make_secure_provider(settings.provider)
+        self._validate_provider_capabilities(selected, settings)
         super().__init__(
             adapter_type,
             settings,
@@ -98,6 +99,46 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         raise ExecutionEnvironmentError(
             f"unknown Capsule provider {name!r} — available: auto, hyperv, libvirt"
         )
+
+    @staticmethod
+    def _validate_provider_capabilities(
+        provider: CapsuleProvider,
+        settings: CapsuleSettings,
+    ) -> None:
+        """Fail closed when an injected/extension provider weakens security."""
+        capabilities = provider.capabilities()
+        provider_name = str(provider.provider_name or "unknown")
+        advertised = str(capabilities.provider or "").strip()
+        if advertised and advertised != provider_name:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} advertises mismatched capabilities "
+                f"for {advertised!r}"
+            )
+
+        missing: list[str] = []
+        if not capabilities.secure_transport:
+            missing.append("secure transport")
+        if not capabilities.network_isolation:
+            missing.append("network isolation")
+        if not capabilities.explicit_transfers:
+            missing.append("explicit staging/collection")
+        if missing:
+            raise ExecutionEnvironmentError(
+                f"secure Capsule provider {provider_name!r} lacks required capability: "
+                + ", ".join(missing)
+            )
+
+        if settings.retain_on_failure and not capabilities.failure_retention:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} does not support requested failure retention"
+            )
+
+        network_mode = str(settings.network_mode or "host_only").strip().lower()
+        wants_allowlist = network_mode == "allowlist" or bool(settings.egress_allowlist)
+        if wants_allowlist and not capabilities.egress_allowlist:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} does not support requested egress allowlisting"
+            )
 
     @classmethod
     def from_mapping(
