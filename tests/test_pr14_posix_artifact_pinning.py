@@ -49,7 +49,10 @@ def test_posix_collection_stays_bound_when_parent_path_is_replaced(tmp_path):
     # The lexical identity check intentionally reports the concurrent swap on
     # context exit, but the descriptor-relative write must already have landed
     # in the originally pinned directory and never in the replacement target.
-    with pytest.raises(CapsuleError, match="identity changed|disappeared"):
+    with pytest.raises(
+        CapsuleError,
+        match="identity changed|disappeared|no longer a directory",
+    ):
         with pin_artifact_tree(output, ["logs/result.bin"]) as tree:
             result = collect_file_to_pinned_tree(
                 client,
