@@ -39,7 +39,10 @@ class PinnedDirectory:
         except OSError as exc:
             raise CapsuleError(f"pinned artifact directory disappeared: {self.path}: {exc}") from exc
         if not stat.S_ISDIR(info.st_mode):
-            raise CapsuleError(f"pinned artifact path is no longer a directory: {self.path}")
+            raise CapsuleError(
+                f"pinned artifact directory identity changed: {self.path} "
+                "(path is no longer a directory)"
+            )
         if (info.st_dev, info.st_ino) != self.identity:
             raise CapsuleError(f"pinned artifact directory identity changed: {self.path}")
 
