@@ -46,12 +46,17 @@ class ExecutionEnvironment(Adapter, ABC):
     Lifecycle contract
     ------------------
     The environment owns every resource acquired by :meth:`prepare`. A public
-    launch path must be exception-safe: if preparation succeeds (even only
+    launch path must be exception-safe. If preparation succeeds (even only
     partially) but target launch fails, the environment must release those
-    resources before propagating the failure. Implementations whose ``prepare``
-    method can be called directly must also roll back any partial allocation
-    before raising. This prevents VM/disk/network allocations from being leaked
-    merely because a guest target failed to start.
+    resources before propagating the failure unless an explicit retention
+    policy preserves them for diagnostics. If requested preservation itself
+    fails, implementations must fail safe by keeping recoverable resources
+    intact and surfacing enough recovery metadata for an operator to inspect or
+    clean them up. Implementations whose ``prepare`` method can be called
+    directly must still roll back any partial allocation before raising, because
+    no valid test state necessarily exists yet to retain. This prevents
+    VM/disk/network allocations from being leaked accidentally while allowing
+    deliberately retained failure state to remain available for reproduction.
     """
 
     environment_type: str = "base"
@@ -65,7 +70,9 @@ class ExecutionEnvironment(Adapter, ABC):
         raises after partially allocating resources, it must release those
         partial resources before propagating the exception. The normal
         :meth:`launch` path should additionally roll back the whole environment
-        when either preparation or target launch fails.
+        when preparation fails, and should release target-launch resources unless
+        an explicit retention policy preserves the prepared failure state (or
+        fails safe while preserving recoverable resources for operator action).
         """
 
     def info(self) -> ExecutionEnvironmentInfo:
@@ -80,6 +87,17 @@ class ExecutionEnvironment(Adapter, ABC):
         info = self.info()
         isolation = "isolated" if info.isolated else "shared"
         return f"{info.environment_type}:{info.adapter_type} ({info.location}, {isolation})"
+
+    def record_failure(self, reason: str) -> None:
+        """Record a failure before teardown.
+
+        Local environments intentionally ignore this. VM-backed environments may
+        use it to retain reproducible failure state when explicitly configured.
+        """
+
+    def failure_capsule(self):
+        """Return retained failure metadata, if this environment produced any."""
+        return None
 
 
 class LocalExecutionEnvironment(ExecutionEnvironment):

@@ -1,5 +1,3 @@
-import time
-
 from argus.tokens import Budget, TokenTracker, Usage
 
 
@@ -26,10 +24,13 @@ def test_tracker_persist_merges(tmp_path):
     assert data["calls"] == 2
 
 
-def test_time_budget():
+def test_time_budget(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("argus.tokens.time.monotonic", lambda: now[0])
+
     b = Budget(max_seconds=0.05)
     assert b.exhausted() is None
-    time.sleep(0.06)
+    now[0] += 0.06
     assert "time budget" in b.exhausted()
 
 

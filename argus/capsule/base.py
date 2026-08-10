@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -48,6 +48,7 @@ class CapsuleSettings:
     boot_timeout_seconds: float = 120.0
     agent_timeout_seconds: float = 60.0
     allow_external_switch: bool = False
+    retain_on_failure: bool = False
 
     @classmethod
     def from_mapping(cls, value: Optional[Mapping[str, Any]] = None) -> "CapsuleSettings":
@@ -58,10 +59,9 @@ class CapsuleSettings:
             raise CapsuleError(
                 "unknown capsule setting(s): " + ", ".join(unknown)
             )
-        if "allow_external_switch" in raw:
-            raw["allow_external_switch"] = _strict_bool(
-                raw["allow_external_switch"], "allow_external_switch"
-            )
+        for name in ("allow_external_switch", "retain_on_failure"):
+            if name in raw:
+                raw[name] = _strict_bool(raw[name], name)
         return cls(**raw)
 
     @property
@@ -97,6 +97,23 @@ class CapsuleHandle:
         return f"http://{self.address}:{self.guest_port}"
 
 
+@dataclass(frozen=True)
+class FailureCapsule:
+    """Durable reference to a VM retained at the point of test failure."""
+
+    failure_id: str
+    session_id: str
+    provider: str
+    vm_name: str
+    root_dir: str
+    reason: str
+    retained_at: str
+    vm_state: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 class CapsuleProvider(ABC):
     """Hypervisor/provider boundary used by :class:`CapsuleExecutionEnvironment`."""
 
@@ -109,6 +126,12 @@ class CapsuleProvider(ABC):
         This method must clean up its own partial allocations before raising;
         callers cannot destroy a handle that was never returned.
         """
+
+    def retain_failure(self, handle: CapsuleHandle, reason: str) -> FailureCapsule:
+        """Freeze a live Capsule for later reproduction instead of destroying it."""
+        raise CapsuleError(
+            f"Capsule provider {self.provider_name!r} does not support failure retention"
+        )
 
     @abstractmethod
     def destroy(self, handle: CapsuleHandle) -> None:

@@ -12,6 +12,7 @@ from argus.capsule.base import (
     CapsuleProvider,
     CapsuleRequest,
     CapsuleSettings,
+    FailureCapsule,
 )
 from argus.capsule.guest import GuestAdapterProxy, GuestAgentClient
 from argus.execution.base import (
@@ -46,6 +47,9 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         self._client: Optional[GuestAgentClient] = None
         self._adapter: Optional[PolicyAdapter] = None
         self._prepared = False
+        self._failure_reason = ""
+        self._retained_failure: Optional[FailureCapsule] = None
+        self._retention_error: Optional[dict] = None
 
     @staticmethod
     def _make_provider(name: str) -> CapsuleProvider:
@@ -127,18 +131,27 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         return None
 
     def launch(self, target: str) -> None:
+        # Preparation failures remain PR3-style infrastructure failures: prepare()
+        # owns rollback because no valid guest test state necessarily exists yet.
+        if not self._prepared:
+            self.prepare()
+        if self._adapter is None:
+            raise ExecutionEnvironmentError("Capsule guest adapter was not prepared")
+
         try:
-            if not self._prepared:
-                self.prepare()
-            if self._adapter is None:
-                raise ExecutionEnvironmentError("Capsule guest adapter was not prepared")
             self._adapter.launch(target)
         except Exception as launch_exc:
+            # Once preparation has succeeded, a target-launch failure is part of
+            # the test state. Retain it when explicitly requested instead of
+            # destroying the prepared Capsule before the runner can report it.
+            if self.settings.retain_on_failure:
+                self.record_failure(f"target launch failed: {launch_exc}")
             try:
                 self.close()
             except Exception as cleanup_exc:
+                action = "retention" if self.settings.retain_on_failure else "rollback"
                 raise ExecutionEnvironmentError(
-                    "Capsule target launch failed and rollback also failed: "
+                    f"Capsule target launch failed and {action} also failed: "
                     f"launch={launch_exc}; cleanup={cleanup_exc}"
                 ) from launch_exc
             raise
@@ -168,19 +181,96 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             raise ExecutionEnvironmentError("Capsule target is not launched")
         return self._adapter.act(action)
 
-    def close(self) -> None:
-        adapter = self._adapter
+    def record_failure(self, reason: str) -> None:
+        if not self.settings.retain_on_failure:
+            return
+        if not self._failure_reason:
+            self._failure_reason = (reason or "test failure")[:2000]
+
+    def failure_capsule(self):
+        if self._retained_failure is None:
+            return None
+        return self._retained_failure.to_dict()
+
+    def failure_capsule_error(self):
+        """Return structured recovery data when requested retention failed."""
+        if self._retention_error is None:
+            return None
+        return dict(self._retention_error)
+
+    def _retain_failure_before_teardown(self) -> bool:
+        if not (
+            self.settings.retain_on_failure
+            and self._failure_reason
+            and self._handle is not None
+        ):
+            return False
         handle = self._handle
+        try:
+            retained = self.provider.retain_failure(handle, self._failure_reason)
+        except Exception as exc:
+            # Never destroy evidence after a retention failure. Keep the handle
+            # and expose exact recovery coordinates to the run result.
+            self._handle = handle
+            self._retention_error = {
+                "status": "retention_failed",
+                "session_id": handle.session_id,
+                "provider": handle.provider,
+                "vm_name": handle.vm_name,
+                "root_dir": handle.root_dir,
+                "error": str(exc),
+                "recovery": (
+                    "Capsule was preserved instead of destroyed. Inspect the registered VM "
+                    "and session storage, then retry retention or clean it up manually."
+                ),
+            }
+            raise CapsuleError(
+                "Failure Capsule retention failed; Capsule preserved for recovery at "
+                f"{handle.root_dir}: {exc}"
+            ) from exc
+
+        self._retained_failure = retained
+        self._retention_error = None
         self._adapter = None
         self._client = None
         self._prepared = False
+        self._handle = None
+        return True
 
+    def close(self) -> None:
+        # An already-recorded failure must be retained before any guest teardown.
+        if self._retain_failure_before_teardown():
+            return
+
+        adapter = self._adapter
+        handle = self._handle
         errors = []
+
         if adapter is not None:
             try:
                 adapter.close()
             except Exception as exc:
-                errors.append(f"guest session close failed: {exc}")
+                guest_close_error = f"guest session close failed: {exc}"
+
+                # Teardown can itself be the first failure of an otherwise
+                # passing run. When retention is enabled, arm retention while
+                # the provider handle is still intact and before destroy().
+                if self.settings.retain_on_failure and handle is not None:
+                    self.record_failure(guest_close_error)
+                    if self._retain_failure_before_teardown():
+                        # Retention succeeded, but guest teardown still failed;
+                        # surface that run error to the caller rather than
+                        # converting the run into a false pass.
+                        raise CapsuleError(guest_close_error) from exc
+
+                errors.append(guest_close_error)
+
+        # If retention succeeded or failed, control has already returned/raised
+        # above and the provider handle was deliberately preserved. Reaching this
+        # point means normal cleanup should proceed.
+        self._adapter = None
+        self._client = None
+        self._prepared = False
 
         if handle is not None:
             try:

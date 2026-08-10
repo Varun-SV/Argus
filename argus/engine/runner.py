@@ -131,6 +131,50 @@ def _execution_fields(adapter: Adapter) -> dict:
     }
 
 
+def _record_environment_failure_reason(adapter: Adapter, reason: str) -> None:
+    """Notify an execution environment before teardown can erase failure state."""
+    hook = getattr(adapter, "record_failure", None)
+    if not callable(hook):
+        return
+    try:
+        hook(reason)
+    except Exception:
+        # Failure retention is diagnostic. A test result must never be converted
+        # into a different outcome merely because the optional hook failed.
+        pass
+
+
+def _record_environment_failure(adapter: Adapter, step: StepResult) -> None:
+    reason = f"step {step.index + 1} {step.status}: {step.text}"
+    if step.note:
+        reason += f" — {step.note}"
+    elif step.actual:
+        reason += f" — {step.actual}"
+    _record_environment_failure_reason(adapter, reason)
+
+
+def _retained_failure(adapter: Adapter):
+    hook = getattr(adapter, "failure_capsule", None)
+    if not callable(hook):
+        return None
+    try:
+        value = hook()
+    except Exception:
+        return None
+    return value if isinstance(value, dict) and value else None
+
+
+def _retention_failure(adapter: Adapter):
+    hook = getattr(adapter, "failure_capsule_error", None)
+    if not callable(hook):
+        return None
+    try:
+        value = hook()
+    except Exception:
+        return None
+    return value if isinstance(value, dict) and value else None
+
+
 def run_test(
     spec: TestSpec,
     provider: LLMProvider,
@@ -170,10 +214,20 @@ def run_test(
     except AdapterError as exc:
         result.status = "error"
         result.error = f"launch failed: {exc}"
+        # A prepared Capsule may have retained the failed guest launch before
+        # re-raising. Capture both success and recovery metadata before this
+        # early return; preparation failures simply leave both fields empty.
+        result.failure_capsule = _retained_failure(adapter)
+        result.failure_capsule_error = _retention_failure(adapter)
         result.duration_s = time.monotonic() - started
+        result.tokens = provider.tracker.snapshot()
         return result
 
     failed = False
+    budget_failure_recorded = False
+    teardown_budget_reason: Optional[str] = None
+    execution_error: Optional[str] = None
+    cleanup_error: Optional[str] = None
     try:
         for index, step in enumerate(spec.steps):
             step_started = time.monotonic()
@@ -186,14 +240,28 @@ def run_test(
                     on_step(sr)
                 continue
 
+            # Always check the budget at a step boundary. If it has expired when
+            # entering teardown, record the run failure but still execute teardown
+            # so retention/cleanup reaches a deterministic close point.
             budget_reason = budget.exhausted() if budget else None
-            if budget_reason:
+            if budget_reason and step.kind == "teardown":
+                if not budget_failure_recorded:
+                    failed = True
+                    budget_failure_recorded = True
+                    teardown_budget_reason = budget_reason
+                    _record_environment_failure_reason(
+                        adapter,
+                        f"run budget exhausted before teardown: {budget_reason}",
+                    )
+            elif budget_reason:
                 sr = StepResult(index=index, kind=step.kind, text=_step_text(step),
                                 status="skipped", note=f"skipped: {budget_reason}")
                 result.steps.append(sr)
+                _record_environment_failure(adapter, sr)
                 if on_step:
                     on_step(sr)
                 failed = True
+                budget_failure_recorded = True
                 continue
 
             if isinstance(step, AssertStep):
@@ -207,8 +275,28 @@ def run_test(
                 sr.index = index
                 _attach_screenshot(sr, adapter, index, shots_dir)
             elif step.text == "close" and step.kind == "teardown":
-                adapter.close()
-                sr = StepResult(index=index, kind="teardown", text="close target", status="pass")
+                try:
+                    adapter.close()
+                except Exception as exc:
+                    retention_error = _retention_failure(adapter)
+                    if retention_error is None:
+                        raise
+                    # If the run was healthy before teardown, this retention
+                    # failure was armed by teardown itself and is a real run
+                    # error. For an already-failed run, keep the original result
+                    # semantics and surface retention as diagnostic metadata.
+                    teardown_failed = not failed
+                    sr = StepResult(
+                        index=index,
+                        kind="teardown",
+                        text="close target",
+                        status="error" if teardown_failed else "pass",
+                        note=f"Failure Capsule retention warning: {exc}",
+                    )
+                    if teardown_failed:
+                        result.error = f"teardown failed: {exc}"
+                else:
+                    sr = StepResult(index=index, kind="teardown", text="close target", status="pass")
             else:
                 sr = _run_nl_step_with_retries(
                     step, index, provider, adapter, use_vision, spec.retries,
@@ -216,20 +304,56 @@ def run_test(
                     shots_dir=shots_dir,
                 )
 
+            if step.kind == "teardown" and teardown_budget_reason:
+                budget_note = f"run budget exhausted before teardown: {teardown_budget_reason}"
+                sr.note = f"{sr.note}; {budget_note}" if sr.note else budget_note
+                teardown_budget_reason = None
+
             sr.duration_s = time.monotonic() - step_started
             result.steps.append(sr)
             if sr.status in ("fail", "error"):
                 failed = True
+                _record_environment_failure(adapter, sr)
             if on_step:
                 on_step(sr)
+    except Exception as exc:
+        # Unexpected observation/action/assertion/callback failures must be
+        # recorded before final close; otherwise retain_on_failure would erase
+        # the state that caused the exception. Keep the failure inside the
+        # structured RunResult so callers can persist the retained/recovery
+        # metadata instead of losing it across an exception boundary.
+        execution_error = f"{type(exc).__name__}: {exc}"
+        _record_environment_failure_reason(
+            adapter,
+            f"run execution error: {execution_error}",
+        )
+        failed = True
+        result.error = f"execution failed: {execution_error}"
     finally:
-        try:
-            adapter.close()
-        except Exception:
-            pass
+        # If explicit teardown already failed to retain a Failure Capsule, do
+        # not retry the retention operation or fall through to destructive
+        # cleanup. The environment has preserved the handle for recovery.
+        if _retention_failure(adapter) is None:
+            try:
+                adapter.close()
+            except Exception as exc:
+                # A cleanup failure on an otherwise healthy run is itself a run
+                # error. Preserve existing fail/error semantics when the run was
+                # already failing, but never silently report pass after teardown
+                # failed or retained a Failure Capsule.
+                if not failed and execution_error is None:
+                    cleanup_error = f"{type(exc).__name__}: {exc}"
+                    failed = True
+                    result.error = f"cleanup failed: {cleanup_error}"
 
+    result.failure_capsule = _retained_failure(adapter)
+    result.failure_capsule_error = _retention_failure(adapter)
     result.duration_s = time.monotonic() - started
-    if any(s.status == "error" for s in result.steps):
+    if (
+        execution_error is not None
+        or cleanup_error is not None
+        or any(s.status == "error" for s in result.steps)
+    ):
         result.status = "error"
     elif failed:
         result.status = "fail"
