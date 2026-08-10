@@ -12,6 +12,7 @@ from argus.capsule.libvirt import LibvirtProvider
 
 
 def _settings(tmp_path: Path, **overrides) -> CapsuleSettings:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     image = tmp_path / "golden.qcow2"
     image.write_bytes(b"golden")
     values = dict(
