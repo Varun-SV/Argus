@@ -71,6 +71,10 @@ class PinnedArtifactTree:
     pathname after pinning. ``open(..., dir_fd=...)``, ``rename(..., *_dir_fd=)``
     and ``unlink(..., dir_fd=...)`` therefore stay bound to the opened directory
     identity even if another same-user process renames/replaces its lexical path.
+
+    Path-like delegation remains only for compatibility with injected/legacy
+    test clients. Production ``GuestAgentClient`` detects this object and uses
+    the descriptor-relative mutation helpers instead of those lexical methods.
     """
 
     def __init__(self, path: Path, parents: dict[str, PinnedDirectory]):
@@ -82,6 +86,12 @@ class PinnedArtifactTree:
 
     def __str__(self) -> str:
         return str(self.path)
+
+    def __truediv__(self, other):
+        return self.path / other
+
+    def __getattr__(self, name):
+        return getattr(self.path, name)
 
     @staticmethod
     def _key(relative: str) -> tuple[str, str, str]:
