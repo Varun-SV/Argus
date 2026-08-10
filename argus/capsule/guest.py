@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import shlex
 import time
 import urllib.error
 import urllib.parse
@@ -91,6 +92,9 @@ class GuestAgentClient:
         self.token = token
         self.timeout_seconds = float(timeout_seconds)
         self._opener = opener or urllib.request.urlopen
+        # Staged-path provenance remains host-side. Only paths returned by a
+        # successful guest commit are eligible for automatic literal launch.
+        self._staged_guest_paths: set[str] = set()
 
     def _request(self, method: str, path: str, payload: Optional[dict] = None) -> dict:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -231,6 +235,7 @@ class GuestAgentClient:
         guest_path = str(data.get("guest_path") or "").strip()
         if not guest_path:
             raise CapsuleGuestError("guest did not return the committed staged path")
+        self._staged_guest_paths.add(guest_path)
         return {
             "source": source_name,
             "destination": destination,
@@ -238,6 +243,26 @@ class GuestAgentClient:
             "sha256": digest,
             "guest_path": guest_path,
         }
+
+    def staged_literal_target(self, target: str) -> str:
+        """Return the exact committed staged path represented by *target*.
+
+        CLI staging historically quotes the committed path before handing it to
+        the adapter because ordinary CLI launches are command strings. Decode
+        only a single-token command and require an exact match against a path
+        returned by a successful stage commit; arbitrary command strings can
+        never opt themselves into literal/executable authorization.
+        """
+        raw = str(target or "")
+        if raw in self._staged_guest_paths:
+            return raw
+        try:
+            argv = shlex.split(raw)
+        except ValueError:
+            return ""
+        if len(argv) == 1 and argv[0] in self._staged_guest_paths:
+            return argv[0]
+        return ""
 
     def stage_file(
         self,
@@ -392,7 +417,17 @@ class GuestAdapterProxy(Adapter):
         self._capabilities = capabilities
 
     def launch(self, target: str) -> None:
-        data = self.client.launch(self.type_name, target, self.input_mode)
+        resolver = getattr(self.client, "staged_literal_target", None)
+        literal_target = resolver(target) if callable(resolver) else ""
+        if literal_target:
+            data = self.client.launch(
+                self.type_name,
+                literal_target,
+                self.input_mode,
+                literal_target=True,
+            )
+        else:
+            data = self.client.launch(self.type_name, target, self.input_mode)
         self._store_launch_capabilities(data)
 
     def launch_literal(self, target: str) -> None:
