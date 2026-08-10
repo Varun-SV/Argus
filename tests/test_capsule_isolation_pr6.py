@@ -9,7 +9,11 @@ import pytest
 
 from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleProvider, CapsuleRequest, CapsuleSettings
 from argus.capsule.guest import CapsuleGuestError
-from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
+from argus.capsule.hyperv_isolated import (
+    IsolatedHyperVProvider,
+    _GUEST_SERVICE_INTERFACE_ID,
+    _KVP_EXCHANGE_ID,
+)
 from argus.capsule.secure_client import SecureGuestAgentClient
 from argus.capsule.secure_guest_agent import (
     SecureGuestAgentServer,
@@ -192,7 +196,7 @@ def _isolated_runner(
             return ""
         if "Get-VMNetworkAdapter -VMName" in script and ".IPAddresses" in script:
             return "192.168.100.20"
-        if "Key-Value Pair Exchange" in script and fail_kvp:
+        if _KVP_EXCHANGE_ID in script and fail_kvp:
             raise CapsuleError("KVP disable failed")
         return ""
     return runner
@@ -213,8 +217,8 @@ def test_hyperv_isolation_is_installed_before_vm_boot(tmp_path):
 
     acl_index = next(i for i, script in enumerate(calls) if "Add-VMNetworkAdapterExtendedAcl" in script)
     start_index = next(i for i, script in enumerate(calls) if "Start-VM -Name" in script)
-    gsi_index = next(i for i, script in enumerate(calls) if "Guest Service Interface" in script)
-    kvp_index = next(i for i, script in enumerate(calls) if "Key-Value Pair Exchange" in script)
+    gsi_index = next(i for i, script in enumerate(calls) if _GUEST_SERVICE_INTERFACE_ID in script)
+    kvp_index = next(i for i, script in enumerate(calls) if _KVP_EXCHANGE_ID in script)
     address_index = next(i for i, script in enumerate(calls) if "Get-VMNetworkAdapter -VMName" in script and ".IPAddresses" in script)
     assert gsi_index < acl_index < start_index < address_index < kvp_index
 
@@ -254,6 +258,22 @@ def test_hyperv_isolation_is_installed_before_vm_boot(tmp_path):
     )
 
     provider.destroy(handle)
+
+
+def test_integration_services_are_selected_by_stable_id_not_localized_name():
+    calls: list[str] = []
+    provider = IsolatedHyperVProvider(runner=lambda script, timeout: calls.append(script) or "")
+
+    provider._disable_host_file_copy("Argus-localized")
+    provider._disable_host_kvp("Argus-localized")
+
+    assert len(calls) == 2
+    assert _GUEST_SERVICE_INTERFACE_ID in calls[0]
+    assert _KVP_EXCHANGE_ID in calls[1]
+    for script in calls:
+        assert "([string]$_.Id).ToUpperInvariant().EndsWith" in script
+        assert "Where-Object { $_.Name" not in script
+        assert "Disable-VMIntegrationService -VMIntegrationService $svc" in script
 
 
 def test_host_only_policy_has_no_declared_egress_allowlist(tmp_path):
