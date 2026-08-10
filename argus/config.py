@@ -56,25 +56,35 @@ execution:
   # capsule:
   #   provider: hyperv
   #   image: C:\\Argus\\images\\windows-11-clean.vhdx
-  #   switch_name: Default Switch   # must be an Internal Hyper-V switch in PR3
+  #   switch_name: Default Switch   # Internal Hyper-V switch
   #   vm_root: C:\\Argus\\capsules
   #   memory_mb: 4096
   #   cpu_count: 2
   #   guest_port: 8765
-  #   guest_input_mode: physical    # physical input is contained inside the VM
-  #   guest_address: null           # optional candidate; Hyper-V must attest it belongs to the VM
+  #   guest_input_mode: physical
+  #   guest_address: null
   #   boot_timeout_seconds: 120
   #   agent_timeout_seconds: 60
-  #   allow_external_switch: false  # reserved; true is rejected until transport is confidential
-  #   retain_on_failure: false      # save failed VM state instead of deleting the Capsule
+  #   retain_on_failure: false
+  #
+  #   # PR6 secure control plane / network isolation
+  #   guest_transport: https
+  #   guest_ca_cert: C:\\Argus\\certs\\argus-guest-ca.pem
+  #   allow_insecure_http: false   # explicit legacy-only escape hatch
+  #   rotate_session_token: true   # bootstrap token -> random per-session bearer
+  #   network_mode: host_only      # host_only | allowlist
+  #   egress_allowlist: []         # CIDRs, e.g. ["10.20.30.0/24"]
+  #   allow_dhcp: true
+  #   disable_guest_file_copy: true
+  #   allow_external_switch: false # External switches remain unsupported
 
 # Knowledge engine — persistent graph + vector learning store.
 # Requires: pip install argus-app-testing[knowledge]
 # knowledge:
 #   enabled: true
-#   type: local          # local | docker | external
-#   vector_backend: chroma   # chroma (local) | qdrant (docker/external)
-#   vector_url: null     # Qdrant URL; auto-set when type: docker
+#   type: local
+#   vector_backend: chroma
+#   vector_url: null
 #   embedding_model: all-MiniLM-L6-v2
 """
 
@@ -113,6 +123,14 @@ class CapsuleConfig:
     agent_timeout_seconds: float = 60.0
     allow_external_switch: bool = False
     retain_on_failure: bool = False
+    guest_transport: str = "https"
+    guest_ca_cert: str = ""
+    allow_insecure_http: bool = False
+    rotate_session_token: bool = True
+    network_mode: str = "host_only"
+    egress_allowlist: tuple[str, ...] = ()
+    allow_dhcp: bool = True
+    disable_guest_file_copy: bool = True
 
 
 @dataclass
@@ -151,9 +169,10 @@ class ArgusConfig:
     ):
         """Build the configured local or Capsule execution environment.
 
-        Capsule control credentials always come from the dedicated host variable
-        ``ARGUS_CAPSULE_GUEST_TOKEN``. Project configuration is intentionally not
-        allowed to select an arbitrary host environment variable.
+        The reusable bootstrap credential always comes from the dedicated host
+        variable ``ARGUS_CAPSULE_GUEST_TOKEN``. Project configuration cannot
+        select an arbitrary host environment variable. PR6 rotates that token
+        to a fresh bearer after the HTTPS control channel is authenticated.
         """
         from argus.execution import create_execution_environment
 
@@ -196,6 +215,26 @@ class ArgusConfig:
             ),
             "retain_on_failure": _env_bool(
                 "ARGUS_CAPSULE_RETAIN_ON_FAILURE", cc.retain_on_failure
+            ),
+            "guest_transport": (
+                os.environ.get("ARGUS_CAPSULE_GUEST_TRANSPORT") or cc.guest_transport
+            ),
+            "guest_ca_cert": (
+                os.environ.get("ARGUS_CAPSULE_GUEST_CA_CERT") or cc.guest_ca_cert
+            ),
+            "allow_insecure_http": _env_bool(
+                "ARGUS_CAPSULE_ALLOW_INSECURE_HTTP", cc.allow_insecure_http
+            ),
+            "rotate_session_token": _env_bool(
+                "ARGUS_CAPSULE_ROTATE_SESSION_TOKEN", cc.rotate_session_token
+            ),
+            "network_mode": os.environ.get("ARGUS_CAPSULE_NETWORK_MODE") or cc.network_mode,
+            "egress_allowlist": _env_cidrs(
+                "ARGUS_CAPSULE_EGRESS_ALLOWLIST", cc.egress_allowlist
+            ),
+            "allow_dhcp": _env_bool("ARGUS_CAPSULE_ALLOW_DHCP", cc.allow_dhcp),
+            "disable_guest_file_copy": _env_bool(
+                "ARGUS_CAPSULE_DISABLE_GUEST_FILE_COPY", cc.disable_guest_file_copy
             ),
         }
         return create_execution_environment(
@@ -275,6 +314,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return _strict_bool(value, name)
 
 
+def _env_cidrs(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.environ.get(name)
+    if value is None:
+        return tuple(default)
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
 def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
     project_dir = (project_dir or Path.cwd()).resolve()
     cfg_path = project_dir / ".argus" / "config.yaml"
@@ -313,6 +359,11 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             "execution.capsule.guest_token_env cannot select arbitrary host "
             f"environment variables; only {CAPSULE_GUEST_TOKEN_ENV} is allowed"
         )
+
+    raw_allowlist = capsule_raw.get("egress_allowlist") or []
+    if not isinstance(raw_allowlist, list):
+        raise ValueError("execution.capsule.egress_allowlist must be a list of CIDRs")
+
     execution = ExecutionConfig(
         environment=str(execution_raw.get("environment") or "local"),
         capsule=CapsuleConfig(
@@ -339,6 +390,26 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             retain_on_failure=_strict_bool(
                 capsule_raw.get("retain_on_failure", False),
                 "execution.capsule.retain_on_failure",
+            ),
+            guest_transport=str(capsule_raw.get("guest_transport") or "https"),
+            guest_ca_cert=str(capsule_raw.get("guest_ca_cert") or ""),
+            allow_insecure_http=_strict_bool(
+                capsule_raw.get("allow_insecure_http", False),
+                "execution.capsule.allow_insecure_http",
+            ),
+            rotate_session_token=_strict_bool(
+                capsule_raw.get("rotate_session_token", True),
+                "execution.capsule.rotate_session_token",
+            ),
+            network_mode=str(capsule_raw.get("network_mode") or "host_only"),
+            egress_allowlist=tuple(str(item).strip() for item in raw_allowlist),
+            allow_dhcp=_strict_bool(
+                capsule_raw.get("allow_dhcp", True),
+                "execution.capsule.allow_dhcp",
+            ),
+            disable_guest_file_copy=_strict_bool(
+                capsule_raw.get("disable_guest_file_copy", True),
+                "execution.capsule.disable_guest_file_copy",
             ),
         ),
     )
