@@ -19,14 +19,14 @@ macOS/Apple Virtualization is intentionally **not** implemented in this PR. Unsu
 The first Linux Capsule provider targets local KVM/QEMU managed through libvirt:
 
 - Linux host with hardware virtualization/KVM available;
-- `virsh` and `qemu-img` installed;
+- `virsh`, `qemu-img`, and the iproute2 `ip` command installed;
 - access to the local `qemu:///system` libvirt connection;
 - a Linux qcow2 or raw golden image whose architecture matches the KVM host;
 - a system-accessible Capsule storage root usable by both the Argus host process and the system QEMU account;
 - the secure Argus guest agent configured to start automatically in the test-user session;
 - a dedicated guest TLS certificate/private key and one-time bootstrap bearer, as with the Windows secure guest-agent design.
 
-PR7 does not use the Python `libvirt` binding. Host commands are argv-based `virsh`/`qemu-img` invocations and are never composed through a shell.
+PR7 does not use the Python `libvirt` binding. Host commands are argv-based `virsh`, `qemu-img`, and `ip` invocations and are never composed through a shell.
 
 ## Linux configuration
 
@@ -112,13 +112,17 @@ PR7 uses libvirt domains with `type="kvm"`; it is not a cross-architecture QEMU 
 
 On an aarch64 host, PR7 generates a libvirt domain with EFI firmware autoselection (`<os firmware="efi">`). If no machine is explicitly configured, the provider also selects the QEMU ARM `virt` machine. This avoids pretending that an ARM guest can fall back to PC-style firmware and avoids hard-coding distribution-specific AAVMF/UEFI loader paths into Argus configuration.
 
+Firmware autoselection can create managed libvirt NVRAM. Normal destruction and failed-create rollback therefore use `virsh undefine <domain> --nvram` for aarch64 Capsules so managed EFI state cannot keep the domain defined after teardown. x86_64 domains keep the ordinary `undefine` path.
+
 The host still needs a libvirt/QEMU installation whose domain capabilities provide a suitable EFI firmware implementation for the requested architecture. If firmware cannot be selected, libvirt fails the domain definition/start rather than Argus silently weakening the architecture contract.
 
 ## Provider-resource ownership and rollback
 
 Libvirt resource names are derived from a strong hash of the complete Capsule session id rather than a short shared prefix. Before storage allocation, Argus checks that the generated domain, transient network, and nwfilter names do not already exist. A collision is a hard failure; Argus never redefines the existing object.
 
-Creation rollback additionally records ownership incrementally. A filter is considered owned only after `nwfilter-define` succeeds, a network only after `net-create` succeeds, and a domain only after `define` succeeds. If a later step fails, rollback removes only the objects created by that attempt. Pre-existing or concurrently appearing resources are never selected merely because their names match.
+Creation records ownership after each successful `nwfilter-define`, `net-create`, and domain `define`. PR7 also handles the harder response-loss case: if `virsh` reports an error or timeout after libvirt may have committed the operation, Argus probes the exact generated resource name. A resource that is now present is treated as owned and is included in rollback.
+
+If the reconciliation probe itself fails, ownership is unknowable. Argus then fails closed and **preserves the session storage** rather than deleting XML/overlay files that a possibly-live provider object may still reference. Known-owned earlier resources can still be cleaned up. This trades an explicit manual-recovery condition for avoiding destructive cleanup under uncertainty.
 
 ## Network boundary
 
@@ -143,6 +147,14 @@ per-session isolated libvirt /24
 
 Argus divides the pool into `/24` session networks. A configured `/24` therefore allows exactly one concurrent Capsule; a `/23` provides two slots, a `/20` provides sixteen, and the default `10.240.0.0/12` provides 4096. Candidate selection starts at a deterministic session-hash position and probes the rest of the pool if that slot is occupied.
 
+### Host-route exclusion
+
+A free libvirt network name is not enough to prove an address range is safe on the host. Before selecting a Capsule `/24`, Argus also reads `ip -4 route show table all` and treats every explicit IPv4 route except the default route as occupied. This includes physical-LAN prefixes, VPN/tunnel routes, local-address routes, and policy-routing-table prefixes.
+
+A candidate that overlaps any such route is skipped. The host-route set is read again during the final under-lock occupancy check immediately before provider creation. This prevents an Argus connected `/24` from becoming a more-specific route that hijacks traffic which previously followed a corporate/VPN/LAN route. If the configured pool is entirely covered by host routes, allocation fails closed.
+
+Operators should still choose a pool reserved for Argus. The route check is a safety boundary, not a substitute for intentional address planning.
+
 ### Atomic Argus subnet allocation
 
 Subnet discovery alone is not a reservation. To prevent two concurrent Argus sessions from both observing the same `/24` as free, the libvirt provider serializes the allocation critical section:
@@ -150,7 +162,7 @@ Subnet discovery alone is not a reservation. To prevent two concurrent Argus ses
 ```text
 acquire Argus allocation lock
         ↓
-scan defined libvirt networks
+scan libvirt networks + host routes
         ↓
 choose free /24
         ↓
@@ -167,7 +179,7 @@ A process-local mutex closes thread races. On Linux, a URI-derived lock file in 
 
 The lock is held until `net-create` succeeds. At that point the live libvirt network itself is the durable reservation visible to the next allocator. If Argus crashes before that point, the operating system releases the advisory lock automatically, so no separate stale subnet-reservation record is required.
 
-While holding the lock Argus enumerates every defined libvirt network with `virsh net-list --all --name`, reads its XML using `virsh net-dumpxml`, and rejects overlapping candidates. A final occupancy check also detects an unmanaged libvirt network that already appeared during preparation. Operators should reserve the configured pool for Argus; arbitrary external libvirt actors are outside the Argus allocator lock and must not concurrently allocate from the same address pool.
+While holding the lock Argus enumerates every defined libvirt network with `virsh net-list --all --name`, reads its XML using `virsh net-dumpxml`, and rejects overlapping candidates. A final occupancy check also detects an unmanaged libvirt network or host route that appeared during preparation. Operators should reserve the configured pool for Argus; arbitrary external libvirt actors are outside the Argus allocator lock and must not concurrently allocate from the same address pool.
 
 A full pool fails closed rather than reusing an endpoint.
 
@@ -195,7 +207,7 @@ If `guest_address` is explicitly configured, it pins the `.2` address of that se
 
 Without an explicit `guest_address`, Argus may probe later free `/24`s in the configured pool. In either mode the attested endpoint cannot be redirected to an unrelated host.
 
-## Linux GUI testing
+## Linux GUI and staged executable testing
 
 Argus's Linux GUI adapter is X11-based. A Linux Capsule intended for desktop GUI tests should run its interactive test session under **Xvfb** (or another intentionally configured local X server) inside the guest.
 
@@ -213,6 +225,8 @@ python -m argus.capsule.secure_guest_agent \
 ```
 
 The bootstrap token and TLS private-key file are consumed from the writable session layer when the secure guest agent starts, matching the PR6 control-plane model.
+
+The transfer protocol intentionally does **not** copy arbitrary host Unix mode bits into the guest. When an authenticated `stage://` target is launched literally on a POSIX guest, the guest agent first resolves the existing target, requires it to remain within the bound Argus workspace and be a regular file, then adds only the owner execute bit (`u+x`). Group/other permissions, setuid, and setgid are not imported. Generic literal adapter targets that do not exist as local POSIX files are passed through unchanged for adapter-specific handling.
 
 ## Transfer semantics
 
@@ -242,13 +256,15 @@ All existing transfer properties remain in force:
 - failure-retention support;
 - whether destination-CIDR egress allowlists are implemented.
 
-`SecureCapsuleExecutionEnvironment` treats this descriptor as a security contract, including for an injected extension provider. Before the provider can allocate a VM, secure transport, network isolation, and explicit staging/collection must all be advertised. If the run requests failure retention, the provider must advertise retention. If the configuration requests egress allowlisting, the provider must advertise egress-allowlist support. A provider with missing or mismatched capabilities is rejected before `create()` is called.
+`SecureCapsuleExecutionEnvironment` treats this descriptor as a security contract, including for an injected extension provider. Injected providers have their advertised host platform checked immediately when the secure environment is constructed. Built-in providers may be constructed on a non-native host for configuration/factory inspection, but **every provider is checked again immediately before `provider.create()`**, so no VM allocation can cross an unadvertised host boundary.
+
+Before allocation, secure transport, network isolation, and explicit staging/collection must all be advertised. If the run requests failure retention, the provider must advertise retention. If the configuration requests egress allowlisting, the provider must advertise egress-allowlist support. A provider with missing or mismatched capabilities is rejected before `create()` is called.
 
 The secure environment also uses the provider contract to resolve `guest_os: auto` and rejects explicit unsupported guest OS selections.
 
 ## Validation boundary
 
-Hosted CI can validate provider selection, XML generation, ordering, rollback behavior, path semantics, network-pool allocation, same-process concurrent allocation, capability enforcement, and simulated libvirt command flows on Ubuntu and Windows runners. It cannot create a real nested KVM/libvirt Capsule in GitHub-hosted CI.
+Hosted CI can validate provider selection, XML generation, ordering, rollback behavior, path semantics, network-pool and host-route allocation, same-process concurrent allocation, ambiguous-create reconciliation, capability enforcement, staged POSIX execute authorization, aarch64 NVRAM teardown, and simulated libvirt command flows on Ubuntu and Windows runners. It cannot create a real nested KVM/libvirt Capsule in GitHub-hosted CI.
 
 Before claiming hardware-backed Linux isolation, run a manual/on-prem smoke test that verifies:
 
@@ -256,15 +272,19 @@ Before claiming hardware-backed Linux isolation, run a manual/on-prem smoke test
 2. the system QEMU account can access the configured/default Capsule storage without broadening access to the user's home;
 3. concurrent Argus processes using the supported host account receive non-overlapping `/24`s and distinct guest endpoints;
 4. a second host account fails closed rather than bypassing the allocator lock;
-5. special-use/non-RFC1918 pools are rejected before network creation;
-6. the isolated network has no physical forwarding;
-7. the nwfilter blocks arbitrary guest → host and guest → LAN traffic;
-8. only the host can reach the secure guest-agent control port;
-9. staging/collection work through the existing guest protocol;
-10. Linux CLI and Xvfb desktop tests execute inside the guest;
-11. an aarch64 golden image boots through libvirt-selected EFI firmware on an aarch64 host;
-12. a mismatched `libvirt_arch` pin fails before VM allocation;
-13. normal teardown removes domain/network/filter/session storage;
-14. a forced mid-create failure never deletes a pre-existing domain/network/filter;
-15. path-like or traversal session IDs are rejected before storage creation;
-16. failure retention powers off and preserves forensic disk/config state.
+5. physical, VPN, local, and policy routes overlapping the candidate pool are excluded;
+6. special-use/non-RFC1918 pools are rejected before network creation;
+7. the isolated network has no physical forwarding;
+8. the nwfilter blocks arbitrary guest → host and guest → LAN traffic;
+9. only the host can reach the secure guest-agent control port;
+10. staging/collection work through the existing guest protocol and staged Linux targets execute after bounded `u+x` authorization;
+11. Linux CLI and Xvfb desktop tests execute inside the guest;
+12. an aarch64 golden image boots through libvirt-selected EFI firmware on an aarch64 host;
+13. aarch64 teardown removes managed NVRAM with the domain;
+14. a mismatched `libvirt_arch` pin fails before VM allocation;
+15. normal teardown removes domain/network/filter/session storage;
+16. a forced mid-create response loss is reconciled by exact resource name and cleaned up;
+17. failed ownership reconciliation preserves session storage for manual recovery;
+18. a forced mid-create failure never deletes a pre-existing domain/network/filter;
+19. path-like or traversal session IDs are rejected before storage creation;
+20. failure retention powers off and preserves forensic disk/config state.
