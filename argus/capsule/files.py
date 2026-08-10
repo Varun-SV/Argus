@@ -1,7 +1,7 @@
 """Deterministic file-transfer policy for Argus Capsule workspaces.
 
 All host→guest staging and guest→host collection paths are expressed as
-POSIX-style relative paths rooted in a per-session workspace.  Absolute paths,
+POSIX-style relative paths rooted in a per-session workspace. Absolute paths,
 drive-qualified paths, traversal, and symlink/reparse escapes are rejected.
 """
 
@@ -21,6 +21,11 @@ TRANSFER_MAX_FILE_BYTES = 64 * 1024 * 1024
 TRANSFER_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_WINDOWS_RESERVED = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
 
 
 def validate_session_id(value: str) -> str:
@@ -31,7 +36,7 @@ def validate_session_id(value: str) -> str:
 
 
 def normalize_relative_path(value: str) -> str:
-    """Return one canonical workspace-relative path or fail closed."""
+    """Return one canonical platform-neutral relative path or fail closed."""
     raw = str(value or "").strip().replace("\\", "/")
     if not raw:
         raise CapsuleError("Capsule transfer path cannot be empty")
@@ -45,11 +50,35 @@ def normalize_relative_path(value: str) -> str:
     return "/".join(parts)
 
 
+def normalize_guest_relative_path(value: str) -> str:
+    """Normalize a path that will exist in the current Windows Hyper-V guest.
+
+    NTFS/Win32 aliases trailing spaces/dots and reserved device names. Reject
+    those spellings up front so one declarative path always names one guest
+    object and cannot collide with a differently-spelled manifest entry.
+    """
+    relative = normalize_relative_path(value)
+    for part in relative.split("/"):
+        if part.rstrip(" .") != part:
+            raise CapsuleError(
+                "Capsule guest path segments cannot end in a space or dot"
+            )
+        stem = part.split(".", 1)[0].casefold()
+        if stem in _WINDOWS_RESERVED:
+            raise CapsuleError(f"Capsule guest path uses reserved Windows name: {part}")
+    return relative
+
+
+def guest_path_key(value: str) -> str:
+    """Return the alias key used by the current Windows Hyper-V guest."""
+    return normalize_guest_relative_path(value).casefold()
+
+
 def workspace_path(root: Path, relative: str, *, must_exist: bool = False) -> Path:
     """Resolve ``relative`` under ``root`` and reject filesystem escapes.
 
     ``Path.resolve`` follows symlinks and, on supported Windows/Python builds,
-    junction/reparse targets.  Containment is checked after resolution so a
+    junction/reparse targets. Containment is checked after resolution so a
     guest-created link cannot redirect collection outside the workspace.
     """
     rel = normalize_relative_path(relative)
@@ -67,7 +96,12 @@ def workspace_path(root: Path, relative: str, *, must_exist: bool = False) -> Pa
 
 
 def project_source_path(project_root: Path, source: str) -> Path:
-    """Resolve an explicitly staged host source without leaving the project."""
+    """Resolve an explicitly staged host source without leaving the project.
+
+    Production staging additionally binds the source through a race-safe file
+    handle before hashing/uploading. This helper remains useful for callers that
+    only need deterministic path validation.
+    """
     rel = normalize_relative_path(source)
     root = project_root.resolve(strict=True)
     candidate = root.joinpath(*rel.split("/"))
