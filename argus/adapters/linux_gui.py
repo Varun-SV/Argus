@@ -81,13 +81,24 @@ class LinuxGUIAdapter(Adapter):
             self._xvfb_proc = None
 
     def launch(self, target: str) -> None:
+        self._launch_target(target, literal=False)
+
+    def launch_literal(self, target: str) -> None:
+        """Launch one exact staged executable path without a shell."""
+        self._launch_target(target, literal=True)
+
+    def _launch_target(self, target: str, *, literal: bool) -> None:
         if self._auto_xvfb:
             self._start_xvfb()
         env = {**os.environ, "DISPLAY": self._display}
+        command = [str(target)] if literal else target
         try:
             self._proc = subprocess.Popen(
-                target, shell=True, env=env,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                command,
+                shell=not literal,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             self._pid = self._proc.pid
         except Exception as exc:
