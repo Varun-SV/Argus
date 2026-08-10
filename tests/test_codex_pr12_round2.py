@@ -47,9 +47,11 @@ def test_snapshot_copy_is_bounded_to_preflight_size(tmp_path, monkeypatch):
     state.begin_files("growthbound123")
     artifact = state.workspace_root / "logs" / "growing.log"
     artifact.parent.mkdir(parents=True)
-    artifact.write_bytes(b"a" * (2 * 1024 * 1024))
+    original = b"a" * (2 * 1024 * 1024)
+    artifact.write_bytes(original)
 
     real_open = open_workspace_regular_file
+    write_blocked = [False]
 
     @contextmanager
     def growing_open(root: Path, relative: str):
@@ -68,8 +70,15 @@ def test_snapshot_copy_is_bounded_to_preflight_size(tmp_path, monkeypatch):
                     data = inner.read(size)
                     if self._first:
                         self._first = False
-                        with artifact.open("ab") as writer:
-                            writer.write(b"growth-after-preflight")
+                        try:
+                            with artifact.open("ab") as writer:
+                                writer.write(b"growth-after-preflight")
+                                writer.flush()
+                        except PermissionError:
+                            # The supported Windows Capsule path holds a mandatory
+                            # LockFileEx barrier, so the hostile append is refused
+                            # before it can race the snapshot.
+                            write_blocked[0] = True
                     return data
 
             yield GrowingHandle()
@@ -79,10 +88,15 @@ def test_snapshot_copy_is_bounded_to_preflight_size(tmp_path, monkeypatch):
         growing_open,
     )
 
-    with pytest.raises(AdapterError, match="changed while being snapshotted"):
-        state.collect_info("logs/growing.log")
-
-    assert "logs/growing.log" not in state._collection_snapshots
+    if os.name == "nt":
+        info = state.collect_info("logs/growing.log")
+        assert write_blocked[0]
+        assert info["size"] == len(original)
+        assert bytes(state._collection_snapshots["logs/growing.log"]["data"]) == original
+    else:
+        with pytest.raises(AdapterError, match="changed while being snapshotted"):
+            state.collect_info("logs/growing.log")
+        assert "logs/growing.log" not in state._collection_snapshots
 
 
 def test_collection_snapshot_aggregate_cap_is_enforced_before_next_copy(
