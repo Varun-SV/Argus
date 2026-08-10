@@ -11,7 +11,11 @@ from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleProvider, Cap
 from argus.capsule.guest import CapsuleGuestError
 from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
 from argus.capsule.secure_client import SecureGuestAgentClient
-from argus.capsule.secure_guest_agent import SecureGuestAgentServer, _consume_tls_private_key
+from argus.capsule.secure_guest_agent import (
+    SecureGuestAgentServer,
+    _consume_tls_private_key,
+    _require_disabled_service_start,
+)
 from argus.execution import SecureCapsuleExecutionEnvironment, create_execution_environment
 
 
@@ -56,6 +60,12 @@ def test_tls_private_key_symlink_is_rejected(tmp_path):
     with pytest.raises(Exception, match="cannot be a symlink"):
         _consume_tls_private_key(str(link))
     assert actual.exists()
+
+
+def test_powershell_direct_service_must_be_disabled_in_golden_image():
+    _require_disabled_service_start("vmicvmsession", 4)
+    with pytest.raises(Exception, match="must be Disabled"):
+        _require_disabled_service_start("vmicvmsession", 3)
 
 
 def _start_secure_loopback_server(token: str = "bootstrap-secret"):
@@ -110,8 +120,6 @@ def test_rotation_recovers_when_success_response_is_lost():
         response = urllib.request.urlopen(request, timeout=timeout)
         if request.full_url.endswith("/v1/auth/rotate") and not lost["done"]:
             lost["done"] = True
-            # The guest has already authenticated and committed the new token.
-            # Simulate losing the response before GuestAgentClient can read it.
             response.close()
             raise urllib.error.URLError("rotation response lost")
         return response
@@ -165,7 +173,13 @@ def _isolated_settings(tmp_path: Path, **overrides) -> CapsuleSettings:
     return CapsuleSettings(**values)
 
 
-def _isolated_runner(calls: list[str], *, fail_acl: bool = False, host_ip: str = "192.168.100.1"):
+def _isolated_runner(
+    calls: list[str],
+    *,
+    fail_acl: bool = False,
+    fail_kvp: bool = False,
+    host_ip: str = "192.168.100.1",
+):
     def runner(script: str, timeout: float) -> str:
         calls.append(script)
         if "SwitchType.ToString()" in script:
@@ -178,6 +192,8 @@ def _isolated_runner(calls: list[str], *, fail_acl: bool = False, host_ip: str =
             return ""
         if "Get-VMNetworkAdapter" in script and ".IPAddresses" in script:
             return "192.168.100.20"
+        if "Key-Value Pair Exchange" in script and fail_kvp:
+            raise CapsuleError("KVP disable failed")
         return ""
     return runner
 
@@ -198,7 +214,9 @@ def test_hyperv_isolation_is_installed_before_vm_boot(tmp_path):
     acl_index = next(i for i, script in enumerate(calls) if "Add-VMNetworkAdapterExtendedAcl" in script)
     start_index = next(i for i, script in enumerate(calls) if "Start-VM -Name" in script)
     gsi_index = next(i for i, script in enumerate(calls) if "Guest Service Interface" in script)
-    assert gsi_index < acl_index < start_index
+    kvp_index = next(i for i, script in enumerate(calls) if "Key-Value Pair Exchange" in script)
+    address_index = next(i for i, script in enumerate(calls) if ".IPAddresses" in script)
+    assert gsi_index < acl_index < start_index < address_index < kvp_index
 
     acl = calls[acl_index]
     assert "192.168.100.1" in acl
@@ -257,6 +275,20 @@ def test_network_isolation_failure_rolls_back_vm_and_storage(tmp_path):
     assert any("Remove-VM" in script for script in calls)
     assert not root.exists()
     assert not any("Start-VM -Name" in script for script in calls)
+
+
+def test_kvp_disable_failure_rolls_back_booted_vm(tmp_path):
+    calls: list[str] = []
+    provider = IsolatedHyperVProvider(runner=_isolated_runner(calls, fail_kvp=True))
+    settings = _isolated_settings(tmp_path)
+    root = Path(settings.vm_root) / "kvpfail123"
+
+    with pytest.raises(CapsuleError, match="KVP disable failed"):
+        provider.create(CapsuleRequest("kvpfail123", "cli", settings))
+
+    assert any("Start-VM -Name" in script for script in calls)
+    assert any("Remove-VM" in script for script in calls)
+    assert not root.exists()
 
 
 def test_missing_management_switch_address_fails_closed_and_rolls_back(tmp_path):
