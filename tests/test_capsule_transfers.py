@@ -120,9 +120,16 @@ class TransferClient:
             "host_path": str(output),
         }
 
-    def launch(self, adapter_type: str, target: str, input_mode: str) -> dict:
-        self.launched = (adapter_type, target, input_mode)
-        self.events.append(("launch", target))
+    def launch(
+        self,
+        adapter_type: str,
+        target: str,
+        input_mode: str,
+        *,
+        literal_target: bool = False,
+    ) -> dict:
+        self.launched = (adapter_type, target, input_mode, literal_target)
+        self.events.append(("launch", target, literal_target))
         return {"ok": True, "capabilities": _CAPABILITIES}
 
     def observe(self, include_screenshot: bool = True) -> Observation:
@@ -208,6 +215,7 @@ def test_environment_stages_stage_uri_and_collects(tmp_path):
 
     assert staged[0]["destination"] == "bin/app.exe"
     assert client.launched[1] == "C:/Argus/session/bin/app.exe"
+    assert client.launched[3] is True
     assert artifacts[0]["path"] == "logs/result.txt"
     assert (tmp_path / "out" / "logs" / "result.txt").read_bytes() == b"artifact-data"
     environment.close()
