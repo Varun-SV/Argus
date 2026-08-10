@@ -260,6 +260,14 @@ class GuestAgentClient:
                 raise CapsuleGuestError(
                     f"artifact checksum mismatch for {relative}: expected {expected}, got {actual}"
                 )
+            final_metadata = self.collect_info(relative)
+            if (
+                int(final_metadata["size"]) != size
+                or str(final_metadata["sha256"]).lower() != expected
+            ):
+                raise CapsuleGuestError(
+                    f"artifact changed while being collected: {relative}"
+                )
             os.replace(temp, destination)
         except Exception:
             try:
