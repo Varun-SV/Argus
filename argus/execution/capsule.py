@@ -27,6 +27,7 @@ from argus.capsule.files import (
     workspace_path,
 )
 from argus.capsule.guest import GuestAdapterProxy, GuestAgentClient
+from argus.capsule.host_collect import collect_file_to_pinned_tree
 from argus.capsule.safe_open import open_project_regular_file
 from argus.capsule.safe_output import pin_artifact_tree
 from argus.execution.base import (
@@ -267,14 +268,18 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         return self._normalize_artifact_paths(paths)
 
     @staticmethod
-    def _rollback_collected_artifacts(output_dir: Path, collected: list[dict]) -> list[str]:
-        """Remove already committed artifacts when a later member of the set fails."""
+    def _rollback_collected_artifacts(output_dir, collected: list[dict]) -> list[str]:
+        """Remove committed artifacts without re-resolving pinned POSIX parents."""
         errors = []
+        pinned_unlink = getattr(output_dir, "unlink_relative", None)
         for item in reversed(collected):
             relative = str(item.get("path") or "")
             try:
-                committed = workspace_path(output_dir, relative, must_exist=True)
-                committed.unlink()
+                if callable(pinned_unlink):
+                    pinned_unlink(relative)
+                else:
+                    committed = workspace_path(output_dir, relative, must_exist=True)
+                    committed.unlink()
             except Exception as exc:
                 errors.append(f"{relative}: {exc}")
         return errors
@@ -285,9 +290,9 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         normalized = self._normalize_artifact_paths(paths)
 
         # Pin the host runs/run/artifacts/parent directory tree for the entire
-        # transaction. On the supported Windows Hyper-V host, these handles deny
-        # delete/rename sharing so a validated run path cannot later become a
-        # junction to an arbitrary host directory.
+        # transaction. Windows handles deny rename/replacement; POSIX collection
+        # keeps opened parent FDs and performs create/rename/unlink relative to
+        # those descriptors so lexical replacement cannot redirect bytes.
         with pin_artifact_tree(output_dir, normalized) as pinned_output:
             # The guest enforces the aggregate snapshot cap before reading each
             # artifact. Mirror the same running bound host-side so a bad/mismatched
@@ -303,7 +308,26 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             collected = []
             for relative, info in infos:
                 try:
-                    data = self._client.collect_file(relative, pinned_output, info=info)
+                    if os.name != "nt" and isinstance(self._client, GuestAgentClient):
+                        # SecureGuestAgentClient subclasses GuestAgentClient and is
+                        # the production PR7 Linux client, so it must take this
+                        # descriptor-relative path too. Only non-GuestAgentClient
+                        # injected fakes/extensions keep the historical Path API.
+                        data = collect_file_to_pinned_tree(
+                            self._client,
+                            relative,
+                            pinned_output,
+                            info=info,
+                        )
+                    else:
+                        # Windows directory pins deny replacement, and injected
+                        # non-GuestAgentClient test/extension clients retain the
+                        # historical Path API.
+                        data = self._client.collect_file(
+                            relative,
+                            pinned_output.path,
+                            info=info,
+                        )
                 except Exception as exc:
                     rollback_errors = self._rollback_collected_artifacts(
                         pinned_output, collected

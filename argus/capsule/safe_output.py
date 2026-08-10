@@ -1,15 +1,17 @@
 """Pinned host-output directories for Capsule artifact collection.
 
-The Hyper-V host is Windows, where an opened directory handle that omits
-FILE_SHARE_DELETE prevents another same-user process from renaming/replacing the
-trusted run/artifact directories while collection is in progress. POSIX handles
-are retained and identity-checked as a fail-closed compatibility path for tests
-and future providers.
+Windows relies on directory handles that omit ``FILE_SHARE_DELETE`` so trusted
+run/artifact paths cannot be renamed or replaced during collection. POSIX cannot
+obtain the same mandatory rename barrier, so PR7 retains opened directory file
+descriptors and performs all mutable artifact operations relative to those FDs.
+A lexical identity check still runs on context exit to surface concurrent tree
+replacement, but bytes are never redirected through a replacement pathname.
 """
 from __future__ import annotations
 
 import os
 import stat
+import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -37,7 +39,10 @@ class PinnedDirectory:
         except OSError as exc:
             raise CapsuleError(f"pinned artifact directory disappeared: {self.path}: {exc}") from exc
         if not stat.S_ISDIR(info.st_mode):
-            raise CapsuleError(f"pinned artifact path is no longer a directory: {self.path}")
+            raise CapsuleError(
+                f"pinned artifact directory identity changed: {self.path} "
+                "(path is no longer a directory)"
+            )
         if (info.st_dev, info.st_ino) != self.identity:
             raise CapsuleError(f"pinned artifact directory identity changed: {self.path}")
 
@@ -60,6 +65,117 @@ class PinnedDirectory:
             except Exception:
                 pass
             self.handle = None
+
+
+class PinnedArtifactTree:
+    """Artifact output tree whose parent directories remain open and attested.
+
+    On POSIX, mutation helpers below never resolve parent directories through a
+    pathname after pinning. ``open(..., dir_fd=...)``, ``rename(..., *_dir_fd=)``
+    and ``unlink(..., dir_fd=...)`` therefore stay bound to the opened directory
+    identity even if another same-user process renames/replaces its lexical path.
+
+    Path-like delegation remains only for compatibility with injected/legacy
+    test clients. Production ``GuestAgentClient`` detects this object and uses
+    the descriptor-relative mutation helpers instead of those lexical methods.
+    """
+
+    def __init__(self, path: Path, parents: dict[str, PinnedDirectory]):
+        self.path = path
+        self._parents = parents
+
+    def __fspath__(self) -> str:
+        return os.fspath(self.path)
+
+    def __str__(self) -> str:
+        return str(self.path)
+
+    def __truediv__(self, other):
+        return self.path / other
+
+    def __getattr__(self, name):
+        return getattr(self.path, name)
+
+    @staticmethod
+    def _key(relative: str) -> tuple[str, str, str]:
+        normalized = normalize_guest_relative_path(relative)
+        parts = normalized.split("/")
+        parent = "/".join(parts[:-1])
+        lookup = parent.casefold() if os.name == "nt" else parent
+        return normalized, lookup, parts[-1]
+
+    def _parent_pin(self, relative: str) -> tuple[PinnedDirectory, str, str]:
+        normalized, key, name = self._key(relative)
+        pin = self._parents.get(key)
+        if pin is None:
+            raise CapsuleError(f"artifact parent directory was not pinned: {normalized}")
+        return pin, name, normalized
+
+    def lexical_path(self, relative: str) -> Path:
+        normalized = normalize_guest_relative_path(relative)
+        return self.path.joinpath(*normalized.split("/"))
+
+    def open_temp_file(self, relative: str):
+        """Create one POSIX temporary file relative to the pinned parent FD."""
+        if os.name == "nt":
+            raise CapsuleError("descriptor-relative artifact writes are POSIX-only")
+        pin, name, normalized = self._parent_pin(relative)
+        if pin.fd is None:
+            raise CapsuleError(f"artifact parent directory is no longer pinned: {normalized}")
+        temp_name = f".{name}.argus-{uuid.uuid4().hex}.part"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(temp_name, flags, 0o600, dir_fd=pin.fd)
+        except OSError as exc:
+            raise CapsuleError(f"artifact temporary file cannot be created safely: {normalized}: {exc}") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise CapsuleError(f"artifact temporary object is not a regular file: {normalized}")
+            handle = os.fdopen(fd, "wb")
+            fd = -1
+            return handle, temp_name, self.lexical_path(normalized)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+    def commit_temp(self, relative: str, temp_name: str) -> None:
+        """Atomically rename a temporary file inside the same pinned parent."""
+        if os.name == "nt":
+            raise CapsuleError("descriptor-relative artifact commits are POSIX-only")
+        pin, name, normalized = self._parent_pin(relative)
+        if pin.fd is None:
+            raise CapsuleError(f"artifact parent directory is no longer pinned: {normalized}")
+        try:
+            os.rename(
+                temp_name,
+                name,
+                src_dir_fd=pin.fd,
+                dst_dir_fd=pin.fd,
+            )
+        except OSError as exc:
+            raise CapsuleError(f"artifact commit failed inside pinned directory: {normalized}: {exc}") from exc
+
+    def remove_temp(self, relative: str, temp_name: str) -> None:
+        if os.name == "nt":
+            return
+        pin, _name, _normalized = self._parent_pin(relative)
+        if pin.fd is None:
+            return
+        try:
+            os.unlink(temp_name, dir_fd=pin.fd)
+        except FileNotFoundError:
+            pass
+
+    def unlink_relative(self, relative: str) -> None:
+        """Remove a committed artifact without re-resolving its parent on POSIX."""
+        pin, name, normalized = self._parent_pin(relative)
+        if os.name == "nt":
+            self.lexical_path(normalized).unlink()
+            return
+        if pin.fd is None:
+            raise CapsuleError(f"artifact parent directory is no longer pinned: {normalized}")
+        os.unlink(name, dir_fd=pin.fd)
 
 
 def _lexical_absolute(path: Path) -> Path:
@@ -169,6 +285,38 @@ def _pin_posix_directory(path: Path) -> PinnedDirectory:
         raise
 
 
+def _pin_posix_child(parent: PinnedDirectory, name: str, path: Path) -> PinnedDirectory:
+    """Create/open one child through an already-pinned parent directory FD."""
+    if parent.fd is None:
+        raise CapsuleError(f"artifact parent directory is no longer pinned: {parent.path}")
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise CapsuleError(f"invalid artifact directory component: {name!r}")
+    try:
+        os.mkdir(name, dir_fd=parent.fd)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise CapsuleError(f"artifact directory cannot be created safely: {path}: {exc}") from exc
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=parent.fd)
+    except OSError as exc:
+        raise CapsuleError(f"artifact directory cannot be pinned safely: {path}: {exc}") from exc
+    try:
+        info = os.fstat(fd)
+        entry = os.stat(name, dir_fd=parent.fd, follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode) or not stat.S_ISDIR(entry.st_mode):
+            raise CapsuleError(f"artifact output path is not a directory: {path}")
+        identity = (info.st_dev, info.st_ino)
+        if identity != (entry.st_dev, entry.st_ino):
+            raise CapsuleError(f"artifact directory changed while being pinned: {path}")
+        return PinnedDirectory(path, fd=fd, identity=identity)
+    except Exception:
+        os.close(fd)
+        raise
+
+
 @contextmanager
 def pin_directory(path: Path) -> Iterator[PinnedDirectory]:
     lexical = _lexical_absolute(path)
@@ -183,13 +331,26 @@ def pin_directory(path: Path) -> Iterator[PinnedDirectory]:
 
 
 @contextmanager
-def pin_artifact_tree(output_dir: Path, relatives) -> Iterator[Path]:
+def _pin_child_directory(parent: PinnedDirectory, name: str, path: Path) -> Iterator[PinnedDirectory]:
+    pin = _pin_posix_child(parent, name, path)
+    try:
+        yield pin
+    finally:
+        try:
+            pin.assert_current()
+        finally:
+            pin.close()
+
+
+@contextmanager
+def pin_artifact_tree(output_dir: Path, relatives) -> Iterator[PinnedArtifactTree]:
     """Pin the full directory tree used by one collection transaction.
 
-    ``output_dir`` is expected to be ``<runs>/<run>/artifacts``. The trusted
-    runs root is pinned first, then the run directory, artifacts directory, and
-    every declared parent directory. No artifact bytes are written until all
-    these boundaries have been opened and attested.
+    ``output_dir`` is expected to be ``<runs>/<run>/artifacts``. On Windows,
+    rename-denying handles keep the lexical tree stable. On POSIX, descendants
+    are created/opened through their parent's pinned FD and all later file
+    mutations use the corresponding parent FD, so pathname replacement cannot
+    redirect artifact bytes.
     """
     output_dir = _lexical_absolute(Path(output_dir))
     run_dir = output_dir.parent
@@ -201,27 +362,57 @@ def pin_artifact_tree(output_dir: Path, relatives) -> Iterator[Path]:
     normalized = [normalize_guest_relative_path(value) for value in relatives]
 
     with ExitStack() as stack:
-        stack.enter_context(pin_directory(runs_root))
+        runs_pin = stack.enter_context(pin_directory(runs_root))
+        parents: dict[str, PinnedDirectory] = {}
 
-        run_dir.mkdir(exist_ok=True)
-        stack.enter_context(pin_directory(run_dir))
+        if os.name == "nt":
+            run_dir.mkdir(exist_ok=True)
+            stack.enter_context(pin_directory(run_dir))
 
-        output_dir.mkdir(exist_ok=True)
-        stack.enter_context(pin_directory(output_dir))
+            output_dir.mkdir(exist_ok=True)
+            output_pin = stack.enter_context(pin_directory(output_dir))
+            parents[""] = output_pin
 
-        pinned_parents = {""}
-        for relative in normalized:
-            parts = relative.split("/")[:-1]
-            current = output_dir
-            prefix = []
-            for part in parts:
-                prefix.append(part)
-                key = "/".join(prefix).casefold()
-                current = current / part
-                if key in pinned_parents:
-                    continue
-                current.mkdir(exist_ok=True)
-                stack.enter_context(pin_directory(current))
-                pinned_parents.add(key)
+            pinned_parents = {""}
+            for relative in normalized:
+                parts = relative.split("/")[:-1]
+                current = output_dir
+                prefix = []
+                for part in parts:
+                    prefix.append(part)
+                    key = "/".join(prefix).casefold()
+                    current = current / part
+                    if key in pinned_parents:
+                        continue
+                    current.mkdir(exist_ok=True)
+                    parents[key] = stack.enter_context(pin_directory(current))
+                    pinned_parents.add(key)
+        else:
+            run_pin = stack.enter_context(
+                _pin_child_directory(runs_pin, run_dir.name, run_dir)
+            )
+            output_pin = stack.enter_context(
+                _pin_child_directory(run_pin, output_dir.name, output_dir)
+            )
+            parents[""] = output_pin
 
-        yield output_dir
+            for relative in normalized:
+                parts = relative.split("/")[:-1]
+                parent_pin = output_pin
+                current = output_dir
+                prefix: list[str] = []
+                for part in parts:
+                    prefix.append(part)
+                    key = "/".join(prefix)
+                    current = current / part
+                    existing = parents.get(key)
+                    if existing is not None:
+                        parent_pin = existing
+                        continue
+                    child = stack.enter_context(
+                        _pin_child_directory(parent_pin, part, current)
+                    )
+                    parents[key] = child
+                    parent_pin = child
+
+        yield PinnedArtifactTree(output_dir, parents)

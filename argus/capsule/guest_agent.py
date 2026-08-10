@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import json
 import os
+import stat
 import tempfile
 import threading
 import uuid
@@ -347,6 +348,46 @@ class GuestAgentState:
                 raise AdapterError(f"artifact snapshot changed while being collected: {relative}")
             return bytes(data)
 
+    def _authorize_literal_target(self, target: str) -> None:
+        """Grant only owner-execute to an existing staged POSIX launch target.
+
+        The transfer protocol intentionally does not copy arbitrary host mode
+        bits into the guest. A literal launch is the authenticated authorization
+        boundary for real ``stage://`` targets, so POSIX guests add only ``u+x``
+        after proving an existing file is contained by the bound workspace.
+
+        Literal launch is also a generic adapter API used by tests/integrations
+        with platform-native target strings. If the target does not exist on this
+        host, leave it untouched and let the selected adapter validate it. An
+        existing file, however, must satisfy the workspace boundary before Argus
+        changes any permission bit.
+        """
+        if os.name == "nt":
+            return
+        root = self._workspace().resolve(strict=True)
+        candidate = Path(target)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            return
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise AdapterError("literal staged launch target escapes the Capsule workspace") from exc
+        if not resolved.is_file():
+            raise AdapterError("literal staged launch target must be a regular file")
+        try:
+            mode = stat.S_IMODE(resolved.stat().st_mode)
+            os.chmod(resolved, mode | stat.S_IXUSR)
+            if not (stat.S_IMODE(resolved.stat().st_mode) & stat.S_IXUSR):
+                raise AdapterError("could not authorize staged launch target for execution")
+        except OSError as exc:
+            raise AdapterError(
+                f"could not authorize staged launch target for execution: {exc}"
+            ) from exc
+
     def start(
         self,
         adapter_type: str,
@@ -360,6 +401,8 @@ class GuestAgentState:
             raise AdapterError("invalid guest input_mode")
         with self._lock:
             self.close()
+            if literal_target:
+                self._authorize_literal_target(target)
             previous_input = os.environ.get("ARGUS_INPUT_MODE")
             previous_cwd = Path.cwd()
             try:

@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleProvider, CapsuleRequest, CapsuleSettings
+from argus.capsule.base import (
+    CapsuleError,
+    CapsuleHandle,
+    CapsuleProvider,
+    CapsuleProviderCapabilities,
+    CapsuleRequest,
+    CapsuleSettings,
+)
 from argus.capsule.guest import CapsuleGuestError
 from argus.capsule.hyperv_isolated import (
     IsolatedHyperVProvider,
@@ -349,6 +356,18 @@ def test_missing_management_switch_address_fails_closed_and_rolls_back(tmp_path)
 
 class _FakeSecureProvider(CapsuleProvider):
     provider_name = "hyperv"
+    provider_capabilities = CapsuleProviderCapabilities(
+        provider="hyperv",
+        # Pure in-process test double; it does not call Hyper-V and is exercised
+        # on both Ubuntu and Windows CI. Production Hyper-V remains Windows-only.
+        host_platforms=("windows", "linux"),
+        guest_os=("windows",),
+        secure_transport=True,
+        network_isolation=True,
+        explicit_transfers=True,
+        failure_retention=True,
+        egress_allowlist=True,
+    )
 
     def __init__(self, root: Path):
         self.root = root

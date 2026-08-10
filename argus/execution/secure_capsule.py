@@ -1,27 +1,39 @@
-"""Secure Capsule execution environment introduced by PR6."""
+"""Secure multi-provider Capsule execution environment."""
 
 from __future__ import annotations
 
 import secrets
+import sys
+from dataclasses import replace
 from typing import Callable, Mapping, Optional
 
 from argus.adapters.base import PolicyAdapter
-from argus.capsule.base import CapsuleHandle, CapsuleProvider, CapsuleRequest, CapsuleSettings
+from argus.capsule.base import (
+    CapsuleHandle,
+    CapsuleProvider,
+    CapsuleProviderCapabilities,
+    CapsuleRequest,
+    CapsuleSettings,
+)
 from argus.capsule.guest import GuestAdapterProxy
-from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
 from argus.capsule.secure_client import SecureGuestAgentClient
 from argus.execution.base import ExecutionEnvironmentError
 from argus.execution.capsule import CapsuleExecutionEnvironment
 
 
 class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
-    """Capsule environment with isolated networking and secure control auth.
+    """Capsule environment with provider-enforced isolation and secure auth.
 
-    Secure retained Capsules intentionally reuse the base PR4 disk/config-only
-    retention path. Runtime bootstrap/TLS material has already been consumed,
-    and no replacement control credential is persisted into a guest that may
-    have been influenced by the application under test. Retention is therefore
-    forensic evidence preservation rather than a promise of remote restart.
+    PR7 keeps Hyper-V/Windows as the reference implementation and adds a Linux
+    libvirt/QEMU provider behind the same lifecycle. Provider-specific security
+    capabilities stay below this boundary; runner/agent code continues to see
+    one Capsule execution environment.
+
+    Secure retained Capsules intentionally reuse the disk/config-only retention
+    path. Runtime bootstrap/TLS material has already been consumed, and no
+    replacement control credential is persisted into a guest that may have been
+    influenced by the application under test. Retention is forensic evidence
+    preservation rather than a promise of remote restart.
     """
 
     def __init__(
@@ -38,23 +50,145 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 "secure Capsules require per-session bearer rotation; "
                 "rotate_session_token cannot be disabled"
             )
+        injected_provider = provider is not None
+        selected = provider or self._make_secure_provider(settings.provider)
+        # Injected providers are an extension boundary, so their host-platform
+        # claim is checked immediately. Built-in providers remain constructible
+        # for config/factory inspection on non-native CI hosts, but are checked
+        # again immediately before any provider allocation in prepare().
+        self._validate_provider_capabilities(
+            selected,
+            settings,
+            validate_host_platform=injected_provider,
+        )
         super().__init__(
             adapter_type,
             settings,
-            provider=provider or self._make_secure_provider(settings.provider),
+            provider=selected,
             client_factory=client_factory,
             session_id=session_id,
         )
         self._session_token_rotated = False
 
     @staticmethod
-    def _make_secure_provider(name: str) -> CapsuleProvider:
-        kind = (name or "hyperv").lower().strip()
+    def _normalize_host_platform(value: str) -> str:
+        raw = str(value or "").strip().lower()
+        if raw.startswith("win") or raw == "windows":
+            return "windows"
+        if raw.startswith("linux"):
+            return "linux"
+        if raw in {"darwin", "mac", "macos", "osx"}:
+            return "macos"
+        return raw
+
+    @staticmethod
+    def _make_secure_provider(name: str, platform_name: str = "") -> CapsuleProvider:
+        kind = (name or "auto").lower().strip()
+        host = str(platform_name or sys.platform).lower()
+        if kind == "auto":
+            if host == "win32":
+                kind = "hyperv"
+            elif host.startswith("linux"):
+                kind = "libvirt"
+            else:
+                raise ExecutionEnvironmentError(
+                    "automatic Capsule provider selection currently supports Windows "
+                    "(Hyper-V) and Linux (libvirt/QEMU) hosts"
+                )
+
         if kind == "hyperv":
-            return IsolatedHyperVProvider()
+            from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
+
+            class SecureHyperVProvider(IsolatedHyperVProvider):
+                provider_capabilities = CapsuleProviderCapabilities(
+                    provider="hyperv",
+                    host_platforms=("windows",),
+                    guest_os=("windows",),
+                    secure_transport=True,
+                    network_isolation=True,
+                    explicit_transfers=True,
+                    failure_retention=True,
+                    egress_allowlist=True,
+                )
+
+            return SecureHyperVProvider()
+        if kind in {"libvirt", "qemu", "kvm"}:
+            from argus.capsule.libvirt import LibvirtProvider
+
+            return LibvirtProvider()
         raise ExecutionEnvironmentError(
-            f"unknown Capsule provider {name!r} — available: hyperv"
+            f"unknown Capsule provider {name!r} — available: auto, hyperv, libvirt"
         )
+
+    @classmethod
+    def _validate_provider_host_platform(cls, provider: CapsuleProvider) -> None:
+        capabilities = provider.capabilities()
+        provider_name = str(provider.provider_name or "unknown")
+        current_host = cls._normalize_host_platform(sys.platform)
+        advertised_hosts = {
+            cls._normalize_host_platform(item)
+            for item in capabilities.host_platforms
+            if str(item or "").strip()
+        }
+        if not advertised_hosts or current_host not in advertised_hosts:
+            supported = ", ".join(sorted(advertised_hosts)) or "none"
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} does not support the current host "
+                f"platform {current_host!r}; advertised hosts: {supported}"
+            )
+
+    @classmethod
+    def _validate_provider_capabilities(
+        cls,
+        provider: CapsuleProvider,
+        settings: CapsuleSettings,
+        *,
+        validate_host_platform: bool = True,
+    ) -> None:
+        """Fail closed when a provider weakens the secure Capsule contract."""
+        capabilities = provider.capabilities()
+        provider_name = str(provider.provider_name or "unknown")
+        advertised = str(capabilities.provider or "").strip()
+        if advertised and advertised != provider_name:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} advertises mismatched capabilities "
+                f"for {advertised!r}"
+            )
+
+        if validate_host_platform:
+            cls._validate_provider_host_platform(provider)
+
+        missing: list[str] = []
+        if not capabilities.secure_transport:
+            missing.append("secure transport")
+        if not capabilities.network_isolation:
+            missing.append("network isolation")
+        if not capabilities.explicit_transfers:
+            missing.append("explicit staging/collection")
+        advertised_guest_os = tuple(
+            str(item or "").strip().lower()
+            for item in capabilities.guest_os
+            if str(item or "").strip()
+        )
+        if not advertised_guest_os:
+            missing.append("supported guest OS")
+        if missing:
+            raise ExecutionEnvironmentError(
+                f"secure Capsule provider {provider_name!r} lacks required capability: "
+                + ", ".join(missing)
+            )
+
+        if settings.retain_on_failure and not capabilities.failure_retention:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} does not support requested failure retention"
+            )
+
+        network_mode = str(settings.network_mode or "host_only").strip().lower()
+        wants_allowlist = network_mode == "allowlist" or bool(settings.egress_allowlist)
+        if wants_allowlist and not capabilities.egress_allowlist:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} does not support requested egress allowlisting"
+            )
 
     @classmethod
     def from_mapping(
@@ -64,15 +198,48 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
     ) -> "SecureCapsuleExecutionEnvironment":
         return cls(adapter_type, CapsuleSettings.from_mapping(config))
 
+    def _resolved_guest_os(self) -> str:
+        configured = (self.settings.guest_os or "auto").lower().strip()
+        capabilities = self.provider.capabilities()
+        supported = tuple(
+            str(item or "").strip().lower()
+            for item in capabilities.guest_os
+            if str(item or "").strip()
+        )
+        if not supported:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {self.provider.provider_name!r} advertises no supported guest OS"
+            )
+        if configured == "auto":
+            return supported[0]
+        if configured not in supported:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {self.provider.provider_name!r} does not support "
+                f"guest_os={configured!r}; supported: {', '.join(supported)}"
+            )
+        return configured
+
     def prepare(self) -> None:
         if self._prepared:
             return
         handle: Optional[CapsuleHandle] = None
         try:
+            # Regardless of how the environment was constructed, no provider may
+            # cross the allocation boundary on an unadvertised host platform.
+            self._validate_provider_host_platform(self.provider)
+            guest_os = self._resolved_guest_os()
+            # Resolve aliases before crossing the provider boundary. This keeps
+            # existing Hyper-V/libvirt providers strict about their own names
+            # while allowing user configuration to say provider: auto.
+            request_settings = replace(
+                self.settings,
+                provider=self.provider.provider_name,
+                guest_os=guest_os,
+            )
             request = CapsuleRequest(
                 session_id=self.session_id,
                 adapter_type=self.type_name,
-                settings=self.settings,
+                settings=request_settings,
             )
             handle = self.provider.create(request)
             self._handle = handle

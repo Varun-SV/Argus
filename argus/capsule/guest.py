@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import shlex
 import time
 import urllib.error
 import urllib.parse
@@ -91,6 +92,9 @@ class GuestAgentClient:
         self.token = token
         self.timeout_seconds = float(timeout_seconds)
         self._opener = opener or urllib.request.urlopen
+        # Staged-path provenance remains host-side. Only paths returned by a
+        # successful guest commit are eligible for automatic literal launch.
+        self._staged_guest_paths: set[str] = set()
 
     def _request(self, method: str, path: str, payload: Optional[dict] = None) -> dict:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -231,6 +235,7 @@ class GuestAgentClient:
         guest_path = str(data.get("guest_path") or "").strip()
         if not guest_path:
             raise CapsuleGuestError("guest did not return the committed staged path")
+        self._staged_guest_paths.add(guest_path)
         return {
             "source": source_name,
             "destination": destination,
@@ -238,6 +243,26 @@ class GuestAgentClient:
             "sha256": digest,
             "guest_path": guest_path,
         }
+
+    def staged_literal_target(self, target: str) -> str:
+        """Return the exact committed staged path represented by *target*.
+
+        CLI staging historically quotes the committed path before handing it to
+        the adapter because ordinary CLI launches are command strings. Decode
+        only a single-token command and require an exact match against a path
+        returned by a successful stage commit; arbitrary command strings can
+        never opt themselves into literal/executable authorization.
+        """
+        raw = str(target or "")
+        if raw in self._staged_guest_paths:
+            return raw
+        try:
+            argv = shlex.split(raw)
+        except ValueError:
+            return ""
+        if len(argv) == 1 and argv[0] in self._staged_guest_paths:
+            return argv[0]
+        return ""
 
     def stage_file(
         self,
@@ -267,24 +292,92 @@ class GuestAgentClient:
             raise CapsuleGuestError(f"guest artifact checksum is invalid for {relative}")
         return {"path": relative, "size": size, "sha256": digest}
 
-    def collect_file(self, relative: str, output_root: Path, *, info: Optional[dict] = None) -> dict:
+    def _stream_artifact(self, relative: str, size: int, handle) -> str:
+        digest = hashlib.sha256()
+        offset = 0
+        while offset < size:
+            limit = min(TRANSFER_CHUNK_BYTES, size - offset)
+            query = urllib.parse.urlencode(
+                {"path": relative, "offset": offset, "limit": limit}
+            )
+            data = self._request("GET", f"/v1/files/collect/chunk?{query}")
+            try:
+                chunk = base64.b64decode(str(data.get("data_b64") or ""), validate=True)
+            except Exception as exc:
+                raise CapsuleGuestError(
+                    f"guest returned invalid artifact data for {relative}"
+                ) from exc
+            if len(chunk) != limit:
+                raise CapsuleGuestError(
+                    f"guest artifact chunk length mismatch for {relative}: "
+                    f"expected {limit}, got {len(chunk)}"
+                )
+            handle.write(chunk)
+            digest.update(chunk)
+            offset += len(chunk)
+        return digest.hexdigest()
+
+    def _verify_collected_snapshot(self, relative: str, size: int, expected: str) -> None:
+        final_metadata = self.collect_info(relative)
+        if (
+            int(final_metadata["size"]) != size
+            or str(final_metadata["sha256"]).lower() != expected
+        ):
+            raise CapsuleGuestError(f"artifact changed while being collected: {relative}")
+
+    def collect_file(self, relative: str, output_root, *, info: Optional[dict] = None) -> dict:
         relative = normalize_guest_relative_path(relative)
         metadata = dict(info or self.collect_info(relative))
         size = int(metadata["size"])
         expected = str(metadata["sha256"]).lower()
 
-        parent_root = output_root.parent.resolve(strict=True)
-        if output_root.is_symlink():
-            raise CapsuleGuestError(f"artifact output root cannot be a symlink: {output_root}")
-        output_root.mkdir(parents=True, exist_ok=True)
-        if output_root.is_symlink():
-            raise CapsuleGuestError(f"artifact output root became a symlink: {output_root}")
-        resolved_output_root = output_root.resolve(strict=True)
+        # Production POSIX collection receives PinnedArtifactTree from the
+        # execution environment. Its methods create/rename/unlink through the
+        # already-open parent directory FD, so a pathname replacement cannot
+        # redirect bytes outside the attested output tree. Keep the lexical Path
+        # path below for Windows (whose handles deny rename) and compatibility
+        # callers that do not use the Capsule transaction wrapper.
+        open_pinned = getattr(output_root, "open_temp_file", None)
+        commit_pinned = getattr(output_root, "commit_temp", None)
+        remove_pinned = getattr(output_root, "remove_temp", None)
+        if os.name != "nt" and callable(open_pinned) and callable(commit_pinned):
+            handle, temp_name, destination = open_pinned(relative)
+            try:
+                with handle:
+                    actual = self._stream_artifact(relative, size, handle)
+                if actual != expected:
+                    raise CapsuleGuestError(
+                        f"artifact checksum mismatch for {relative}: expected {expected}, got {actual}"
+                    )
+                self._verify_collected_snapshot(relative, size, expected)
+                commit_pinned(relative, temp_name)
+            except Exception:
+                if callable(remove_pinned):
+                    try:
+                        remove_pinned(relative, temp_name)
+                    except OSError:
+                        pass
+                raise
+            return {
+                "path": relative,
+                "size": size,
+                "sha256": expected,
+                "host_path": str(destination),
+            }
+
+        output_path = Path(os.fspath(output_root))
+        parent_root = output_path.parent.resolve(strict=True)
+        if output_path.is_symlink():
+            raise CapsuleGuestError(f"artifact output root cannot be a symlink: {output_path}")
+        output_path.mkdir(parents=True, exist_ok=True)
+        if output_path.is_symlink():
+            raise CapsuleGuestError(f"artifact output root became a symlink: {output_path}")
+        resolved_output_root = output_path.resolve(strict=True)
         try:
             resolved_output_root.relative_to(parent_root)
         except ValueError as exc:
             raise CapsuleGuestError(
-                f"artifact output root escapes its run directory: {output_root}"
+                f"artifact output root escapes its run directory: {output_path}"
             ) from exc
         if resolved_output_root == parent_root:
             raise CapsuleGuestError("artifact output root cannot equal its run directory")
@@ -293,43 +386,14 @@ class GuestAgentClient:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination = workspace_path(resolved_output_root, relative, must_exist=False)
         temp = destination.with_name(f".{destination.name}.argus-{uuid.uuid4().hex}.part")
-        digest = hashlib.sha256()
-        offset = 0
         try:
             with temp.open("xb") as handle:
-                while offset < size:
-                    limit = min(TRANSFER_CHUNK_BYTES, size - offset)
-                    query = urllib.parse.urlencode(
-                        {"path": relative, "offset": offset, "limit": limit}
-                    )
-                    data = self._request("GET", f"/v1/files/collect/chunk?{query}")
-                    try:
-                        chunk = base64.b64decode(str(data.get("data_b64") or ""), validate=True)
-                    except Exception as exc:
-                        raise CapsuleGuestError(
-                            f"guest returned invalid artifact data for {relative}"
-                        ) from exc
-                    if len(chunk) != limit:
-                        raise CapsuleGuestError(
-                            f"guest artifact chunk length mismatch for {relative}: "
-                            f"expected {limit}, got {len(chunk)}"
-                        )
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    offset += len(chunk)
-            actual = digest.hexdigest()
+                actual = self._stream_artifact(relative, size, handle)
             if actual != expected:
                 raise CapsuleGuestError(
                     f"artifact checksum mismatch for {relative}: expected {expected}, got {actual}"
                 )
-            final_metadata = self.collect_info(relative)
-            if (
-                int(final_metadata["size"]) != size
-                or str(final_metadata["sha256"]).lower() != expected
-            ):
-                raise CapsuleGuestError(
-                    f"artifact changed while being collected: {relative}"
-                )
+            self._verify_collected_snapshot(relative, size, expected)
             os.replace(temp, destination)
         except Exception:
             try:
@@ -392,7 +456,17 @@ class GuestAdapterProxy(Adapter):
         self._capabilities = capabilities
 
     def launch(self, target: str) -> None:
-        data = self.client.launch(self.type_name, target, self.input_mode)
+        resolver = getattr(self.client, "staged_literal_target", None)
+        literal_target = resolver(target) if callable(resolver) else ""
+        if literal_target:
+            data = self.client.launch(
+                self.type_name,
+                literal_target,
+                self.input_mode,
+                literal_target=True,
+            )
+        else:
+            data = self.client.launch(self.type_name, target, self.input_mode)
         self._store_launch_capabilities(data)
 
     def launch_literal(self, target: str) -> None:

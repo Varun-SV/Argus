@@ -1,8 +1,8 @@
 """Project configuration: ``.argus/config.yaml`` + ``ARGUS_*`` env vars.
 
-Execution is local by default. A Windows Hyper-V Capsule can be selected with
-``execution.environment: capsule`` once a golden VHDX and in-guest Argus agent
-are configured.
+Execution is local by default. Disposable Capsule execution can use secure
+Hyper-V on Windows or libvirt/QEMU on Linux once an appropriate golden image
+and in-guest Argus agent are configured.
 """
 
 from __future__ import annotations
@@ -54,9 +54,10 @@ budgets:
 execution:
   environment: local            # local | capsule
   # capsule:
-  #   provider: hyperv
+  #   provider: hyperv          # hyperv | libvirt | auto
+  #   guest_os: auto            # auto | windows | linux
   #   image: C:\\Argus\\images\\windows-11-clean.vhdx
-  #   switch_name: Default Switch   # Internal Hyper-V switch
+  #   switch_name: Default Switch   # Hyper-V Internal switch
   #   vm_root: C:\\Argus\\capsules
   #   memory_mb: 4096
   #   cpu_count: 2
@@ -67,16 +68,24 @@ execution:
   #   agent_timeout_seconds: 60
   #   retain_on_failure: false
   #
+  #   # Linux libvirt/QEMU (provider: libvirt or provider: auto on Linux)
+  #   # image: /var/lib/libvirt/images/argus-linux-golden.qcow2
+  #   # vm_root: /var/lib/libvirt/images/argus-capsules
+  #   libvirt_uri: qemu:///system
+  #   libvirt_network_cidr: ""   # optional site-specific private /24, e.g. 10.250.77.0/24
+  #   libvirt_arch: ""           # auto host arch; x86_64 or aarch64 when pinned
+  #   libvirt_machine: ""        # optional libvirt/QEMU machine type
+  #
   #   # PR6 secure control plane / network isolation
   #   guest_transport: https
   #   guest_ca_cert: C:\\Argus\\certs\\argus-guest-ca.pem
   #   allow_insecure_http: false   # explicit legacy-only escape hatch
   #   rotate_session_token: true   # bootstrap token -> random per-session bearer
-  #   network_mode: host_only      # host_only | allowlist
+  #   network_mode: host_only      # host_only | allowlist (allowlist currently Hyper-V only)
   #   egress_allowlist: []         # CIDRs, e.g. ["10.20.30.0/24"]
   #   allow_dhcp: true
   #   disable_guest_file_copy: true
-  #   allow_external_switch: false # External switches remain unsupported
+  #   allow_external_switch: false # External/bridged networking remains unsupported
 
 # Knowledge engine — persistent graph + vector learning store.
 # Requires: pip install argus-app-testing[knowledge]
@@ -110,6 +119,7 @@ class KnowledgeConfig:
 @dataclass
 class CapsuleConfig:
     provider: str = "hyperv"
+    guest_os: str = "auto"
     image: str = ""
     switch_name: str = ""
     vm_root: str = ""
@@ -131,6 +141,10 @@ class CapsuleConfig:
     egress_allowlist: tuple[str, ...] = ()
     allow_dhcp: bool = True
     disable_guest_file_copy: bool = True
+    libvirt_uri: str = "qemu:///system"
+    libvirt_network_cidr: str = ""
+    libvirt_arch: str = ""
+    libvirt_machine: str = ""
 
 
 @dataclass
@@ -193,6 +207,7 @@ class ArgusConfig:
             )
         capsule_config = {
             "provider": os.environ.get("ARGUS_CAPSULE_PROVIDER") or cc.provider,
+            "guest_os": os.environ.get("ARGUS_CAPSULE_GUEST_OS") or cc.guest_os,
             "image": os.environ.get("ARGUS_CAPSULE_IMAGE") or cc.image,
             "switch_name": os.environ.get("ARGUS_CAPSULE_SWITCH") or cc.switch_name,
             "vm_root": os.environ.get("ARGUS_CAPSULE_VM_ROOT") or cc.vm_root,
@@ -235,6 +250,17 @@ class ArgusConfig:
             "allow_dhcp": _env_bool("ARGUS_CAPSULE_ALLOW_DHCP", cc.allow_dhcp),
             "disable_guest_file_copy": _env_bool(
                 "ARGUS_CAPSULE_DISABLE_GUEST_FILE_COPY", cc.disable_guest_file_copy
+            ),
+            "libvirt_uri": os.environ.get("ARGUS_CAPSULE_LIBVIRT_URI") or cc.libvirt_uri,
+            "libvirt_network_cidr": (
+                os.environ.get("ARGUS_CAPSULE_LIBVIRT_NETWORK_CIDR")
+                or cc.libvirt_network_cidr
+            ),
+            "libvirt_arch": (
+                os.environ.get("ARGUS_CAPSULE_LIBVIRT_ARCH") or cc.libvirt_arch
+            ),
+            "libvirt_machine": (
+                os.environ.get("ARGUS_CAPSULE_LIBVIRT_MACHINE") or cc.libvirt_machine
             ),
         }
         return create_execution_environment(
@@ -368,6 +394,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
         environment=str(execution_raw.get("environment") or "local"),
         capsule=CapsuleConfig(
             provider=str(capsule_raw.get("provider") or "hyperv"),
+            guest_os=str(capsule_raw.get("guest_os") or "auto"),
             image=str(capsule_raw.get("image") or ""),
             switch_name=str(capsule_raw.get("switch_name") or ""),
             vm_root=str(capsule_raw.get("vm_root") or ""),
@@ -411,6 +438,10 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
                 capsule_raw.get("disable_guest_file_copy", True),
                 "execution.capsule.disable_guest_file_copy",
             ),
+            libvirt_uri=str(capsule_raw.get("libvirt_uri") or "qemu:///system"),
+            libvirt_network_cidr=str(capsule_raw.get("libvirt_network_cidr") or ""),
+            libvirt_arch=str(capsule_raw.get("libvirt_arch") or ""),
+            libvirt_machine=str(capsule_raw.get("libvirt_machine") or ""),
         ),
     )
 
