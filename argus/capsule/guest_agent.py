@@ -286,6 +286,9 @@ class GuestAgentState:
                 os.environ["ARGUS_INPUT_MODE"] = input_mode
                 adapter = create_platform_adapter(adapter_type)
                 if self.workspace_root is not None:
+                    setter = getattr(adapter, "set_working_directory", None)
+                    if callable(setter):
+                        setter(str(self.workspace_root))
                     os.chdir(self.workspace_root)
                 adapter.launch(target)
             except Exception:
