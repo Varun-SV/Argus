@@ -71,12 +71,15 @@ class IsolatedHyperVProvider(HyperVProvider):
         return transport, tuple(normalized)
 
     def _host_switch_ipv4s(self, switch_name: str) -> list[str]:
+        # Resolve the management-OS vNIC through Hyper-V identity rather than
+        # guessing the default "vEthernet (<switch>)" display alias. The latter
+        # can be renamed by an administrator without changing switch ownership.
         script = (
             "$s=Get-VMSwitch -Name " + _ps_quote(switch_name) + " -ErrorAction Stop; "
-            "$alias='vEthernet ('+$s.Name+')'; "
-            "Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction Stop | "
-            "Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -ne '0.0.0.0' } | "
-            "Select-Object -ExpandProperty IPAddress"
+            "Get-VMNetworkAdapter -ManagementOS -SwitchName $s.Name -ErrorAction Stop | "
+            "ForEach-Object { $_.IPAddresses } | "
+            "Where-Object { $_ -match '^([0-9]{1,3}\\.){3}[0-9]{1,3}$' "
+            "-and $_ -notlike '169.254.*' -and $_ -ne '0.0.0.0' }"
         )
         raw = self._run_ps(script, 20)
         addresses = []
@@ -118,6 +121,9 @@ class IsolatedHyperVProvider(HyperVProvider):
 
         weight = 1000
         for host_ip in host_ips:
+            # Hyper-V supports stateful inbound extended ACLs. A stateful inbound
+            # allow dynamically permits only the matching outbound return flow,
+            # so do not replace this with a broad outbound control response rule.
             commands.append(
                 "Add-VMNetworkAdapterExtendedAcl -VMName $vm -Action Allow "
                 f"-Direction Inbound -RemoteIPAddress {_ps_quote(host_ip)} "
