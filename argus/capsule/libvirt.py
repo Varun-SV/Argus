@@ -44,6 +44,10 @@ from argus.capsule.base import (
 from argus.capsule.files import validate_session_id
 
 
+class _AmbiguousResourceOwnership(CapsuleError):
+    """A libvirt mutation may have completed but ownership cannot be attested."""
+
+
 class LibvirtProvider(CapsuleProvider):
     """Create isolated Linux Capsules using libvirt/QEMU/KVM."""
 
@@ -82,6 +86,7 @@ class LibvirtProvider(CapsuleProvider):
         self._clock = clock
         self._virsh: Optional[str] = None
         self._qemu_img: Optional[str] = None
+        self._ip: Optional[str] = None
 
     # ---- command boundary ---------------------------------------------
 
@@ -97,10 +102,15 @@ class LibvirtProvider(CapsuleProvider):
             raise CapsuleError("libvirt/QEMU Capsules require a Linux host")
         self._virsh = shutil.which("virsh")
         self._qemu_img = shutil.which("qemu-img")
+        self._ip = shutil.which("ip")
         if not self._virsh:
             raise CapsuleError("virsh is required for the libvirt Capsule provider")
         if not self._qemu_img:
             raise CapsuleError("qemu-img is required for the libvirt Capsule provider")
+        if not self._ip:
+            raise CapsuleError(
+                "iproute2 'ip' is required to attest host routes before libvirt subnet allocation"
+            )
         self._run([self._virsh, "-c", uri, "uri"], 15)
         self._run([self._virsh, "-c", uri, "version"], 15)
 
@@ -215,7 +225,8 @@ class LibvirtProvider(CapsuleProvider):
         """Compatibility helper returning the deterministic first /24 in a pool.
 
         Real allocation uses :meth:`_allocate_network`, which also rejects
-        overlap with every currently defined libvirt network.
+        overlap with every currently defined libvirt network and explicit host
+        route.
         """
         return next(cls._candidate_networks(session_id, cls._network_pool(configured)))
 
@@ -255,6 +266,56 @@ class LibvirtProvider(CapsuleProvider):
             occupied.extend(self._network_from_xml(raw, name))
         return occupied
 
+    @staticmethod
+    def _route_networks_from_output(raw: str) -> list[ipaddress.IPv4Network]:
+        """Parse explicit IPv4 routes from ``ip -4 route show table all``.
+
+        The default route is intentionally ignored: a Capsule connected /24 is
+        expected to be more specific than 0/0. Every other explicit route,
+        including VPN and policy-table prefixes, is treated as occupied because
+        installing a connected Capsule route would otherwise override it.
+        """
+        route_types = {
+            "unicast",
+            "local",
+            "broadcast",
+            "multicast",
+            "throw",
+            "unreachable",
+            "prohibit",
+            "blackhole",
+            "nat",
+            "anycast",
+        }
+        result: list[ipaddress.IPv4Network] = []
+        for line in str(raw or "").splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            index = 1 if fields[0].lower() in route_types else 0
+            if index >= len(fields):
+                continue
+            destination = fields[index]
+            if destination.lower() == "default":
+                continue
+            try:
+                network = ipaddress.ip_network(destination, strict=False)
+            except ValueError:
+                continue
+            if isinstance(network, ipaddress.IPv4Network):
+                result.append(network)
+        return result
+
+    def _host_route_networks(self) -> list[ipaddress.IPv4Network]:
+        raw = self._run(
+            [self._ip or "ip", "-4", "route", "show", "table", "all"],
+            15,
+        )
+        return self._route_networks_from_output(raw)
+
+    def _occupied_networks(self, uri: str) -> list[ipaddress.IPv4Network]:
+        return [*self._defined_networks(uri), *self._host_route_networks()]
+
     def _allocate_network(
         self,
         uri: str,
@@ -262,7 +323,7 @@ class LibvirtProvider(CapsuleProvider):
         configured: str,
     ) -> ipaddress.IPv4Network:
         pool = self._network_pool(configured)
-        occupied = self._defined_networks(uri)
+        occupied = self._occupied_networks(uri)
         for candidate in self._candidate_networks(session_id, pool):
             if not any(candidate.overlaps(existing) for existing in occupied):
                 return candidate
@@ -660,6 +721,54 @@ class LibvirtProvider(CapsuleProvider):
                 names.add(fields[-1])
         return names
 
+    def _resource_present(self, uri: str, kind: str, name: str) -> bool:
+        if kind == "domain":
+            return name in self._list_names(
+                self._virsh_cmd(uri, "list", "--all", "--name", timeout=15)
+            )
+        if kind == "network":
+            return name in self._list_names(
+                self._virsh_cmd(uri, "net-list", "--all", "--name", timeout=15)
+            )
+        if kind == "filter":
+            return name in self._nwfilter_names(
+                self._virsh_cmd(uri, "nwfilter-list", timeout=15)
+            )
+        raise CapsuleError(f"unknown libvirt resource kind: {kind}")
+
+    def _create_owned_resource(
+        self,
+        uri: str,
+        kind: str,
+        name: str,
+        owned_resources: set[str],
+        command: str,
+        xml_path: Path,
+        *,
+        timeout: float,
+    ) -> None:
+        """Create one resource and reconcile response-loss ambiguity.
+
+        Names were proven absent before mutation. If ``virsh`` fails or times
+        out after libvirt committed the operation, probe the exact generated
+        name. A present object is claimed for rollback. If the probe itself
+        fails, ownership is unknowable and storage must be preserved rather
+        than deleting files that a possibly-live resource still references.
+        """
+        try:
+            self._virsh_cmd(uri, command, str(xml_path), timeout=timeout)
+        except Exception as create_exc:
+            try:
+                if self._resource_present(uri, kind, name):
+                    owned_resources.add(kind)
+            except Exception as probe_exc:
+                raise _AmbiguousResourceOwnership(
+                    f"could not reconcile {kind} {name!r} after ambiguous {command} failure: "
+                    f"create={create_exc}; probe={probe_exc}"
+                ) from create_exc
+            raise
+        owned_resources.add(kind)
+
     def _assert_resources_available(
         self,
         uri: str,
@@ -700,13 +809,15 @@ class LibvirtProvider(CapsuleProvider):
         *,
         remove_storage: bool,
         owned_resources: Optional[set[str]] = None,
+        remove_nvram: bool = False,
     ) -> Optional[Exception]:
         """Remove only resources owned by this allocation attempt when supplied.
 
         ``owned_resources=None`` is reserved for cleanup of a successfully
         returned Capsule handle, whose provider ownership is already established.
         Creation rollback passes an explicit set that is populated only after
-        each corresponding libvirt create/define operation succeeds.
+        each corresponding libvirt create/define operation succeeds or is
+        reconciled as committed after an ambiguous command failure.
         """
         owns = lambda kind: owned_resources is None or kind in owned_resources
         try:
@@ -720,7 +831,10 @@ class LibvirtProvider(CapsuleProvider):
                     )
                     if vm_name in active:
                         self._virsh_cmd(uri, "destroy", vm_name, timeout=45)
-                    self._virsh_cmd(uri, "undefine", vm_name, timeout=30)
+                    undefine_args = ["undefine", vm_name]
+                    if remove_nvram:
+                        undefine_args.append("--nvram")
+                    self._virsh_cmd(uri, *undefine_args, timeout=30)
 
             if owns("network"):
                 networks = self._list_names(
@@ -861,28 +975,50 @@ class LibvirtProvider(CapsuleProvider):
                     ),
                 )
 
-                # Recheck object names immediately before provider creation. The
-                # global allocation lock serializes Argus subnet users; this
-                # occupancy check also catches an external libvirt actor that
-                # created an overlapping network after initial selection.
+                # Recheck object names, libvirt networks, and host/VPN routes
+                # immediately before provider creation. The Argus lock closes
+                # allocator races while the fresh host-route read prevents a
+                # Capsule bridge from intentionally overriding an existing
+                # physical or policy route.
                 self._assert_resources_available(uri, vm_name, network_name, filter_name)
                 if any(
                     network.overlaps(existing)
-                    for existing in self._defined_networks(uri)
+                    for existing in self._occupied_networks(uri)
                 ):
                     raise CapsuleError(
                         f"libvirt Capsule subnet {network} became occupied during allocation"
                     )
 
-                self._virsh_cmd(uri, "nwfilter-define", str(filter_xml), timeout=30)
-                owned_resources.add("filter")
-                self._virsh_cmd(uri, "net-create", str(network_xml), timeout=30)
-                owned_resources.add("network")
+                self._create_owned_resource(
+                    uri,
+                    "filter",
+                    filter_name,
+                    owned_resources,
+                    "nwfilter-define",
+                    filter_xml,
+                    timeout=30,
+                )
+                self._create_owned_resource(
+                    uri,
+                    "network",
+                    network_name,
+                    owned_resources,
+                    "net-create",
+                    network_xml,
+                    timeout=30,
+                )
 
             # Domain definition/start no longer needs the subnet allocator lock:
             # the live libvirt network is now the durable reservation.
-            self._virsh_cmd(uri, "define", str(domain_xml), timeout=30)
-            owned_resources.add("domain")
+            self._create_owned_resource(
+                uri,
+                "domain",
+                vm_name,
+                owned_resources,
+                "define",
+                domain_xml,
+                timeout=30,
+            )
             self._virsh_cmd(uri, "start", vm_name, timeout=60)
 
             address = self._wait_for_guest_address(
@@ -903,19 +1039,26 @@ class LibvirtProvider(CapsuleProvider):
                 architecture=arch,
             )
         except Exception as create_exc:
+            preserve_storage = isinstance(create_exc, _AmbiguousResourceOwnership)
             cleanup_exc = self._cleanup_resources(
                 uri,
                 vm_name,
                 network_name,
                 filter_name,
                 root,
-                remove_storage=True,
+                remove_storage=not preserve_storage,
                 owned_resources=owned_resources,
+                remove_nvram=arch == "aarch64",
             )
             if cleanup_exc is not None:
                 raise CapsuleError(
                     "libvirt Capsule creation failed and partial cleanup also failed: "
                     f"create={create_exc}; cleanup={cleanup_exc}"
+                ) from create_exc
+            if preserve_storage:
+                raise CapsuleError(
+                    "libvirt Capsule creation has ambiguous provider ownership; "
+                    f"session storage was preserved at {root}: {create_exc}"
                 ) from create_exc
             raise
 
@@ -973,6 +1116,7 @@ class LibvirtProvider(CapsuleProvider):
             filter_name,
             root,
             remove_storage=True,
+            remove_nvram=handle.architecture == "aarch64",
         )
         if cleanup_exc is not None:
             raise cleanup_exc
