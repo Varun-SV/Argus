@@ -308,7 +308,11 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             collected = []
             for relative, info in infos:
                 try:
-                    if os.name != "nt" and type(self._client) is GuestAgentClient:
+                    if os.name != "nt" and isinstance(self._client, GuestAgentClient):
+                        # SecureGuestAgentClient subclasses GuestAgentClient and is
+                        # the production PR7 Linux client, so it must take this
+                        # descriptor-relative path too. Only non-GuestAgentClient
+                        # injected fakes/extensions keep the historical Path API.
                         data = collect_file_to_pinned_tree(
                             self._client,
                             relative,
@@ -317,7 +321,8 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
                         )
                     else:
                         # Windows directory pins deny replacement, and injected
-                        # test/extension clients retain the historical Path API.
+                        # non-GuestAgentClient test/extension clients retain the
+                        # historical Path API.
                         data = self._client.collect_file(
                             relative,
                             pinned_output.path,
