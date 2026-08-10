@@ -55,6 +55,7 @@ class LibvirtProvider(CapsuleProvider):
         # mode can express Hyper-V's destination-CIDR egress allowlist semantics.
         egress_allowlist=False,
     )
+    _DEFAULT_SYSTEM_VM_ROOT = Path("/var/lib/libvirt/images/argus-capsules")
 
     def __init__(
         self,
@@ -121,13 +122,16 @@ class LibvirtProvider(CapsuleProvider):
 
     @staticmethod
     def _resource_suffix(session_id: str) -> str:
-        return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+        # Resource names are derived from the complete session id, not a shared
+        # prefix. Twenty hex characters gives an 80-bit collision boundary while
+        # keeping generated libvirt names readable and well below practical limits.
+        return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:20]
 
     @classmethod
     def _resource_names(cls, session_id: str) -> tuple[str, str, str, str]:
         suffix = cls._resource_suffix(session_id)
         return (
-            f"Argus-{session_id[:12]}",
+            f"Argus-{suffix}",
             f"argus-{suffix}",
             f"argus-{suffix}-control",
             f"ar{suffix[:10]}",  # Linux interface names must fit IFNAMSIZ.
@@ -181,6 +185,20 @@ class LibvirtProvider(CapsuleProvider):
                 f"PR7 libvirt Capsules support same-architecture x86_64/aarch64 guests, got {value!r}"
             )
         return value
+
+    @classmethod
+    def _resolved_vm_root(cls, configured: str) -> Path:
+        """Return storage suitable for a system libvirt/QEMU process.
+
+        The generic Capsule default lives under the invoking user's home, which
+        a ``qemu:///system`` worker commonly cannot traverse. Libvirt therefore
+        defaults to the system image hierarchy. Sites can provide ``vm_root``
+        explicitly when they have provisioned equivalent ownership/ACL access.
+        """
+        raw = str(configured or "").strip()
+        if raw:
+            return Path(raw).expanduser().resolve()
+        return cls._DEFAULT_SYSTEM_VM_ROOT
 
     @staticmethod
     def _write_xml(path: Path, root: ET.Element) -> None:
@@ -471,6 +489,36 @@ class LibvirtProvider(CapsuleProvider):
                 names.add(fields[-1])
         return names
 
+    def _assert_resources_available(
+        self,
+        uri: str,
+        vm_name: str,
+        network_name: str,
+        filter_name: str,
+    ) -> None:
+        """Reject provider-name collisions before Argus allocates mutable state."""
+        collisions: list[str] = []
+        domains = self._list_names(
+            self._virsh_cmd(uri, "list", "--all", "--name", timeout=15)
+        )
+        if vm_name in domains:
+            collisions.append(f"domain {vm_name!r}")
+        networks = self._list_names(
+            self._virsh_cmd(uri, "net-list", "--all", "--name", timeout=15)
+        )
+        if network_name in networks:
+            collisions.append(f"network {network_name!r}")
+        filters = self._nwfilter_names(
+            self._virsh_cmd(uri, "nwfilter-list", timeout=15)
+        )
+        if filter_name in filters:
+            collisions.append(f"nwfilter {filter_name!r}")
+        if collisions:
+            raise CapsuleError(
+                "libvirt Capsule resource collision; refusing to modify pre-existing "
+                + ", ".join(collisions)
+            )
+
     def _cleanup_resources(
         self,
         uri: str,
@@ -480,24 +528,46 @@ class LibvirtProvider(CapsuleProvider):
         root: Path,
         *,
         remove_storage: bool,
+        owned_resources: Optional[set[str]] = None,
     ) -> Optional[Exception]:
+        """Remove only resources owned by this allocation attempt when supplied.
+
+        ``owned_resources=None`` is reserved for cleanup of a successfully
+        returned Capsule handle, whose provider ownership is already established.
+        Creation rollback passes an explicit set that is populated only after
+        each corresponding libvirt create/define operation succeeds.
+        """
+        owns = lambda kind: owned_resources is None or kind in owned_resources
         try:
-            domains = self._list_names(self._virsh_cmd(uri, "list", "--all", "--name", timeout=15))
-            if vm_name in domains:
-                active = self._list_names(self._virsh_cmd(uri, "list", "--name", timeout=15))
-                if vm_name in active:
-                    self._virsh_cmd(uri, "destroy", vm_name, timeout=45)
-                self._virsh_cmd(uri, "undefine", vm_name, timeout=30)
+            if owns("domain"):
+                domains = self._list_names(
+                    self._virsh_cmd(uri, "list", "--all", "--name", timeout=15)
+                )
+                if vm_name in domains:
+                    active = self._list_names(
+                        self._virsh_cmd(uri, "list", "--name", timeout=15)
+                    )
+                    if vm_name in active:
+                        self._virsh_cmd(uri, "destroy", vm_name, timeout=45)
+                    self._virsh_cmd(uri, "undefine", vm_name, timeout=30)
 
-            networks = self._list_names(self._virsh_cmd(uri, "net-list", "--all", "--name", timeout=15))
-            if network_name in networks:
-                active_networks = self._list_names(self._virsh_cmd(uri, "net-list", "--name", timeout=15))
-                if network_name in active_networks:
-                    self._virsh_cmd(uri, "net-destroy", network_name, timeout=30)
+            if owns("network"):
+                networks = self._list_names(
+                    self._virsh_cmd(uri, "net-list", "--all", "--name", timeout=15)
+                )
+                if network_name in networks:
+                    active_networks = self._list_names(
+                        self._virsh_cmd(uri, "net-list", "--name", timeout=15)
+                    )
+                    if network_name in active_networks:
+                        self._virsh_cmd(uri, "net-destroy", network_name, timeout=30)
 
-            filters = self._nwfilter_names(self._virsh_cmd(uri, "nwfilter-list", timeout=15))
-            if filter_name in filters:
-                self._virsh_cmd(uri, "nwfilter-undefine", filter_name, timeout=30)
+            if owns("filter"):
+                filters = self._nwfilter_names(
+                    self._virsh_cmd(uri, "nwfilter-list", timeout=15)
+                )
+                if filter_name in filters:
+                    self._virsh_cmd(uri, "nwfilter-undefine", filter_name, timeout=30)
         except Exception as exc:
             return CapsuleError(
                 f"libvirt resource cleanup failed: {exc}; session storage preserved at {root}"
@@ -521,28 +591,46 @@ class LibvirtProvider(CapsuleProvider):
             raise CapsuleError(f"Capsule golden image not found: {settings.image!r}")
         image = image.resolve()
 
-        root_parent = settings.resolved_vm_root
-        root_parent.mkdir(parents=True, exist_ok=True)
-        root = root_parent / request.session_id
-        if root.exists():
-            raise CapsuleError(f"Capsule session directory already exists: {root}")
-        root.mkdir(parents=False)
-
+        # Validate every caller-controlled session parameter before creating the
+        # session directory so a bad config is retryable with the same session id.
         vm_name, network_name, filter_name, bridge_name = self._resource_names(request.session_id)
-        overlay = root / "session.qcow2"
-        network_xml = root / "network.xml"
-        filter_xml = root / "nwfilter.xml"
-        domain_xml = root / "domain.xml"
-
         network = self._network_for(request.session_id, settings.libvirt_network_cidr)
         host_ip = str(network.network_address + 1)
         guest_ip = str(network.network_address + 2)
         self._validate_requested_address(settings.guest_address, guest_ip)
         mac = self._mac_for(request.session_id)
         arch = self._host_arch(settings.libvirt_arch)
+        base_format = self._base_image_format(image)
+
+        # A collision is a hard boundary: never redefine or clean up a provider
+        # object that existed before this allocation attempt.
+        self._assert_resources_available(uri, vm_name, network_name, filter_name)
+
+        root_parent = self._resolved_vm_root(settings.vm_root)
+        try:
+            root_parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            source = "configured vm_root" if settings.vm_root else "default system libvirt storage"
+            raise CapsuleError(
+                f"cannot prepare {source} at {root_parent}: {exc}. For qemu:///system, "
+                "use a system-accessible directory writable by the Argus host process and "
+                "traversable by the libvirt QEMU account."
+            ) from exc
+        root = root_parent / request.session_id
+        if root.exists():
+            raise CapsuleError(f"Capsule session directory already exists: {root}")
+        try:
+            root.mkdir(parents=False)
+        except OSError as exc:
+            raise CapsuleError(f"cannot create Capsule session directory {root}: {exc}") from exc
+
+        overlay = root / "session.qcow2"
+        network_xml = root / "network.xml"
+        filter_xml = root / "nwfilter.xml"
+        domain_xml = root / "domain.xml"
+        owned_resources: set[str] = set()
 
         try:
-            base_format = self._base_image_format(image)
             self._qemu_img_cmd(
                 "create",
                 "-f",
@@ -578,10 +666,17 @@ class LibvirtProvider(CapsuleProvider):
                 ),
             )
 
+            # Recheck immediately before provider creation so an object that
+            # appeared while the overlay/XML were prepared is never redefined.
+            self._assert_resources_available(uri, vm_name, network_name, filter_name)
+
             # Define all policy/resources before the first guest CPU executes.
             self._virsh_cmd(uri, "nwfilter-define", str(filter_xml), timeout=30)
+            owned_resources.add("filter")
             self._virsh_cmd(uri, "net-create", str(network_xml), timeout=30)
+            owned_resources.add("network")
             self._virsh_cmd(uri, "define", str(domain_xml), timeout=30)
+            owned_resources.add("domain")
             self._virsh_cmd(uri, "start", vm_name, timeout=60)
 
             address = self._wait_for_guest_address(
@@ -609,6 +704,7 @@ class LibvirtProvider(CapsuleProvider):
                 filter_name,
                 root,
                 remove_storage=True,
+                owned_resources=owned_resources,
             )
             if cleanup_exc is not None:
                 raise CapsuleError(
@@ -634,7 +730,9 @@ class LibvirtProvider(CapsuleProvider):
         state = self._virsh_cmd(uri, "domstate", handle.vm_name, timeout=15).strip().lower()
         if state not in {"shut off", "shutoff", "off"}:
             self._virsh_cmd(uri, "destroy", handle.vm_name, timeout=45)
-        active_networks = self._list_names(self._virsh_cmd(uri, "net-list", "--name", timeout=15))
+        active_networks = self._list_names(
+            self._virsh_cmd(uri, "net-list", "--name", timeout=15)
+        )
         if network_name in active_networks:
             self._virsh_cmd(uri, "net-destroy", network_name, timeout=30)
 
