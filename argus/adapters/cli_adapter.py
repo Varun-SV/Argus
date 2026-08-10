@@ -20,7 +20,12 @@ class CLIAdapter(Adapter):
         self._command: str = ""
         self._timeout = timeout
         self._shell = shell
+        self._cwd: Optional[str] = None
         self._last_obs = Observation(window_title="")
+
+    def set_working_directory(self, path: str) -> None:
+        """Pin all subprocesses to an execution-environment-owned workspace."""
+        self._cwd = str(path) if path else None
 
     def capabilities(self) -> dict:
         return {
@@ -63,6 +68,7 @@ class CLIAdapter(Adapter):
                 text=True,
                 timeout=self._timeout,
                 shell=self._shell,
+                cwd=self._cwd,
             )
             self._last_obs = Observation(
                 window_title=f"cli: {cmd[:60]}",
