@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import uuid
 from pathlib import Path
 from typing import Callable, Mapping, Optional
@@ -211,9 +212,8 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
                 ) from stage_exc
             raise
 
-    def collect_artifacts(self, paths, output_dir: Path) -> list[dict]:
-        if not self._workspace_ready or self._client is None:
-            raise ExecutionEnvironmentError("Capsule artifact workspace is not available")
+    @staticmethod
+    def _normalize_artifact_paths(paths) -> list[str]:
         normalized = []
         seen = set()
         for value in paths:
@@ -224,12 +224,29 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
                 )
             seen.add(relative)
             normalized.append(relative)
+        return normalized
+
+    def validate_artifact_paths(self, paths) -> list[str]:
+        """Fail closed on invalid collection declarations before target launch."""
+        return self._normalize_artifact_paths(paths)
+
+    def collect_artifacts(self, paths, output_dir: Path) -> list[dict]:
+        if not self._workspace_ready or self._client is None:
+            raise ExecutionEnvironmentError("Capsule artifact workspace is not available")
+        normalized = self._normalize_artifact_paths(paths)
 
         infos = [(relative, self._client.collect_info(relative)) for relative in normalized]
         enforce_total_bytes(info["size"] for _, info in infos)
         collected = []
         for relative, info in infos:
-            data = self._client.collect_file(relative, output_dir, info=info)
+            try:
+                data = self._client.collect_file(relative, output_dir, info=info)
+            except Exception as exc:
+                error = ExecutionEnvironmentError(
+                    f"Capsule artifact collection failed for {relative}: {exc}"
+                )
+                error.collected = list(collected)
+                raise error from exc
             collected.append(
                 {
                     "path": relative,
@@ -251,13 +268,19 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         target_attempted = False
         try:
             resolved_target = target
-            if str(target).startswith("stage://"):
+            staged_target = str(target).startswith("stage://")
+            if staged_target:
                 relative = normalize_relative_path(str(target)[len("stage://"):])
                 resolved_target = self._staged_targets.get(relative, "")
                 if not resolved_target:
                     raise ExecutionEnvironmentError(
                         f"staged launch target was not declared/committed: {relative}"
                     )
+                if self.type_name in {"cli", "terminal", "shell"}:
+                    # CLIAdapter intentionally uses POSIX shlex parsing for command
+                    # strings. Quote the staged executable so Windows backslashes
+                    # survive that parser and become one subprocess argv element.
+                    resolved_target = shlex.quote(resolved_target)
             target_attempted = True
             self._adapter.launch(resolved_target)
         except Exception as launch_exc:
