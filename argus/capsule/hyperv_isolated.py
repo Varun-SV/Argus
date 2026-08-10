@@ -9,6 +9,12 @@ from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleRequest
 from argus.capsule.hyperv import HyperVProvider, _ps_quote
 
 
+# Hyper-V integration-component IDs are stable across localized host display
+# names. ``Get-VMIntegrationService`` exposes them as the suffix of ``Id``.
+_GUEST_SERVICE_INTERFACE_ID = "6C09BB55-D683-4DA0-8931-C9BF705F6480"
+_KVP_EXCHANGE_ID = "2A34B1C2-FD73-4043-8A5B-DD2159BC743F"
+
+
 class IsolatedHyperVProvider(HyperVProvider):
     """Hyper-V provider that installs isolation before the VM is started.
 
@@ -163,25 +169,47 @@ class IsolatedHyperVProvider(HyperVProvider):
         )
         self._run_ps("; ".join(commands), 45)
 
-    def _disable_and_verify_integration_service(self, vm_name: str, service_name: str) -> None:
-        quoted_name = _ps_quote(service_name)
+    def _disable_and_verify_integration_service(
+        self,
+        vm_name: str,
+        service_id: str,
+        service_label: str,
+    ) -> None:
+        # ``Name`` is localized by Windows. Match the stable component GUID at
+        # the end of the VMIntegrationComponent ``Id`` instead, e.g.
+        # ``Microsoft:<VM-GUID>\<component-GUID>``.
+        quoted_id = _ps_quote(service_id.upper())
+        quoted_label = _ps_quote(service_label)
+        service_query = (
+            "Get-VMIntegrationService -VMName " + _ps_quote(vm_name) +
+            " | Where-Object { ([string]$_.Id).ToUpperInvariant().EndsWith('\\' + " +
+            quoted_id + ") }"
+        )
         self._run_ps(
             "$ErrorActionPreference='Stop'; "
-            "$svc=Get-VMIntegrationService -VMName " + _ps_quote(vm_name) +
-            " | Where-Object { $_.Name -eq " + quoted_name + " }; "
-            "if (-not $svc) { throw (" + quoted_name + " + ' integration service not found') }; "
+            "$svc=" + service_query + "; "
+            "if (-not $svc) { throw (" + quoted_label + " + ' integration service not found') }; "
+            "if (@($svc).Count -ne 1) { throw (" + quoted_label + " + ' integration service ID is ambiguous') }; "
             "if ($svc.Enabled) { Disable-VMIntegrationService -VMIntegrationService $svc -ErrorAction Stop }; "
-            "$verify=Get-VMIntegrationService -VMName " + _ps_quote(vm_name) +
-            " | Where-Object { $_.Name -eq " + quoted_name + " }; "
-            "if (-not $verify -or $verify.Enabled) { throw (" + quoted_name + " + ' remains enabled') }",
+            "$verify=" + service_query + "; "
+            "if (-not $verify -or @($verify).Count -ne 1 -or $verify.Enabled) { throw (" +
+            quoted_label + " + ' remains enabled') }",
             20,
         )
 
     def _disable_host_file_copy(self, vm_name: str) -> None:
-        self._disable_and_verify_integration_service(vm_name, "Guest Service Interface")
+        self._disable_and_verify_integration_service(
+            vm_name,
+            _GUEST_SERVICE_INTERFACE_ID,
+            "Guest Service Interface",
+        )
 
     def _disable_host_kvp(self, vm_name: str) -> None:
-        self._disable_and_verify_integration_service(vm_name, "Key-Value Pair Exchange")
+        self._disable_and_verify_integration_service(
+            vm_name,
+            _KVP_EXCHANGE_ID,
+            "Key-Value Pair Exchange",
+        )
 
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
         self._ensure_host()
