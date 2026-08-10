@@ -33,6 +33,9 @@ from typing import List, Optional, Union
 
 import yaml
 
+from argus.capsule.base import CapsuleError
+from argus.capsule.files import normalize_relative_path
+
 ASSERTION_KINDS = (
     # desktop-gui
     "text_visible",
@@ -155,10 +158,18 @@ def _parse_collect(raw) -> List[str]:
     if not isinstance(raw, list):
         raise SpecError("collect must be a list")
     out: List[str] = []
+    seen = set()
     for index, item in enumerate(raw):
         if not isinstance(item, str) or not item.strip():
             raise SpecError(f"collect[{index}] must be a non-empty path string")
-        out.append(item.strip())
+        try:
+            relative = normalize_relative_path(item)
+        except CapsuleError as exc:
+            raise SpecError(f"collect[{index}] is invalid: {exc}") from exc
+        if relative in seen:
+            raise SpecError(f"collect[{index}] duplicates artifact path: {relative}")
+        seen.add(relative)
+        out.append(relative)
     return out
 
 
