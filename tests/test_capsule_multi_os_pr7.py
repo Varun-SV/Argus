@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -148,7 +149,6 @@ def test_libvirt_builds_isolated_policy_before_start_and_uses_overlay(tmp_path):
         if command == "net-list":
             return state.get("network", "")
         if command == "nwfilter-list":
-            # Current provider parser accepts the regular tabular output too.
             return " UUID Name\n --------------------------------\n deadbeef " + state.get("filter", "")
         if command == "domstate":
             return "running"
@@ -172,8 +172,15 @@ def test_libvirt_builds_isolated_policy_before_start_and_uses_overlay(tmp_path):
     nwfilter = ET.parse(root / "nwfilter.xml").getroot()
     assert nwfilter.attrib["chain"] == "root"
     rules = nwfilter.findall("rule")
-    assert any(rule.attrib.get("action") == "drop" and rule.attrib.get("direction") == "inout" for rule in rules)
-    control_in = next(rule for rule in rules if rule.find("tcp") is not None and rule.attrib["direction"] == "in")
+    assert any(
+        rule.attrib.get("action") == "drop" and rule.attrib.get("direction") == "inout"
+        for rule in rules
+    )
+    control_in = next(
+        rule
+        for rule in rules
+        if rule.find("tcp") is not None and rule.attrib["direction"] == "in"
+    )
     tcp_in = control_in.find("tcp")
     assert tcp_in is not None
     assert tcp_in.attrib["srcipaddr"] == "10.250.77.1"
@@ -188,12 +195,42 @@ def test_libvirt_builds_isolated_policy_before_start_and_uses_overlay(tmp_path):
     assert domain.find(".//filterref").attrib["filter"] == state["filter"]
     assert domain.find(".//disk/source").attrib["file"].endswith("session.qcow2")
 
-    qemu_create = next(i for i, argv in enumerate(calls) if argv[0] == "qemu-img" and "create" in argv)
-    filter_define = next(i for i, argv in enumerate(calls) if len(argv) > 3 and argv[3] == "nwfilter-define")
-    network_create = next(i for i, argv in enumerate(calls) if len(argv) > 3 and argv[3] == "net-create")
-    domain_define = next(i for i, argv in enumerate(calls) if len(argv) > 3 and argv[3] == "define")
-    domain_start = next(i for i, argv in enumerate(calls) if len(argv) > 3 and argv[3] == "start")
+    qemu_create = next(
+        i for i, argv in enumerate(calls) if argv[0] == "qemu-img" and "create" in argv
+    )
+    filter_define = next(
+        i for i, argv in enumerate(calls) if len(argv) > 3 and argv[3] == "nwfilter-define"
+    )
+    network_create = next(
+        i for i, argv in enumerate(calls) if len(argv) > 3 and argv[3] == "net-create"
+    )
+    domain_define = next(
+        i for i, argv in enumerate(calls) if len(argv) > 3 and argv[3] == "define"
+    )
+    domain_start = next(
+        i for i, argv in enumerate(calls) if len(argv) > 3 and argv[3] == "start"
+    )
     assert qemu_create < filter_define < network_create < domain_define < domain_start
+
+    provider.destroy(handle)
+    assert not root.exists()
+    nwfilter_list = next(
+        argv for argv in calls if len(argv) > 3 and argv[3] == "nwfilter-list"
+    )
+    assert "--name" not in nwfilter_list
+    assert any(
+        len(argv) > 4 and argv[3] == "nwfilter-undefine" and argv[4] == state["filter"]
+        for argv in calls
+    )
+
+
+def test_libvirt_nwfilter_list_parser_uses_regular_table_output():
+    raw = (
+        " UUID                                   Name\n"
+        "--------------------------------------------------------------------\n"
+        " 1234abcd                               argus-deadbeef-control\n"
+    )
+    assert LibvirtProvider._nwfilter_names(raw) == {"argus-deadbeef-control"}
 
 
 def test_libvirt_default_network_is_deterministic_private_24():
@@ -202,4 +239,4 @@ def test_libvirt_default_network_is_deterministic_private_24():
     assert first == second
     assert first.is_private
     assert first.prefixlen == 24
-    assert first.subnet_of(__import__("ipaddress").ip_network("10.240.0.0/12"))
+    assert first.subnet_of(ipaddress.ip_network("10.240.0.0/12"))
