@@ -32,7 +32,9 @@ class ArgusAPI:
         self._roam_state: dict = {"running": False, "log": [], "report": None, "findings": 0}
         self._roam_stop = False
         self._latest_screenshot: Optional[bytes] = None
-        self._active_ks = None
+        self._active_ks = None  # live knowledge store during a session
+
+    # ---- project / config -------------------------------------------------
 
     def app_info(self) -> dict:
         cfg = load_config()
@@ -48,6 +50,8 @@ class ArgusAPI:
     def init_project(self) -> dict:
         path = init_project()
         return {"ok": True, "path": str(path)}
+
+    # ---- tests -----------------------------------------------------------
 
     def list_tests(self) -> list:
         cfg = load_config()
@@ -72,6 +76,8 @@ class ArgusAPI:
     def recent_runs(self, limit: int = 20) -> list:
         cfg = load_config()
         return load_runs(cfg.project_dir, limit)
+
+    # ---- run -----------------------------------------------------------------
 
     def run_test(self, file_name: str) -> dict:
         with self._lock:
@@ -125,6 +131,8 @@ class ArgusAPI:
         state = dict(self._run_state)
         state["tokens"] = self._tracker.snapshot()
         return state
+
+    # ---- roam --------------------------------------------------------------------
 
     def start_roam(self, target: str, minutes: float, max_tokens) -> dict:
         with self._lock:
@@ -187,6 +195,8 @@ class ArgusAPI:
         state["tokens"] = self._tracker.snapshot()
         return state
 
+    # ---- live preview -------------------------------------------------------
+
     def capture_live(self) -> dict:
         """Return the latest captured screenshot as a base64 PNG."""
         png = self._latest_screenshot
@@ -196,6 +206,8 @@ class ArgusAPI:
             "b64": base64.b64encode(png).decode("ascii"),
             "ts": time.time(),
         }
+
+    # ---- knowledge ----------------------------------------------------------
 
     def knowledge_stats(self, target: str) -> dict:
         try:
@@ -236,6 +248,8 @@ class ArgusAPI:
             return total
         except Exception:
             return {"active": True}
+
+    # ---- providers / tokens ---------------------------------------------------------
 
     def check_provider(self) -> dict:
         cfg = load_config()
