@@ -119,16 +119,18 @@ steps:
         )
 
 
-def test_same_size_rewrite_with_restored_mtime_is_rejected(tmp_path, monkeypatch):
+def test_same_size_rewrite_with_restored_mtime_cannot_corrupt_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
     state = GuestAgentState()
     state.begin_files("tornsnapshot123")
     artifact = state.workspace_root / "logs" / "result.bin"
     artifact.parent.mkdir(parents=True)
-    artifact.write_bytes(b"AAAA")
+    original = b"AAAA"
+    artifact.write_bytes(original)
     original_stat = artifact.stat()
 
     real_handle = artifact.open("rb")
+    write_blocked = [False]
 
     class MutatingHandle:
         def __init__(self, handle):
@@ -145,14 +147,19 @@ def test_same_size_rewrite_with_restored_mtime_is_rejected(tmp_path, monkeypatch
             if offset == 0 and whence == 0:
                 self.zero_seeks += 1
                 if self.zero_seeks == 2:
-                    with artifact.open("r+b") as writer:
-                        writer.seek(0)
-                        writer.write(b"BBBB")
-                        writer.flush()
-                    os.utime(
-                        artifact,
-                        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
-                    )
+                    try:
+                        with artifact.open("r+b") as writer:
+                            writer.seek(0)
+                            writer.write(b"BBBB")
+                            writer.flush()
+                        os.utime(
+                            artifact,
+                            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+                        )
+                    except PermissionError:
+                        # The supported Windows guest takes a mandatory byte-range
+                        # lock, so the same-size rewrite is denied at the source.
+                        write_blocked[0] = True
             return self.handle.seek(offset, whence)
 
         def close(self):
@@ -171,10 +178,17 @@ def test_same_size_rewrite_with_restored_mtime_is_rejected(tmp_path, monkeypatch
         fake_open,
     )
 
-    # On Windows the mandatory byte-range lock may block the injected writer
-    # before the second pass; on POSIX the second digest/ctime check catches it.
-    with pytest.raises((AdapterError, CapsuleError), match="snapshot|stabilized"):
-        state.collect_info("logs/result.bin")
+    if os.name == "nt":
+        info = state.collect_info("logs/result.bin")
+        assert write_blocked[0]
+        assert info["sha256"] == hashlib.sha256(original).hexdigest()
+        assert bytes(state._collection_snapshots["logs/result.bin"]["data"]) == original
+    else:
+        # Advisory POSIX locking cannot stop an uncooperative writer, so the
+        # second bounded digest/ctime pass must reject the changed object.
+        with pytest.raises((AdapterError, CapsuleError), match="snapshot|stabilized"):
+            state.collect_info("logs/result.bin")
+        assert "logs/result.bin" not in state._collection_snapshots
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Hyper-V host replacement barrier is Windows-specific")
