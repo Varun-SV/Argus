@@ -80,6 +80,23 @@ execution:
 
 Both the bootstrap-token file and TLS private-key file are consumed/deleted from the session differencing disk during secure guest-agent startup. They remain available only through the immutable/golden parent for fresh sessions. The target should run as a non-administrative test user so it cannot re-enable disabled guest services.
 
+## Retained Failure Capsule recovery
+
+Normal live Capsules intentionally keep no restart bearer or TLS private-key file on the writable session disk. When `retain_on_failure` is actually selected for a failed secure Capsule, Argus performs a narrow recovery-arm sequence before Hyper-V `TurnOff`:
+
+1. generate a fresh one-time **recovery bearer** that is different from both the golden-image bootstrap token and the live per-session bearer;
+2. persist that recovery bearer only in the trusted host Capsule directory as `recovery-control.json`;
+3. terminate/close the application-under-test session so it cannot read newly restored restart material;
+4. over the still-authenticated live control channel, ask the secure guest agent to restore the original TLS private-key bytes and the fresh recovery bearer to the same fixed startup paths used by the golden-image service;
+5. immediately power the VM off without serializing RAM;
+6. record only the host recovery-file **path** in `failure-capsule.json` / `RunResult`; the bearer itself is never copied into result/report metadata.
+
+On a later retained-VM boot, the secure guest agent can therefore load the restored TLS key and one-time recovery bearer, consume/delete them again, and become reachable through the same secure protocol. Recovery credentials are created only for a Capsule that is actually being retained; passing runs and destructively cleaned failures never persist them.
+
+If the target cannot be closed or the guest cannot arm restart material, Argus refuses to power the VM off as a successful Failure Capsule. The VM/storage remain live/preserved and `failure_capsule_error.status` is `recovery_provision_failed`, avoiding an apparently retained Capsule that cannot restart its secure control service. If Hyper-V retention itself fails after recovery has already been armed, the same recovery credential set is kept so retention can be retried without minting conflicting restart authority.
+
+The host recovery file contains secret restart authority and must be protected like any other control credential. `failure_capsule.recovery_credentials_path` identifies it without serializing the bearer itself into normal run reports.
+
 ## Network isolation
 
 PR6 installs Hyper-V extended ACLs **before the VM boots**. The default is:
@@ -149,6 +166,6 @@ Collection is transactional across the declared set: if a later artifact fails, 
 
 ## Validation boundary
 
-Hosted GitHub Actions exercises TLS/auth policy, bearer rotation and recovery, credential-file consumption, network-policy generation/order, rollback behavior, integration-service policy, protocol/lifecycle code, path containment, Windows/POSIX handle behavior, quotas, and simulated provider/client paths. Hosted CI still does **not** provide nested Hyper-V, so a manual/on-prem Hyper-V smoke test remains necessary before claiming hardware-backed host↔Windows-guest isolation validation.
+Hosted GitHub Actions exercises TLS/auth policy, bearer rotation and recovery, retained-restart credential arming, credential-file consumption, network-policy generation/order, rollback behavior, integration-service policy, protocol/lifecycle code, path containment, Windows/POSIX handle behavior, quotas, and simulated provider/client paths. Hosted CI still does **not** provide nested Hyper-V, so a manual/on-prem Hyper-V smoke test remains necessary before claiming hardware-backed host↔Windows-guest isolation validation.
 
 PR6 does not automate certificate issuance/rotation for golden images and does not use Hyper-V sockets or mTLS. Those can be future hardening layers without weakening the current pinned-HTTPS, per-session-bearer, default-deny network boundary.
