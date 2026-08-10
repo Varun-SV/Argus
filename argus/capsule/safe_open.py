@@ -1,9 +1,9 @@
-"""Race-safe read-only opens for Capsule workspace artifacts.
+"""Race-safe, read-only opens for Capsule transfer boundaries.
 
-Collection runs while the target application is still active and therefore must
-not trust a pathname after it has been resolved.  These helpers bind the read to
-an opened file object first, validate that exact object, and only then expose
-bytes to the snapshotter.
+Transfer policy must bind authority to an opened object, not to a pathname that
+can be replaced after validation. The helpers below walk from a trusted root,
+reject redirects, validate the exact opened object, and optionally hold a
+snapshot-stability lock while bytes are copied.
 """
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ from argus.capsule.base import CapsuleError
 from argus.capsule.files import normalize_relative_path
 
 
-def _require_regular_file(handle: BinaryIO, relative: str) -> None:
+def _require_regular_file(handle: BinaryIO, relative: str, purpose: str) -> None:
     info = os.fstat(handle.fileno())
     if not stat.S_ISREG(info.st_mode):
-        raise CapsuleError(f"requested artifact is not a regular file: {relative}")
+        raise CapsuleError(f"{purpose} is not a regular file: {relative}")
 
 
 def _strip_windows_device_prefix(value: str) -> str:
@@ -48,14 +48,8 @@ def _windows_final_path(handle_value: int) -> str:
     return _strip_windows_device_prefix(buffer.value)
 
 
-def _open_windows_workspace_file(root: Path, relative: str) -> BinaryIO:
-    """Open a Windows artifact without following the final reparse point.
-
-    Ancestor junctions/reparse points may still be traversed by CreateFileW, so
-    the final opened handle is canonicalized and checked against the workspace
-    before a single byte is read.  This makes a rename/reparse race fail closed:
-    the handle stays bound to whichever object was actually opened.
-    """
+def _open_windows_rooted_file(root: Path, relative: str, purpose: str) -> BinaryIO:
+    """Open a Windows file and validate the exact opened handle against root."""
     import ctypes
     import msvcrt
     import ntpath
@@ -113,7 +107,7 @@ def _open_windows_workspace_file(root: Path, relative: str) -> BinaryIO:
     handle_value = int(raw_handle)
     if handle_value == INVALID_HANDLE_VALUE:
         raise CapsuleError(
-            f"requested artifact cannot be opened safely: {relative}: "
+            f"{purpose} cannot be opened safely: {relative}: "
             f"WinError {ctypes.get_last_error()}"
         )
 
@@ -127,30 +121,26 @@ def _open_windows_workspace_file(root: Path, relative: str) -> BinaryIO:
             ctypes.sizeof(tag_info),
         ):
             raise CapsuleError(
-                f"requested artifact metadata cannot be validated: {relative}: "
+                f"{purpose} metadata cannot be validated: {relative}: "
                 f"WinError {ctypes.get_last_error()}"
             )
         if tag_info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
-            raise CapsuleError(f"requested artifact cannot be a reparse point: {relative}")
+            raise CapsuleError(f"{purpose} cannot be a reparse point: {relative}")
 
         opened_final = ntpath.normcase(ntpath.abspath(_windows_final_path(handle_value)))
         try:
             common = ntpath.commonpath([root_final, opened_final])
         except ValueError as exc:
-            raise CapsuleError(
-                f"requested artifact escapes the session workspace: {relative}"
-            ) from exc
+            raise CapsuleError(f"{purpose} escapes its trusted root: {relative}") from exc
         if common != root_final or opened_final == root_final:
-            raise CapsuleError(
-                f"requested artifact escapes the session workspace: {relative}"
-            )
+            raise CapsuleError(f"{purpose} escapes its trusted root: {relative}")
 
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
         fd = msvcrt.open_osfhandle(handle_value, flags)
         transferred = True
         file_obj = os.fdopen(fd, "rb")
         try:
-            _require_regular_file(file_obj, relative)
+            _require_regular_file(file_obj, relative, purpose)
         except Exception:
             file_obj.close()
             raise
@@ -160,12 +150,12 @@ def _open_windows_workspace_file(root: Path, relative: str) -> BinaryIO:
             close_handle(raw_handle)
 
 
-def _open_posix_workspace_file(root: Path, relative: str) -> BinaryIO:
-    """Walk from an opened workspace directory using no-follow openat calls."""
+def _open_posix_rooted_file(root: Path, relative: str, purpose: str) -> BinaryIO:
+    """Walk from an opened root directory using no-follow openat calls."""
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
     if nofollow is None or directory is None:
-        raise CapsuleError("race-safe workspace opens are unsupported on this platform")
+        raise CapsuleError("race-safe rooted opens are unsupported on this platform")
 
     root_flags = os.O_RDONLY | directory | nofollow
     dir_fd = os.open(str(root), root_flags)
@@ -183,15 +173,13 @@ def _open_posix_workspace_file(root: Path, relative: str) -> BinaryIO:
         file_obj = os.fdopen(file_fd, "rb")
         file_fd = None
         try:
-            _require_regular_file(file_obj, relative)
+            _require_regular_file(file_obj, relative, purpose)
         except Exception:
             file_obj.close()
             raise
         return file_obj
     except OSError as exc:
-        raise CapsuleError(
-            f"requested artifact cannot be opened safely: {relative}: {exc}"
-        ) from exc
+        raise CapsuleError(f"{purpose} cannot be opened safely: {relative}: {exc}") from exc
     finally:
         if file_fd is not None:
             os.close(file_fd)
@@ -203,23 +191,143 @@ def _open_posix_workspace_file(root: Path, relative: str) -> BinaryIO:
 
 
 @contextmanager
-def open_workspace_regular_file(root: Path, relative: str) -> Iterator[BinaryIO]:
-    """Yield a regular workspace file bound to a race-safe read handle."""
+def open_rooted_regular_file(
+    root: Path,
+    relative: str,
+    *,
+    purpose: str = "requested file",
+) -> Iterator[BinaryIO]:
+    """Yield a regular file bound to a race-safe handle beneath ``root``."""
     relative = normalize_relative_path(relative)
     try:
         handle = (
-            _open_windows_workspace_file(root, relative)
+            _open_windows_rooted_file(root, relative, purpose)
             if os.name == "nt"
-            else _open_posix_workspace_file(root, relative)
+            else _open_posix_rooted_file(root, relative, purpose)
         )
     except CapsuleError:
         raise
     except OSError as exc:
-        raise CapsuleError(
-            f"requested artifact cannot be opened safely: {relative}: {exc}"
-        ) from exc
+        raise CapsuleError(f"{purpose} cannot be opened safely: {relative}: {exc}") from exc
 
     try:
         yield handle
     finally:
         handle.close()
+
+
+@contextmanager
+def open_workspace_regular_file(root: Path, relative: str) -> Iterator[BinaryIO]:
+    """Yield a regular guest-workspace artifact bound to a safe read handle."""
+    with open_rooted_regular_file(
+        root,
+        relative,
+        purpose="requested artifact",
+    ) as handle:
+        yield handle
+
+
+@contextmanager
+def open_project_regular_file(root: Path, relative: str) -> Iterator[BinaryIO]:
+    """Yield one staged project source bound before hashing/uploading."""
+    with open_rooted_regular_file(
+        root,
+        relative,
+        purpose="staging source",
+    ) as handle:
+        yield handle
+
+
+@contextmanager
+def stabilize_snapshot_read(handle: BinaryIO, relative: str) -> Iterator[None]:
+    """Hold the strongest available mutation barrier while snapshotting.
+
+    The current production Capsule is a Windows Hyper-V guest. There we take an
+    exclusive byte-range lock over the entire 64-bit file range, which makes
+    ordinary writes through other handles fail while the snapshot is copied.
+    POSIX CI/future providers additionally take an advisory exclusive flock;
+    collection also performs a second bounded read/digest verification so an
+    uncooperative same-size writer is detected rather than silently accepted.
+    """
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        class OVERLAPPED(ctypes.Structure):
+            _fields_ = [
+                ("Internal", ctypes.c_void_p),
+                ("InternalHigh", ctypes.c_void_p),
+                ("Offset", wintypes.DWORD),
+                ("OffsetHigh", wintypes.DWORD),
+                ("hEvent", wintypes.HANDLE),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        lock_file = kernel32.LockFileEx
+        lock_file.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(OVERLAPPED),
+        ]
+        lock_file.restype = wintypes.BOOL
+        unlock_file = kernel32.UnlockFileEx
+        unlock_file.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(OVERLAPPED),
+        ]
+        unlock_file.restype = wintypes.BOOL
+
+        LOCKFILE_FAIL_IMMEDIATELY = 0x00000001
+        LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
+        os_handle = wintypes.HANDLE(msvcrt.get_osfhandle(handle.fileno()))
+        overlapped = OVERLAPPED()
+        if not lock_file(
+            os_handle,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            0xFFFFFFFF,
+            0xFFFFFFFF,
+            ctypes.byref(overlapped),
+        ):
+            raise CapsuleError(
+                f"artifact cannot be stabilized for snapshotting: {relative}: "
+                f"WinError {ctypes.get_last_error()}"
+            )
+        try:
+            yield
+        finally:
+            unlock_file(
+                os_handle,
+                0,
+                0xFFFFFFFF,
+                0xFFFFFFFF,
+                ctypes.byref(overlapped),
+            )
+        return
+
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        raise CapsuleError(
+            f"artifact cannot be stabilized for snapshotting: {relative}: {exc}"
+        ) from exc
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
