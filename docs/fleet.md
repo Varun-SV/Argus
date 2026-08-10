@@ -208,17 +208,25 @@ Potential implementations should be evaluated later based on latency, cross-plat
 
 Fleet should support secure enrollment rather than trusting arbitrary network discovery.
 
+Enrollment credentials are security-sensitive bootstrap secrets. They **must not be accepted as literal command-line argument values** because process listings, shell history, terminal logging, audit tooling, and diagnostic collectors can expose argv.
+
 A conceptual flow:
 
 ```text
-1. Administrator creates a short-lived enrollment token.
-2. `argus-node join <control-center> --token <token>`
-3. Node authenticates the Control Center.
-4. Control Center assigns a durable Node identity.
-5. Node receives/creates its long-term credentials.
-6. Enrollment token expires or is consumed.
-7. Node establishes authenticated heartbeats/control sessions.
+1. Administrator creates a short-lived, single-use enrollment credential scoped to the intended Control Center.
+2. Administrator starts `argus-node join <control-center>` without placing the credential in argv.
+3. Node authenticates the Control Center before releasing the enrollment credential.
+4. The credential is supplied through a protected input path such as a hidden stdin prompt,
+   restricted file descriptor/file, or OS credential mechanism.
+5. Control Center validates and atomically consumes the enrollment credential.
+6. Control Center assigns a durable Node identity and provisions long-term Node credentials.
+7. Bootstrap credential material is erased from temporary storage as soon as practical.
+8. Node establishes authenticated heartbeats/control sessions using its durable identity.
 ```
+
+A non-interactive implementation may support a dedicated option such as `--token-file <path>` or an inherited file descriptor, but the file must be access-restricted and the secret value itself must never appear in argv. Environment variables should not be the default bootstrap mechanism because they may also be exposed by process/debugging facilities on some systems.
+
+Enrollment credentials should be short-lived, single-use, audience-bound to the intended Control Center, and consumed atomically to reduce replay/race risk. A failed or ambiguous enrollment attempt must not silently mint multiple durable Node identities from one credential.
 
 Optional mDNS/LAN discovery may help users find an unregistered Node, but discovery must not equal trust. Production execution requires explicit authenticated enrollment.
 
@@ -322,6 +330,8 @@ Node/Capsule
 
 The Control Center should not rewrite Node facts as though it observed them directly. Provenance must identify which Node/environment emitted each event.
 
+Fleet transport must preserve the ATES event envelope: stable event IDs, monotonic per-run sequence numbers, idempotent retries, explicit gap detection, and conflict rejection. Canonical execution order comes from the producer's ATES sequence rather than network arrival order.
+
 ## Results and artifacts
 
 The Control Center may index metadata centrally while large artifacts remain on Nodes or are uploaded to central/object storage according to deployment policy.
@@ -348,25 +358,26 @@ Future discard/export workflows should use explicit privileged Control Center op
 
 1. Node discovery is not authentication.
 2. Node enrollment is explicit and authenticated.
-3. Observer authorization is read-only by construction.
-4. Control Center privilege does not bypass Capsule guest policy accidentally.
-5. Node Agents enforce local provider/capability constraints.
-6. Remote placement never silently falls back to local execution.
-7. All control-plane mutations are auditable.
-8. ATES facts retain Node/session provenance.
-9. Credentials and guest-control secrets are not emitted into ATES evidence.
-10. Ambiguous distributed failures use reconciliation rather than destructive guesses.
+3. Enrollment secrets never appear as literal argv values and are short-lived, single-use, and atomically consumed.
+4. Observer authorization is read-only by construction.
+5. Control Center privilege does not bypass Capsule guest policy accidentally.
+6. Node Agents enforce local provider/capability constraints.
+7. Remote placement never silently falls back to local execution.
+8. All control-plane mutations are auditable.
+9. ATES facts retain Node/session provenance and transport preserves ATES event identity/order.
+10. Credentials and guest-control secrets are not emitted into ATES evidence.
+11. Ambiguous distributed failures use reconciliation rather than destructive guesses.
 
 ## Initial implementation sequence
 
 Recommended order:
 
-1. define Node identity/capability models;
-2. implement Node Agent daemon and authenticated enrollment;
+1. define Node identity/capability models and enrollment credential semantics;
+2. implement Node Agent daemon and authenticated enrollment using protected secret input rather than argv;
 3. add heartbeat/capability registry to the Control Center;
 4. implement remote session request/response around existing Capsule APIs;
 5. add reconciliation for disconnect/restart scenarios;
-6. add ATES event transport once ATES Core exists;
+6. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics;
 7. implement read-only Observer API;
 8. implement live screen transport;
 9. add scheduler/queue and placement requirements;
