@@ -5,6 +5,7 @@ from pathlib import Path
 from argus.capsule.base import (
     CapsuleHandle,
     CapsuleProvider,
+    CapsuleProviderCapabilities,
     CapsuleRequest,
     CapsuleSettings,
     FailureCapsule,
@@ -32,6 +33,16 @@ def test_secure_control_surface_has_no_recovery_credential_arming():
 
 class ForensicProvider(CapsuleProvider):
     provider_name = "hyperv"
+    provider_capabilities = CapsuleProviderCapabilities(
+        provider="hyperv",
+        host_platforms=("windows",),
+        guest_os=("windows",),
+        secure_transport=True,
+        network_isolation=True,
+        explicit_transfers=True,
+        failure_retention=True,
+        egress_allowlist=True,
+    )
 
     def __init__(self, root: Path):
         self.root = root
