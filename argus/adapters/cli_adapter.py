@@ -42,6 +42,11 @@ class CLIAdapter(Adapter):
         self._command = target
         self._run(target)
 
+    def launch_literal(self, target: str) -> None:
+        """Execute one exact staged path without command-string reparsing."""
+        self._command = str(target)
+        self._run(str(target), literal=True)
+
     def observe(self, include_screenshot: bool = True) -> Observation:
         return self._last_obs
 
@@ -57,17 +62,22 @@ class CLIAdapter(Adapter):
             return "waited"
         raise AdapterError(f"CLI adapter: unknown action '{kind}' — use run/execute/done")
 
-    def _run(self, cmd: str) -> str:
+    def _run(self, cmd: str, *, literal: bool = False) -> str:
         if not cmd:
             cmd = self._command
         try:
-            args = shlex.split(cmd) if not self._shell else cmd
+            if literal:
+                args = [str(cmd)]
+                use_shell = False
+            else:
+                args = shlex.split(cmd) if not self._shell else cmd
+                use_shell = self._shell
             result = subprocess.run(
                 args,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,
-                shell=self._shell,
+                shell=use_shell,
                 cwd=self._cwd,
             )
             self._last_obs = Observation(
