@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from argus.capsule.guest_agent import GuestAgentState
 from argus.engine.runner import run_test
 from argus.engine.spec import StageFile, parse_spec
 from argus.execution import CapsuleExecutionEnvironment
+from argus.execution.base import ExecutionEnvironmentError
 from tests.conftest import FakeProvider
 
 
@@ -179,7 +181,7 @@ def test_guest_state_stages_and_collects_only_inside_workspace(tmp_path, monkeyp
     digest = hashlib.sha256(payload).hexdigest()
 
     state.stage_begin("app/payload.bin", len(payload), digest)
-    state.stage_chunk("app/payload.bin", 0, __import__("base64").b64encode(payload).decode("ascii"))
+    state.stage_chunk("app/payload.bin", 0, base64.b64encode(payload).decode("ascii"))
     committed = state.stage_commit("app/payload.bin", len(payload), digest)
 
     assert Path(committed["guest_path"]).read_bytes() == payload
@@ -216,7 +218,7 @@ def test_undeclared_stage_uri_rolls_back_without_retention(tmp_path):
     environment, provider, _ = _environment(tmp_path, retain=True)
     environment.prepare_transfers()
 
-    with pytest.raises(CapsuleError, match="not declared/committed"):
+    with pytest.raises(ExecutionEnvironmentError, match="not declared/committed"):
         environment.launch("stage://bin/missing.exe")
 
     assert provider.retained == []
