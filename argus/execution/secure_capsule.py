@@ -8,7 +8,13 @@ from dataclasses import replace
 from typing import Callable, Mapping, Optional
 
 from argus.adapters.base import PolicyAdapter
-from argus.capsule.base import CapsuleHandle, CapsuleProvider, CapsuleRequest, CapsuleSettings
+from argus.capsule.base import (
+    CapsuleHandle,
+    CapsuleProvider,
+    CapsuleProviderCapabilities,
+    CapsuleRequest,
+    CapsuleSettings,
+)
 from argus.capsule.guest import GuestAdapterProxy
 from argus.capsule.secure_client import SecureGuestAgentClient
 from argus.execution.base import ExecutionEnvironmentError
@@ -72,7 +78,19 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         if kind == "hyperv":
             from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
 
-            return IsolatedHyperVProvider()
+            class SecureHyperVProvider(IsolatedHyperVProvider):
+                provider_capabilities = CapsuleProviderCapabilities(
+                    provider="hyperv",
+                    host_platforms=("windows",),
+                    guest_os=("windows",),
+                    secure_transport=True,
+                    network_isolation=True,
+                    explicit_transfers=True,
+                    failure_retention=True,
+                    egress_allowlist=True,
+                )
+
+            return SecureHyperVProvider()
         if kind in {"libvirt", "qemu", "kvm"}:
             from argus.capsule.libvirt import LibvirtProvider
 
