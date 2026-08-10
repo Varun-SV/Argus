@@ -79,7 +79,7 @@ execution:
     assert environment.settings.libvirt_network_cidr == "10.251.44.0/24"
     assert environment.settings.libvirt_arch == "x86_64"
     assert environment.settings.libvirt_machine == "pc-q35-test"
-    assert environment.settings.vm_root == str(vm_root)
+    assert Path(environment.settings.vm_root) == vm_root
 
 
 def test_libvirt_env_overrides_are_propagated(tmp_path, monkeypatch):
