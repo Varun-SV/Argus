@@ -11,17 +11,14 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Optional
 
 from argus.adapters.base import Adapter, AdapterError, Observation
 
 
 class ExecutionEnvironmentError(AdapterError):
-    """Raised when an execution environment cannot be prepared or created.
-
-    Subclassing :class:`AdapterError` keeps existing callers backward-compatible
-    while giving environment failures a distinct type for newer code.
-    """
+    """Raised when an execution environment cannot be prepared or created."""
 
 
 @dataclass(frozen=True)
@@ -37,26 +34,21 @@ class ExecutionEnvironmentInfo:
 class ExecutionEnvironment(Adapter, ABC):
     """Adapter-compatible boundary around an execution location.
 
-    The compatibility with :class:`Adapter` is intentional: current Argus
-    engines already consume ``launch / observe / act / close / capabilities``.
-    Keeping that surface lets the execution-location boundary wrap either the
-    local host or a Capsule/guest-agent implementation without rewriting the
-    agent loop.
-
     Lifecycle contract
     ------------------
     The environment owns every resource acquired by :meth:`prepare`. A public
-    launch path must be exception-safe. If preparation succeeds (even only
-    partially) but target launch fails, the environment must release those
-    resources before propagating the failure unless an explicit retention
-    policy preserves them for diagnostics. If requested preservation itself
-    fails, implementations must fail safe by keeping recoverable resources
-    intact and surfacing enough recovery metadata for an operator to inspect or
-    clean them up. Implementations whose ``prepare`` method can be called
-    directly must still roll back any partial allocation before raising, because
-    no valid test state necessarily exists yet to retain. This prevents
-    VM/disk/network allocations from being leaked accidentally while allowing
-    deliberately retained failure state to remain available for reproduction.
+    launch path must be exception-safe. If preparation succeeds but target
+    launch fails, resources are released unless an explicit retention policy
+    preserves them. Failed preservation must leave recoverable resources intact
+    and surface recovery metadata. Direct ``prepare`` failures still roll back
+    partial allocations because no valid test state necessarily exists yet.
+
+    File-transfer contract
+    ----------------------
+    Staging and collection are explicit execution-environment operations. Local
+    execution does not implicitly copy files. Capsule implementations may expose
+    a bounded per-session workspace; paths crossing that boundary must be
+    deterministic policy inputs rather than agent/model-generated destinations.
     """
 
     environment_type: str = "base"
@@ -64,16 +56,7 @@ class ExecutionEnvironment(Adapter, ABC):
     location: str = "unknown"
 
     def prepare(self) -> None:
-        """Prepare resources required by this environment.
-
-        Implementations must make direct calls exception-safe: if preparation
-        raises after partially allocating resources, it must release those
-        partial resources before propagating the exception. The normal
-        :meth:`launch` path should additionally roll back the whole environment
-        when preparation fails, and should release target-launch resources unless
-        an explicit retention policy preserves the prepared failure state (or
-        fails safe while preserving recoverable resources for operator action).
-        """
+        """Prepare resources required by this environment."""
 
     def info(self) -> ExecutionEnvironmentInfo:
         return ExecutionEnvironmentInfo(
@@ -89,15 +72,33 @@ class ExecutionEnvironment(Adapter, ABC):
         return f"{info.environment_type}:{info.adapter_type} ({info.location}, {isolation})"
 
     def record_failure(self, reason: str) -> None:
-        """Record a failure before teardown.
-
-        Local environments intentionally ignore this. VM-backed environments may
-        use it to retain reproducible failure state when explicitly configured.
-        """
+        """Record a failure before teardown."""
 
     def failure_capsule(self):
         """Return retained failure metadata, if this environment produced any."""
         return None
+
+    def failure_capsule_error(self):
+        """Return retention recovery metadata, if retention itself failed."""
+        return None
+
+    def prepare_transfers(self) -> None:
+        """Prepare an explicit staging/collection workspace."""
+        raise ExecutionEnvironmentError(
+            "file staging/collection is only supported by a transfer-capable execution environment"
+        )
+
+    def stage_files(self, entries, project_dir: Path) -> list[dict]:
+        """Stage explicit project files into the execution workspace."""
+        raise ExecutionEnvironmentError(
+            "file staging is not supported by this execution environment"
+        )
+
+    def collect_artifacts(self, paths, output_dir: Path) -> list[dict]:
+        """Collect explicit workspace files into ``output_dir``."""
+        raise ExecutionEnvironmentError(
+            "artifact collection is not supported by this execution environment"
+        )
 
 
 class LocalExecutionEnvironment(ExecutionEnvironment):
@@ -116,7 +117,6 @@ class LocalExecutionEnvironment(ExecutionEnvironment):
         self._prepared = True
 
     def launch(self, target: str) -> None:
-        """Prepare and launch atomically from the caller's point of view."""
         try:
             if not self._prepared:
                 self.prepare()
@@ -164,12 +164,7 @@ def create_execution_environment(
     environment_type: str = "local",
     capsule_config: Optional[Mapping] = None,
 ) -> ExecutionEnvironment:
-    """Create the requested session execution location.
-
-    ``local`` preserves the current host behavior. ``capsule`` creates a
-    disposable VM-backed environment; PR3 initially supports Hyper-V through
-    its Capsule provider configuration.
-    """
+    """Create the requested session execution location."""
     kind = (environment_type or "local").lower().strip()
     if kind == "capsule":
         from argus.execution.capsule import CapsuleExecutionEnvironment
