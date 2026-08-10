@@ -42,8 +42,6 @@ class SecureGuestAgentClient(GuestAgentClient):
                 )
             if opener is None:
                 context = ssl.create_default_context(cafile=str(ca_path.resolve()))
-                # Capsule endpoints are provider-attested IPs. Trust is pinned to
-                # the dedicated CA/certificate rather than DNS hostnames.
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_REQUIRED
                 opener = urllib.request.build_opener(
@@ -97,3 +95,17 @@ class SecureGuestAgentClient(GuestAgentClient):
             raise rotate_exc
         else:
             self.token = token
+
+    def arm_recovery(self, session_id: str, recovery_token: str) -> None:
+        """Provision one-time startup credentials for an explicitly retained Capsule."""
+        session_id = validate_session_id(session_id)
+        token = str(recovery_token or "").strip()
+        if len(token) < 32:
+            raise CapsuleGuestError("retained Capsule recovery token is too short")
+        data = self._request(
+            "POST",
+            "/v1/recovery/arm",
+            {"session_id": session_id, "token": token},
+        )
+        if data.get("armed") is not True or data.get("session_id") != session_id:
+            raise CapsuleGuestError("guest did not confirm retained Capsule recovery arming")
