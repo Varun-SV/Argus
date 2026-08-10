@@ -55,9 +55,7 @@ class ExecutionEnvironment(Adapter, ABC):
     intact and surfacing enough recovery metadata for an operator to inspect or
     clean them up. Implementations whose ``prepare`` method can be called
     directly must still roll back any partial allocation before raising, because
-    no valid test state necessarily exists yet to retain. This prevents
-    VM/disk/network allocations from being leaked accidentally while allowing
-    deliberately retained failure state to remain available for reproduction.
+    no valid test state necessarily exists yet to retain.
 
     File-transfer contract
     ----------------------
@@ -67,6 +65,13 @@ class ExecutionEnvironment(Adapter, ABC):
     deterministic policy inputs rather than agent/model-generated destinations.
     Transfer preparation/staging occurs before target launch, while collection
     must finish before the environment is closed, retained, or destroyed.
+
+    Isolation contract
+    ------------------
+    Production Capsule creation routes through the PR6 secure environment. The
+    hypervisor network boundary is installed before VM boot, and remote guest
+    control defaults to authenticated HTTPS with a per-session bearer. Legacy
+    plaintext control requires an explicit insecure opt-in.
     """
 
     environment_type: str = "base"
@@ -74,16 +79,7 @@ class ExecutionEnvironment(Adapter, ABC):
     location: str = "unknown"
 
     def prepare(self) -> None:
-        """Prepare resources required by this environment.
-
-        Implementations must make direct calls exception-safe: if preparation
-        raises after partially allocating resources, it must release those
-        partial resources before propagating the exception. The normal
-        :meth:`launch` path should additionally roll back the whole environment
-        when preparation fails, and should release target-launch resources unless
-        an explicit retention policy preserves the prepared failure state (or
-        fails safe while preserving recoverable resources for operator action).
-        """
+        """Prepare resources required by this environment."""
 
     def info(self) -> ExecutionEnvironmentInfo:
         return ExecutionEnvironmentInfo(
@@ -99,11 +95,7 @@ class ExecutionEnvironment(Adapter, ABC):
         return f"{info.environment_type}:{info.adapter_type} ({info.location}, {isolation})"
 
     def record_failure(self, reason: str) -> None:
-        """Record a failure before teardown.
-
-        Local environments intentionally ignore this. VM-backed environments may
-        use it to retain reproducible failure state when explicitly configured.
-        """
+        """Record a failure before teardown."""
 
     def failure_capsule(self):
         """Return retained failure metadata, if this environment produced any."""
@@ -196,17 +188,12 @@ def create_execution_environment(
     environment_type: str = "local",
     capsule_config: Optional[Mapping] = None,
 ) -> ExecutionEnvironment:
-    """Create the requested session execution location.
-
-    ``local`` preserves the current host behavior. ``capsule`` creates a
-    disposable VM-backed environment; PR3 initially supports Hyper-V through
-    its Capsule provider configuration.
-    """
+    """Create the requested session execution location."""
     kind = (environment_type or "local").lower().strip()
     if kind == "capsule":
-        from argus.execution.capsule import CapsuleExecutionEnvironment
+        from argus.execution.secure_capsule import SecureCapsuleExecutionEnvironment
 
-        return CapsuleExecutionEnvironment.from_mapping(adapter_type, capsule_config)
+        return SecureCapsuleExecutionEnvironment.from_mapping(adapter_type, capsule_config)
     if kind != "local":
         raise ExecutionEnvironmentError(
             f"unknown execution environment '{environment_type}' — available: local, capsule"
