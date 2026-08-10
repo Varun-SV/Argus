@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from argus.adapters.base import AdapterError
@@ -13,6 +11,7 @@ from argus.capsule.files import (
 )
 from argus.capsule.guest import CapsuleGuestError, GuestAgentClient
 from argus.capsule.guest_agent import GuestAgentState
+from argus.engine.results import RunResult
 
 
 def test_guest_pending_uploads_count_toward_session_limit(tmp_path, monkeypatch):
@@ -94,3 +93,27 @@ def test_host_staging_source_symlink_cannot_escape_project(tmp_path):
 
     with pytest.raises(CapsuleError, match="escapes the project root"):
         project_source_path(project, "linked.bin")
+
+
+def test_runs_root_symlink_cannot_escape_project(tmp_path):
+    project = tmp_path / "project"
+    argus_dir = project / ".argus"
+    argus_dir.mkdir(parents=True)
+    outside = tmp_path / "outside-runs"
+    outside.mkdir()
+    runs = argus_dir / "runs"
+    try:
+        runs.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable on this runner: {exc}")
+
+    result = RunResult(
+        test_name="escape",
+        test_file="escape.test.yaml",
+        adapter="desktop-gui",
+        provider="fake",
+    )
+    with pytest.raises(OSError, match="escapes the project root"):
+        result.run_dir(project)
+
+    assert list(outside.iterdir()) == []
