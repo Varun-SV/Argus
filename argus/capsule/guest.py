@@ -282,7 +282,14 @@ class GuestAgentClient:
             "host_path": str(destination),
         }
 
-    def launch(self, adapter_type: str, target: str, input_mode: str) -> dict:
+    def launch(
+        self,
+        adapter_type: str,
+        target: str,
+        input_mode: str,
+        *,
+        literal_target: bool = False,
+    ) -> dict:
         return self._request(
             "POST",
             "/v1/session/start",
@@ -290,6 +297,7 @@ class GuestAgentClient:
                 "adapter_type": adapter_type,
                 "target": target,
                 "input_mode": input_mode,
+                "literal_target": bool(literal_target),
             },
         )
 
@@ -315,12 +323,24 @@ class GuestAdapterProxy(Adapter):
         self.input_mode = input_mode
         self._capabilities: Optional[dict] = None
 
-    def launch(self, target: str) -> None:
-        data = self.client.launch(self.type_name, target, self.input_mode)
+    def _store_launch_capabilities(self, data: dict) -> None:
         capabilities = data.get("capabilities")
         if not isinstance(capabilities, dict):
             raise CapsuleGuestError("guest agent did not return adapter capabilities")
         self._capabilities = capabilities
+
+    def launch(self, target: str) -> None:
+        data = self.client.launch(self.type_name, target, self.input_mode)
+        self._store_launch_capabilities(data)
+
+    def launch_literal(self, target: str) -> None:
+        data = self.client.launch(
+            self.type_name,
+            target,
+            self.input_mode,
+            literal_target=True,
+        )
+        self._store_launch_capabilities(data)
 
     def observe(self, include_screenshot: bool = True) -> Observation:
         obs = self.client.observe(include_screenshot=include_screenshot)
