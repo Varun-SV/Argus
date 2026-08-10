@@ -120,6 +120,27 @@ def test_guest_state_pins_cli_workspace_before_launch(tmp_path, monkeypatch):
     assert Path.cwd() == original_cwd
 
 
+def test_guest_collection_reads_stable_preflight_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    state = GuestAgentState()
+    state.begin_files("snapshot123")
+    artifact = state.workspace_root / "logs" / "result.txt"
+    artifact.parent.mkdir(parents=True)
+    original = b"abc"
+    artifact.write_bytes(original)
+
+    info = state.collect_info("logs/result.txt")
+    artifact.write_bytes(b"abcdef")
+
+    assert info == {
+        "size": len(original),
+        "sha256": hashlib.sha256(original).hexdigest(),
+    }
+    assert state.collect_chunk("logs/result.txt", 0, len(original)) == original
+    assert state.collect_info("logs/result.txt") == info
+    state.close()
+
+
 def test_collection_rejects_artifact_that_changes_after_preflight(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
