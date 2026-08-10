@@ -12,7 +12,7 @@ from argus.adapters.cli_adapter import CLIAdapter
 from argus.capsule.base import CapsuleError, CapsuleSettings
 from argus.capsule.guest import CapsuleGuestError, GuestAgentClient
 from argus.capsule.guest_agent import GuestAgentState
-from argus.engine.spec import SpecError, StageFile, parse_spec
+from argus.engine.spec import SpecError, StageFile, TestSpec, parse_spec
 from argus.execution import CapsuleExecutionEnvironment
 from argus.execution.base import ExecutionEnvironmentError
 from tests.test_capsule_transfers import TransferClient, TransferProvider
@@ -251,3 +251,13 @@ collect:
 
     with pytest.raises(SpecError, match=error):
         parse_spec(text)
+
+
+def test_invalid_programmatic_testspec_collect_is_rejected_before_runner():
+    with pytest.raises(SpecError, match="invalid"):
+        TestSpec(
+            name="programmatic invalid collect",
+            adapter="desktop-gui",
+            launch="app.exe",
+            collect=["../escape.txt"],
+        )
