@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from pathlib import Path
 from typing import Callable, Optional
 
 from argus.adapters.base import Adapter, Observation, UIElement
 from argus.capsule.base import CapsuleError
+from argus.capsule.files import (
+    TRANSFER_CHUNK_BYTES,
+    TRANSFER_MAX_FILE_BYTES,
+    normalize_relative_path,
+    sha256_file,
+    workspace_path,
+)
 
 
 class CapsuleGuestError(CapsuleError):
@@ -121,6 +132,138 @@ class GuestAgentClient:
         raise CapsuleGuestError(
             f"guest agent did not become ready within {timeout_seconds:.0f}s: {last_error}"
         )
+
+    # ---- deterministic workspace file transfer -------------------------
+
+    def begin_files(self, session_id: str) -> dict:
+        return self._request("POST", "/v1/files/begin", {"session_id": session_id})
+
+    def stage_file(
+        self,
+        source: Path,
+        destination: str,
+        *,
+        expected_sha256: str = "",
+    ) -> dict:
+        destination = normalize_relative_path(destination)
+        size = source.stat().st_size
+        if size > TRANSFER_MAX_FILE_BYTES:
+            raise CapsuleGuestError(
+                f"staged file exceeds {TRANSFER_MAX_FILE_BYTES} byte limit: {destination}"
+            )
+        digest = sha256_file(source)
+        expected = str(expected_sha256 or "").strip().lower()
+        if expected and expected != digest:
+            raise CapsuleGuestError(
+                f"staging checksum mismatch before upload for {destination}: "
+                f"expected {expected}, got {digest}"
+            )
+        self._request(
+            "POST",
+            "/v1/files/stage/begin",
+            {"path": destination, "size": size, "sha256": digest},
+        )
+        offset = 0
+        with source.open("rb") as handle:
+            while True:
+                chunk = handle.read(TRANSFER_CHUNK_BYTES)
+                if not chunk:
+                    break
+                self._request(
+                    "POST",
+                    "/v1/files/stage/chunk",
+                    {
+                        "path": destination,
+                        "offset": offset,
+                        "data_b64": base64.b64encode(chunk).decode("ascii"),
+                    },
+                )
+                offset += len(chunk)
+        data = self._request(
+            "POST",
+            "/v1/files/stage/commit",
+            {"path": destination, "size": size, "sha256": digest},
+        )
+        guest_path = str(data.get("guest_path") or "").strip()
+        if not guest_path:
+            raise CapsuleGuestError("guest did not return the committed staged path")
+        return {
+            "source": str(source),
+            "destination": destination,
+            "size": size,
+            "sha256": digest,
+            "guest_path": guest_path,
+        }
+
+    def collect_info(self, relative: str) -> dict:
+        relative = normalize_relative_path(relative)
+        query = urllib.parse.urlencode({"path": relative})
+        data = self._request("GET", f"/v1/files/collect/info?{query}")
+        size = int(data.get("size", -1))
+        digest = str(data.get("sha256") or "").strip().lower()
+        if size < 0 or size > TRANSFER_MAX_FILE_BYTES:
+            raise CapsuleGuestError(f"guest artifact size is invalid for {relative}: {size}")
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise CapsuleGuestError(f"guest artifact checksum is invalid for {relative}")
+        return {"path": relative, "size": size, "sha256": digest}
+
+    def collect_file(self, relative: str, output_root: Path, *, info: Optional[dict] = None) -> dict:
+        relative = normalize_relative_path(relative)
+        metadata = dict(info or self.collect_info(relative))
+        size = int(metadata["size"])
+        expected = str(metadata["sha256"]).lower()
+
+        output_root.mkdir(parents=True, exist_ok=True)
+        destination = workspace_path(output_root, relative, must_exist=False)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # Resolve again after creating parents so a pre-existing symlink/junction
+        # cannot become a host-write escape between validation and the write.
+        destination = workspace_path(output_root, relative, must_exist=False)
+        temp = destination.with_name(f".{destination.name}.argus-{uuid.uuid4().hex}.part")
+        digest = hashlib.sha256()
+        offset = 0
+        try:
+            with temp.open("xb") as handle:
+                while offset < size:
+                    limit = min(TRANSFER_CHUNK_BYTES, size - offset)
+                    query = urllib.parse.urlencode(
+                        {"path": relative, "offset": offset, "limit": limit}
+                    )
+                    data = self._request("GET", f"/v1/files/collect/chunk?{query}")
+                    try:
+                        chunk = base64.b64decode(str(data.get("data_b64") or ""), validate=True)
+                    except Exception as exc:
+                        raise CapsuleGuestError(
+                            f"guest returned invalid artifact data for {relative}"
+                        ) from exc
+                    if len(chunk) != limit:
+                        raise CapsuleGuestError(
+                            f"guest artifact chunk length mismatch for {relative}: "
+                            f"expected {limit}, got {len(chunk)}"
+                        )
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    offset += len(chunk)
+            actual = digest.hexdigest()
+            if actual != expected:
+                raise CapsuleGuestError(
+                    f"artifact checksum mismatch for {relative}: expected {expected}, got {actual}"
+                )
+            os.replace(temp, destination)
+        except Exception:
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+            raise
+        return {
+            "path": relative,
+            "size": size,
+            "sha256": expected,
+            "host_path": str(destination),
+        }
+
+    # ---- target session -------------------------------------------------
 
     def launch(self, adapter_type: str, target: str, input_mode: str) -> dict:
         return self._request(
