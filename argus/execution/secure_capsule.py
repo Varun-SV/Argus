@@ -50,8 +50,17 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 "secure Capsules require per-session bearer rotation; "
                 "rotate_session_token cannot be disabled"
             )
+        injected_provider = provider is not None
         selected = provider or self._make_secure_provider(settings.provider)
-        self._validate_provider_capabilities(selected, settings)
+        # Injected providers are an extension boundary, so their host-platform
+        # claim is checked immediately. Built-in providers remain constructible
+        # for config/factory inspection on non-native CI hosts, but are checked
+        # again immediately before any provider allocation in prepare().
+        self._validate_provider_capabilities(
+            selected,
+            settings,
+            validate_host_platform=injected_provider,
+        )
         super().__init__(
             adapter_type,
             settings,
@@ -112,21 +121,9 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         )
 
     @classmethod
-    def _validate_provider_capabilities(
-        cls,
-        provider: CapsuleProvider,
-        settings: CapsuleSettings,
-    ) -> None:
-        """Fail closed when an injected/extension provider weakens security."""
+    def _validate_provider_host_platform(cls, provider: CapsuleProvider) -> None:
         capabilities = provider.capabilities()
         provider_name = str(provider.provider_name or "unknown")
-        advertised = str(capabilities.provider or "").strip()
-        if advertised and advertised != provider_name:
-            raise ExecutionEnvironmentError(
-                f"Capsule provider {provider_name!r} advertises mismatched capabilities "
-                f"for {advertised!r}"
-            )
-
         current_host = cls._normalize_host_platform(sys.platform)
         advertised_hosts = {
             cls._normalize_host_platform(item)
@@ -139,6 +136,27 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 f"Capsule provider {provider_name!r} does not support the current host "
                 f"platform {current_host!r}; advertised hosts: {supported}"
             )
+
+    @classmethod
+    def _validate_provider_capabilities(
+        cls,
+        provider: CapsuleProvider,
+        settings: CapsuleSettings,
+        *,
+        validate_host_platform: bool = True,
+    ) -> None:
+        """Fail closed when a provider weakens the secure Capsule contract."""
+        capabilities = provider.capabilities()
+        provider_name = str(provider.provider_name or "unknown")
+        advertised = str(capabilities.provider or "").strip()
+        if advertised and advertised != provider_name:
+            raise ExecutionEnvironmentError(
+                f"Capsule provider {provider_name!r} advertises mismatched capabilities "
+                f"for {advertised!r}"
+            )
+
+        if validate_host_platform:
+            cls._validate_provider_host_platform(provider)
 
         missing: list[str] = []
         if not capabilities.secure_transport:
@@ -197,6 +215,9 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             return
         handle: Optional[CapsuleHandle] = None
         try:
+            # Regardless of how the environment was constructed, no provider may
+            # cross the allocation boundary on an unadvertised host platform.
+            self._validate_provider_host_platform(self.provider)
             guest_os = self._resolved_guest_os()
             # Resolve aliases before crossing the provider boundary. This keeps
             # existing Hyper-V/libvirt providers strict about their own names
