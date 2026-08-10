@@ -3,720 +3,127 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Argus — Autonomous Application Testing with AI</title>
-<meta name="description" content="Argus tests any software — desktop GUI, web, CLI — using multimodal LLMs. No selectors. No brittle scripts. Just describe what you want.">
+<title>Argus — Autonomous Application Testing with Isolated Execution</title>
+<meta name="description" content="Argus uses multimodal LLMs to test desktop, web, and CLI software. Run lightweight tests locally or use isolated Argus Capsules for production testing.">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #0d1117;
-    --bg2: #161b22;
-    --bg3: #21262d;
-    --border: #30363d;
-    --text: #e6edf3;
-    --muted: #8b949e;
-    --faint: #484f58;
-    --brand: #14c9ac;
-    --brand-dim: rgba(20,201,172,.12);
-    --blue: #58a6ff;
-    --red: #f85149;
-    --green: #3fb950;
-    --yellow: #d29922;
-    --r: 8px;
-  }
-  html { scroll-behavior: smooth; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.6;
-    font-size: 16px;
-  }
-  a { color: var(--brand); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  code, pre { font-family: "SF Mono", "Fira Mono", "Cascadia Code", Consolas, monospace; }
-
-  /* ── Nav ───────────────────────────────────── */
-  nav {
-    position: sticky; top: 0; z-index: 100;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 2rem; height: 56px;
-    background: rgba(13,17,23,.92);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--border);
-  }
-  .nav-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.1rem; color: var(--text); }
-  .nav-brand svg { flex-shrink: 0; }
-  .nav-links { display: flex; gap: 1.5rem; }
-  .nav-links a { color: var(--muted); font-size: .9rem; }
-  .nav-links a:hover { color: var(--text); text-decoration: none; }
-  .nav-cta {
-    background: var(--brand); color: #0d1117; font-weight: 600;
-    padding: .4rem 1rem; border-radius: 6px; font-size: .875rem;
-  }
-  .nav-cta:hover { background: #0fb89a; text-decoration: none; }
-
-  /* ── Hero ──────────────────────────────────── */
-  .hero {
-    max-width: 860px; margin: 0 auto;
-    padding: 6rem 2rem 4rem;
-    text-align: center;
-  }
-  .hero-badge {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: var(--brand-dim); border: 1px solid rgba(20,201,172,.25);
-    color: var(--brand); font-size: .8rem; font-weight: 600;
-    letter-spacing: .06em; text-transform: uppercase;
-    padding: .3rem .9rem; border-radius: 100px; margin-bottom: 1.5rem;
-  }
-  .hero-badge span { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); animation: pulse 1.6s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.3 } }
-  h1 {
-    font-size: clamp(2.4rem, 6vw, 4rem);
-    font-weight: 800; letter-spacing: -.03em; line-height: 1.1;
-    margin-bottom: 1.25rem;
-  }
-  h1 em { font-style: normal; color: var(--brand); }
-  .hero-sub {
-    font-size: 1.2rem; color: var(--muted); max-width: 560px;
-    margin: 0 auto 2.5rem; line-height: 1.7;
-  }
-  .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-bottom: 3rem; }
-  .btn-primary {
-    background: var(--brand); color: #0d1117; font-weight: 700;
-    padding: .75rem 1.75rem; border-radius: var(--r); font-size: 1rem;
-    display: inline-flex; align-items: center; gap: .5rem;
-  }
-  .btn-primary:hover { background: #0fb89a; text-decoration: none; }
-  .btn-ghost {
-    border: 1px solid var(--border); color: var(--text);
-    padding: .75rem 1.75rem; border-radius: var(--r); font-size: 1rem;
-    display: inline-flex; align-items: center; gap: .5rem;
-  }
-  .btn-ghost:hover { background: var(--bg2); text-decoration: none; }
-
-  /* ── Terminal ──────────────────────────────── */
-  .terminal-wrap { max-width: 720px; margin: 0 auto 5rem; }
-  .terminal {
-    background: var(--bg2); border: 1px solid var(--border);
-    border-radius: var(--r); overflow: hidden;
-    box-shadow: 0 16px 48px rgba(0,0,0,.4);
-  }
-  .terminal-bar {
-    background: var(--bg3); padding: .6rem 1rem;
-    display: flex; align-items: center; gap: .5rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .terminal-bar i {
-    width: 12px; height: 12px; border-radius: 50%;
-    display: inline-block;
-  }
-  .dot-r { background: #ff5f57; }
-  .dot-y { background: #febc2e; }
-  .dot-g { background: #28c840; }
-  .terminal-title { margin-left: .5rem; font-size: .78rem; color: var(--muted); }
-  .terminal-body { padding: 1.25rem 1.5rem; font-size: .875rem; line-height: 1.7; }
-  .terminal-body pre { white-space: pre-wrap; }
-  .c-muted { color: var(--muted); }
-  .c-green { color: var(--green); }
-  .c-brand { color: var(--brand); }
-  .c-yellow { color: var(--yellow); }
-  .c-red { color: var(--red); }
-  .c-blue { color: var(--blue); }
-
-  /* ── Section titles ────────────────────────── */
-  section { padding: 5rem 2rem; }
-  .section-inner { max-width: 1100px; margin: 0 auto; }
-  .section-label {
-    font-size: .78rem; font-weight: 700; letter-spacing: .1em;
-    text-transform: uppercase; color: var(--brand);
-    margin-bottom: .75rem;
-  }
-  h2 {
-    font-size: clamp(1.6rem, 4vw, 2.4rem);
-    font-weight: 700; letter-spacing: -.02em; margin-bottom: 1rem;
-  }
-  .section-sub { color: var(--muted); font-size: 1.1rem; max-width: 600px; margin-bottom: 3rem; }
-
-  /* ── Feature grid ──────────────────────────── */
-  .feature-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 1.5rem;
-  }
-  .feature-card {
-    background: var(--bg2); border: 1px solid var(--border);
-    border-radius: var(--r); padding: 1.5rem;
-    transition: border-color .2s;
-  }
-  .feature-card:hover { border-color: var(--brand); }
-  .feature-icon {
-    width: 40px; height: 40px; border-radius: 10px;
-    background: var(--brand-dim); display: flex; align-items: center;
-    justify-content: center; margin-bottom: 1rem; font-size: 1.25rem;
-  }
-  .feature-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: .5rem; }
-  .feature-card p { font-size: .9rem; color: var(--muted); line-height: 1.6; }
-
-  /* ── How it works ──────────────────────────── */
-  .steps { display: flex; flex-direction: column; gap: 2rem; max-width: 700px; }
-  .step { display: flex; gap: 1.5rem; }
-  .step-num {
-    flex-shrink: 0; width: 36px; height: 36px; border-radius: 50%;
-    background: var(--brand-dim); border: 2px solid var(--brand);
-    color: var(--brand); font-weight: 700; font-size: .9rem;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .step-content h3 { font-size: 1rem; font-weight: 600; margin-bottom: .4rem; }
-  .step-content p { font-size: .9rem; color: var(--muted); }
-
-  /* ── Adapters ──────────────────────────────── */
-  .adapter-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 1rem;
-  }
-  .adapter-card {
-    background: var(--bg2); border: 1px solid var(--border);
-    border-radius: var(--r); padding: 1.25rem;
-  }
-  .adapter-card h3 { font-size: .95rem; font-weight: 600; margin-bottom: .4rem; display: flex; align-items: center; gap: .5rem; }
-  .adapter-card p { font-size: .85rem; color: var(--muted); }
-  .badge {
-    font-size: .7rem; font-weight: 700; padding: 1px 7px;
-    border-radius: 100px; text-transform: uppercase;
-  }
-  .badge-stable { background: rgba(63,185,80,.15); color: var(--green); }
-  .badge-new { background: rgba(88,166,255,.15); color: var(--blue); }
-
-  /* ── Install ───────────────────────────────── */
-  .install-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 1rem;
-  }
-  .install-card {
-    background: var(--bg2); border: 1px solid var(--border);
-    border-radius: var(--r); overflow: hidden;
-  }
-  .install-card-head {
-    padding: .75rem 1rem;
-    border-bottom: 1px solid var(--border);
-    font-size: .85rem; font-weight: 600; color: var(--muted);
-  }
-  .install-card pre {
-    padding: 1rem; font-size: .82rem; color: var(--text);
-    overflow-x: auto;
-  }
-
-  /* ── Comparison table ──────────────────────── */
-  .compare-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-  .compare-table th {
-    text-align: left; padding: .75rem 1rem;
-    border-bottom: 2px solid var(--border);
-    color: var(--muted); font-weight: 600;
-  }
-  .compare-table td {
-    padding: .65rem 1rem;
-    border-bottom: 1px solid var(--bg3);
-  }
-  .compare-table tr:last-child td { border-bottom: none; }
-  .compare-table td:first-child { color: var(--muted); }
-  .compare-table .argus-col { color: var(--brand); font-weight: 500; }
-  .compare-table .no-col { color: var(--faint); }
-
-  /* ── YAML example ──────────────────────────── */
-  .yaml-tabs {
-    display: flex; gap: .5rem; margin-bottom: -1px;
-  }
-  .yaml-tab {
-    background: var(--bg3); border: 1px solid var(--border);
-    border-bottom-color: var(--bg3); border-radius: 6px 6px 0 0;
-    padding: .4rem 1rem; font-size: .8rem; color: var(--muted);
-    cursor: pointer;
-  }
-  .yaml-tab.active { background: var(--bg2); border-bottom-color: var(--bg2); color: var(--text); }
-  .yaml-panel {
-    background: var(--bg2); border: 1px solid var(--border);
-    border-radius: 0 var(--r) var(--r) var(--r); padding: 1.5rem;
-    overflow-x: auto;
-  }
-  .yaml-panel pre { font-size: .85rem; line-height: 1.7; }
-
-  /* ── Roam section ──────────────────────────── */
-  .roam-output {
-    background: var(--bg2); border: 1px solid var(--border);
-    border-radius: var(--r); padding: 1.5rem;
-    font-size: .85rem; line-height: 1.8;
-    max-width: 640px;
-  }
-
-  /* ── CTA ───────────────────────────────────── */
-  .cta-section {
-    text-align: center; padding: 6rem 2rem;
-    background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
-  }
-  .cta-section h2 { margin-bottom: 1rem; }
-  .cta-section p { color: var(--muted); margin-bottom: 2rem; font-size: 1.1rem; }
-
-  /* ── Footer ────────────────────────────────── */
-  footer {
-    border-top: 1px solid var(--border);
-    padding: 2rem; text-align: center;
-    color: var(--faint); font-size: .85rem;
-  }
-  footer a { color: var(--muted); }
-
-  /* ── Responsive ────────────────────────────── */
-  @media (max-width: 640px) {
-    .nav-links { display: none; }
-    .hero { padding: 4rem 1.25rem 3rem; }
-    h1 { font-size: 2rem; }
-    section { padding: 3.5rem 1.25rem; }
-  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--faint:#484f58;--brand:#14c9ac;--brand-dim:rgba(20,201,172,.12);--blue:#58a6ff;--red:#f85149;--green:#3fb950;--yellow:#d29922;--r:8px}
+  html{scroll-behavior:smooth} body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;font-size:16px} a{color:var(--brand);text-decoration:none} a:hover{text-decoration:underline} code,pre{font-family:"SF Mono","Fira Mono","Cascadia Code",Consolas,monospace}
+  nav{position:sticky;top:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 2rem;height:56px;background:rgba(13,17,23,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+  .nav-brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.1rem;color:var(--text)} .nav-links{display:flex;gap:1.35rem;align-items:center}.nav-links a{color:var(--muted);font-size:.9rem}.nav-links a:hover{color:var(--text);text-decoration:none}.nav-cta{background:var(--brand);color:#0d1117;font-weight:700;padding:.4rem 1rem;border-radius:6px;font-size:.875rem}.nav-cta:hover{background:#0fb89a;text-decoration:none}
+  .hero{max-width:920px;margin:0 auto;padding:6rem 2rem 4rem;text-align:center}.hero-badge{display:inline-flex;align-items:center;gap:8px;background:var(--brand-dim);border:1px solid rgba(20,201,172,.25);color:var(--brand);font-size:.8rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:.3rem .9rem;border-radius:100px;margin-bottom:1.5rem}.hero-badge span{width:7px;height:7px;border-radius:50%;background:var(--brand)} h1{font-size:clamp(2.4rem,6vw,4rem);font-weight:800;letter-spacing:-.03em;line-height:1.1;margin-bottom:1.25rem} h1 em{font-style:normal;color:var(--brand)} .hero-sub{font-size:1.18rem;color:var(--muted);max-width:690px;margin:0 auto 2.5rem;line-height:1.7}.hero-actions{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;margin-bottom:3rem}.btn-primary,.btn-ghost{padding:.75rem 1.5rem;border-radius:var(--r);font-size:1rem;display:inline-flex;align-items:center;gap:.5rem}.btn-primary{background:var(--brand);color:#0d1117;font-weight:700}.btn-primary:hover{background:#0fb89a;text-decoration:none}.btn-ghost{border:1px solid var(--border);color:var(--text)}.btn-ghost:hover{background:var(--bg2);text-decoration:none}
+  .terminal-wrap{max-width:760px;margin:0 auto 4rem}.terminal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,.4)}.terminal-bar{background:var(--bg3);padding:.6rem 1rem;display:flex;align-items:center;gap:.5rem;border-bottom:1px solid var(--border)}.terminal-bar i{width:12px;height:12px;border-radius:50%;display:inline-block}.dot-r{background:#ff5f57}.dot-y{background:#febc2e}.dot-g{background:#28c840}.terminal-title{margin-left:.5rem;font-size:.78rem;color:var(--muted)}.terminal-body{padding:1.25rem 1.5rem;font-size:.875rem;line-height:1.7}.terminal-body pre{white-space:pre-wrap}.c-muted{color:var(--muted)}.c-green{color:var(--green)}.c-brand{color:var(--brand)}.c-yellow{color:var(--yellow)}.c-blue{color:var(--blue)}
+  section{padding:5rem 2rem}.section-inner{max-width:1100px;margin:0 auto}.section-label{font-size:.78rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--brand);margin-bottom:.75rem} h2{font-size:clamp(1.6rem,4vw,2.4rem);font-weight:700;letter-spacing:-.02em;margin-bottom:1rem}.section-sub{color:var(--muted);font-size:1.08rem;max-width:720px;margin-bottom:2.5rem}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.25rem}.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.45rem}.card:hover{border-color:var(--brand)}.card .icon{font-size:1.25rem;margin-bottom:.8rem}.card h3{font-size:1rem;margin-bottom:.5rem}.card p{font-size:.9rem;color:var(--muted)}.badge{font-size:.68rem;font-weight:700;padding:2px 7px;border-radius:100px;text-transform:uppercase}.badge-live{background:rgba(63,185,80,.15);color:var(--green)}.badge-plan{background:rgba(88,166,255,.15);color:var(--blue)}
+  .mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.25rem}.mode{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.5rem}.mode.recommended{border-color:rgba(20,201,172,.55);box-shadow:inset 0 0 0 1px rgba(20,201,172,.12)}.mode h3{display:flex;justify-content:space-between;gap:1rem;align-items:center;margin-bottom:.75rem}.mode p,.mode li{color:var(--muted);font-size:.9rem}.mode ul{padding-left:1.15rem;margin-top:.8rem}.mode li{margin:.35rem 0}
+  .steps{display:flex;flex-direction:column;gap:1.6rem;max-width:760px}.step{display:flex;gap:1.2rem}.step-num{flex-shrink:0;width:34px;height:34px;border-radius:50%;border:2px solid var(--brand);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem}.step h3{font-size:1rem;margin-bottom:.3rem}.step p{font-size:.9rem;color:var(--muted)}
+  .codebox{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem;overflow-x:auto}.codebox pre{font-size:.84rem;line-height:1.7}.notice{border:1px solid rgba(210,153,34,.35);background:rgba(210,153,34,.08);border-radius:var(--r);padding:1rem 1.2rem;color:var(--muted);margin-top:1.5rem}.notice strong{color:var(--yellow)}
+  .roadmap{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.25rem}.roadmap .card{min-height:220px}.roadmap .card a{font-weight:700}.cta{text-align:center;padding:6rem 2rem;background:linear-gradient(180deg,var(--bg) 0%,var(--bg2) 100%)}.cta p{color:var(--muted);margin:0 auto 2rem;max-width:650px} footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:var(--faint);font-size:.85rem}footer a{color:var(--muted)}
+  @media(max-width:760px){.nav-links{display:none}.hero{padding:4rem 1.25rem 3rem}h1{font-size:2.25rem}section{padding:3.5rem 1.25rem}.mode-grid,.roadmap{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-
-<!-- ── Nav ──────────────────────────────────────────────────── -->
 <nav>
-  <div class="nav-brand">
-    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-      <circle cx="14" cy="14" r="13" stroke="#14c9ac" stroke-width="2"/>
-      <circle cx="14" cy="14" r="6" fill="#14c9ac" opacity=".3"/>
-      <circle cx="14" cy="14" r="3" fill="#14c9ac"/>
-      <circle cx="14" cy="5" r="2" fill="#14c9ac" opacity=".7"/>
-      <circle cx="14" cy="23" r="2" fill="#14c9ac" opacity=".7"/>
-      <circle cx="5" cy="14" r="2" fill="#14c9ac" opacity=".7"/>
-      <circle cx="23" cy="14" r="2" fill="#14c9ac" opacity=".7"/>
-    </svg>
+  <a class="nav-brand" href="#top" aria-label="Argus home">
+    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true"><circle cx="14" cy="14" r="13" stroke="#14c9ac" stroke-width="2"/><circle cx="14" cy="14" r="6" fill="#14c9ac" opacity=".3"/><circle cx="14" cy="14" r="3" fill="#14c9ac"/><circle cx="14" cy="5" r="2" fill="#14c9ac" opacity=".7"/><circle cx="14" cy="23" r="2" fill="#14c9ac" opacity=".7"/><circle cx="5" cy="14" r="2" fill="#14c9ac" opacity=".7"/><circle cx="23" cy="14" r="2" fill="#14c9ac" opacity=".7"/></svg>
     Argus
-  </div>
+  </a>
   <div class="nav-links">
-    <a href="#features">Features</a>
-    <a href="#adapters">Adapters</a>
-    <a href="#how-it-works">How it works</a>
-    <a href="#install">Install</a>
-    <a href="https://github.com/Varun-SV/argus">GitHub</a>
+    <a href="#execution">Execution</a><a href="#features">Features</a><a href="#how">How it works</a><a href="#roadmap">Roadmap</a><a href="https://github.com/Varun-SV/Argus/tree/main/docs">Docs</a><a href="https://github.com/Varun-SV/Argus">GitHub</a>
   </div>
   <a href="#install" class="nav-cta">Get started</a>
 </nav>
 
-<!-- ── Hero ─────────────────────────────────────────────────── -->
-<div class="hero">
-  <div class="hero-badge"><span></span> Now with adaptive learning engine</div>
-  <h1>Test any app with<br><em>plain English</em></h1>
-  <p class="hero-sub">
-    Argus uses multimodal LLMs to test desktop apps, web UIs, and CLI tools —
-    the way a real user would. No selectors. No brittle scripts. Just describe what you want.
-  </p>
-  <div class="hero-actions">
-    <a href="#install" class="btn-primary">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm.25 4.75a.75.75 0 00-1.5 0v4.5a.75.75 0 001.5 0v-4.5zm-.25 7a1 1 0 100-2 1 1 0 000 2z"/></svg>
-      Install
-    </a>
-    <a href="https://github.com/Varun-SV/argus" class="btn-ghost">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      View on GitHub
-    </a>
-  </div>
+<div class="hero" id="top">
+  <div class="hero-badge"><span></span> Safe execution + Argus Capsules</div>
+  <h1>Autonomous testing,<br><em>without surrendering your desktop</em></h1>
+  <p class="hero-sub">Argus uses multimodal LLMs to test desktop apps, web UIs, and CLI tools with natural-language actions and deterministic assertions. Run lightweight tests locally, or move production testing into disposable isolated Capsules.</p>
+  <div class="hero-actions"><a href="#install" class="btn-primary">Install Argus</a><a href="https://github.com/Varun-SV/Argus" class="btn-ghost">View on GitHub</a></div>
+  <div class="terminal-wrap"><div class="terminal"><div class="terminal-bar"><i class="dot-r"></i><i class="dot-y"></i><i class="dot-g"></i><span class="terminal-title">argus run checkout.test.yaml</span></div><div class="terminal-body"><pre><span class="c-muted">Running</span> <b>checkout.test.yaml</b>
+  <span class="c-green">✓</span> Type 'hello from argus' into the editor
+  <span class="c-green">✓</span> text_visible: 'hello from argus'
+  <span class="c-green">✓</span> Open the File menu
+  <span class="c-green">✓</span> element_exists: Save
 
-  <div class="terminal-wrap">
-    <div class="terminal">
-      <div class="terminal-bar">
-        <i class="dot-r"></i><i class="dot-y"></i><i class="dot-g"></i>
-        <span class="terminal-title">argus run checkout.test.yaml</span>
-      </div>
-      <div class="terminal-body">
-        <pre><span class="c-muted">Argus v0.1.0 · provider: </span><span class="c-brand">ollama:gemma3:9b</span>
-
-<span class="c-muted">Running</span> <b>checkout.test.yaml</b><span class="c-muted">…</span>
-  <span class="c-green">✓</span>  Type 'hello from argus' into the editor        <span class="c-muted">2.31s</span>
-     <span class="c-muted">↳ typed 'hello from argus' — located Edit field [1]</span>
-  <span class="c-green">✓</span>  text_visible: 'hello from argus'               <span class="c-muted">0.12s</span>
-  <span class="c-green">✓</span>  Open the File menu                              <span class="c-muted">1.08s</span>
-     <span class="c-muted">↳ clicked MenuItem "File" [2] — opened menu</span>
-  <span class="c-green">✓</span>  element_exists: {name: Save, control_type: MenuItem} <span class="c-muted">0.09s</span>
-
-<span class="c-green">4 passed</span> · <span class="c-muted">0 failed · 0 skipped</span> · 3.6s · 1840 tokens · exit 0</pre>
-      </div>
-    </div>
-  </div>
+<span class="c-green">4 passed</span> · <span class="c-muted">0 failed · production isolation available with Capsules</span></pre></div></div></div>
 </div>
 
-<!-- ── Features ──────────────────────────────────────────────── -->
-<section id="features" style="background:var(--bg2);">
-  <div class="section-inner">
-    <div class="section-label">Features</div>
-    <h2>Everything you need to test modern software</h2>
-    <p class="section-sub">Argus handles any platform, any stack. One tool, one YAML format.</p>
-    <div class="feature-grid">
-      <div class="feature-card">
-        <div class="feature-icon">🗣️</div>
-        <h3>Natural language steps</h3>
-        <p>Write "Type hello into the editor" instead of <code>find_element(By.ID, "editor").send_keys("hello")</code>. The LLM figures out the how.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🔍</div>
-        <h3>Structured assertions</h3>
-        <p>Mix AI-driven steps with deterministic assertions (<code>text_visible</code>, <code>exit_code_is</code>, <code>url_contains</code>). Assertions never consult the model.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🤖</div>
-        <h3>Free-roam bug hunting</h3>
-        <p><code>argus roam</code> turns the LLM loose to explore like a curious tester — opens menus, fills fields, tries edge cases, detects crashes and error dialogs automatically.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🧠</div>
-        <h3>Adaptive Learning Engine</h3>
-        <p>Builds a semantic graph of UI states and transitions across sessions. Vector search retrieves similar past experiences to guide the LLM — smarter exploration and targeted bug re-discovery over time.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🔄</div>
-        <h3>Retry &amp; flaky tracking</h3>
-        <p>Set <code>retries: 2</code> in your spec. Flaky steps are flagged so you know which tests are unreliable before they hit CI.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">👁️</div>
-        <h3>Multimodal or text-only</h3>
-        <p>Argus auto-detects vision capability. Multimodal models get screenshots; text-only models fall back to the accessibility tree. Both work.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">💰</div>
-        <h3>Provider-agnostic + cost-aware</h3>
-        <p>Ollama (free, local), Anthropic, OpenAI, Azure, Gemini, LiteLLM. Token tracking and cost estimation included for cloud providers.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">👀</div>
-        <h3>Watch mode</h3>
-        <p><code>argus watch</code> re-runs tests instantly on YAML save. The tightest feedback loop for test authoring.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">📊</div>
-        <h3>Web dashboard</h3>
-        <p><code>argus serve</code> serves a live dashboard of run history and roam sessions. See pass/fail trends without leaving the browser.</p>
-      </div>
-    </div>
+<section id="execution" style="background:var(--bg2)"><div class="section-inner">
+  <div class="section-label">Execution environments</div><h2>Choose where Argus is allowed to act</h2><p class="section-sub">Adapters describe how Argus interacts with an application. Execution environments decide where that interaction is allowed to happen. Keeping those concerns separate is now part of Argus's core architecture.</p>
+  <div class="mode-grid">
+    <div class="mode recommended"><h3>Argus Capsule <span class="badge badge-live">Recommended production</span></h3><p>Disposable VM execution for tests that should not share the operator's interactive host.</p><ul><li>Windows Hyper-V and Linux libvirt/QEMU/KVM providers</li><li>Secure guest control with pinned HTTPS and per-session credentials</li><li>Explicit staging and artifact collection</li><li>Isolated networking and provider capability enforcement</li><li>Optional forensic Failure Capsule retention</li></ul></div>
+    <div class="mode"><h3>Local <span class="badge badge-live">Lightweight</span></h3><p>Fast shared-host execution for development, quick checks, and systems without virtualization.</p><ul><li>Compatibility default remains local</li><li>Shared and non-isolated by design</li><li>Windows desktop mode defaults to semantic UI Automation</li><li>Legacy unrestricted physical input requires explicit opt-in</li><li>Use a Capsule when production containment matters</li></ul></div>
   </div>
-</section>
+  <div class="notice"><strong>Compatibility note:</strong> Capsules are the recommended production architecture, but Argus does not silently change existing configurations. Local execution remains the current default.</div>
+</div></section>
 
-<!-- ── Adapters ──────────────────────────────────────────────── -->
-<section id="adapters">
-  <div class="section-inner">
-    <div class="section-label">Adapters</div>
-    <h2>Test anything</h2>
-    <p class="section-sub">One YAML format, four execution environments.</p>
-    <div class="adapter-grid">
-      <div class="adapter-card">
-        <h3>🖥️ Desktop GUI <span class="badge badge-stable">Stable</span></h3>
-        <p>Windows (UIA/pywinauto) and Linux (X11/Xvfb). Screenshots + accessibility tree. Handles WinUI3 apps and system singletons like explorer.exe.</p>
-      </div>
-      <div class="adapter-card">
-        <h3>🌐 Browser <span class="badge badge-new">New</span></h3>
-        <p>Playwright-powered. Chromium, Firefox, WebKit. Full DOM element access, screenshot support, URL and title assertions. Headless or headed.</p>
-      </div>
-      <div class="adapter-card">
-        <h3>⌨️ CLI <span class="badge badge-new">New</span></h3>
-        <p>Run any shell command. Assert on stdout, stderr, and exit code. Perfect for testing scripts, build tools, compilers, and data pipelines.</p>
-      </div>
-      <div class="adapter-card">
-        <h3>🪟 Native App GUI</h3>
-        <p>The optional <code>argus gui</code> desktop app — a pywebview window with a live test runner, roam journal, provider checker, and token meter.</p>
-      </div>
-    </div>
+<section id="features"><div class="section-inner">
+  <div class="section-label">Capabilities</div><h2>AI-driven interaction with deterministic guardrails</h2><p class="section-sub">Natural language controls the exploratory parts; structured assertions and execution policy keep critical checks and boundaries explicit.</p>
+  <div class="grid">
+    <div class="card"><div class="icon">🗣️</div><h3>Natural-language actions</h3><p>Describe what a user should do instead of maintaining brittle selectors for every UI interaction.</p></div>
+    <div class="card"><div class="icon">🔍</div><h3>Deterministic assertions</h3><p>Assertions such as visible text, process state, exit code, URL, and page title are evaluated without asking the model to decide whether they passed.</p></div>
+    <div class="card"><div class="icon">🛡️</div><h3>Central execution policy</h3><p>Actions are normalized and checked against capabilities and host-safety policy before platform execution.</p></div>
+    <div class="card"><div class="icon">🖥️</div><h3>Safe Windows local mode</h3><p>Supported desktop actions default to semantic UI Automation rather than intentional host-wide physical mouse/keyboard injection.</p></div>
+    <div class="card"><div class="icon">📦</div><h3>Disposable Capsules</h3><p>Run invasive tests inside dedicated VMs with secure guest control and explicit lifecycle ownership.</p></div>
+    <div class="card"><div class="icon">🧪</div><h3>Failure Capsules</h3><p>Optionally retain disk/config evidence after failure for forensic investigation without persisting live recovery credentials.</p></div>
+    <div class="card"><div class="icon">📤</div><h3>Explicit file transfer</h3><p>Stage inputs and collect outputs through declared, bounded, hashed transfer authority rather than shared folders or clipboard shortcuts.</p></div>
+    <div class="card"><div class="icon">🤖</div><h3>Free-roam testing</h3><p><code>argus roam</code> explores applications autonomously, records findings, and can build cross-session exploration memory.</p></div>
+    <div class="card"><div class="icon">🌐</div><h3>Multiple interaction surfaces</h3><p>Desktop GUI, browser, and CLI adapters share the same testing model while remaining distinct from execution placement.</p></div>
   </div>
-</section>
+</div></section>
 
-<!-- ── How it works ──────────────────────────────────────────── -->
-<section id="how-it-works" style="background:var(--bg2);">
-  <div class="section-inner" style="display:grid; grid-template-columns:1fr 1fr; gap:4rem; align-items:start;">
-    <div>
-      <div class="section-label">How it works</div>
-      <h2>Hybrid-agentic execution</h2>
-      <p class="section-sub">NL steps get the LLM. Assertions run deterministically. You get the best of both.</p>
-      <div class="steps">
-        <div class="step">
-          <div class="step-num">1</div>
-          <div class="step-content">
-            <h3>Argus launches the target</h3>
-            <p>Starts the app (or attaches to an existing process) and takes an initial snapshot.</p>
-          </div>
-        </div>
-        <div class="step">
-          <div class="step-num">2</div>
-          <div class="step-content">
-            <h3>For each NL step: observe → act loop</h3>
-            <p>The LLM sees a screenshot + accessibility tree, picks the best action (click, type, key…), Argus executes it, rinse and repeat until done.</p>
-          </div>
-        </div>
-        <div class="step">
-          <div class="step-num">3</div>
-          <div class="step-content">
-            <h3>Assertions run without the LLM</h3>
-            <p><code>text_visible</code>, <code>exit_code_is</code>, <code>url_contains</code> — these check the observation directly. Fast, deterministic, never hallucinates.</p>
-          </div>
-        </div>
-        <div class="step">
-          <div class="step-num">4</div>
-          <div class="step-content">
-            <h3>Teardown and report</h3>
-            <p>Closes the app, saves JSON results to <code>.argus/runs/</code>, prints a summary with token usage and exit code.</p>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div>
-      <div class="yaml-tabs">
-        <div class="yaml-tab active">notepad.test.yaml</div>
-      </div>
-      <div class="yaml-panel">
-        <pre><span class="c-muted"># Desktop GUI test</span>
-<span class="c-blue">name</span>: Notepad smoke test
-<span class="c-blue">target</span>:
-  <span class="c-blue">adapter</span>: desktop-gui
-  <span class="c-blue">launch</span>: notepad.exe
-<span class="c-blue">retries</span>: 1
-
-<span class="c-blue">steps</span>:
-  - <span class="c-brand">"Type 'hello from argus' into the editor"</span>
-  - <span class="c-blue">assert</span>:
-      <span class="c-blue">text_visible</span>: <span class="c-yellow">"hello from argus"</span>
-  - <span class="c-brand">"Open the File menu"</span>
-  - <span class="c-blue">assert</span>:
-      <span class="c-blue">element_exists</span>:
-        <span class="c-blue">name</span>: <span class="c-yellow">"Save"</span>
-        <span class="c-blue">control_type</span>: MenuItem
-  - <span class="c-blue">assert</span>:
-      <span class="c-blue">window_title_contains</span>: <span class="c-yellow">"Notepad"</span>
-
-<span class="c-blue">teardown</span>:
-  - close</pre>
-      </div>
-    </div>
+<section id="how" style="background:var(--bg2)"><div class="section-inner">
+  <div class="section-label">How it works</div><h2>A clear boundary from intent to execution</h2><p class="section-sub">Argus now treats placement, interaction, policy, and verification as separate concerns.</p>
+  <div class="steps">
+    <div class="step"><div class="step-num">1</div><div><h3>Select execution environment</h3><p>Use local mode for lightweight shared-host work or a Capsule for production isolation.</p></div></div>
+    <div class="step"><div class="step-num">2</div><div><h3>Prepare and launch the target</h3><p>The selected execution environment allocates resources, stages authorized files where applicable, and creates the adapter inside that boundary.</p></div></div>
+    <div class="step"><div class="step-num">3</div><div><h3>Observe → propose → validate → act</h3><p>The model receives supported observations, proposes an action, and Argus applies normalization/capability/policy checks before execution.</p></div></div>
+    <div class="step"><div class="step-num">4</div><div><h3>Evaluate assertions</h3><p>Structured assertions are evaluated deterministically against the current observation or adapter state.</p></div></div>
+    <div class="step"><div class="step-num">5</div><div><h3>Collect, retain, or destroy</h3><p>Authorized artifacts are collected, failures may retain a forensic Capsule when configured, and normal disposable sessions are torn down.</p></div></div>
   </div>
-</section>
+</div></section>
 
-<!-- ── Roam ──────────────────────────────────────────────────── -->
-<section id="roam">
-  <div class="section-inner" style="display:grid; grid-template-columns:1fr 1fr; gap:4rem; align-items:start;">
-    <div>
-      <div class="section-label">Free-roam mode</div>
-      <h2>Let the AI find bugs you didn't think to look for</h2>
-      <p style="color:var(--muted); margin-bottom:1.5rem; line-height:1.7;">
-        <code>argus roam</code> turns an LLM loose on your app with no script. It opens every menu,
-        fills every field, tries edge cases — and files a detailed bug report when something looks wrong.
-      </p>
-      <p style="color:var(--muted); margin-bottom:2rem; line-height:1.7;">
-        Cross-session memory means each run explores <em>new ground</em> instead of repeating the same path.
-        Findings get auto-generated regression stubs you can refine and commit.
-      </p>
-      <pre style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1rem;font-size:.85rem;"><span class="c-muted"># Desktop app</span>
-argus roam "notepad.exe" --minutes 10
-
-<span class="c-muted"># Web app</span>
-argus roam "http://localhost:3000" \
-  --adapter browser --minutes 5
-
-<span class="c-muted"># CLI tool</span>
-argus roam "./my-script.sh" \
-  --adapter cli --minutes 2</pre>
-    </div>
-    <div>
-      <div class="roam-output">
-        <div style="color:var(--muted);font-size:.78rem;margin-bottom:1rem;">argus roam "notepad.exe" --minutes 5</div>
-        <pre><span class="c-muted">[10:42:01]</span> launching target: notepad.exe
-<span class="c-muted">[10:42:03]</span> roaming with budget: 300s
-<span class="c-muted">[10:42:04]</span> #1 clicked MenuItem "File" — open File menu
-<span class="c-muted">[10:42:06]</span> #2 clicked MenuItem "New Window" — try new window
-<span class="c-muted">[10:42:09]</span> #3 typed 'x' × 50000 — overflow test
-<span class="c-brand">FINDING [medium]</span> Save fails silently on read-only path
-<span class="c-muted">[10:42:13]</span> #4 key Ctrl+S — trigger save
-<span class="c-muted">[10:42:15]</span> #5 clicked button "OK" — dismiss dialog
-<span class="c-muted">[10:42:17]</span> #6 typed '' — empty input edge case
-<span class="c-muted">[10:42:19]</span> #7 key Ctrl+Z — undo empty
-<span class="c-muted">…</span>
-<span class="c-muted">[10:47:00]</span> roam finished: time budget reached
-<span class="c-muted">           42 actions · </span><span class="c-red">1 finding</span> · 12,480 tokens
-
-report: .argus/roam/20260611-104200/report.md</pre>
-      </div>
-    </div>
+<section id="adapters"><div class="section-inner">
+  <div class="section-label">Adapters</div><h2>One test style, multiple interaction surfaces</h2><p class="section-sub">Adapters are not execution environments: they define how the target is controlled once an execution environment has been selected.</p>
+  <div class="grid">
+    <div class="card"><h3>🖥️ Desktop GUI <span class="badge badge-live">Implemented</span></h3><p>Windows UI Automation and Linux GUI support with screenshots/structured observations where available.</p></div>
+    <div class="card"><h3>🌐 Browser <span class="badge badge-live">Implemented</span></h3><p>Playwright-powered browser testing with page observations and deterministic URL/title checks.</p></div>
+    <div class="card"><h3>⌨️ CLI <span class="badge badge-live">Implemented</span></h3><p>Execute commands and validate stdout, stderr, process state, and exit codes.</p></div>
   </div>
-</section>
+</div></section>
 
-<!-- ── Knowledge Engine ──────────────────────────────────────── -->
-<section id="knowledge" style="background:var(--bg2);">
-  <div class="section-inner">
-    <div class="section-label">Knowledge Engine</div>
-    <h2>Learns what to attack — every session</h2>
-    <p class="section-sub">
-      Argus builds a persistent graph of your app's UI surface and uses vector search to recall
-      past observations, so each roam session is smarter than the last.
-    </p>
-    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1.5rem; margin-top:2rem;">
-      <div class="feature-card">
-        <div class="feature-icon">🗺️</div>
-        <h3>State graph</h3>
-        <p>Every unique UI state becomes a node; every action that transitions between states becomes an edge. Bug-prone zones are marked red and re-targeted on the next run.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🔎</div>
-        <h3>Semantic recall</h3>
-        <p>Observations are embedded with sentence-transformers and stored in ChromaDB or Qdrant. Before each LLM call, Argus injects the most similar past experiences as context.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">⚡</div>
-        <h3>Zero-config or Docker</h3>
-        <p>Works out of the box with local ChromaDB + NetworkX. Upgrade to Qdrant in a single command — Argus spins up a container automatically and reuses it across sessions.</p>
-      </div>
-    </div>
-    <div style="margin-top:2.5rem;">
-      <div class="yaml-tabs"><div class="yaml-tab active">.argus/config.yaml</div></div>
-      <div class="yaml-panel" style="max-width:520px;">
-        <pre><span class="c-muted"># Zero-config local backend (default)</span>
-<span class="c-blue">knowledge</span>:
-  <span class="c-blue">enabled</span>: <span class="c-yellow">true</span>
-  <span class="c-blue">type</span>: <span class="c-yellow">local</span>
-  <span class="c-blue">embedding_model</span>: <span class="c-yellow">all-MiniLM-L6-v2</span>
-
-<span class="c-muted"># Docker-managed Qdrant (better at scale)</span>
-<span class="c-muted"># knowledge:</span>
-<span class="c-muted">#   type: docker</span>
-<span class="c-muted">#   vector_backend: qdrant</span>
-
-<span class="c-muted"># Install knowledge extras:</span>
-<span class="c-muted"># pip install argus-app-testing[knowledge]</span></pre>
-      </div>
-    </div>
+<section id="roadmap" style="background:var(--bg2)"><div class="section-inner">
+  <div class="section-label">Next architecture</div><h2>From isolated execution to a testing platform</h2><p class="section-sub">These designs are now documented, but are not yet runtime features. They are deliberately called out as roadmap architecture rather than marketed as shipped behavior.</p>
+  <div class="roadmap">
+    <div class="card"><h3>ATES — Argus Test Evidence Specification <span class="badge badge-plan">Specification</span></h3><p>An always-on canonical evidence model for every run: stable IDs, step/action/observation/assertion traceability, failure and explicit-checkpoint evidence, artifact hashes, provenance, requirements mapping, audit history, and optional approvals.</p><p style="margin-top:1rem"><a href="https://github.com/Varun-SV/Argus/blob/main/docs/ates.md">Read the ATES design →</a></p></div>
+    <div class="card"><h3>Argus Fleet <span class="badge badge-plan">Specification</span></h3><p>Distributed Capsule execution across physical hosts with authenticated Node Agents, scheduling, centralized evidence aggregation, and a separate Observer interface that is read-only by authorization—not just by hidden controls.</p><p style="margin-top:1rem"><a href="https://github.com/Varun-SV/Argus/blob/main/docs/fleet.md">Read the Fleet design →</a></p></div>
   </div>
-</section>
+  <div class="notice"><strong>Design principle:</strong> test specification says <em>what</em> to test, execution specification says <em>where/how</em> Argus may run it, and ATES says <em>what Argus must prove happened</em>.</div>
+</div></section>
 
-<!-- ── Comparison ─────────────────────────────────────────────── -->
-<section style="background:var(--bg2);">
-  <div class="section-inner">
-    <div class="section-label">Comparison</div>
-    <h2>Why not Selenium / Playwright / Cypress?</h2>
-    <p class="section-sub">Traditional tools are great when the UI is stable. Argus shines when it isn't.</p>
-    <table class="compare-table">
-      <tr>
-        <th>Capability</th>
-        <th>Selenium / Playwright / Cypress</th>
-        <th class="argus-col">Argus</th>
-      </tr>
-      <tr>
-        <td>Test authoring</td>
-        <td>Write code with selectors/locators</td>
-        <td class="argus-col">Write plain English</td>
-      </tr>
-      <tr>
-        <td>Handles UI changes</td>
-        <td class="no-col">Breaks when selectors change</td>
-        <td class="argus-col">Adapts like a human tester</td>
-      </tr>
-      <tr>
-        <td>Desktop GUI testing</td>
-        <td class="no-col">Browser only</td>
-        <td class="argus-col">Windows + Linux GUI supported</td>
-      </tr>
-      <tr>
-        <td>CLI testing</td>
-        <td class="no-col">Not supported</td>
-        <td class="argus-col">Built-in CLI adapter</td>
-      </tr>
-      <tr>
-        <td>Exploratory testing</td>
-        <td class="no-col">Manual, or scripted scenarios</td>
-        <td class="argus-col">Autonomous free-roam mode</td>
-      </tr>
-      <tr>
-        <td>Vision / screenshots</td>
-        <td class="no-col">Screenshots only for debugging</td>
-        <td class="argus-col">First-class: LLM sees the screen</td>
-      </tr>
-      <tr>
-        <td>LLM provider</td>
-        <td class="no-col">N/A</td>
-        <td class="argus-col">Ollama (free local) or any cloud API</td>
-      </tr>
-    </table>
+<section id="install"><div class="section-inner">
+  <div class="section-label">Install</div><h2>Start lightweight, move production runs into Capsules</h2><p class="section-sub">Argus requires Python 3.10+. Capsule execution also requires a configured virtualization host and prepared golden image.</p>
+  <div class="grid">
+    <div class="card"><h3>Core</h3><div class="codebox"><pre>pip install argus-app-testing</pre></div></div>
+    <div class="card"><h3>Windows desktop</h3><div class="codebox"><pre>pip install "argus-app-testing[windows]"</pre></div></div>
+    <div class="card"><h3>Browser</h3><div class="codebox"><pre>pip install "argus-app-testing[browser]"
+playwright install chromium</pre></div></div>
+    <div class="card"><h3>Linux GUI</h3><div class="codebox"><pre>pip install "argus-app-testing[linux]"</pre></div></div>
+    <div class="card"><h3>Dashboard</h3><div class="codebox"><pre>pip install "argus-app-testing[serve]"
+argus serve</pre></div></div>
+    <div class="card"><h3>Everything</h3><div class="codebox"><pre>pip install "argus-app-testing[all]"</pre></div></div>
   </div>
-</section>
-
-<!-- ── Install ───────────────────────────────────────────────── -->
-<section id="install">
-  <div class="section-inner">
-    <div class="section-label">Install</div>
-    <h2>Get started in 60 seconds</h2>
-    <p class="section-sub">Requires Python 3.10+ and Ollama for free local LLM inference.</p>
-    <div class="install-grid">
-      <div class="install-card">
-        <div class="install-card-head">Core (any OS)</div>
-        <pre>pip install argus-app-testing</pre>
-      </div>
-      <div class="install-card">
-        <div class="install-card-head">Windows desktop GUI</div>
-        <pre>pip install "argus-app-testing[windows]"</pre>
-      </div>
-      <div class="install-card">
-        <div class="install-card-head">Browser testing</div>
-        <pre>pip install "argus-app-testing[browser]"
-playwright install chromium</pre>
-      </div>
-      <div class="install-card">
-        <div class="install-card-head">Linux GUI (X11/Xvfb)</div>
-        <pre>pip install "argus-app-testing[linux]"</pre>
-      </div>
-      <div class="install-card">
-        <div class="install-card-head">Web dashboard</div>
-        <pre>pip install "argus-app-testing[serve]"
-argus serve</pre>
-      </div>
-      <div class="install-card">
-        <div class="install-card-head">Everything</div>
-        <pre>pip install "argus-app-testing[all]"</pre>
-      </div>
-    </div>
-    <div style="margin-top:2.5rem;">
-      <div class="terminal" style="max-width:600px;">
-        <div class="terminal-bar">
-          <i class="dot-r"></i><i class="dot-y"></i><i class="dot-g"></i>
-          <span class="terminal-title">First run</span>
-        </div>
-        <div class="terminal-body">
-          <pre><span class="c-muted"># Install a free local model</span>
+  <div style="margin-top:2rem" class="codebox"><pre><span class="c-muted"># Local model example</span>
 ollama pull gemma3:9b
 
-<span class="c-muted"># Initialize a project</span>
+<span class="c-muted"># Initialize and run</span>
 argus init
-
-<span class="c-muted"># Check your provider</span>
 argus providers
+argus run</pre></div>
+  <p style="color:var(--muted);margin-top:1rem">For production Capsule setup, start with the <a href="https://github.com/Varun-SV/Argus/tree/main/docs">documentation hub</a>.</p>
+</div></section>
 
-<span class="c-muted"># Run the example test</span>
-argus run</pre>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ── CTA ───────────────────────────────────────────────────── -->
-<div class="cta-section">
-  <h2>Ready to stop writing selectors?</h2>
-  <p>Argus is open source, MIT-licensed, and works with local models — zero cloud costs.</p>
-  <div class="hero-actions" style="justify-content:center;">
-    <a href="#install" class="btn-primary">Install Argus</a>
-    <a href="https://github.com/Varun-SV/argus" class="btn-ghost">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      Star on GitHub
-    </a>
-  </div>
-</div>
-
-<!-- ── Footer ────────────────────────────────────────────────── -->
-<footer>
-  <p>Argus — MIT License · Built with Python + multimodal LLMs</p>
-  <p style="margin-top:.5rem;"><a href="https://github.com/Varun-SV/argus">GitHub</a> · <a href="https://github.com/Varun-SV/argus/issues">Issues</a></p>
-</footer>
-
+<div class="cta"><h2>Test autonomously. Keep execution boundaries explicit.</h2><p>Use Argus locally for fast development, then move production and invasive testing into isolated Capsules. ATES and Fleet are the next planned layers.</p><div class="hero-actions" style="margin-bottom:0"><a href="#install" class="btn-primary">Install Argus</a><a href="https://github.com/Varun-SV/Argus/tree/main/docs" class="btn-ghost">Read the docs</a></div></div>
+<footer><p>Argus — MIT License · Python + multimodal LLMs</p><p style="margin-top:.5rem"><a href="https://github.com/Varun-SV/Argus">GitHub</a> · <a href="https://github.com/Varun-SV/Argus/tree/main/docs">Docs</a> · <a href="https://github.com/Varun-SV/Argus/issues">Issues</a></p></footer>
 </body>
 </html>
