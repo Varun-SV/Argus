@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -9,7 +11,7 @@ from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleProvider, Cap
 from argus.capsule.guest import CapsuleGuestError
 from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
 from argus.capsule.secure_client import SecureGuestAgentClient
-from argus.capsule.secure_guest_agent import SecureGuestAgentServer
+from argus.capsule.secure_guest_agent import SecureGuestAgentServer, _consume_tls_private_key
 from argus.execution import SecureCapsuleExecutionEnvironment, create_execution_environment
 
 
@@ -36,11 +38,36 @@ def test_secure_client_allows_explicit_legacy_http():
     assert client.transport_secure is False
 
 
-def test_rotated_bearer_replaces_bootstrap_and_binds_file_session():
-    server = SecureGuestAgentServer(("127.0.0.1", 0), "bootstrap-secret")
+def test_tls_private_key_is_consumed_from_session_disk(tmp_path):
+    key = tmp_path / "guest-key.pem"
+    key.write_text("private-key-material", encoding="utf-8")
+    _consume_tls_private_key(str(key))
+    assert not key.exists()
+
+
+def test_tls_private_key_symlink_is_rejected(tmp_path):
+    actual = tmp_path / "actual-key.pem"
+    actual.write_text("private-key-material", encoding="utf-8")
+    link = tmp_path / "guest-key.pem"
+    try:
+        link.symlink_to(actual)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this runner")
+    with pytest.raises(Exception, match="cannot be a symlink"):
+        _consume_tls_private_key(str(link))
+    assert actual.exists()
+
+
+def _start_secure_loopback_server(token: str = "bootstrap-secret"):
+    server = SecureGuestAgentServer(("127.0.0.1", 0), token)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+    return server, thread, endpoint
+
+
+def test_rotated_bearer_replaces_bootstrap_and_binds_file_session():
+    server, thread, endpoint = _start_secure_loopback_server()
     bootstrap = SecureGuestAgentClient(
         endpoint,
         "bootstrap-secret",
@@ -69,6 +96,39 @@ def test_rotated_bearer_replaces_bootstrap_and_binds_file_session():
 
         with pytest.raises(CapsuleGuestError, match="already been rotated"):
             bootstrap.rotate_session_token("capsule123", "t" * 48)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_rotation_recovers_when_success_response_is_lost():
+    server, thread, endpoint = _start_secure_loopback_server()
+    lost = {"done": False}
+
+    def lossy_opener(request, timeout):
+        response = urllib.request.urlopen(request, timeout=timeout)
+        if request.full_url.endswith("/v1/auth/rotate") and not lost["done"]:
+            lost["done"] = True
+            # The guest has already authenticated and committed the new token.
+            # Simulate losing the response before GuestAgentClient can read it.
+            response.close()
+            raise urllib.error.URLError("rotation response lost")
+        return response
+
+    client = SecureGuestAgentClient(
+        endpoint,
+        "bootstrap-secret",
+        allow_insecure_http=True,
+        timeout_seconds=2,
+        opener=lossy_opener,
+    )
+    proposed = "r" * 48
+    try:
+        client.rotate_session_token("recover123", proposed)
+        assert lost["done"] is True
+        assert client.token == proposed
+        assert client.health()["auth_session_id"] == "recover123"
     finally:
         server.shutdown()
         server.server_close()
