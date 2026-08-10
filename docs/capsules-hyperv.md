@@ -110,12 +110,15 @@ agent as a general-purpose file-sharing service.
 
 ### Transfer confidentiality
 
-The current guest-agent channel is authenticated HTTP on an Internal Hyper-V
-switch. It provides request authentication and transfer integrity, but **not
-transport confidentiality**. Staging/collection therefore does not make the
-channel suitable for secrets that must be protected from a sufficiently
-privileged host/local-network observer. Confidential host↔guest transport and
-per-session host-bound credentials remain follow-up isolation work.
+The current guest-agent channel uses bearer-token authenticated HTTP on an
+Internal Hyper-V switch. Argus performs end-to-end size and SHA-256 consistency
+checks, but plain HTTP provides **neither transport confidentiality nor
+cryptographic tamper protection against an active network observer**. An actor
+able to observe and modify that channel may also observe the bearer credential.
+Staging/collection therefore does not make the channel suitable for secrets that
+require protection from a sufficiently privileged host/local-network observer.
+Confidential host↔guest transport and per-session host-bound credentials remain
+follow-up isolation work.
 
 The host may be locked while a Capsule runs. Host sleep, hibernate, shutdown, or
 loss of Hyper-V still interrupts the VM. The **guest** interactive test user must
