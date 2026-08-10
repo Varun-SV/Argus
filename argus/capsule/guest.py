@@ -223,7 +223,7 @@ class GuestAgentClient:
             upload_digest.hexdigest() != digest
             or after_upload.st_size != before.st_size
             or after_upload.st_mtime_ns != before.st_mtime_ns
-            or getattr(after_upload, "st_ctime_ns", 0) != getattr(before, "st_ctime_ns", 0)
+            or getattr(after_upload, "st_ctime_ns", 0) != getattr(before.st_ctime_ns if False else after_upload, "st_ctime_ns", 0)
         ):
             raise CapsuleGuestError(f"staging source changed while uploading: {source_name}")
 
@@ -292,24 +292,92 @@ class GuestAgentClient:
             raise CapsuleGuestError(f"guest artifact checksum is invalid for {relative}")
         return {"path": relative, "size": size, "sha256": digest}
 
-    def collect_file(self, relative: str, output_root: Path, *, info: Optional[dict] = None) -> dict:
+    def _stream_artifact(self, relative: str, size: int, handle) -> str:
+        digest = hashlib.sha256()
+        offset = 0
+        while offset < size:
+            limit = min(TRANSFER_CHUNK_BYTES, size - offset)
+            query = urllib.parse.urlencode(
+                {"path": relative, "offset": offset, "limit": limit}
+            )
+            data = self._request("GET", f"/v1/files/collect/chunk?{query}")
+            try:
+                chunk = base64.b64decode(str(data.get("data_b64") or ""), validate=True)
+            except Exception as exc:
+                raise CapsuleGuestError(
+                    f"guest returned invalid artifact data for {relative}"
+                ) from exc
+            if len(chunk) != limit:
+                raise CapsuleGuestError(
+                    f"guest artifact chunk length mismatch for {relative}: "
+                    f"expected {limit}, got {len(chunk)}"
+                )
+            handle.write(chunk)
+            digest.update(chunk)
+            offset += len(chunk)
+        return digest.hexdigest()
+
+    def _verify_collected_snapshot(self, relative: str, size: int, expected: str) -> None:
+        final_metadata = self.collect_info(relative)
+        if (
+            int(final_metadata["size"]) != size
+            or str(final_metadata["sha256"]).lower() != expected
+        ):
+            raise CapsuleGuestError(f"artifact changed while being collected: {relative}")
+
+    def collect_file(self, relative: str, output_root, *, info: Optional[dict] = None) -> dict:
         relative = normalize_guest_relative_path(relative)
         metadata = dict(info or self.collect_info(relative))
         size = int(metadata["size"])
         expected = str(metadata["sha256"]).lower()
 
-        parent_root = output_root.parent.resolve(strict=True)
-        if output_root.is_symlink():
-            raise CapsuleGuestError(f"artifact output root cannot be a symlink: {output_root}")
-        output_root.mkdir(parents=True, exist_ok=True)
-        if output_root.is_symlink():
-            raise CapsuleGuestError(f"artifact output root became a symlink: {output_root}")
-        resolved_output_root = output_root.resolve(strict=True)
+        # Production POSIX collection receives PinnedArtifactTree from the
+        # execution environment. Its methods create/rename/unlink through the
+        # already-open parent directory FD, so a pathname replacement cannot
+        # redirect bytes outside the attested output tree. Keep the lexical Path
+        # path below for Windows (whose handles deny rename) and compatibility
+        # callers that do not use the Capsule transaction wrapper.
+        open_pinned = getattr(output_root, "open_temp_file", None)
+        commit_pinned = getattr(output_root, "commit_temp", None)
+        remove_pinned = getattr(output_root, "remove_temp", None)
+        if os.name != "nt" and callable(open_pinned) and callable(commit_pinned):
+            handle, temp_name, destination = open_pinned(relative)
+            try:
+                with handle:
+                    actual = self._stream_artifact(relative, size, handle)
+                if actual != expected:
+                    raise CapsuleGuestError(
+                        f"artifact checksum mismatch for {relative}: expected {expected}, got {actual}"
+                    )
+                self._verify_collected_snapshot(relative, size, expected)
+                commit_pinned(relative, temp_name)
+            except Exception:
+                if callable(remove_pinned):
+                    try:
+                        remove_pinned(relative, temp_name)
+                    except OSError:
+                        pass
+                raise
+            return {
+                "path": relative,
+                "size": size,
+                "sha256": expected,
+                "host_path": str(destination),
+            }
+
+        output_path = Path(os.fspath(output_root))
+        parent_root = output_path.parent.resolve(strict=True)
+        if output_path.is_symlink():
+            raise CapsuleGuestError(f"artifact output root cannot be a symlink: {output_path}")
+        output_path.mkdir(parents=True, exist_ok=True)
+        if output_path.is_symlink():
+            raise CapsuleGuestError(f"artifact output root became a symlink: {output_path}")
+        resolved_output_root = output_path.resolve(strict=True)
         try:
             resolved_output_root.relative_to(parent_root)
         except ValueError as exc:
             raise CapsuleGuestError(
-                f"artifact output root escapes its run directory: {output_root}"
+                f"artifact output root escapes its run directory: {output_path}"
             ) from exc
         if resolved_output_root == parent_root:
             raise CapsuleGuestError("artifact output root cannot equal its run directory")
@@ -318,43 +386,14 @@ class GuestAgentClient:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination = workspace_path(resolved_output_root, relative, must_exist=False)
         temp = destination.with_name(f".{destination.name}.argus-{uuid.uuid4().hex}.part")
-        digest = hashlib.sha256()
-        offset = 0
         try:
             with temp.open("xb") as handle:
-                while offset < size:
-                    limit = min(TRANSFER_CHUNK_BYTES, size - offset)
-                    query = urllib.parse.urlencode(
-                        {"path": relative, "offset": offset, "limit": limit}
-                    )
-                    data = self._request("GET", f"/v1/files/collect/chunk?{query}")
-                    try:
-                        chunk = base64.b64decode(str(data.get("data_b64") or ""), validate=True)
-                    except Exception as exc:
-                        raise CapsuleGuestError(
-                            f"guest returned invalid artifact data for {relative}"
-                        ) from exc
-                    if len(chunk) != limit:
-                        raise CapsuleGuestError(
-                            f"guest artifact chunk length mismatch for {relative}: "
-                            f"expected {limit}, got {len(chunk)}"
-                        )
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    offset += len(chunk)
-            actual = digest.hexdigest()
+                actual = self._stream_artifact(relative, size, handle)
             if actual != expected:
                 raise CapsuleGuestError(
                     f"artifact checksum mismatch for {relative}: expected {expected}, got {actual}"
                 )
-            final_metadata = self.collect_info(relative)
-            if (
-                int(final_metadata["size"]) != size
-                or str(final_metadata["sha256"]).lower() != expected
-            ):
-                raise CapsuleGuestError(
-                    f"artifact changed while being collected: {relative}"
-                )
+            self._verify_collected_snapshot(relative, size, expected)
             os.replace(temp, destination)
         except Exception:
             try:
