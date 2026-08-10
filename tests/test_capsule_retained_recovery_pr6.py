@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import json
-import threading
 from pathlib import Path
 
-import pytest
-
 from argus.capsule.base import (
-    CapsuleError,
     CapsuleHandle,
     CapsuleProvider,
     CapsuleRequest,
@@ -19,48 +14,23 @@ from argus.capsule.secure_guest_agent import SecureGuestAgentServer
 from argus.execution import SecureCapsuleExecutionEnvironment
 
 
-def test_guest_recovery_arm_restores_one_time_restart_material(tmp_path):
-    token_file = tmp_path / "guest-token.once"
-    key_file = tmp_path / "guest-key.pem"
-    server = SecureGuestAgentServer(
-        ("127.0.0.1", 0),
-        "bootstrap-secret",
-        recovery_token_file=str(token_file),
-        recovery_tls_key_path=str(key_file),
-    )
-    server.recovery_tls_key_material = b"private-key-material"
-    thread = threading.Thread(
-        target=server.serve_forever,
-        kwargs={"poll_interval": 0.01},
-        daemon=True,
-    )
-    thread.start()
-    endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+def test_secure_control_surface_has_no_recovery_credential_arming():
     client = SecureGuestAgentClient(
-        endpoint,
+        "http://127.0.0.1:8765",
         "bootstrap-secret",
         allow_insecure_http=True,
-        timeout_seconds=2,
     )
+    server = SecureGuestAgentServer(("127.0.0.1", 0), "bootstrap-secret")
     try:
-        client.rotate_session_token("retained123", "s" * 48)
-        recovery = "r" * 48
-        client.arm_recovery("retained123", recovery)
-
-        assert token_file.read_text(encoding="utf-8").strip() == recovery
-        assert key_file.read_bytes() == b"private-key-material"
-        assert server.recovery_armed is True
-        assert server.recovery_tls_key_material == b""
-
-        with pytest.raises(Exception, match="already armed"):
-            client.arm_recovery("retained123", "t" * 48)
+        assert not hasattr(client, "arm_recovery")
+        assert not hasattr(server, "arm_recovery")
+        assert not hasattr(server, "recovery_tls_key_material")
+        assert not hasattr(server, "recovery_token_file")
     finally:
-        server.shutdown()
         server.server_close()
-        thread.join(timeout=2)
 
 
-class RecoveryProvider(CapsuleProvider):
+class ForensicProvider(CapsuleProvider):
     provider_name = "hyperv"
 
     def __init__(self, root: Path):
@@ -82,7 +52,7 @@ class RecoveryProvider(CapsuleProvider):
 
     def retain_failure(self, handle: CapsuleHandle, reason: str) -> FailureCapsule:
         self.retained.append((handle, reason))
-        return FailureCapsule(
+        failure = FailureCapsule(
             failure_id=handle.session_id,
             session_id=handle.session_id,
             provider=handle.provider,
@@ -92,44 +62,39 @@ class RecoveryProvider(CapsuleProvider):
             retained_at="2026-08-10T00:00:00+00:00",
             vm_state="Off",
         )
+        (self.root / "failure-capsule.json").write_text(
+            '{"forensic_only": true}\n', encoding="utf-8"
+        )
+        return failure
 
     def destroy(self, handle: CapsuleHandle) -> None:
         self.destroyed.append(handle.session_id)
 
 
-class RecoveryClient:
-    def __init__(self, endpoint, token, *, fail_arm: bool = False, **kwargs):
+class ForensicClient:
+    def __init__(self, endpoint, token, **kwargs):
         self.endpoint = endpoint
         self.token = token
-        self.fail_arm = fail_arm
         self.rotations = []
-        self.events = []
-        self.armed = []
+        self.close_calls = 0
 
     def wait_until_ready(self, timeout_seconds):
-        self.events.append("ready")
+        return None
 
     def rotate_session_token(self, session_id, token):
         self.rotations.append((session_id, token))
         self.token = token
-        self.events.append("rotate")
 
     def close_session(self):
-        self.events.append("close-target")
-
-    def arm_recovery(self, session_id, token):
-        self.events.append("arm-recovery")
-        if self.fail_arm:
-            raise CapsuleError("recovery arm failed")
-        self.armed.append((session_id, token))
+        self.close_calls += 1
 
 
-def _recovery_environment(tmp_path: Path, *, fail_arm: bool = False):
-    provider = RecoveryProvider(tmp_path / "capsule")
+def _forensic_environment(tmp_path: Path):
+    provider = ForensicProvider(tmp_path / "capsule")
     clients = []
 
     def factory(*args, **kwargs):
-        client = RecoveryClient(*args, fail_arm=fail_arm, **kwargs)
+        client = ForensicClient(*args, **kwargs)
         clients.append(client)
         return client
 
@@ -146,56 +111,38 @@ def _recovery_environment(tmp_path: Path, *, fail_arm: bool = False):
         settings,
         provider=provider,
         client_factory=factory,
-        session_id="recoverable123",
+        session_id="forensic123",
     )
     environment.prepare()
     return environment, provider, clients[0]
 
 
-def test_retained_secure_capsule_arms_recovery_before_provider_poweroff(tmp_path):
-    environment, provider, client = _recovery_environment(tmp_path)
+def test_secure_failure_retention_powers_off_without_persisting_restart_authority(tmp_path):
+    environment, provider, client = _forensic_environment(tmp_path)
     environment.record_failure("assertion failed")
 
     environment.close()
 
-    assert client.events[-2:] == ["close-target", "arm-recovery"]
-    assert len(client.armed) == 1
     assert len(provider.retained) == 1
     assert provider.destroyed == []
+    # PR4 retention powers the VM off before normal guest teardown. No secret is
+    # written back into the potentially target-controlled guest first.
+    assert client.close_calls == 0
 
-    session_id, recovery_token = client.armed[0]
-    assert session_id == "recoverable123"
-    assert recovery_token != "bootstrap"
-    assert len(recovery_token) >= 32
-
-    recovery_path = Path(environment.failure_capsule()["recovery_credentials_path"])
-    recovery = json.loads(recovery_path.read_text(encoding="utf-8"))
-    assert recovery["session_id"] == "recoverable123"
-    assert recovery["token"] == recovery_token
-
-    # Caller-visible/report metadata points to the host-only recovery file but
-    # never serializes the bearer itself.
     failure = environment.failure_capsule()
-    assert failure["recovery_credentials_path"] == str(recovery_path)
-    assert "token" not in failure
-
-    manifest = json.loads((provider.root / "failure-capsule.json").read_text(encoding="utf-8"))
-    assert manifest["recovery_credentials_path"] == str(recovery_path)
-    assert recovery_token not in json.dumps(manifest)
-
-
-def test_recovery_arm_failure_preserves_live_capsule_instead_of_powering_off(tmp_path):
-    environment, provider, client = _recovery_environment(tmp_path, fail_arm=True)
-    environment.record_failure("assertion failed")
-
-    with pytest.raises(CapsuleError, match="recovery credentials could not be provisioned"):
-        environment.close()
-
-    assert client.events[-2:] == ["close-target", "arm-recovery"]
-    assert provider.retained == []
-    assert provider.destroyed == []
-    assert environment._handle is not None
-    error = environment.failure_capsule_error()
-    assert error["status"] == "recovery_provision_failed"
-    assert "unrestartable" in error["recovery"]
+    assert failure is not None
+    assert failure["vm_state"] == "Off"
+    assert "recovery_credentials_path" not in failure
     assert not (provider.root / "recovery-control.json").exists()
+
+
+def test_failure_capsule_contract_contains_no_restart_secret_or_recovery_path(tmp_path):
+    environment, _provider, _client = _forensic_environment(tmp_path)
+    environment.record_failure("assertion failed")
+    environment.close()
+
+    failure = environment.failure_capsule()
+    serialized = str(failure).lower()
+    assert "token" not in serialized
+    assert "credential" not in serialized
+    assert "recovery" not in serialized
