@@ -2,22 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import os
 import secrets
-import uuid
-from dataclasses import replace
-from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from argus.adapters.base import PolicyAdapter
-from argus.capsule.base import (
-    CapsuleError,
-    CapsuleHandle,
-    CapsuleProvider,
-    CapsuleRequest,
-    CapsuleSettings,
-)
+from argus.capsule.base import CapsuleHandle, CapsuleProvider, CapsuleRequest, CapsuleSettings
 from argus.capsule.guest import GuestAdapterProxy
 from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
 from argus.capsule.secure_client import SecureGuestAgentClient
@@ -26,7 +15,14 @@ from argus.execution.capsule import CapsuleExecutionEnvironment
 
 
 class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
-    """Capsule environment with isolated networking and secure control auth."""
+    """Capsule environment with isolated networking and secure control auth.
+
+    Secure retained Capsules intentionally reuse the base PR4 disk/config-only
+    retention path. Runtime bootstrap/TLS material has already been consumed,
+    and no replacement control credential is persisted into a guest that may
+    have been influenced by the application under test. Retention is therefore
+    forensic evidence preservation rather than a promise of remote restart.
+    """
 
     def __init__(
         self,
@@ -50,9 +46,6 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             session_id=session_id,
         )
         self._session_token_rotated = False
-        self._recovery_token = ""
-        self._recovery_credentials_path = ""
-        self._recovery_armed = False
 
     @staticmethod
     def _make_secure_provider(name: str) -> CapsuleProvider:
@@ -121,135 +114,7 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
 
     def _rollback_handle(self, handle: Optional[CapsuleHandle]):
         self._session_token_rotated = False
-        self._recovery_token = ""
-        self._recovery_credentials_path = ""
-        self._recovery_armed = False
         return super()._rollback_handle(handle)
-
-    @staticmethod
-    def _recovery_file_for(handle: CapsuleHandle) -> Path:
-        root = Path(handle.root_dir).resolve(strict=True)
-        return root / "recovery-control.json"
-
-    def _persist_recovery_control(self, handle: CapsuleHandle, token: str) -> str:
-        """Persist the one-time restart bearer on the trusted host, not in reports."""
-        destination = self._recovery_file_for(handle)
-        if destination.is_symlink():
-            raise CapsuleError("Failure Capsule recovery credential path cannot be a symlink")
-        payload = {
-            "version": 1,
-            "session_id": handle.session_id,
-            "vm_name": handle.vm_name,
-            "address": handle.address,
-            "guest_port": handle.guest_port,
-            "transport": handle.transport,
-            "token": token,
-        }
-        temp = destination.with_name(
-            f".{destination.name}.argus-{uuid.uuid4().hex}.tmp"
-        )
-        try:
-            with temp.open("x", encoding="utf-8") as stream:
-                json.dump(payload, stream, indent=2, sort_keys=True)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            try:
-                os.chmod(temp, 0o600)
-            except OSError:
-                pass
-            os.replace(temp, destination)
-        except Exception:
-            try:
-                temp.unlink()
-            except OSError:
-                pass
-            raise
-        return str(destination)
-
-    def _recovery_provisioning_failed(self, handle: CapsuleHandle, exc: Exception) -> None:
-        self._handle = handle
-        self._retention_error = {
-            "status": "recovery_provision_failed",
-            "session_id": handle.session_id,
-            "provider": handle.provider,
-            "vm_name": handle.vm_name,
-            "root_dir": handle.root_dir,
-            "error": str(exc),
-            "recovery": (
-                "Capsule was left powered/live rather than creating an unrestartable "
-                "Failure Capsule. Fix recovery provisioning, then retry retention or "
-                "clean up the VM manually."
-            ),
-        }
-
-    def _arm_retained_recovery(self, handle: CapsuleHandle) -> None:
-        if self._recovery_armed:
-            return
-        client = self._client
-        if client is None or not self._session_token_rotated:
-            raise CapsuleError("secure Capsule session auth is unavailable for retained recovery")
-        arm = getattr(client, "arm_recovery", None)
-        if not callable(arm):
-            raise CapsuleError("secure Capsule client does not support retained recovery arming")
-
-        token = self._recovery_token or secrets.token_urlsafe(48)
-        path = self._recovery_credentials_path
-        if not path:
-            path = self._persist_recovery_control(handle, token)
-
-        try:
-            # The recovery credential is written into the guest only after the
-            # application-under-test has been terminated. TurnOff would discard
-            # its RAM anyway; this prevents the target from reading restart
-            # material while preserving its on-disk failure state.
-            client.close_session()
-            arm(self.session_id, token)
-        except Exception:
-            if not self._recovery_armed:
-                try:
-                    Path(path).unlink()
-                except OSError:
-                    pass
-            raise
-
-        self._recovery_token = token
-        self._recovery_credentials_path = path
-        self._recovery_armed = True
-
-    def _retain_failure_before_teardown(self) -> bool:
-        if not (
-            self.settings.retain_on_failure
-            and self._failure_reason
-            and self._handle is not None
-        ):
-            return False
-        handle = self._handle
-
-        if not self._recovery_armed:
-            try:
-                self._arm_retained_recovery(handle)
-            except Exception as exc:
-                self._recovery_provisioning_failed(handle, exc)
-                raise CapsuleError(
-                    "Failure Capsule recovery credentials could not be provisioned; "
-                    f"Capsule preserved live at {handle.root_dir}: {exc}"
-                ) from exc
-
-        retained = super()._retain_failure_before_teardown()
-        if retained and self._retained_failure is not None:
-            self._retained_failure = replace(
-                self._retained_failure,
-                recovery_credentials_path=self._recovery_credentials_path,
-            )
-            # Keep the provider manifest and caller-visible metadata consistent,
-            # but never include the recovery bearer itself in RunResult/reporting.
-            manifest = Path(self._retained_failure.root_dir) / "failure-capsule.json"
-            manifest.write_text(
-                json.dumps(self._retained_failure.to_dict(), indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-        return retained
 
     def close(self) -> None:
         try:
