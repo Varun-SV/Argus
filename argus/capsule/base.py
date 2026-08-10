@@ -59,9 +59,9 @@ class CapsuleSettings:
     disk writable.
     """
 
-    # ``auto`` selects Hyper-V on Windows and libvirt/QEMU on Linux. Explicit
-    # provider names remain supported for deterministic deployments.
-    provider: str = "auto"
+    # Keep PR3-PR6 behavior for configs that omit provider. Cross-platform
+    # deployments can opt into ``auto`` (Hyper-V on Windows, libvirt on Linux).
+    provider: str = "hyperv"
     guest_os: str = "auto"
     image: str = ""
     switch_name: str = ""
