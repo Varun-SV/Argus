@@ -19,7 +19,8 @@ ATES is designed to provide:
 - clear separation between observed facts, deterministic assertions, executed actions, and AI interpretation;
 - failure and checkpoint evidence without capturing screenshots for every action by default;
 - provenance for test definitions, Argus builds, models, execution environments, nodes, Capsules, and artifacts;
-- tamper-evident artifact manifests;
+- cryptographic artifact digests for corruption/integrity detection;
+- a manifest model that can become tamper-evident only when bound to a trusted external, immutable, or cryptographic trust boundary;
 - append-oriented audit history rather than silent mutation;
 - requirement-to-test-to-evidence traceability;
 - a stable machine-readable foundation for reports, dashboards, audit packages, and future compliance mappings.
@@ -33,7 +34,8 @@ ATES does not:
 - require ISO/IEC material for native Argus operation;
 - claim compliance with a regulated standard merely because a report resembles one;
 - make screenshots mandatory for every normal action;
-- allow report configuration to suppress mandatory core evidence.
+- allow report configuration to suppress mandatory core evidence;
+- claim that a locally stored hash and locally stored manifest are tamper-evident without an independent trust boundary.
 
 ## ATES Core is always on
 
@@ -301,7 +303,32 @@ RUN_COMPLETED
 
 Not every adapter/environment will emit every event.
 
-Events should contain stable identifiers and references rather than duplicating large payloads.
+### Event envelope and canonical ordering
+
+Every ATES event must carry a stable event identity and a monotonic sequence within its run. The event envelope should contain at least:
+
+```yaml
+ates_version: "0.1"
+run_id: RUN-01K...
+event_id: EVT-01K...
+sequence: 42
+event_type: ACTION_EXECUTED
+occurred_at: "2026-08-11T01:21:43.819+05:30"
+```
+
+Required semantics:
+
+- `event_id` is stable for the logical event and is reused when the same event is retried in transport;
+- `sequence` is allocated by the authoritative run producer, increases monotonically within one `run_id`, and is never reused for a different logical event;
+- transport retries must resend the original `event_id` and `sequence`, not mint a replacement event;
+- consumers deduplicate by event identity and treat identical retries as idempotent;
+- conflicting payloads for the same `event_id` or `(run_id, sequence)` are integrity/protocol errors and must not be silently reconciled;
+- consumers reconstruct canonical execution order from the per-run sequence, not network arrival order;
+- sequence gaps are detectable and must remain visible until the missing events are reconciled or the run is explicitly marked incomplete.
+
+These rules are required before ATES is used as the canonical vocabulary for Fleet streaming, because Nodes may reconnect, retransmit, or deliver events out of order.
+
+Events should otherwise contain stable entity identifiers and references rather than duplicating large payloads.
 
 ## Storage layout
 
@@ -327,6 +354,8 @@ A possible on-disk layout is:
 
 Retained artifacts should be hashed with SHA-256 and included in the run manifest.
 
+A digest stored alongside mutable evidence detects accidental corruption and modification **only while the manifest/digest itself remains trusted**. A process that can replace both an artifact and its stored digest can recompute both, so hashes alone must not be described as tamper-evident.
+
 ### Manifest
 
 The manifest should bind:
@@ -336,18 +365,32 @@ The manifest should bind:
 - report inputs;
 - relevant schema/version identifiers.
 
-### Future signing
+The manifest should itself have a canonical digest. This establishes a single value that a deployment can bind to an independent trust boundary.
 
-ATES should leave room for cryptographic signing of manifests without requiring signatures for ordinary users.
+### Tamper-evidence boundary
 
-Possible future chain:
+ATES may claim that a completed evidence package is **tamper-evident** only when the final manifest digest is bound outside the mutable evidence set by at least one approved mechanism, for example:
+
+- a cryptographic signature whose verification key is independently trusted;
+- a trusted external transparency/audit service that records the manifest digest;
+- immutable/WORM storage or another storage boundary that prevents the evidence producer from rewriting both evidence and its recorded digest after finalization.
+
+A native run without such a binding remains useful for integrity/corruption detection, but must not be labeled tamper-evident.
+
+### Signing and audit profiles
+
+ATES should support cryptographic signing of manifests without requiring signatures for ordinary users.
+
+Possible chain:
 
 ```text
 artifact hashes
     -> evidence manifest
         -> manifest digest
-            -> optional organizational signature
+            -> signature / trusted external digest / immutable binding
 ```
+
+A future regulated/audit profile may require one or more concrete binding mechanisms and must record which mechanism was used, its verifier/reference, and the binding timestamp.
 
 ## Audit history
 
@@ -409,7 +452,7 @@ The report generator must derive claims from evidence references rather than cre
 14. Model/resource usage
 15. Failure Capsule information, if retained
 16. Approvals/review state, if applicable
-17. Evidence manifest
+17. Evidence manifest and integrity/tamper-evidence status
 
 ## Privacy and secret handling
 
@@ -431,6 +474,8 @@ Capsule secrets that are intentionally non-persistent today must remain non-pers
 ATES is also the planned protocol-level foundation for Argus Fleet observation.
 
 A Node can stream ATES events to the Control Center while retaining canonical local evidence. The read-only Observer UI can then display live progress from the same event vocabulary later used to render final reports.
+
+Fleet transport must preserve the event envelope semantics above: retries retain identity, out-of-order delivery does not change canonical order, and gaps/conflicts are reconciled explicitly rather than hidden.
 
 That avoids creating one schema for execution, another for dashboards, and a third for documentation.
 
@@ -462,13 +507,14 @@ Schema evolution should favor additive changes. Breaking changes require a new m
 
 Recommended implementation order:
 
-1. define typed ATES Core IDs, events, and schema version;
-2. add append-only local event writer;
+1. define typed ATES Core IDs, the event envelope (`event_id`, per-run `sequence`), events, and schema version;
+2. add append-only local event writer with duplicate/conflict/gap invariants;
 3. emit run/step/action/observation/assertion lifecycle events from the existing runner;
 4. implement failure evidence and explicit checkpoints;
 5. hash artifacts and generate the run manifest;
-6. render the first Markdown/JSON Test Execution Report from canonical evidence;
-7. add requirement traceability;
-8. add optional approval/supersession records;
-9. integrate live event streaming with Argus Fleet;
-10. add external compliance mappings only after the native model is stable.
+6. implement optional manifest binding mechanisms before advertising tamper-evident evidence;
+7. render the first Markdown/JSON Test Execution Report from canonical evidence;
+8. add requirement traceability;
+9. add optional approval/supersession records;
+10. integrate live event streaming with Argus Fleet using idempotent retry/reconciliation semantics;
+11. add external compliance mappings only after the native model is stable.
