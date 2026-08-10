@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ipaddress
-import shutil
 from pathlib import Path
 
 from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleRequest
@@ -112,8 +111,6 @@ class IsolatedHyperVProvider(HyperVProvider):
             "Remove-VMNetworkAdapterExtendedAcl -ErrorAction Stop",
         ]
 
-        # Highest-priority rule: only the management OS may initiate the Argus
-        # control connection to the guest's declared control port.
         weight = 1000
         for host_ip in host_ips:
             commands.append(
@@ -145,7 +142,6 @@ class IsolatedHyperVProvider(HyperVProvider):
             )
             weight -= 1
 
-        # Lowest-priority catch-alls. Higher-weight allows are evaluated first.
         commands.extend(
             [
                 "Add-VMNetworkAdapterExtendedAcl -VMName $vm -Action Deny "
@@ -157,10 +153,17 @@ class IsolatedHyperVProvider(HyperVProvider):
         self._run_ps("; ".join(commands), 45)
 
     def _disable_host_file_copy(self, vm_name: str) -> None:
+        # Fail closed if the expected integration service cannot be identified,
+        # or if Hyper-V reports it still enabled after the disable command.
         self._run_ps(
+            "$ErrorActionPreference='Stop'; "
             "$svc=Get-VMIntegrationService -VMName " + _ps_quote(vm_name) +
-            " -ErrorAction Stop | Where-Object { $_.Name -eq 'Guest Service Interface' }; "
-            "if ($svc -and $svc.Enabled) { Disable-VMIntegrationService -VMIntegrationService $svc }",
+            " | Where-Object { $_.Name -eq 'Guest Service Interface' }; "
+            "if (-not $svc) { throw 'Guest Service Interface integration service not found' }; "
+            "if ($svc.Enabled) { Disable-VMIntegrationService -VMIntegrationService $svc -ErrorAction Stop }; "
+            "$verify=Get-VMIntegrationService -VMName " + _ps_quote(vm_name) +
+            " | Where-Object { $_.Name -eq 'Guest Service Interface' }; "
+            "if (-not $verify -or $verify.Enabled) { throw 'Guest Service Interface remains enabled' }",
             20,
         )
 
