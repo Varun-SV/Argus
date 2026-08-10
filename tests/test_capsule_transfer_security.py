@@ -95,7 +95,33 @@ def test_host_staging_source_symlink_cannot_escape_project(tmp_path):
         project_source_path(project, "linked.bin")
 
 
-def test_runs_root_symlink_cannot_escape_project(tmp_path):
+def _result() -> RunResult:
+    return RunResult(
+        test_name="escape",
+        test_file="escape.test.yaml",
+        adapter="desktop-gui",
+        provider="fake",
+    )
+
+
+def test_argus_root_redirect_is_rejected_before_external_run_creation(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside-argus"
+    outside.mkdir()
+    argus_dir = project / ".argus"
+    try:
+        argus_dir.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable on this runner: {exc}")
+
+    with pytest.raises(OSError, match=".argus cannot be a symlink"):
+        _result().run_dir(project)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_runs_root_redirect_is_rejected_before_external_write(tmp_path):
     project = tmp_path / "project"
     argus_dir = project / ".argus"
     argus_dir.mkdir(parents=True)
@@ -107,13 +133,7 @@ def test_runs_root_symlink_cannot_escape_project(tmp_path):
     except OSError as exc:
         pytest.skip(f"symlink creation is unavailable on this runner: {exc}")
 
-    result = RunResult(
-        test_name="escape",
-        test_file="escape.test.yaml",
-        adapter="desktop-gui",
-        provider="fake",
-    )
-    with pytest.raises(OSError, match="escapes the project root"):
-        result.run_dir(project)
+    with pytest.raises(OSError, match=".argus/runs cannot be a symlink"):
+        _result().run_dir(project)
 
     assert list(outside.iterdir()) == []
