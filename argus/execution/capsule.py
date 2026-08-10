@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from argus.adapters.base import Observation, PolicyAdapter
@@ -13,6 +14,11 @@ from argus.capsule.base import (
     CapsuleRequest,
     CapsuleSettings,
     FailureCapsule,
+)
+from argus.capsule.files import (
+    enforce_total_bytes,
+    normalize_relative_path,
+    project_source_path,
 )
 from argus.capsule.guest import GuestAdapterProxy, GuestAgentClient
 from argus.execution.base import (
@@ -47,6 +53,8 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         self._client: Optional[GuestAgentClient] = None
         self._adapter: Optional[PolicyAdapter] = None
         self._prepared = False
+        self._workspace_ready = False
+        self._staged_targets: dict[str, str] = {}
         self._failure_reason = ""
         self._retained_failure: Optional[FailureCapsule] = None
         self._retention_error: Optional[dict] = None
@@ -117,33 +125,137 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         self._adapter = None
         self._client = None
         self._prepared = False
+        self._workspace_ready = False
+        self._staged_targets.clear()
         if handle is None:
             self._handle = None
             return None
         try:
             self.provider.destroy(handle)
         except Exception as exc:
-            # Retain the handle so launch()'s outer rollback or a later close()
-            # can retry a transient provider cleanup failure.
             self._handle = handle
             return exc
         self._handle = None
         return None
 
+    # ---- explicit staging / collection ---------------------------------
+
+    def prepare_transfers(self) -> None:
+        if not self._prepared:
+            self.prepare()
+        if self._client is None:
+            raise ExecutionEnvironmentError("Capsule guest client was not prepared")
+        if not self._workspace_ready:
+            self._client.begin_files(self.session_id)
+            self._workspace_ready = True
+
+    def stage_files(self, entries, project_dir: Path) -> list[dict]:
+        self.prepare_transfers()
+        if self._client is None:
+            raise ExecutionEnvironmentError("Capsule guest client was not prepared")
+
+        prepared = []
+        destinations = set()
+        for entry in entries:
+            source_name = str(getattr(entry, "source", "") or "")
+            destination = normalize_relative_path(
+                str(getattr(entry, "destination", "") or "")
+            )
+            if destination in destinations:
+                raise ExecutionEnvironmentError(
+                    f"duplicate Capsule staging destination: {destination}"
+                )
+            destinations.add(destination)
+            source = project_source_path(project_dir, source_name)
+            prepared.append(
+                (
+                    entry,
+                    source,
+                    destination,
+                    source.stat().st_size,
+                )
+            )
+        enforce_total_bytes(item[3] for item in prepared)
+
+        staged = []
+        try:
+            for entry, source, destination, _, in prepared:
+                data = self._client.stage_file(
+                    source,
+                    destination,
+                    expected_sha256=str(getattr(entry, "sha256", "") or ""),
+                )
+                self._staged_targets[destination] = str(data["guest_path"])
+                staged.append(
+                    {
+                        "source": str(getattr(entry, "source", "")),
+                        "destination": destination,
+                        "size": int(data["size"]),
+                        "sha256": str(data["sha256"]),
+                    }
+                )
+        except Exception as stage_exc:
+            # Staging happens before target launch. A staging failure is an input
+            # or infrastructure failure, not retainable application state.
+            try:
+                self.close()
+            except Exception as cleanup_exc:
+                raise ExecutionEnvironmentError(
+                    "Capsule staging failed and rollback also failed: "
+                    f"staging={stage_exc}; cleanup={cleanup_exc}"
+                ) from stage_exc
+            raise
+        return staged
+
+    def collect_artifacts(self, paths, output_dir: Path) -> list[dict]:
+        if not self._workspace_ready or self._client is None:
+            raise ExecutionEnvironmentError("Capsule artifact workspace is not available")
+        normalized = []
+        seen = set()
+        for value in paths:
+            relative = normalize_relative_path(str(value or ""))
+            if relative in seen:
+                raise ExecutionEnvironmentError(
+                    f"duplicate Capsule artifact path: {relative}"
+                )
+            seen.add(relative)
+            normalized.append(relative)
+
+        infos = [(relative, self._client.collect_info(relative)) for relative in normalized]
+        enforce_total_bytes(info["size"] for _, info in infos)
+        collected = []
+        for relative, info in infos:
+            data = self._client.collect_file(relative, output_dir, info=info)
+            collected.append(
+                {
+                    "path": relative,
+                    "size": int(data["size"]),
+                    "sha256": str(data["sha256"]),
+                    "host_path": f"artifacts/{relative}",
+                }
+            )
+        return collected
+
+    # ---- target lifecycle ----------------------------------------------
+
     def launch(self, target: str) -> None:
-        # Preparation failures remain PR3-style infrastructure failures: prepare()
-        # owns rollback because no valid guest test state necessarily exists yet.
         if not self._prepared:
             self.prepare()
         if self._adapter is None:
             raise ExecutionEnvironmentError("Capsule guest adapter was not prepared")
 
+        resolved_target = target
+        if str(target).startswith("stage://"):
+            relative = normalize_relative_path(str(target)[len("stage://"):])
+            resolved_target = self._staged_targets.get(relative, "")
+            if not resolved_target:
+                raise ExecutionEnvironmentError(
+                    f"staged launch target was not declared/committed: {relative}"
+                )
+
         try:
-            self._adapter.launch(target)
+            self._adapter.launch(resolved_target)
         except Exception as launch_exc:
-            # Once preparation has succeeded, a target-launch failure is part of
-            # the test state. Retain it when explicitly requested instead of
-            # destroying the prepared Capsule before the runner can report it.
             if self.settings.retain_on_failure:
                 self.record_failure(f"target launch failed: {launch_exc}")
             try:
@@ -193,7 +305,6 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         return self._retained_failure.to_dict()
 
     def failure_capsule_error(self):
-        """Return structured recovery data when requested retention failed."""
         if self._retention_error is None:
             return None
         return dict(self._retention_error)
@@ -209,8 +320,6 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         try:
             retained = self.provider.retain_failure(handle, self._failure_reason)
         except Exception as exc:
-            # Never destroy evidence after a retention failure. Keep the handle
-            # and expose exact recovery coordinates to the run result.
             self._handle = handle
             self._retention_error = {
                 "status": "retention_failed",
@@ -234,11 +343,11 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         self._adapter = None
         self._client = None
         self._prepared = False
+        self._workspace_ready = False
         self._handle = None
         return True
 
     def close(self) -> None:
-        # An already-recorded failure must be retained before any guest teardown.
         if self._retain_failure_before_teardown():
             return
 
@@ -251,32 +360,22 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
                 adapter.close()
             except Exception as exc:
                 guest_close_error = f"guest session close failed: {exc}"
-
-                # Teardown can itself be the first failure of an otherwise
-                # passing run. When retention is enabled, arm retention while
-                # the provider handle is still intact and before destroy().
                 if self.settings.retain_on_failure and handle is not None:
                     self.record_failure(guest_close_error)
                     if self._retain_failure_before_teardown():
-                        # Retention succeeded, but guest teardown still failed;
-                        # surface that run error to the caller rather than
-                        # converting the run into a false pass.
                         raise CapsuleError(guest_close_error) from exc
-
                 errors.append(guest_close_error)
 
-        # If retention succeeded or failed, control has already returned/raised
-        # above and the provider handle was deliberately preserved. Reaching this
-        # point means normal cleanup should proceed.
         self._adapter = None
         self._client = None
         self._prepared = False
+        self._workspace_ready = False
+        self._staged_targets.clear()
 
         if handle is not None:
             try:
                 self.provider.destroy(handle)
             except Exception as exc:
-                # Keep the provider handle so a second close() can retry.
                 self._handle = handle
                 errors.append(f"Capsule destroy failed: {exc}")
             else:
