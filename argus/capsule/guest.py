@@ -223,7 +223,7 @@ class GuestAgentClient:
             upload_digest.hexdigest() != digest
             or after_upload.st_size != before.st_size
             or after_upload.st_mtime_ns != before.st_mtime_ns
-            or getattr(after_upload, "st_ctime_ns", 0) != getattr(before.st_ctime_ns if False else after_upload, "st_ctime_ns", 0)
+            or getattr(after_upload, "st_ctime_ns", 0) != getattr(before, "st_ctime_ns", 0)
         ):
             raise CapsuleGuestError(f"staging source changed while uploading: {source_name}")
 
