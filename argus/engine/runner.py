@@ -314,12 +314,6 @@ def run_test(
         for index, step in enumerate(spec.steps):
             step_started = time.monotonic()
 
-            # Artifacts must leave the guest before explicit teardown can retain
-            # or destroy the Capsule. Collection is read-only and follows the
-            # deterministic paths declared in the test spec.
-            if step.kind == "teardown":
-                collect_once()
-
             if failed and not spec.continue_on_failure and step.kind != "teardown":
                 sr = StepResult(
                     index=index,
@@ -371,6 +365,9 @@ def run_test(
                 sr.index = index
                 _attach_screenshot(sr, adapter, index, shots_dir)
             elif step.text == "close" and step.kind == "teardown":
+                # Non-close teardown steps may flush or export files. Collect at
+                # the last safe point: immediately before a declared close.
+                collect_once()
                 try:
                     adapter.close()
                 except Exception as exc:
@@ -429,8 +426,8 @@ def run_test(
         failed = True
         result.error = f"execution failed: {execution_error}"
     finally:
-        # If execution raised or no explicit teardown exists, collect before the
-        # final close while the guest workspace is still reachable.
+        # No declared close reached (or execution raised): collect after any
+        # teardown preparation that did run, but before implicit final cleanup.
         collect_once()
 
         if _retention_failure(adapter) is None:
