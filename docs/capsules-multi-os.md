@@ -21,7 +21,7 @@ The first Linux Capsule provider targets local KVM/QEMU managed through libvirt:
 - Linux host with hardware virtualization/KVM available;
 - `virsh` and `qemu-img` installed;
 - access to the local `qemu:///system` libvirt connection;
-- a Linux qcow2 or raw golden image;
+- a Linux qcow2 or raw golden image whose architecture matches the KVM host;
 - a system-accessible Capsule storage root usable by both the Argus host process and the system QEMU account;
 - the secure Argus guest agent configured to start automatically in the test-user session;
 - a dedicated guest TLS certificate/private key and one-time bootstrap bearer, as with the Windows secure guest-agent design.
@@ -53,10 +53,11 @@ execution:
     # Optional RFC1918 allocation pool. Argus allocates one free /24 per session.
     # A /24 supports one concurrent Capsule; use a larger pool for concurrency.
     # libvirt_network_cidr: 10.250.64.0/20
-    # Optional architecture/machine pins.
+    # Optional architecture/machine pins. libvirt_arch must match the host
+    # because PR7 domains use KVM rather than cross-architecture emulation.
     # libvirt_arch: x86_64
     # libvirt_machine: pc-q35-9.0
-    # For aarch64, Argus defaults the machine to virt and requests EFI firmware.
+    # On an aarch64 host, Argus defaults the machine to virt and requests EFI.
 ```
 
 `guest_os`, `libvirt_uri`, `libvirt_network_cidr`, `libvirt_arch`, and `libvirt_machine` are propagated through the normal `.argus/config.yaml` → `load_config()` → execution-environment path. Matching `ARGUS_CAPSULE_GUEST_OS`, `ARGUS_CAPSULE_LIBVIRT_URI`, `ARGUS_CAPSULE_LIBVIRT_NETWORK_CIDR`, `ARGUS_CAPSULE_LIBVIRT_ARCH`, and `ARGUS_CAPSULE_LIBVIRT_MACHINE` environment overrides are also supported.
@@ -77,6 +78,16 @@ This keeps Capsule overlays under the system libvirt image hierarchy. The host m
 
 A custom `vm_root` is allowed for sites that intentionally provision equivalent access. In particular, do not point it beneath a mode-0700 user home unless the system QEMU identity has an explicit safe access path.
 
+### Session identifiers
+
+A Capsule `session_id` is part of the provider ownership boundary, not an arbitrary filesystem path. The libvirt provider applies the same shared safe-character policy used by Capsule transfers before it derives resource names or joins the ID beneath `vm_root`:
+
+```text
+[A-Za-z0-9_-]{1,64}
+```
+
+The value must already be canonical; surrounding whitespace, absolute paths, `/` or `\` separators, `.`/`..` traversal, and other characters outside that set are rejected before provider commands or mutable session storage are created. This prevents a caller-supplied session ID from redirecting creation or recursive cleanup outside the configured Capsule root.
+
 ## Disk lifecycle
 
 Argus first asks `qemu-img info --output=json` for the golden image format and accepts `qcow2` or `raw`. Every session then creates:
@@ -89,17 +100,19 @@ session.qcow2                   (all guest writes)
 
 The session overlay, provider XML, and retained forensic metadata live beneath `vm_root/<session-id>`.
 
-Before allocating that session directory, PR7 validates the requested RFC1918 network pool, guest address, architecture, golden-image format, current libvirt subnet occupancy, and provider resource names. Invalid configuration is therefore retryable with the same session id and cannot leave an empty session directory that blocks the next attempt.
+Before allocating that session directory, PR7 validates the canonical session ID, requested RFC1918 network pool, any explicitly pinned guest address, host/guest architecture compatibility, golden-image format, and provider resource names. Invalid deterministic configuration is therefore retryable with the same session id and cannot leave an empty session directory that blocks the next attempt.
 
 The golden image is never attached as the writable domain disk. Normal teardown undefines the libvirt domain/network filter, destroys the transient network, and removes the session directory. Failure retention powers the domain off, destroys the transient network, and preserves the defined domain, qcow2 overlay, nwfilter definition, XML files, and `failure-capsule.json` for forensic inspection.
 
 As with secure Hyper-V retention, no new restart bearer or TLS private key is persisted merely to make a failed guest remotely restartable.
 
-### aarch64 firmware
+### Architecture and aarch64 firmware
 
-When `libvirt_arch: aarch64` is selected, PR7 generates a libvirt domain with EFI firmware autoselection (`<os firmware="efi">`). If no machine is explicitly configured, the provider also selects the QEMU ARM `virt` machine. This avoids pretending that an ARM guest can fall back to PC-style firmware and avoids hard-coding distribution-specific AAVMF/UEFI loader paths into Argus configuration.
+PR7 uses libvirt domains with `type="kvm"`; it is not a cross-architecture QEMU emulation provider. `platform.machine()` is normalized independently from `libvirt_arch`, and an explicit architecture pin is accepted only when it resolves to the actual host architecture. A mismatch fails before session storage or VM allocation.
 
-The host still needs a libvirt/QEMU installation whose domain capabilities provide a suitable EFI firmware implementation for the requested architecture. If firmware cannot be selected, libvirt fails the domain definition/start rather than Argus silently booting with a weaker or different architecture contract.
+On an aarch64 host, PR7 generates a libvirt domain with EFI firmware autoselection (`<os firmware="efi">`). If no machine is explicitly configured, the provider also selects the QEMU ARM `virt` machine. This avoids pretending that an ARM guest can fall back to PC-style firmware and avoids hard-coding distribution-specific AAVMF/UEFI loader paths into Argus configuration.
+
+The host still needs a libvirt/QEMU installation whose domain capabilities provide a suitable EFI firmware implementation for the requested architecture. If firmware cannot be selected, libvirt fails the domain definition/start rather than Argus silently weakening the architecture contract.
 
 ## Provider-resource ownership and rollback
 
@@ -130,7 +143,33 @@ per-session isolated libvirt /24
 
 Argus divides the pool into `/24` session networks. A configured `/24` therefore allows exactly one concurrent Capsule; a `/23` provides two slots, a `/20` provides sixteen, and the default `10.240.0.0/12` provides 4096. Candidate selection starts at a deterministic session-hash position and probes the rest of the pool if that slot is occupied.
 
-Before allocation, Argus enumerates every defined libvirt network with `virsh net-list --all --name` and reads each network's XML with `virsh net-dumpxml`. Any candidate `/24` that overlaps an existing IPv4 libvirt network is skipped. The chosen subnet is checked again immediately before provider resources are defined, closing the ordinary race window created while the overlay/XML are prepared. A full pool fails closed rather than reusing an endpoint.
+### Atomic Argus subnet allocation
+
+Subnet discovery alone is not a reservation. To prevent two concurrent Argus sessions from both observing the same `/24` as free, the libvirt provider serializes the allocation critical section:
+
+```text
+acquire Argus allocation lock
+        ↓
+scan defined libvirt networks
+        ↓
+choose free /24
+        ↓
+final occupancy/name checks
+        ↓
+nwfilter-define
+        ↓
+virsh net-create
+        ↓
+release lock
+```
+
+A process-local mutex closes thread races. On Linux, a URI-derived lock file in `/tmp` is additionally protected with `fcntl.flock`, so separate Argus processes using the same host account serialize as well. The file is opened without following symlinks when supported and must be a regular file owned by the invoking account with no group/other write bits. If a different account owns that well-known lock file, Argus fails closed instead of proceeding without coordination.
+
+The lock is held until `net-create` succeeds. At that point the live libvirt network itself is the durable reservation visible to the next allocator. If Argus crashes before that point, the operating system releases the advisory lock automatically, so no separate stale subnet-reservation record is required.
+
+While holding the lock Argus enumerates every defined libvirt network with `virsh net-list --all --name`, reads its XML using `virsh net-dumpxml`, and rejects overlapping candidates. A final occupancy check also detects an unmanaged libvirt network that already appeared during preparation. Operators should reserve the configured pool for Argus; arbitrary external libvirt actors are outside the Argus allocator lock and must not concurrently allocate from the same address pool.
+
+A full pool fails closed rather than reusing an endpoint.
 
 A per-session libvirt `nwfilter` is attached directly to the guest interface. It allows:
 
@@ -152,7 +191,9 @@ This is deliberate: an isolated network plus nwfilter has a clear default-deny c
 
 The allocated `/24` gives the guest a fixed DHCP reservation at `.2`. After the domain starts, Argus queries `virsh domifaddr --source lease --full` and waits until libvirt reports that exact reserved IPv4 address before exposing the secure guest client.
 
-A configured `guest_address` is accepted only if it exactly matches the provider's allocated reservation and must be IPv4. It cannot redirect Argus to an unrelated host.
+If `guest_address` is explicitly configured, it pins the `.2` address of that session's deterministic first `/24` candidate. A mismatched address is rejected before image inspection or mutable storage creation. The selected live subnet is checked again while the allocation lock is held; if the pinned first subnet is occupied, Argus fails rather than silently moving an explicitly pinned endpoint to another `/24`.
+
+Without an explicit `guest_address`, Argus may probe later free `/24`s in the configured pool. In either mode the attested endpoint cannot be redirected to an unrelated host.
 
 ## Linux GUI testing
 
@@ -207,20 +248,23 @@ The secure environment also uses the provider contract to resolve `guest_os: aut
 
 ## Validation boundary
 
-Hosted CI can validate provider selection, XML generation, ordering, rollback behavior, path semantics, network-pool allocation, capability enforcement, and simulated libvirt command flows on Ubuntu and Windows runners. It cannot create a real nested KVM/libvirt Capsule in GitHub-hosted CI.
+Hosted CI can validate provider selection, XML generation, ordering, rollback behavior, path semantics, network-pool allocation, same-process concurrent allocation, capability enforcement, and simulated libvirt command flows on Ubuntu and Windows runners. It cannot create a real nested KVM/libvirt Capsule in GitHub-hosted CI.
 
 Before claiming hardware-backed Linux isolation, run a manual/on-prem smoke test that verifies:
 
 1. the qcow2 overlay boots and the golden image remains unchanged;
 2. the system QEMU account can access the configured/default Capsule storage without broadening access to the user's home;
-3. two concurrent Capsules receive non-overlapping `/24`s and distinct guest endpoints;
-4. special-use/non-RFC1918 pools are rejected before network creation;
-5. the isolated network has no physical forwarding;
-6. the nwfilter blocks arbitrary guest → host and guest → LAN traffic;
-7. only the host can reach the secure guest-agent control port;
-8. staging/collection work through the existing guest protocol;
-9. Linux CLI and Xvfb desktop tests execute inside the guest;
-10. an aarch64 golden image boots through libvirt-selected EFI firmware on an ARM64 host;
-11. normal teardown removes domain/network/filter/session storage;
-12. a forced mid-create failure never deletes a pre-existing domain/network/filter;
-13. failure retention powers off and preserves forensic disk/config state.
+3. concurrent Argus processes using the supported host account receive non-overlapping `/24`s and distinct guest endpoints;
+4. a second host account fails closed rather than bypassing the allocator lock;
+5. special-use/non-RFC1918 pools are rejected before network creation;
+6. the isolated network has no physical forwarding;
+7. the nwfilter blocks arbitrary guest → host and guest → LAN traffic;
+8. only the host can reach the secure guest-agent control port;
+9. staging/collection work through the existing guest protocol;
+10. Linux CLI and Xvfb desktop tests execute inside the guest;
+11. an aarch64 golden image boots through libvirt-selected EFI firmware on an aarch64 host;
+12. a mismatched `libvirt_arch` pin fails before VM allocation;
+13. normal teardown removes domain/network/filter/session storage;
+14. a forced mid-create failure never deletes a pre-existing domain/network/filter;
+15. path-like or traversal session IDs are rejected before storage creation;
+16. failure retention powers off and preserves forensic disk/config state.
