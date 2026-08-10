@@ -211,16 +211,25 @@ class GuestAgentClient:
         size = int(metadata["size"])
         expected = str(metadata["sha256"]).lower()
 
-        # The runner has already authenticated the parent run directory. Do not
-        # let a pre-created artifacts symlink/junction redefine this write root.
+        parent_root = output_root.parent.resolve(strict=True)
         if output_root.is_symlink():
             raise CapsuleGuestError(f"artifact output root cannot be a symlink: {output_root}")
         output_root.mkdir(parents=True, exist_ok=True)
         if output_root.is_symlink():
             raise CapsuleGuestError(f"artifact output root became a symlink: {output_root}")
-        destination = workspace_path(output_root, relative, must_exist=False)
+        resolved_output_root = output_root.resolve(strict=True)
+        try:
+            resolved_output_root.relative_to(parent_root)
+        except ValueError as exc:
+            raise CapsuleGuestError(
+                f"artifact output root escapes its run directory: {output_root}"
+            ) from exc
+        if resolved_output_root == parent_root:
+            raise CapsuleGuestError("artifact output root cannot equal its run directory")
+
+        destination = workspace_path(resolved_output_root, relative, must_exist=False)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination = workspace_path(output_root, relative, must_exist=False)
+        destination = workspace_path(resolved_output_root, relative, must_exist=False)
         temp = destination.with_name(f".{destination.name}.argus-{uuid.uuid4().hex}.part")
         digest = hashlib.sha256()
         offset = 0
