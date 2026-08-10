@@ -375,7 +375,7 @@ class LibvirtProvider(CapsuleProvider):
         try:
             data = json.loads(raw)
             fmt = str(data.get("format") or "").strip().lower()
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise CapsuleError("qemu-img did not return valid image metadata") from exc
         if fmt not in {"qcow2", "raw"}:
             raise CapsuleError(
@@ -450,6 +450,27 @@ class LibvirtProvider(CapsuleProvider):
     def _list_names(raw: str) -> set[str]:
         return {line.strip() for line in raw.splitlines() if line.strip()}
 
+    @staticmethod
+    def _nwfilter_names(raw: str) -> set[str]:
+        """Parse regular ``virsh nwfilter-list`` tabular output.
+
+        Unlike domain/network list commands, ``nwfilter-list`` has no ``--name``
+        option. Argus-generated filter names contain no whitespace, so the final
+        table column is a deterministic selector.
+        """
+        names: set[str] = set()
+        for line in raw.splitlines():
+            value = line.strip()
+            if not value:
+                continue
+            lowered = value.lower()
+            if lowered.startswith("uuid") or set(value) <= {"-", " "}:
+                continue
+            fields = value.split()
+            if len(fields) >= 2:
+                names.add(fields[-1])
+        return names
+
     def _cleanup_resources(
         self,
         uri: str,
@@ -474,7 +495,7 @@ class LibvirtProvider(CapsuleProvider):
                 if network_name in active_networks:
                     self._virsh_cmd(uri, "net-destroy", network_name, timeout=30)
 
-            filters = self._list_names(self._virsh_cmd(uri, "nwfilter-list", "--name", timeout=15))
+            filters = self._nwfilter_names(self._virsh_cmd(uri, "nwfilter-list", timeout=15))
             if filter_name in filters:
                 self._virsh_cmd(uri, "nwfilter-undefine", filter_name, timeout=30)
         except Exception as exc:
