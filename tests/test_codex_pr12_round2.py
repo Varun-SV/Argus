@@ -61,6 +61,9 @@ def test_snapshot_copy_is_bounded_to_preflight_size(tmp_path, monkeypatch):
                 def fileno(self):
                     return inner.fileno()
 
+                def seek(self, offset, whence=0):
+                    return inner.seek(offset, whence)
+
                 def read(self, size=-1):
                     data = inner.read(size)
                     if self._first:
