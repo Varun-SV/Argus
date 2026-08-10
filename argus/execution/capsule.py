@@ -27,6 +27,7 @@ from argus.capsule.files import (
     workspace_path,
 )
 from argus.capsule.guest import GuestAdapterProxy, GuestAgentClient
+from argus.capsule.host_collect import collect_file_to_pinned_tree
 from argus.capsule.safe_open import open_project_regular_file
 from argus.capsule.safe_output import pin_artifact_tree
 from argus.execution.base import (
@@ -307,7 +308,21 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
             collected = []
             for relative, info in infos:
                 try:
-                    data = self._client.collect_file(relative, pinned_output, info=info)
+                    if os.name != "nt" and type(self._client) is GuestAgentClient:
+                        data = collect_file_to_pinned_tree(
+                            self._client,
+                            relative,
+                            pinned_output,
+                            info=info,
+                        )
+                    else:
+                        # Windows directory pins deny replacement, and injected
+                        # test/extension clients retain the historical Path API.
+                        data = self._client.collect_file(
+                            relative,
+                            pinned_output.path,
+                            info=info,
+                        )
                 except Exception as exc:
                     rollback_errors = self._rollback_collected_artifacts(
                         pinned_output, collected
