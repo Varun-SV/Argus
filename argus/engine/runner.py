@@ -227,6 +227,7 @@ def run_test(
     budget_failure_recorded = False
     teardown_budget_reason: Optional[str] = None
     execution_error: Optional[str] = None
+    cleanup_error: Optional[str] = None
     try:
         for index, step in enumerate(spec.steps):
             step_started = time.monotonic()
@@ -280,13 +281,20 @@ def run_test(
                     retention_error = _retention_failure(adapter)
                     if retention_error is None:
                         raise
+                    # If the run was healthy before teardown, this retention
+                    # failure was armed by teardown itself and is a real run
+                    # error. For an already-failed run, keep the original result
+                    # semantics and surface retention as diagnostic metadata.
+                    teardown_failed = not failed
                     sr = StepResult(
                         index=index,
                         kind="teardown",
                         text="close target",
-                        status="pass",
+                        status="error" if teardown_failed else "pass",
                         note=f"Failure Capsule retention warning: {exc}",
                     )
+                    if teardown_failed:
+                        result.error = f"teardown failed: {exc}"
                 else:
                     sr = StepResult(index=index, kind="teardown", text="close target", status="pass")
             else:
@@ -328,15 +336,24 @@ def run_test(
         if _retention_failure(adapter) is None:
             try:
                 adapter.close()
-            except Exception:
-                # Preserve original test semantics, but collect structured
-                # retention recovery metadata below instead of hiding it.
-                pass
+            except Exception as exc:
+                # A cleanup failure on an otherwise healthy run is itself a run
+                # error. Preserve existing fail/error semantics when the run was
+                # already failing, but never silently report pass after teardown
+                # failed or retained a Failure Capsule.
+                if not failed and execution_error is None:
+                    cleanup_error = f"{type(exc).__name__}: {exc}"
+                    failed = True
+                    result.error = f"cleanup failed: {cleanup_error}"
 
     result.failure_capsule = _retained_failure(adapter)
     result.failure_capsule_error = _retention_failure(adapter)
     result.duration_s = time.monotonic() - started
-    if execution_error is not None or any(s.status == "error" for s in result.steps):
+    if (
+        execution_error is not None
+        or cleanup_error is not None
+        or any(s.status == "error" for s in result.steps)
+    ):
         result.status = "error"
     elif failed:
         result.status = "fail"
