@@ -358,7 +358,9 @@ class _FakeSecureProvider(CapsuleProvider):
     provider_name = "hyperv"
     provider_capabilities = CapsuleProviderCapabilities(
         provider="hyperv",
-        host_platforms=("windows",),
+        # Pure in-process test double; it does not call Hyper-V and is exercised
+        # on both Ubuntu and Windows CI. Production Hyper-V remains Windows-only.
+        host_platforms=("windows", "linux"),
         guest_os=("windows",),
         secure_transport=True,
         network_isolation=True,
