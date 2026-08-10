@@ -33,6 +33,10 @@ class CapsuleSettings:
 
     ``image`` is a read-only/golden virtual disk. Every session receives a
     differencing child disk; Argus never boots the golden disk writable.
+
+    PR6 makes isolation explicit. The control channel is HTTPS by default,
+    the active bearer rotates per Capsule session, and Hyper-V networking is
+    host-only unless explicit egress CIDRs are declared.
     """
 
     provider: str = "hyperv"
@@ -50,6 +54,16 @@ class CapsuleSettings:
     allow_external_switch: bool = False
     retain_on_failure: bool = False
 
+    # PR6 isolation/control-plane policy.
+    guest_transport: str = "https"
+    guest_ca_cert: str = ""
+    allow_insecure_http: bool = False
+    rotate_session_token: bool = True
+    network_mode: str = "host_only"
+    egress_allowlist: tuple[str, ...] = ()
+    allow_dhcp: bool = True
+    disable_guest_file_copy: bool = True
+
     @classmethod
     def from_mapping(cls, value: Optional[Mapping[str, Any]] = None) -> "CapsuleSettings":
         raw = dict(value or {})
@@ -59,9 +73,24 @@ class CapsuleSettings:
             raise CapsuleError(
                 "unknown capsule setting(s): " + ", ".join(unknown)
             )
-        for name in ("allow_external_switch", "retain_on_failure"):
+        for name in (
+            "allow_external_switch",
+            "retain_on_failure",
+            "allow_insecure_http",
+            "rotate_session_token",
+            "allow_dhcp",
+            "disable_guest_file_copy",
+        ):
             if name in raw:
                 raw[name] = _strict_bool(raw[name], name)
+        if "egress_allowlist" in raw:
+            value = raw["egress_allowlist"]
+            if value is None:
+                raw["egress_allowlist"] = ()
+            elif isinstance(value, (list, tuple)):
+                raw["egress_allowlist"] = tuple(str(item).strip() for item in value)
+            else:
+                raise CapsuleError("egress_allowlist must be a list of CIDR strings")
         return cls(**raw)
 
     @property
@@ -69,6 +98,12 @@ class CapsuleSettings:
         if self.vm_root:
             return Path(self.vm_root).expanduser().resolve()
         return (Path.home() / ".argus" / "capsules").resolve()
+
+    @property
+    def resolved_guest_ca_cert(self) -> Optional[Path]:
+        if not self.guest_ca_cert:
+            return None
+        return Path(self.guest_ca_cert).expanduser().resolve()
 
 
 @dataclass(frozen=True)
@@ -88,13 +123,14 @@ class CapsuleHandle:
     root_dir: str
     address: str
     guest_port: int
+    transport: str = "http"
 
     @property
     def endpoint(self) -> str:
-        # PR3 intentionally permits only host-reachable Internal Hyper-V
-        # switches. This HTTP endpoint must not be exposed to an External switch
-        # until a confidential transport is implemented.
-        return f"http://{self.address}:{self.guest_port}"
+        scheme = (self.transport or "http").lower().strip()
+        if scheme not in {"http", "https"}:
+            raise CapsuleError(f"unsupported Capsule guest transport: {scheme!r}")
+        return f"{scheme}://{self.address}:{self.guest_port}"
 
 
 @dataclass(frozen=True)
