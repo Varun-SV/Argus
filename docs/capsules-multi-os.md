@@ -22,6 +22,7 @@ The first Linux Capsule provider targets local KVM/QEMU managed through libvirt:
 - `virsh` and `qemu-img` installed;
 - access to the local `qemu:///system` libvirt connection;
 - a Linux qcow2 or raw golden image;
+- a system-accessible Capsule storage root usable by both the Argus host process and the system QEMU account;
 - the secure Argus guest agent configured to start automatically in the test-user session;
 - a dedicated guest TLS certificate/private key and one-time bootstrap bearer, as with the Windows secure guest-agent design.
 
@@ -35,8 +36,10 @@ execution:
   capsule:
     provider: libvirt
     guest_os: linux
-    image: /var/lib/argus/images/ubuntu-24.04.qcow2
-    vm_root: /var/lib/argus/sessions
+    image: /var/lib/libvirt/images/ubuntu-24.04.qcow2
+    # Optional. If omitted, libvirt uses:
+    # /var/lib/libvirt/images/argus-capsules
+    vm_root: /var/lib/libvirt/images/argus-capsules
 
     guest_transport: https
     guest_ca_cert: /etc/argus/certs/linux-capsule-ca.pem
@@ -49,9 +52,28 @@ execution:
     libvirt_uri: qemu:///system
     # Optional site override. Otherwise Argus derives a deterministic private /24.
     # libvirt_network_cidr: 10.250.77.0/24
+    # Optional architecture/machine pins.
+    # libvirt_arch: x86_64
+    # libvirt_machine: pc-q35-9.0
 ```
 
+`guest_os`, `libvirt_uri`, `libvirt_network_cidr`, `libvirt_arch`, and `libvirt_machine` are propagated through the normal `.argus/config.yaml` → `load_config()` → execution-environment path. Matching `ARGUS_CAPSULE_GUEST_OS`, `ARGUS_CAPSULE_LIBVIRT_URI`, `ARGUS_CAPSULE_LIBVIRT_NETWORK_CIDR`, `ARGUS_CAPSULE_LIBVIRT_ARCH`, and `ARGUS_CAPSULE_LIBVIRT_MACHINE` environment overrides are also supported.
+
 The bootstrap bearer still comes from `ARGUS_CAPSULE_GUEST_TOKEN`; it should not be stored in project YAML.
+
+### System libvirt storage
+
+`qemu:///system` normally starts QEMU under a dedicated service account such as `qemu` or `libvirt-qemu`. A user-home default like `~/.argus/capsules` is therefore unsafe as a default because home-directory permissions commonly prevent that account from traversing to the overlay.
+
+When `vm_root` is omitted, PR7 uses:
+
+```text
+/var/lib/libvirt/images/argus-capsules
+```
+
+This keeps Capsule overlays under the system libvirt image hierarchy. The host must provision that directory so the Argus invoking process can create session files and the system QEMU process can traverse/read/write the disk through the host's libvirt ownership, DAC/ACL, and MAC policy. If Argus cannot create the root/session directory it fails before defining a domain and reports a setup error rather than falling back to the user's home directory.
+
+A custom `vm_root` is allowed for sites that intentionally provision equivalent access. In particular, do not point it beneath a mode-0700 user home unless the system QEMU identity has an explicit safe access path.
 
 ## Disk lifecycle
 
@@ -65,9 +87,17 @@ session.qcow2                   (all guest writes)
 
 The session overlay, provider XML, and retained forensic metadata live beneath `vm_root/<session-id>`.
 
+Before allocating that session directory, PR7 validates the requested network CIDR, guest address, architecture, golden-image format, and provider resource names. Invalid configuration is therefore retryable with the same session id and cannot leave an empty session directory that blocks the next attempt.
+
 The golden image is never attached as the writable domain disk. Normal teardown undefines the libvirt domain/network filter, destroys the transient network, and removes the session directory. Failure retention powers the domain off, destroys the transient network, and preserves the defined domain, qcow2 overlay, nwfilter definition, XML files, and `failure-capsule.json` for forensic inspection.
 
 As with secure Hyper-V retention, no new restart bearer or TLS private key is persisted merely to make a failed guest remotely restartable.
+
+## Provider-resource ownership and rollback
+
+Libvirt resource names are derived from a strong hash of the complete Capsule session id rather than a short shared prefix. Before storage allocation, Argus checks that the generated domain, transient network, and nwfilter names do not already exist. A collision is a hard failure; Argus never redefines the existing object.
+
+Creation rollback additionally records ownership incrementally. A filter is considered owned only after `nwfilter-define` succeeds, a network only after `net-create` succeeds, and a domain only after `define` succeeds. If a later step fails, rollback removes only the objects created by that attempt. Pre-existing or concurrently appearing resources are never selected merely because their names match.
 
 ## Network boundary
 
@@ -166,10 +196,12 @@ Hosted CI can validate provider selection, XML generation, ordering, rollback be
 Before claiming hardware-backed Linux isolation, run a manual/on-prem smoke test that verifies:
 
 1. the qcow2 overlay boots and the golden image remains unchanged;
-2. the isolated network has no physical forwarding;
-3. the nwfilter blocks arbitrary guest → host and guest → LAN traffic;
-4. only the host can reach the secure guest-agent control port;
-5. staging/collection work through the existing guest protocol;
-6. Linux CLI and Xvfb desktop tests execute inside the guest;
-7. normal teardown removes domain/network/filter/session storage;
-8. failure retention powers off and preserves forensic disk/config state.
+2. the system QEMU account can access the configured/default Capsule storage without broadening access to the user's home;
+3. the isolated network has no physical forwarding;
+4. the nwfilter blocks arbitrary guest → host and guest → LAN traffic;
+5. only the host can reach the secure guest-agent control port;
+6. staging/collection work through the existing guest protocol;
+7. Linux CLI and Xvfb desktop tests execute inside the guest;
+8. normal teardown removes domain/network/filter/session storage;
+9. a forced mid-create failure never deletes a pre-existing domain/network/filter;
+10. failure retention powers off and preserves forensic disk/config state.
