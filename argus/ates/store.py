@@ -233,6 +233,11 @@ def _run_directory_key(run_id: RunId) -> str:
     return prefix + "".join(encoded)
 
 
+def _run_authority_filename(run_id: RunId) -> str:
+    """Return the parent-scoped authority filename for one canonical RunId."""
+    return f".ates-authority-{_run_directory_key(run_id)}.lock"
+
+
 def _windows_handle_info(path: Path, *, directory: bool, create: bool = False):
     """Open and validate a non-reparse Windows filesystem handle."""
     import ctypes
@@ -365,29 +370,31 @@ class _PinnedDirectory:
         if os.name == "nt":
             try:
                 candidate.mkdir()
-                created = True
             except FileExistsError:
-                created = False
+                pass
             except OSError as exc:
                 raise AtesStoreError(
                     f"cannot create {label}: {candidate}: {exc}"
                 ) from exc
-            if created:
-                self.fsync()
+            # This is a no-op on Windows, but keeping the barrier unconditional
+            # mirrors the POSIX retry contract below.
+            self.fsync()
             return _PinnedDirectory(candidate)
 
         assert self._fd is not None
         try:
             os.mkdir(name, 0o700, dir_fd=self._fd)
-            created = True
         except FileExistsError:
-            created = False
+            pass
         except OSError as exc:
             raise AtesStoreError(
                 f"cannot create {label}: {candidate}: {exc}"
             ) from exc
-        if created:
-            self.fsync()
+
+        # Always re-establish the parent durability barrier. A previous mkdir
+        # can have succeeded while its parent fsync failed, leaving an existing
+        # child whose namespace entry has never been proven durable.
+        self.fsync()
 
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -405,6 +412,35 @@ class _PinnedDirectory:
             os.close(child_fd)
             raise
         return _PinnedDirectory._from_posix_fd(candidate, child_fd)
+
+    def assert_child_identity(
+        self,
+        name: str,
+        child: "_PinnedDirectory",
+        label: str,
+    ) -> None:
+        """Require a named child to still refer to the pinned child inode."""
+        if os.name == "nt":
+            # Windows directory handles are opened without FILE_SHARE_DELETE,
+            # so rename/replacement is denied while the pinned handle lives.
+            return
+        assert self._fd is not None
+        assert child._fd is not None
+        try:
+            named = os.stat(name, dir_fd=self._fd, follow_symlinks=False)
+            pinned = os.fstat(child._fd)
+        except OSError as exc:
+            raise AtesStoreError(
+                f"cannot verify {label} namespace identity: {self.path / name}: {exc}"
+            ) from exc
+        if (
+            not stat.S_ISDIR(named.st_mode)
+            or (named.st_dev, named.st_ino) != (pinned.st_dev, pinned.st_ino)
+        ):
+            raise AtesStoreError(
+                f"{label} namespace no longer refers to the pinned directory: "
+                f"{self.path / name}"
+            )
 
     def fsync(self) -> None:
         if os.name == "nt":
@@ -430,6 +466,7 @@ class _RunDirectoryChain:
 
     def __init__(self, project_dir: Path, run_id: RunId) -> None:
         self._directories: list[_PinnedDirectory] = []
+        self._namespace_lock = None
         try:
             try:
                 project_path = Path(project_dir).resolve(strict=True)
@@ -446,11 +483,17 @@ class _RunDirectoryChain:
             self._directories.append(argus)
             runs = argus.ensure_child("runs", ".argus/runs")
             self._directories.append(runs)
-            run = runs.ensure_child(
-                _run_directory_key(run_id), "ATES run directory"
-            )
+            self.runs = runs
+            self.run_name = _run_directory_key(run_id)
+
+            # Acquire per-RunId authority in the stable parent namespace before
+            # creating/opening the replaceable run-directory entry itself.
+            self._namespace_lock = _RunNamespaceLock(runs, run_id)
+
+            run = runs.ensure_child(self.run_name, "ATES run directory")
             self._directories.append(run)
             self.run = run
+            self.assert_authoritative()
         except BaseException:
             try:
                 self.close()
@@ -458,8 +501,24 @@ class _RunDirectoryChain:
                 pass
             raise
 
+    def assert_authoritative(self) -> None:
+        if self._namespace_lock is None:
+            raise AtesStoreError("ATES run namespace authority is unavailable")
+        self._namespace_lock.assert_authoritative()
+        self.runs.assert_child_identity(
+            self.run_name,
+            self.run,
+            "ATES run directory",
+        )
+
     def close(self) -> None:
         first_error: Optional[BaseException] = None
+        if self._namespace_lock is not None:
+            try:
+                self._namespace_lock.close()
+            except BaseException as exc:
+                first_error = exc
+            self._namespace_lock = None
         for directory in reversed(self._directories):
             try:
                 directory.close()
@@ -547,12 +606,111 @@ def _open_regular_file(directory: _PinnedDirectory, name: str):
         raise
 
 
+class _RunNamespaceLock:
+    """Per-run authority anchored in the pinned ``runs`` parent namespace."""
+
+    def __init__(self, directory: _PinnedDirectory, run_id: RunId) -> None:
+        self._directory = directory
+        self._name = _run_authority_filename(run_id)
+        self.path = directory.path / self._name
+        self._handle = None
+        self._locked = False
+        self._owner_pid = os.getpid()
+
+        # Windows already pins the run directory with a non-delete-sharing
+        # handle, so the POSIX parent authority is unnecessary there.
+        if os.name == "nt":
+            return
+
+        handle, created = _open_regular_file(directory, self._name)
+        self._handle = handle
+        try:
+            if created or os.fstat(handle.fileno()).st_size == 0:
+                handle.seek(0)
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+                if created:
+                    directory.fsync()
+
+            import fcntl
+
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise AtesStoreBusy(
+                    f"another authoritative ATES writer owns {run_id}"
+                ) from exc
+            self._locked = True
+            self.assert_authoritative()
+        except BaseException:
+            try:
+                if self._handle is not None and not self._handle.closed:
+                    self._handle.close()
+            finally:
+                self._handle = None
+                self._locked = False
+            raise
+
+    def assert_authoritative(self) -> None:
+        if os.name == "nt":
+            return
+        if os.getpid() != self._owner_pid:
+            raise AtesStoreError("ATES run namespace authority was inherited across a fork")
+        if self._handle is None or self._handle.closed or not self._locked:
+            raise AtesStoreError("ATES run namespace authority is no longer held")
+        assert self._directory._fd is not None
+        _validate_regular_file_descriptor(self._handle.fileno(), self.path)
+        try:
+            named = os.stat(
+                self._name,
+                dir_fd=self._directory._fd,
+                follow_symlinks=False,
+            )
+            pinned = os.fstat(self._handle.fileno())
+        except OSError as exc:
+            raise AtesStoreError(
+                f"cannot verify ATES run namespace authority entry {self.path}: {exc}"
+            ) from exc
+        if (
+            not stat.S_ISREG(named.st_mode)
+            or (named.st_dev, named.st_ino) != (pinned.st_dev, pinned.st_ino)
+        ):
+            raise AtesStoreError(
+                f"ATES run namespace authority entry was replaced: {self.path}"
+            )
+
+    def close(self) -> None:
+        if self._handle is None or self._handle.closed:
+            self._handle = None
+            self._locked = False
+            return
+        inherited = os.getpid() != self._owner_pid
+        first_error: Optional[BaseException] = None
+        try:
+            if self._locked and not inherited and os.name != "nt":
+                import fcntl
+
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        except BaseException as exc:
+            first_error = exc
+        finally:
+            self._locked = False
+            try:
+                self._handle.close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            self._handle = None
+        if first_error is not None:
+            raise first_error
+
+
 class _WriterLock:
     """Cross-process single-authority lock retained for the store lifetime.
 
-    On POSIX, authority is anchored to the pinned run-directory inode before
-    the visible marker file is opened. Replacing or unlinking the marker
-    therefore cannot create a second conforming writer for the same run.
+    On POSIX, the run-directory inode and visible marker remain additional
+    authority barriers beneath the parent-scoped per-RunId namespace lock.
     """
 
     def __init__(self, directory: _PinnedDirectory) -> None:
@@ -563,9 +721,9 @@ class _WriterLock:
         self._directory_locked = False
         self._owner_pid = os.getpid()
 
-        # Acquire the stable authority lock before touching the replaceable
-        # marker pathname. Separate opens of the same directory inode contend
-        # on flock even when they occur in the same process.
+        # Acquire the run-directory inode lock before touching the replaceable
+        # marker pathname. This remains a second independent barrier beneath
+        # the parent-scoped namespace lock.
         if os.name != "nt":
             assert directory._fd is not None
             import fcntl
@@ -737,6 +895,7 @@ class AtesEventStore:
             # after an earlier uncertain append.
             self._sync_evidence_durability(sync_directory=True)
             self._events = self._load_existing(repair_trailing_partial)
+            self._directories.assert_authoritative()
             self._event_by_id = {event.event_id: event for event in self._events}
             self._next_sequence = len(self._events) + 1
         except BaseException:
@@ -789,8 +948,8 @@ class AtesEventStore:
 
     def close(self) -> None:
         if os.getpid() != self._owner_pid:
-            # A forked child must never explicitly unlock the parent's flock.
-            # It may close only its duplicated descriptors/handles and must not
+            # A forked child must never explicitly unlock the parent's flocks.
+            # It may close only duplicated descriptors/handles and must not
             # touch an inherited RLock that may have been owned by another thread.
             if self._closed:
                 return
@@ -875,6 +1034,7 @@ class AtesEventStore:
             io_started = False
             try:
                 assert self._file is not None
+                assert self._directories is not None
                 _validate_regular_file_descriptor(self._file.fileno(), self.path)
                 self._file.seek(0, os.SEEK_END)
                 io_started = True
@@ -885,11 +1045,15 @@ class AtesEventStore:
                     )
                 self._file.flush()
                 os.fsync(self._file.fileno())
+                # Re-check the parent authority and canonical run-directory
+                # namespace *after* the durability barrier. If a rename/swap
+                # raced the write, success cannot safely be reported.
+                self._directories.assert_authoritative()
             except BaseException as exc:
                 if io_started:
                     # Any control-flow interruption after the write can leave
-                    # the durable outcome unknown. Poison first, then preserve
-                    # KeyboardInterrupt/SystemExit rather than wrapping them.
+                    # the durable/canonical outcome unknown. Poison first, then
+                    # preserve KeyboardInterrupt/SystemExit rather than wrapping them.
                     self._poisoned = True
                 if isinstance(exc, (OSError, ValueError, AtesStoreError)):
                     if io_started:
@@ -909,11 +1073,13 @@ class AtesEventStore:
     def _sync_evidence_durability(self, *, sync_directory: bool) -> None:
         assert self._file is not None
         assert self._directories is not None
+        self._directories.assert_authoritative()
         _validate_regular_file_descriptor(self._file.fileno(), self.path)
         self._file.flush()
         os.fsync(self._file.fileno())
         if sync_directory:
             self._directories.run.fsync()
+        self._directories.assert_authoritative()
 
     def _acknowledge_replay(self, event: StoredEvent) -> StoredEvent:
         try:
@@ -949,6 +1115,9 @@ class AtesEventStore:
                 "ATES event store is poisoned after an uncertain append; "
                 "close and reopen to reconcile"
             )
+        if self._directories is None:
+            raise AtesStoreError("ATES run namespace authority is unavailable")
+        self._directories.assert_authoritative()
         if self._writer_lock is None:
             raise AtesStoreError("ATES writer authority is unavailable")
         self._writer_lock.assert_authoritative()
@@ -970,10 +1139,13 @@ class AtesEventStore:
                     "reopen with repair_trailing_partial=True to discard only that tail"
                 )
             assert self._file is not None
+            assert self._directories is not None
+            self._directories.assert_authoritative()
             cut = data.rfind(b"\n") + 1
             self._file.truncate(cut)
             self._file.flush()
             os.fsync(self._file.fileno())
+            self._directories.assert_authoritative()
             data = data[:cut]
 
         events: list[StoredEvent] = []
