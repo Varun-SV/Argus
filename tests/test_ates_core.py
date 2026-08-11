@@ -1,15 +1,19 @@
+import json
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 import pytest
 
 from argus.ates import (
-    ATES_VERSION, ActionId, ActionOperationId, ActionRecord, ArtifactId, ArtifactRecord,
-    AssertionId, AssertionRecord, AssertionResult, CorrectionId, EventEnvelope, EventId,
-    EventType, EvidenceDisposition, EvidenceValue, ExecutionKind, FinalizationId,
-    RequirementIdentity, RoamSource, RunId, RunOutcomeRevision, RunRecord, RunStatus,
-    ScriptedSource, SourceCommitment, StatusInputs, StepAttemptId, StepAttemptRecord,
-    StepAttemptStatus, StepId, StepRecord, Verification, VerificationStatus,
-    derive_run_status, effective_outcome, validate_artifact_path,
+    ATES_VERSION, RUN_OUTCOME_REFINALIZATION_SCOPE, STATUS_POLICY_VERSION,
+    ActionId, ActionOperationId, ActionRecord, ArtifactId, ArtifactRecord,
+    AssertionId, AssertionRecord, AssertionResult, AuthorizationDecision, CorrectionId,
+    EventEnvelope, EventId, EventType, EvidenceDisposition, EvidenceValue, ExecutionKind,
+    FinalizationId, ObservationId, ObservationRecord, RequirementIdentity, RoamSource,
+    RunId, RunOutcomeRevision, RunRecord, RunStatus, ScriptedSource, SourceCommitment,
+    StatusInputs, StepAttemptId, StepAttemptRecord, StepAttemptStatus, StepId, StepRecord,
+    Verification, VerificationStatus, derive_run_status, effective_outcome,
+    to_json_compatible, validate_artifact_path, validate_step_attempt_history,
 )
 
 NOW = datetime(2026, 8, 11, 6, 0, tzinfo=timezone.utc)
@@ -17,6 +21,20 @@ CONFIG_COMMITMENT = SourceCommitment(
     "hmac-sha256", "hmac:runtime-config", "ates-config-v1"
 )
 ARTIFACT_DIGEST = SourceCommitment("sha256", "sha256:final-persisted-bytes")
+VERIFIED_REVIEWER = Verification(
+    VerificationStatus.VERIFIED,
+    method="signature",
+    actor="qa-reviewer",
+    binding_ref="sig://review/authorized",
+)
+AUTHORIZED_REFINALIZATION = AuthorizationDecision(
+    True,
+    RUN_OUTCOME_REFINALIZATION_SCOPE,
+    "argus-evidence-authz",
+    "2026.08",
+    "authz://decision/authorized-refinalization",
+    VERIFIED_REVIEWER,
+)
 
 
 def test_typed_ids_validate_prefix_and_generate_unique_values():
@@ -193,6 +211,18 @@ def test_secret_references_are_snapshotted_before_validation():
         )
 
 
+def test_frozen_json_remains_serializable_through_normal_and_explicit_paths():
+    value = EvidenceValue.safe({"items": ["one", {"nested": True}]})
+    assert json.loads(json.dumps(asdict(value)))["value"]["items"][1]["nested"] is True
+
+    observation = ObservationRecord(
+        ObservationId.new(), StepAttemptId.new(), "screen", NOW,
+        "capture-standard-v1", {"payload": value},
+    )
+    encoded = json.dumps(to_json_compatible(observation))
+    assert json.loads(encoded)["captured_at"] == NOW.isoformat()
+
+
 def test_step_instruction_requires_secret_safe_evidence_value():
     step = StepRecord(StepId.new(), EvidenceValue.safe("Open settings"))
     assert step.instruction.value == "Open settings"
@@ -258,6 +288,31 @@ def test_step_attempts_have_immutable_identity_and_positive_ordinal():
             )
 
 
+def test_step_attempt_history_requires_unique_contiguous_ordinals_per_step():
+    step_id = StepId.new()
+    first = StepAttemptRecord(
+        StepAttemptId.new(), step_id, 1, StepAttemptStatus.PASSED, NOW, NOW
+    )
+    second = StepAttemptRecord(
+        StepAttemptId.new(), step_id, 2, StepAttemptStatus.PASSED, NOW, NOW,
+        EvidenceValue.safe("retry after assertion failure"),
+    )
+    assert validate_step_attempt_history((second, first)) == (second, first)
+
+    duplicate = StepAttemptRecord(
+        StepAttemptId.new(), step_id, 1, StepAttemptStatus.PASSED, NOW, NOW
+    )
+    with pytest.raises(ValueError, match="unique and contiguous"):
+        validate_step_attempt_history((first, duplicate))
+
+    third = StepAttemptRecord(
+        StepAttemptId.new(), step_id, 3, StepAttemptStatus.PASSED, NOW, NOW,
+        EvidenceValue.safe("retry after second failure"),
+    )
+    with pytest.raises(ValueError, match="unique and contiguous"):
+        validate_step_attempt_history((first, third))
+
+
 def test_step_attempt_status_is_normalized_before_lifecycle_validation():
     attempt = StepAttemptRecord(
         StepAttemptId.new(), StepId.new(), 1, "passed", NOW, NOW  # type: ignore[arg-type]
@@ -306,6 +361,7 @@ def test_retry_attempt_requires_secret_safe_nonempty_reason():
         (StatusInputs(), RunStatus.PASSED),
         (StatusInputs(required_assertion_results=(AssertionResult.FAILED,)), RunStatus.FAILED),
         (StatusInputs(required_assertion_results=(AssertionResult.UNEVALUATED,)), RunStatus.ERROR),
+        (StatusInputs(required_assertions_satisfied=False), RunStatus.ERROR),
         (StatusInputs(unresolved_action_outcome=True), RunStatus.ERROR),
         (
             StatusInputs(
@@ -317,6 +373,10 @@ def test_retry_attempt_requires_secret_safe_nonempty_reason():
         (StatusInputs(cancelled=True), RunStatus.CANCELLED),
         (
             StatusInputs(cancelled=True, required_steps_satisfied=False),
+            RunStatus.CANCELLED,
+        ),
+        (
+            StatusInputs(cancelled=True, required_assertions_satisfied=False),
             RunStatus.CANCELLED,
         ),
         (
@@ -346,6 +406,8 @@ def test_status_inputs_normalize_serialized_assertion_results():
 def test_status_inputs_require_real_booleans():
     with pytest.raises(ValueError, match="cancelled"):
         StatusInputs(cancelled="false")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="required_assertions_satisfied"):
+        StatusInputs(required_assertions_satisfied="true")  # type: ignore[arg-type]
 
 
 def test_artifact_paths_are_package_relative_and_confined():
@@ -367,6 +429,7 @@ def test_artifact_paths_are_package_relative_and_confined():
         r"artifacts\..\outside", "artifacts/%2e%2e/outside",
         "C:/Windows/system.ini", "artifacts//shot.png",
         "artifacts/./shot.png", "artifacts/shot.png/",
+        "artifacts/\x00shot.png", "artifacts/\nshot.png",
     ):
         with pytest.raises(ValueError):
             validate_artifact_path(bad)
@@ -478,7 +541,7 @@ def test_verified_records_require_independent_binding_reference():
     assert verified.status is VerificationStatus.VERIFIED
 
 
-def test_status_bearing_correction_requires_verified_refinalization():
+def test_status_bearing_correction_requires_verified_and_authorized_refinalization():
     run_id = RunId.new()
     first = RunOutcomeRevision(
         FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
@@ -492,17 +555,61 @@ def test_status_bearing_correction_requires_verified_refinalization():
             verification=Verification(VerificationStatus.UNVERIFIED),
         )
 
+    with pytest.raises(ValueError, match="authorization decision"):
+        RunOutcomeRevision(
+            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            supersedes_finalization_id=first.finalization_id,
+            correction_ids=(CorrectionId.new(),),
+            verification=VERIFIED_REVIEWER,
+        )
+
+    denied = AuthorizationDecision(
+        False, RUN_OUTCOME_REFINALIZATION_SCOPE, "argus-evidence-authz", "2026.08",
+        "authz://decision/denied", VERIFIED_REVIEWER,
+    )
+    with pytest.raises(ValueError, match="not authorized"):
+        RunOutcomeRevision(
+            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            supersedes_finalization_id=first.finalization_id,
+            correction_ids=(CorrectionId.new(),),
+            verification=VERIFIED_REVIEWER,
+            authorization=denied,
+        )
+
     second = RunOutcomeRevision(
         FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
         supersedes_finalization_id=first.finalization_id,
         correction_ids=(CorrectionId.new(),),
-        verification=Verification(
-            VerificationStatus.VERIFIED, method="signature",
-            actor="qa-reviewer", binding_ref="sig://review/2",
-        ),
+        verification=VERIFIED_REVIEWER,
+        authorization=AUTHORIZED_REFINALIZATION,
     )
     assert first.effective_status is RunStatus.PASSED
     assert effective_outcome((first, second)).effective_status is RunStatus.FAILED
+
+
+def test_refinalization_authorization_is_verified_versioned_and_scope_bound():
+    with pytest.raises(ValueError, match="itself be verified"):
+        AuthorizationDecision(
+            True, RUN_OUTCOME_REFINALIZATION_SCOPE, "argus-evidence-authz", "2026.08",
+            "authz://decision/unverified", Verification(VerificationStatus.UNVERIFIED),
+        )
+
+    run_id = RunId.new()
+    first = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
+    )
+    wrong_scope = AuthorizationDecision(
+        True, "evidence.supersede_finding", "argus-evidence-authz", "2026.08",
+        "authz://decision/wrong-scope", VERIFIED_REVIEWER,
+    )
+    with pytest.raises(ValueError, match="does not cover"):
+        RunOutcomeRevision(
+            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            supersedes_finalization_id=first.finalization_id,
+            correction_ids=(CorrectionId.new(),),
+            verification=VERIFIED_REVIEWER,
+            authorization=wrong_scope,
+        )
 
 
 def test_refinalization_requires_validated_verification_instance():
@@ -519,6 +626,7 @@ def test_refinalization_requires_validated_verification_instance():
             supersedes_finalization_id=first.finalization_id,
             correction_ids=(CorrectionId.new(),),
             verification=ForgedVerification(),  # type: ignore[arg-type]
+            authorization=AUTHORIZED_REFINALIZATION,
         )
 
 
@@ -531,6 +639,18 @@ def test_effective_status_is_normalized_and_invalid_values_are_rejected():
     with pytest.raises(ValueError, match="effective_status"):
         RunOutcomeRevision(
             FinalizationId.new(), run_id, 1, "bogus", 1, NOW  # type: ignore[arg-type]
+        )
+
+
+def test_outcome_revision_rejects_unsupported_status_policy_version():
+    RunOutcomeRevision(
+        FinalizationId.new(), RunId.new(), 1, RunStatus.PASSED, 1, NOW,
+        status_policy_version=STATUS_POLICY_VERSION,
+    )
+    with pytest.raises(ValueError, match="unsupported status_policy_version"):
+        RunOutcomeRevision(
+            FinalizationId.new(), RunId.new(), 1, RunStatus.PASSED, 1, NOW,
+            status_policy_version="unknown",
         )
 
 
@@ -554,10 +674,8 @@ def test_correction_ids_are_snapshotted_before_refinalization_validation():
         FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
         supersedes_finalization_id=first.finalization_id,
         correction_ids=mutable_ids,  # type: ignore[arg-type]
-        verification=Verification(
-            VerificationStatus.VERIFIED, method="signature",
-            actor="qa-reviewer", binding_ref="sig://review/2",
-        ),
+        verification=VERIFIED_REVIEWER,
+        authorization=AUTHORIZED_REFINALIZATION,
     )
     captured = second.correction_ids
     mutable_ids.clear()
@@ -570,16 +688,13 @@ def test_correction_ids_are_typed_before_authorizing_refinalization():
     first = RunOutcomeRevision(
         FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
     )
-    verification = Verification(
-        VerificationStatus.VERIFIED, method="signature",
-        actor="qa-reviewer", binding_ref="sig://review/2",
-    )
     raw_correction = str(CorrectionId.new())
     normalized = RunOutcomeRevision(
         FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
         supersedes_finalization_id=first.finalization_id,
         correction_ids=[raw_correction],  # type: ignore[arg-type]
-        verification=verification,
+        verification=VERIFIED_REVIEWER,
+        authorization=AUTHORIZED_REFINALIZATION,
     )
     assert isinstance(normalized.correction_ids[0], CorrectionId)
 
@@ -588,14 +703,16 @@ def test_correction_ids_are_typed_before_authorizing_refinalization():
             FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
             supersedes_finalization_id=first.finalization_id,
             correction_ids=["EVT-not-a-correction"],  # type: ignore[arg-type]
-            verification=verification,
+            verification=VERIFIED_REVIEWER,
+            authorization=AUTHORIZED_REFINALIZATION,
         )
     with pytest.raises(ValueError, match="correction_ids"):
         RunOutcomeRevision(
             FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
             supersedes_finalization_id=first.finalization_id,
             correction_ids=raw_correction,  # type: ignore[arg-type]
-            verification=verification,
+            verification=VERIFIED_REVIEWER,
+            authorization=AUTHORIZED_REFINALIZATION,
         )
 
 
@@ -608,10 +725,8 @@ def test_effective_outcome_can_render_historical_evidence_revision():
         FinalizationId.new(), run_id, 2, RunStatus.FAILED, 3, NOW,
         supersedes_finalization_id=first.finalization_id,
         correction_ids=(CorrectionId.new(),),
-        verification=Verification(
-            VerificationStatus.VERIFIED, method="signature",
-            actor="qa-reviewer", binding_ref="sig://review/2",
-        ),
+        verification=VERIFIED_REVIEWER,
+        authorization=AUTHORIZED_REFINALIZATION,
     )
 
     assert effective_outcome(
