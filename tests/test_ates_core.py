@@ -67,6 +67,16 @@ def test_run_source_identity_is_conditional_on_execution_kind():
         )
 
 
+def test_roam_source_rejects_contradictory_objective_metadata():
+    commitment = SourceCommitment("sha256_redacted_canonical", "sha256:objective")
+    with pytest.raises(ValueError, match="objective_present=false"):
+        RoamSource(
+            objective_present=False,
+            objective_commitment=commitment,
+            config_commitment=SourceCommitment("hmac-sha256", "hmac:config"),
+        )
+
+
 def test_sensitive_values_never_require_plaintext_in_ordinary_evidence():
     redacted = EvidenceValue.redacted("secret_input", secret_refs=("SECRET-login",))
     assert redacted.value == "<redacted>"
@@ -77,6 +87,14 @@ def test_sensitive_values_never_require_plaintext_in_ordinary_evidence():
 
     with pytest.raises(ValueError, match="exactly"):
         EvidenceValue(EvidenceDisposition.REDACTED, value="password123", reason="secret")
+
+
+def test_raw_disposition_is_normalized_before_secret_safety_validation():
+    with pytest.raises(ValueError, match="exactly"):
+        EvidenceValue("redacted", value="password123", reason="secret")  # type: ignore[arg-type]
+
+    value = EvidenceValue("redacted", value="<redacted>", reason="secret")  # type: ignore[arg-type]
+    assert value.disposition is EvidenceDisposition.REDACTED
 
 
 def test_action_parameters_are_explicit_evidence_values():
@@ -95,13 +113,44 @@ def test_action_parameters_are_explicit_evidence_values():
 def test_step_attempts_have_immutable_identity_and_positive_ordinal():
     attempt = StepAttemptRecord(
         StepAttemptId.new(), StepId.new(), 2, StepAttemptStatus.PASSED,
-        NOW, NOW, "first attempt assertion failed",
+        NOW, NOW, EvidenceValue.safe("first attempt assertion failed"),
     )
     assert attempt.attempt == 2
     with pytest.raises(ValueError, match="attempt"):
         StepAttemptRecord(
             StepAttemptId.new(), StepId.new(), 0, StepAttemptStatus.RUNNING, NOW
         )
+
+
+def test_step_attempt_lifecycle_requires_consistent_end_timestamp():
+    with pytest.raises(ValueError, match="terminal attempts require ended_at"):
+        StepAttemptRecord(
+            StepAttemptId.new(), StepId.new(), 1, StepAttemptStatus.PASSED, NOW
+        )
+
+    with pytest.raises(ValueError, match="running attempts cannot have ended_at"):
+        StepAttemptRecord(
+            StepAttemptId.new(), StepId.new(), 1, StepAttemptStatus.RUNNING, NOW, NOW
+        )
+
+
+def test_retry_attempt_requires_secret_safe_nonempty_reason():
+    with pytest.raises(ValueError, match="retry attempts require retry_reason"):
+        StepAttemptRecord(
+            StepAttemptId.new(), StepId.new(), 2, StepAttemptStatus.RUNNING, NOW
+        )
+
+    with pytest.raises(ValueError, match="non-empty"):
+        StepAttemptRecord(
+            StepAttemptId.new(), StepId.new(), 2, StepAttemptStatus.RUNNING, NOW,
+            retry_reason=EvidenceValue.safe(""),
+        )
+
+    retry = StepAttemptRecord(
+        StepAttemptId.new(), StepId.new(), 2, StepAttemptStatus.RUNNING, NOW,
+        retry_reason=EvidenceValue.redacted("retry_reason_contains_secret"),
+    )
+    assert retry.retry_reason.disposition is EvidenceDisposition.REDACTED
 
 
 @pytest.mark.parametrize(
@@ -119,6 +168,18 @@ def test_step_attempts_have_immutable_identity_and_positive_ordinal():
             RunStatus.FAILED,
         ),
         (StatusInputs(cancelled=True), RunStatus.CANCELLED),
+        (
+            StatusInputs(cancelled=True, required_steps_satisfied=False),
+            RunStatus.CANCELLED,
+        ),
+        (
+            StatusInputs(
+                cancelled=True,
+                required_steps_satisfied=False,
+                required_assertion_results=(AssertionResult.UNEVALUATED,),
+            ),
+            RunStatus.CANCELLED,
+        ),
     ],
 )
 def test_canonical_status_precedence(inputs, expected):
@@ -138,10 +199,25 @@ def test_artifact_paths_are_package_relative_and_confined():
     for bad in (
         "/etc/passwd", "../outside", "artifacts/../outside",
         r"artifacts\..\outside", "artifacts/%2e%2e/outside",
-        "C:/Windows/system.ini",
+        "C:/Windows/system.ini", "artifacts//shot.png",
+        "artifacts/./shot.png", "artifacts/shot.png/",
     ):
         with pytest.raises(ValueError):
             validate_artifact_path(bad)
+
+
+def test_retained_artifact_record_cannot_claim_suppression():
+    with pytest.raises(ValueError, match="ARTIFACT_SUPPRESSED"):
+        ArtifactRecord(
+            ArtifactId.new(), "screenshot", "artifacts/shot.png",
+            "secret", EvidenceDisposition.SUPPRESSED,
+        )
+
+    with pytest.raises(ValueError, match="ARTIFACT_SUPPRESSED"):
+        ArtifactRecord(
+            ArtifactId.new(), "screenshot", "artifacts/shot.png",
+            "secret", "suppressed",  # type: ignore[arg-type]
+        )
 
 
 def test_requirement_identity_cannot_rely_on_mutable_display_id_alone():
@@ -154,6 +230,30 @@ def test_requirement_identity_cannot_rely_on_mutable_display_id_alone():
         commitment=SourceCommitment("sha256_redacted_canonical", "sha256:req"),
     )
     assert identity.identity_key[2] == "3"
+
+
+def test_requirement_identity_key_includes_commitment_semantics():
+    left = RequirementIdentity(
+        "REQ-42", "product-requirements",
+        commitment=SourceCommitment(
+            "sha256", "same-value", "canonical-v1", "verify://one"
+        ),
+    )
+    different_method = RequirementIdentity(
+        "REQ-42", "product-requirements",
+        commitment=SourceCommitment(
+            "hmac-sha256", "same-value", "canonical-v1", "verify://one"
+        ),
+    )
+    different_profile = RequirementIdentity(
+        "REQ-42", "product-requirements",
+        commitment=SourceCommitment(
+            "sha256", "same-value", "canonical-v2", "verify://one"
+        ),
+    )
+
+    assert left.identity_key != different_method.identity_key
+    assert left.identity_key != different_profile.identity_key
 
 
 def test_safe_nested_values_and_record_mappings_are_immutable_snapshots():
@@ -206,6 +306,55 @@ def test_status_bearing_correction_requires_verified_refinalization():
     )
     assert first.effective_status is RunStatus.PASSED
     assert effective_outcome((first, second)).effective_status is RunStatus.FAILED
+
+
+def test_correction_ids_are_snapshotted_before_refinalization_validation():
+    run_id = RunId.new()
+    first = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
+    )
+    mutable_ids = [CorrectionId.new()]
+    second = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+        supersedes_finalization_id=first.finalization_id,
+        correction_ids=mutable_ids,  # type: ignore[arg-type]
+        verification=Verification(
+            VerificationStatus.VERIFIED, method="signature",
+            actor="qa-reviewer", binding_ref="sig://review/2",
+        ),
+    )
+    captured = second.correction_ids
+    mutable_ids.clear()
+    assert second.correction_ids == captured
+    assert second.correction_ids
+
+
+def test_effective_outcome_can_render_historical_evidence_revision():
+    run_id = RunId.new()
+    first = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
+    )
+    second = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 2, RunStatus.FAILED, 3, NOW,
+        supersedes_finalization_id=first.finalization_id,
+        correction_ids=(CorrectionId.new(),),
+        verification=Verification(
+            VerificationStatus.VERIFIED, method="signature",
+            actor="qa-reviewer", binding_ref="sig://review/2",
+        ),
+    )
+
+    assert effective_outcome(
+        (first, second), evidence_revision=1
+    ).effective_status is RunStatus.PASSED
+    assert effective_outcome(
+        (first, second), evidence_revision=2
+    ).effective_status is RunStatus.PASSED
+    assert effective_outcome(
+        (first, second), evidence_revision=3
+    ).effective_status is RunStatus.FAILED
+    with pytest.raises(ValueError, match="evidence_revision"):
+        effective_outcome((first, second), evidence_revision=0)
 
 
 def test_effective_outcome_rejects_cross_run_revision_chains():
