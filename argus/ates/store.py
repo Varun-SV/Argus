@@ -205,7 +205,7 @@ def _decode_json_object(raw: bytes) -> object:
             object_pairs_hook=_object_without_duplicate_keys,
             parse_constant=_reject_json_constant,
         )
-    except (json.JSONDecodeError, ValueError) as exc:
+    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
         raise AtesStoreCorruption(
             f"canonical event line is not valid strict JSON: {exc}"
         ) from exc
@@ -285,25 +285,36 @@ def _windows_handle_info(path: Path, *, directory: bool, create: bool = False):
     invalid = ctypes.c_void_p(-1).value
     if handle == invalid:
         error = ctypes.get_last_error()
-        raise AtesStoreError(f"cannot open pinned filesystem object {path}: winerror {error}")
+        raise AtesStoreError(
+            f"cannot open pinned filesystem object {path}: winerror {error}"
+        )
 
     created = bool(create and ctypes.get_last_error() != 183)  # ERROR_ALREADY_EXISTS
     info = _ByHandleFileInformation()
     if not get_info(handle, ctypes.byref(info)):
         error = ctypes.get_last_error()
         kernel32.CloseHandle(handle)
-        raise AtesStoreError(f"cannot inspect pinned filesystem object {path}: winerror {error}")
+        raise AtesStoreError(
+            f"cannot inspect pinned filesystem object {path}: winerror {error}"
+        )
 
     is_directory = bool(info.dwFileAttributes & 0x00000010)
     is_reparse = bool(info.dwFileAttributes & 0x00000400)
     if is_reparse:
         kernel32.CloseHandle(handle)
         label = "directory" if directory else "event-store file"
-        raise AtesStoreError(f"{label} cannot be a symlink or reparse point: {path}")
+        raise AtesStoreError(
+            f"{label} cannot be a symlink or reparse point: {path}"
+        )
     if is_directory != directory:
         kernel32.CloseHandle(handle)
         kind = "directory" if directory else "regular file"
         raise AtesStoreError(f"filesystem object is not a {kind}: {path}")
+    if not directory and info.nNumberOfLinks != 1:
+        kernel32.CloseHandle(handle)
+        raise AtesStoreError(
+            f"event-store file must have exactly one hard link: {path}"
+        )
     return kernel32, handle, created
 
 
@@ -332,7 +343,7 @@ class _PinnedDirectory:
         try:
             if not stat.S_ISDIR(os.fstat(fd).st_mode):
                 raise AtesStoreError(f"pinned path is not a directory: {self.path}")
-        except Exception:
+        except BaseException:
             os.close(fd)
             raise
         self._fd = fd
@@ -358,7 +369,9 @@ class _PinnedDirectory:
             except FileExistsError:
                 created = False
             except OSError as exc:
-                raise AtesStoreError(f"cannot create {label}: {candidate}: {exc}") from exc
+                raise AtesStoreError(
+                    f"cannot create {label}: {candidate}: {exc}"
+                ) from exc
             if created:
                 self.fsync()
             return _PinnedDirectory(candidate)
@@ -370,7 +383,9 @@ class _PinnedDirectory:
         except FileExistsError:
             created = False
         except OSError as exc:
-            raise AtesStoreError(f"cannot create {label}: {candidate}: {exc}") from exc
+            raise AtesStoreError(
+                f"cannot create {label}: {candidate}: {exc}"
+            ) from exc
         if created:
             self.fsync()
 
@@ -386,7 +401,7 @@ class _PinnedDirectory:
         try:
             if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
                 raise AtesStoreError(f"{label} is not a directory: {candidate}")
-        except Exception:
+        except BaseException:
             os.close(child_fd)
             raise
         return _PinnedDirectory._from_posix_fd(candidate, child_fd)
@@ -419,7 +434,9 @@ class _RunDirectoryChain:
             try:
                 project_path = Path(project_dir).resolve(strict=True)
             except OSError as exc:
-                raise AtesStoreError(f"cannot resolve project_dir {project_dir}: {exc}") from exc
+                raise AtesStoreError(
+                    f"cannot resolve project_dir {project_dir}: {exc}"
+                ) from exc
             if not project_path.is_dir():
                 raise AtesStoreError(f"project_dir is not a directory: {project_path}")
 
@@ -429,13 +446,15 @@ class _RunDirectoryChain:
             self._directories.append(argus)
             runs = argus.ensure_child("runs", ".argus/runs")
             self._directories.append(runs)
-            run = runs.ensure_child(_run_directory_key(run_id), "ATES run directory")
+            run = runs.ensure_child(
+                _run_directory_key(run_id), "ATES run directory"
+            )
             self._directories.append(run)
             self.run = run
-        except Exception:
+        except BaseException:
             try:
                 self.close()
-            except Exception:
+            except BaseException:
                 pass
             raise
 
@@ -450,6 +469,19 @@ class _RunDirectoryChain:
         self._directories.clear()
         if first_error is not None:
             raise first_error
+
+
+def _validate_regular_file_descriptor(fd: int, path: Path) -> None:
+    try:
+        info = os.fstat(fd)
+    except OSError as exc:
+        raise AtesStoreError(f"cannot inspect ATES event-store file {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise AtesStoreError(f"event-store path is not a regular file: {path}")
+    if info.st_nlink != 1:
+        raise AtesStoreError(
+            f"event-store file must have exactly one hard link: {path}"
+        )
 
 
 def _open_regular_file(directory: _PinnedDirectory, name: str):
@@ -467,8 +499,13 @@ def _open_regular_file(directory: _PinnedDirectory, name: str):
             flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
             fd = msvcrt.open_osfhandle(handle, flags)
             handle = None
-            return os.fdopen(fd, "r+b", buffering=0), created
-        except Exception:
+            try:
+                _validate_regular_file_descriptor(fd, path)
+                return os.fdopen(fd, "r+b", buffering=0), created
+            except BaseException:
+                os.close(fd)
+                raise
+        except BaseException:
             if handle is not None:
                 kernel32.CloseHandle(handle)
             raise
@@ -498,14 +535,14 @@ def _open_regular_file(directory: _PinnedDirectory, name: str):
             ) from exc
         created = False
     except OSError as exc:
-        raise AtesStoreError(f"cannot create ATES event-store file {path}: {exc}") from exc
+        raise AtesStoreError(
+            f"cannot create ATES event-store file {path}: {exc}"
+        ) from exc
 
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise AtesStoreError(f"event-store path is not a regular file: {path}")
+        _validate_regular_file_descriptor(fd, path)
         return os.fdopen(fd, "r+b", buffering=0), created
-    except Exception:
+    except BaseException:
         os.close(fd)
         raise
 
@@ -528,11 +565,15 @@ class _WriterLock:
                 os.fsync(self._handle.fileno())
                 if created:
                     directory.fsync()
-        except Exception as exc:
+        except BaseException as exc:
             self._handle.close()
+            if not isinstance(exc, Exception):
+                raise
             if isinstance(exc, AtesStoreError):
                 raise
-            raise AtesStoreError(f"cannot initialize ATES writer lock {path}: {exc}") from exc
+            raise AtesStoreError(
+                f"cannot initialize ATES writer lock {path}: {exc}"
+            ) from exc
 
         try:
             if os.name == "nt":
@@ -546,11 +587,15 @@ class _WriterLock:
                 fcntl.flock(
                     self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
                 )
-        except (OSError, IOError) as exc:
+        except BaseException as exc:
             self._handle.close()
-            raise AtesStoreBusy(
-                f"another authoritative ATES writer owns {directory.path.name}"
-            ) from exc
+            if not isinstance(exc, Exception):
+                raise
+            if isinstance(exc, OSError):
+                raise AtesStoreBusy(
+                    f"another authoritative ATES writer owns {directory.path.name}"
+                ) from exc
+            raise
         self._locked = True
 
     def close(self) -> None:
@@ -608,17 +653,19 @@ class AtesEventStore:
             self.run_dir = self._directories.run.path
             self.path = self.run_dir / "evidence.jsonl"
             self._writer_lock = _WriterLock(self._directories.run)
-            self._file, created = _open_regular_file(
+            self._file, _created = _open_regular_file(
                 self._directories.run, "evidence.jsonl"
             )
-            if created:
-                self._file.flush()
-                os.fsync(self._file.fileno())
-                self._directories.run.fsync()
+            # Every successful open establishes a durability barrier before
+            # history is trusted. This repairs the retry case where a prior
+            # initialization created the directory entry but its fsync failed,
+            # and it re-proves durability for a complete event left visible
+            # after an earlier uncertain append.
+            self._sync_evidence_durability(sync_directory=True)
             self._events = self._load_existing(repair_trailing_partial)
             self._event_by_id = {event.event_id: event for event in self._events}
             self._next_sequence = len(self._events) + 1
-        except Exception:
+        except BaseException:
             self._close_resources(suppress_errors=True)
             self._closed = True
             raise
@@ -732,7 +779,7 @@ class AtesEventStore:
             existing_id = self._event_by_id.get(event.event_id)
             if existing_id is not None:
                 if existing_id.canonical_line() == event.canonical_line():
-                    return existing_id
+                    return self._acknowledge_replay(existing_id)
                 raise AtesEventConflict(
                     "event_id already exists with different canonical content"
                 )
@@ -740,7 +787,7 @@ class AtesEventStore:
             if event.sequence < self._next_sequence:
                 existing = self._events[event.sequence - 1]
                 if existing.canonical_line() == event.canonical_line():
-                    return existing
+                    return self._acknowledge_replay(existing)
                 raise AtesEventConflict(
                     "event sequence already exists with different canonical content"
                 )
@@ -751,9 +798,12 @@ class AtesEventStore:
                 )
 
             line = event.canonical_line()
+            io_started = False
             try:
                 assert self._file is not None
+                _validate_regular_file_descriptor(self._file.fileno(), self.path)
                 self._file.seek(0, os.SEEK_END)
+                io_started = True
                 written = self._file.write(line)
                 if written != len(line):
                     raise OSError(
@@ -761,20 +811,53 @@ class AtesEventStore:
                     )
                 self._file.flush()
                 os.fsync(self._file.fileno())
-            except (OSError, ValueError) as exc:
-                # Do not allocate later sequence numbers after an uncertain
-                # durable-write outcome. Reopen and reconcile this exact ID.
-                self._poisoned = True
-                raise AtesAppendError(
-                    "ATES append durability is unknown for "
-                    f"{event.event_id}/{event.sequence}: {exc}",
-                    event,
-                ) from exc
+            except BaseException as exc:
+                if io_started:
+                    # Any control-flow interruption after the write can leave
+                    # the durable outcome unknown. Poison first, then preserve
+                    # KeyboardInterrupt/SystemExit rather than wrapping them.
+                    self._poisoned = True
+                if isinstance(exc, (OSError, ValueError, AtesStoreError)):
+                    if io_started:
+                        raise AtesAppendError(
+                            "ATES append durability is unknown for "
+                            f"{event.event_id}/{event.sequence}: {exc}",
+                            event,
+                        ) from exc
+                    raise
+                raise
 
             self._events.append(event)
             self._event_by_id[event.event_id] = event
             self._next_sequence += 1
             return event
+
+    def _sync_evidence_durability(self, *, sync_directory: bool) -> None:
+        assert self._file is not None
+        assert self._directories is not None
+        _validate_regular_file_descriptor(self._file.fileno(), self.path)
+        self._file.flush()
+        os.fsync(self._file.fileno())
+        if sync_directory:
+            self._directories.run.fsync()
+
+    def _acknowledge_replay(self, event: StoredEvent) -> StoredEvent:
+        try:
+            # Exact replay is also a durability acknowledgement. Re-sync the
+            # current evidence handle before returning success so a prior
+            # uncertain fsync cannot become success merely because bytes are
+            # visible in the page cache.
+            self._sync_evidence_durability(sync_directory=False)
+        except BaseException as exc:
+            self._poisoned = True
+            if isinstance(exc, (OSError, ValueError, AtesStoreError)):
+                raise AtesAppendError(
+                    "ATES replay durability is unknown for "
+                    f"{event.event_id}/{event.sequence}: {exc}",
+                    event,
+                ) from exc
+            raise
+        return event
 
     def _ensure_owner_process(self) -> None:
         if os.getpid() != self._owner_pid:
