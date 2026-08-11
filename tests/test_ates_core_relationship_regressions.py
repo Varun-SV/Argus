@@ -16,6 +16,7 @@ from argus.ates import (
     StepAttemptRecord,
     StepAttemptStatus,
     StepId,
+    StepRecord,
     validate_step_evidence_relationships,
 )
 
@@ -31,6 +32,10 @@ class SplitViewMapping(dict):
 
     def items(self):
         return {"payload": self._visible_value}.items()
+
+
+def step_record(step_id: StepId, instruction: str) -> StepRecord:
+    return StepRecord(step_id, EvidenceValue.safe(instruction))
 
 
 def test_action_and_observation_validate_the_same_mapping_snapshot_they_store():
@@ -62,6 +67,10 @@ def test_action_and_observation_validate_the_same_mapping_snapshot_they_store():
 def test_step_evidence_relationships_reject_cross_step_action_and_assertion_references():
     step_a = StepId.new()
     step_b = StepId.new()
+    logical_steps = (
+        step_record(step_a, "Step A"),
+        step_record(step_b, "Step B"),
+    )
     attempt_a = StepAttemptRecord(
         StepAttemptId.new(), step_a, 1, StepAttemptStatus.PASSED, NOW, NOW
     )
@@ -71,7 +80,7 @@ def test_step_evidence_relationships_reject_cross_step_action_and_assertion_refe
     )
     with pytest.raises(ValueError, match="action step_id"):
         validate_step_evidence_relationships(
-            (attempt_a,), actions=(mismatched_action,)
+            (attempt_a,), steps=logical_steps, actions=(mismatched_action,)
         )
 
     mismatched_assertion = AssertionRecord(
@@ -85,13 +94,15 @@ def test_step_evidence_relationships_reject_cross_step_action_and_assertion_refe
     )
     with pytest.raises(ValueError, match="assertion step_id"):
         validate_step_evidence_relationships(
-            (attempt_a,), assertions=(mismatched_assertion,)
+            (attempt_a,), steps=logical_steps, assertions=(mismatched_assertion,)
         )
 
 
 def test_step_evidence_relationships_validate_observation_ownership_and_snapshot_inputs():
     step_a = StepId.new()
     step_b = StepId.new()
+    logical_step_a = step_record(step_a, "Step A")
+    logical_step_b = step_record(step_b, "Step B")
     attempt_a = StepAttemptRecord(
         StepAttemptId.new(), step_a, 1, StepAttemptStatus.PASSED, NOW, NOW
     )
@@ -119,6 +130,7 @@ def test_step_evidence_relationships_validate_observation_ownership_and_snapshot
     with pytest.raises(ValueError, match="same step attempt"):
         validate_step_evidence_relationships(
             (attempt_a, attempt_b),
+            steps=(logical_step_a, logical_step_b),
             observations=(observation_b,),
             assertions=(assertion_a,),
         )
@@ -144,21 +156,25 @@ def test_step_evidence_relationships_validate_observation_ownership_and_snapshot
         "deterministic",
         observation_id=observation_a.observation_id,
     )
+    steps = [logical_step_a]
     attempts = [attempt_a]
     actions = [action_a]
     observations = [observation_a]
     assertions = [assertion_a]
     snapshots = validate_step_evidence_relationships(
         attempts,
+        steps=steps,
         actions=actions,
         observations=observations,
         assertions=assertions,
     )
+    steps.clear()
     attempts.clear()
     actions.clear()
     observations.clear()
     assertions.clear()
     assert snapshots == (
+        (logical_step_a,),
         (attempt_a,),
         (action_a,),
         (observation_a,),
