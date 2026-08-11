@@ -9,6 +9,7 @@ from .core import (
     RunStatus, ScriptedSource, SourceCommitment, StepAttemptRecord, StepAttemptStatus,
     StepRecord, Verification, VerificationStatus, to_json_compatible,
     validate_artifact_path, validate_step_attempt_history,
+    validate_step_evidence_relationships,
 )
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
@@ -28,5 +29,5 @@ __all__ = [
     "StatusInputs", "StepAttemptId", "StepAttemptRecord", "StepAttemptStatus", "StepId",
     "StepRecord", "Verification", "VerificationStatus", "derive_run_status",
     "effective_outcome", "to_json_compatible", "validate_artifact_path",
-    "validate_step_attempt_history",
+    "validate_step_attempt_history", "validate_step_evidence_relationships",
 ]
