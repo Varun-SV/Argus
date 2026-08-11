@@ -15,15 +15,15 @@ Every Argus run should eventually produce an ATES Core record automatically, eve
 ATES is designed to provide:
 
 - consistent documentation across all Argus runs;
-- step-by-step traceability from test intent to observed evidence;
+- step-by-step traceability from execution intent to observed evidence;
 - clear separation between observed facts, deterministic assertions, executed actions, and AI interpretation;
 - failure and checkpoint evidence without capturing screenshots for every action by default;
 - artifact-level sensitivity handling so binary evidence does not become a credential-exfiltration path;
-- provenance for test definitions, Argus builds, models, execution environments, Nodes, Capsules, and artifacts;
+- provenance for execution intent/test definitions, Argus builds, models, execution environments, Nodes, Capsules, and artifacts;
 - cryptographic artifact digests for corruption/integrity detection;
 - a manifest model that becomes tamper-evident only when bound to a trusted external, immutable, or cryptographic trust boundary;
 - append-oriented audit history rather than silent mutation;
-- requirement-to-test-to-evidence traceability;
+- requirement-to-test-to-evidence traceability where a run is requirement-driven;
 - recoverable evidence from interrupted/crashed runs;
 - explicit trust status for rendered reports;
 - a stable machine-readable foundation for reports, dashboards, audit packages, and future compliance mappings.
@@ -41,7 +41,8 @@ ATES does not:
 - allow report configuration to suppress mandatory core evidence;
 - claim that a locally stored hash and locally stored manifest are tamper-evident without an independent trust boundary;
 - treat a rendered report as trusted merely because its source evidence manifest verifies;
-- require an interrupted run to fabricate an end timestamp or successful finalization event.
+- require an interrupted run to fabricate an end timestamp or successful finalization event;
+- require every execution mode to invent a pre-authored scripted test-case identity.
 
 ## ATES Core is always on
 
@@ -110,7 +111,8 @@ Every execution has one immutable logical `run_id`.
 Fields required from run creation include at least:
 
 - `run_id`;
-- test case identity and digest;
+- `execution_kind`;
+- execution-source identity/provenance appropriate to that `execution_kind`;
 - Argus version/build/commit where available;
 - `started_at`;
 - execution environment type;
@@ -121,6 +123,42 @@ Fields required from run creation include at least:
 - model/provider identity;
 - effective evidence profile;
 - configuration fingerprint.
+
+#### Execution kind and source identity
+
+ATES is always-on across Argus execution modes, so a Run must not assume that every execution originates from a pre-authored scripted test case.
+
+`execution_kind` identifies the execution contract. Initial values should include at least:
+
+- `scripted` — execution of a pre-authored Argus test specification;
+- `roam` — exploratory/free-roam execution without a pre-authored scripted test case.
+
+Future execution kinds may be added through schema evolution, but they must define their source/provenance requirements explicitly rather than borrowing fields from another kind.
+
+For a scripted run, source identity is mandatory and should include the immutable test/spec identity and digest, for example:
+
+```yaml
+execution_kind: scripted
+source:
+  kind: test_spec
+  test_case_id: TEST-NETWORK-003
+  test_spec_digest: "sha256:..."
+```
+
+For a roam run, **test-case identity/digest is not required and must not be fabricated**. Instead, the Run records the immutable inputs that define that exploratory session, for example:
+
+```yaml
+execution_kind: roam
+source:
+  kind: roam_session
+  objective_digest: "sha256:..."
+  roam_config_digest: "sha256:..."
+  seed_or_policy_ref: "ROAM-POLICY-7"
+```
+
+The exact roam source fields may evolve, but they must let a reviewer distinguish two materially different exploratory sessions without pretending that either was a scripted test case. If the user supplied no explicit objective, ATES may record an explicit `objective_present: false`/equivalent rather than inventing one. Any retained objective text remains subject to the same privacy/redaction policy as other evidence.
+
+Requirement traceability is conditional in the same way: scripted runs may carry declared requirements and verification links; roam runs may produce Findings and evidence without falsely claiming requirement coverage.
 
 Completion fields are **not required until successful finalization**. These include:
 
@@ -135,6 +173,7 @@ A derived `run.json` may expose lifecycle state such as:
 
 ```yaml
 run_id: RUN-01K...
+execution_kind: roam
 started_at: "2026-08-11T01:20:00+05:30"
 lifecycle_state: incomplete
 ended_at: null
@@ -146,7 +185,7 @@ If Argus later performs recovery/reconciliation, it may append an explicit recov
 
 ### Step
 
-A Step represents test intent.
+A Step represents execution intent at a point in the run. In scripted execution it normally corresponds to authored test intent; in roam execution it may represent an exploratory goal/subgoal emitted by the roam engine without implying a pre-authored test case.
 
 ```yaml
 step_id: STEP-0002
@@ -269,9 +308,9 @@ Findings should reference the evidence supporting them and state whether their s
 
 ### Checkpoint
 
-A checkpoint is an explicit documentation/evidence request embedded in the test specification.
+A checkpoint is an explicit documentation/evidence request embedded in the execution intent/specification.
 
-Example future syntax:
+Example future scripted syntax:
 
 ```yaml
 steps:
@@ -338,9 +377,9 @@ This rule applies before the default standard-profile failure/checkpoint screens
 
 ### Requirement
 
-ATES should support first-class requirement traceability.
+ATES should support first-class requirement traceability for executions that declare requirements.
 
-A future test may declare:
+A future scripted test may declare:
 
 ```yaml
 requirements:
@@ -365,6 +404,8 @@ REQ-NET-042
   -> OBS-0019
   -> ART-0004
 ```
+
+A roam run without declared requirements does not fabricate this chain; it records exploratory Findings/evidence and may later be linked to requirements through an explicit authenticated/superseding record if a reviewer performs that mapping.
 
 ## Event stream
 
@@ -394,7 +435,7 @@ RUN_COMPLETED
 RUN_MARKED_INCOMPLETE
 ```
 
-Not every adapter/environment will emit every event.
+Not every adapter/environment or execution kind will emit every event.
 
 ### Event envelope and canonical ordering
 
@@ -610,13 +651,13 @@ This prevents a forged PASS report from riding alongside an otherwise valid evid
 
 ## Suggested standard report structure
 
-1. Test identification
+1. Execution identification and kind
 2. Executive summary
-3. Test objective
-4. Requirements/traceability scope
+3. Execution objective / test objective where applicable
+4. Requirements/traceability scope where applicable
 5. Test environment
 6. Execution configuration
-7. Test case and steps
+7. Execution intent, scripted test case/steps or roam goals/subgoals
 8. Assertions
 9. Checkpoints and evidence
 10. Findings/anomalies
@@ -691,16 +732,16 @@ Schema evolution should favor additive changes. Breaking changes require a new m
 
 Recommended implementation order:
 
-1. define typed ATES Core IDs, lifecycle states, event envelope, redacted value model, artifact sensitivity/protection model, and schema version;
+1. define typed ATES Core IDs, lifecycle states, `execution_kind`/conditional source identity, event envelope, redacted value model, artifact sensitivity/protection model, and schema version;
 2. add append-only local event writer with atomic gap-free sequence assignment and duplicate/conflict invariants;
-3. emit run/step/action/observation/assertion lifecycle events from the existing runner, including interrupted-run recovery semantics;
+3. emit run/step/action/observation/assertion lifecycle events from both scripted and roam execution paths, including interrupted-run recovery semantics;
 4. implement artifact pre-write classification/redaction/protected/suppressed handling **before** enabling default failure/checkpoint screenshot persistence;
 5. implement failure evidence and explicit checkpoints using that artifact policy;
 6. hash canonical artifacts and generate immutable versioned evidence manifests;
 7. implement optional evidence-manifest binding mechanisms before advertising tamper-evident evidence;
-8. render the first Markdown/JSON Test Execution Report from verified/canonical evidence, including incomplete runs, and mark it `unverified_derived` unless regenerated/verified or separately bound;
+8. render the first Markdown/JSON Test Execution Report from verified/canonical evidence, including incomplete runs and execution-kind-aware source identity, and mark it `unverified_derived` unless regenerated/verified or separately bound;
 9. implement versioned package manifests (or verified regeneration flow) for rendered report outputs before distributing them with a verified trust indicator;
-10. add requirement traceability;
+10. add requirement traceability for applicable execution kinds;
 11. add authenticated detached approval/supersession records tied to immutable evidence-manifest revisions, with verification status enforced by renderers/gates;
 12. integrate live event streaming with Argus Fleet using idempotent retry/reconciliation semantics;
 13. add external compliance mappings only after the native model is stable.
