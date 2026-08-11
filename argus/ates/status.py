@@ -11,6 +11,7 @@ from .core import AssertionResult, RunOutcomeRevision, RunStatus
 class StatusInputs:
     required_assertion_results: tuple[AssertionResult, ...] = ()
     required_steps_satisfied: bool = True
+    required_assertions_satisfied: bool = True
     unresolved_action_outcome: bool = False
     evidence_integrity_error: bool = False
     execution_error: bool = False
@@ -31,6 +32,7 @@ class StatusInputs:
 
         for field_name in (
             "required_steps_satisfied",
+            "required_assertions_satisfied",
             "unresolved_action_outcome",
             "evidence_integrity_error",
             "execution_error",
@@ -65,7 +67,11 @@ def derive_run_status(inputs: StatusInputs) -> RunStatus:
     if inputs.cancelled:
         return RunStatus.CANCELLED
 
-    if incomplete_assertion or not inputs.required_steps_satisfied:
+    if (
+        incomplete_assertion
+        or not inputs.required_steps_satisfied
+        or not inputs.required_assertions_satisfied
+    ):
         return RunStatus.ERROR
 
     return RunStatus.PASSED
