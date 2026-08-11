@@ -317,3 +317,114 @@ def test_truncate_after_append_fsync_is_ambiguous_and_poisons(
         assert [str(event.event_id) for event in reopened.events] == [
             "EVT-stable-before-fsync-truncate"
         ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor namespace replacement")
+def test_replacing_runs_ancestor_invalidates_original_writer(tmp_path: Path):
+    run_id = RunId("RUN-runs-ancestor-swap")
+    original = AtesEventStore(tmp_path, run_id)
+    argus = tmp_path / ".argus"
+    runs = argus / "runs"
+    moved_runs = argus / "runs-original"
+
+    runs.rename(moved_runs)
+    runs.mkdir()
+    replacement = AtesEventStore(tmp_path, run_id)
+    try:
+        with pytest.raises(AtesStoreError, match=".argus/runs.*pinned directory"):
+            original.append(
+                EventType.RUN_STARTED,
+                occurred_at=NOW,
+                event_id="EVT-hidden-runs-original",
+            )
+
+        visible = replacement.append(
+            EventType.RUN_STARTED,
+            occurred_at=NOW,
+            event_id="EVT-visible-runs-replacement",
+        )
+        assert visible.sequence == 1
+    finally:
+        replacement.close()
+        original.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor namespace replacement")
+def test_replacing_argus_ancestor_invalidates_original_writer(tmp_path: Path):
+    run_id = RunId("RUN-argus-ancestor-swap")
+    original = AtesEventStore(tmp_path, run_id)
+    argus = tmp_path / ".argus"
+    moved_argus = tmp_path / ".argus-original"
+
+    argus.rename(moved_argus)
+    argus.mkdir()
+    replacement = AtesEventStore(tmp_path, run_id)
+    try:
+        with pytest.raises(AtesStoreError, match=".argus.*pinned directory"):
+            original.append(
+                EventType.RUN_STARTED,
+                occurred_at=NOW,
+                event_id="EVT-hidden-argus-original",
+            )
+
+        visible = replacement.append(
+            EventType.RUN_STARTED,
+            occurred_at=NOW,
+            event_id="EVT-visible-argus-replacement",
+        )
+        assert visible.sequence == 1
+    finally:
+        replacement.close()
+        original.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor namespace replacement")
+def test_runs_ancestor_swap_after_fsync_is_ambiguous_and_poisons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_id = RunId("RUN-runs-swap-after-fsync")
+    store = AtesEventStore(tmp_path, run_id)
+    assert store._file is not None
+    evidence_fd = store._file.fileno()
+    argus = tmp_path / ".argus"
+    runs = argus / "runs"
+    moved_runs = argus / "runs-original"
+    replacement_runs = argus / "runs-replacement"
+    real_fsync = store_module.os.fsync
+    swapped = False
+
+    def fsync_then_swap_runs(fd: int) -> None:
+        nonlocal swapped
+        real_fsync(fd)
+        if fd == evidence_fd and not swapped:
+            swapped = True
+            runs.rename(moved_runs)
+            runs.mkdir()
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(store_module.os, "fsync", fsync_then_swap_runs)
+            with pytest.raises(AtesAppendError) as caught:
+                store.append(
+                    EventType.RUN_STARTED,
+                    occurred_at=NOW,
+                    event_id="EVT-runs-swap-after-fsync",
+                )
+
+        assert swapped is True
+        assert caught.value.event.event_id == "EVT-runs-swap-after-fsync"
+        assert caught.value.outcome_unknown is True
+        assert store.poisoned is True
+    finally:
+        if moved_runs.exists():
+            if runs.exists():
+                runs.rename(replacement_runs)
+            moved_runs.rename(runs)
+        store.close()
+
+    with AtesEventStore(tmp_path, run_id) as reopened:
+        assert reopened.next_sequence == 2
+        assert [str(event.event_id) for event in reopened.events] == [
+            "EVT-runs-swap-after-fsync"
+        ]
