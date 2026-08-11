@@ -101,6 +101,18 @@ class StoredEvent:
     def from_document(cls, document: object) -> "StoredEvent":
         if not isinstance(document, Mapping):
             raise AtesStoreCorruption("canonical event line must contain a JSON object")
+        try:
+            snapshot = tuple(document.items())
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise AtesStoreCorruption(
+                "canonical event object could not be snapshotted safely"
+            ) from exc
+        if not all(isinstance(key, str) for key, _ in snapshot):
+            raise AtesStoreCorruption("canonical event object keys must be strings")
+        if len({key for key, _ in snapshot}) != len(snapshot):
+            raise AtesStoreCorruption("canonical event object contains duplicate fields")
+        document = dict(snapshot)
+
         required = {
             "ates_version",
             "run_id",
@@ -421,13 +433,23 @@ class _RunDirectoryChain:
             self._directories.append(run)
             self.run = run
         except Exception:
-            self.close()
+            try:
+                self.close()
+            except Exception:
+                pass
             raise
 
     def close(self) -> None:
+        first_error: Optional[BaseException] = None
         for directory in reversed(self._directories):
-            directory.close()
+            try:
+                directory.close()
+            except BaseException as exc:  # cleanup must continue through all handles
+                if first_error is None:
+                    first_error = exc
         self._directories.clear()
+        if first_error is not None:
+            raise first_error
 
 
 def _open_regular_file(directory: _PinnedDirectory, name: str):
@@ -492,17 +514,25 @@ class _WriterLock:
     """Cross-process single-authority lock retained for the store lifetime."""
 
     def __init__(self, directory: _PinnedDirectory) -> None:
+        path = directory.path / ".ates-writer.lock"
         handle, created = _open_regular_file(directory, ".ates-writer.lock")
         self._handle = handle
         self._locked = False
         self._owner_pid = os.getpid()
-        if created or os.fstat(self._handle.fileno()).st_size == 0:
-            self._handle.seek(0)
-            self._handle.write(b"\0")
-            self._handle.flush()
-            os.fsync(self._handle.fileno())
-            if created:
-                directory.fsync()
+
+        try:
+            if created or os.fstat(self._handle.fileno()).st_size == 0:
+                self._handle.seek(0)
+                self._handle.write(b"\0")
+                self._handle.flush()
+                os.fsync(self._handle.fileno())
+                if created:
+                    directory.fsync()
+        except Exception as exc:
+            self._handle.close()
+            if isinstance(exc, AtesStoreError):
+                raise
+            raise AtesStoreError(f"cannot initialize ATES writer lock {path}: {exc}") from exc
 
         try:
             if os.name == "nt":
@@ -527,8 +557,9 @@ class _WriterLock:
         if self._handle.closed:
             return
         inherited = os.getpid() != self._owner_pid
-        if self._locked and not inherited:
-            try:
+        unlock_error: Optional[BaseException] = None
+        try:
+            if self._locked and not inherited:
                 if os.name == "nt":
                     import msvcrt
 
@@ -538,9 +569,13 @@ class _WriterLock:
                     import fcntl
 
                     fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
-            finally:
-                self._locked = False
-        self._handle.close()
+        except BaseException as exc:
+            unlock_error = exc
+        finally:
+            self._locked = False
+            self._handle.close()
+        if unlock_error is not None:
+            raise unlock_error
 
 
 class AtesEventStore:
@@ -584,12 +619,7 @@ class AtesEventStore:
             self._event_by_id = {event.event_id: event for event in self._events}
             self._next_sequence = len(self._events) + 1
         except Exception:
-            if self._file is not None:
-                self._file.close()
-            if self._writer_lock is not None:
-                self._writer_lock.close()
-            if self._directories is not None:
-                self._directories.close()
+            self._close_resources(suppress_errors=True)
             self._closed = True
             raise
 
@@ -615,39 +645,47 @@ class AtesEventStore:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def _close_resources(self, *, suppress_errors: bool) -> None:
+        first_error: Optional[BaseException] = None
+        resources = (
+            self._file,
+            self._writer_lock,
+            self._directories,
+        )
+        for resource in resources:
+            if resource is None:
+                continue
+            try:
+                resource.close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        self._file = None
+        self._writer_lock = None
+        self._directories = None
+        if first_error is not None and not suppress_errors:
+            raise first_error
+
     def close(self) -> None:
         if os.getpid() != self._owner_pid:
             # A forked child must never explicitly unlock the parent's flock.
-            # It may close only its duplicated descriptors/handles.
+            # It may close only its duplicated descriptors/handles and must not
+            # touch an inherited RLock that may have been owned by another thread.
             if self._closed:
                 return
             try:
-                if self._file is not None:
-                    self._file.close()
+                self._close_resources(suppress_errors=False)
             finally:
-                try:
-                    if self._writer_lock is not None:
-                        self._writer_lock.close()
-                finally:
-                    if self._directories is not None:
-                        self._directories.close()
-                    self._closed = True
+                self._closed = True
             return
 
         with self._thread_lock:
             if self._closed:
                 return
             try:
-                if self._file is not None:
-                    self._file.close()
+                self._close_resources(suppress_errors=False)
             finally:
-                try:
-                    if self._writer_lock is not None:
-                        self._writer_lock.close()
-                finally:
-                    if self._directories is not None:
-                        self._directories.close()
-                    self._closed = True
+                self._closed = True
 
     def append(
         self,
