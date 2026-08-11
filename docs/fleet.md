@@ -4,7 +4,7 @@
 
 Argus Fleet extends the existing `ExecutionEnvironment` and Capsule architecture across multiple physical hosts on the same network (and later across routed/private networks or cloud infrastructure).
 
-The goal is to let one central Argus Control Center discover/enroll execution nodes, schedule Capsule-backed test sessions, receive live evidence, and monitor many tests simultaneously without giving observers interactive control of the guest machines.
+The goal is to let one central Argus Control Center enroll execution nodes, schedule Capsule-backed test sessions, receive live evidence, and monitor many tests simultaneously without giving observers interactive control of guest machines.
 
 ## Core idea
 
@@ -19,7 +19,7 @@ The goal is to let one central Argus Control Center discover/enroll execution no
                     | Observer API               |
                     +-------------+--------------+
                                   |
-                    authenticated control plane
+                    authenticated encrypted plane
                                   |
               +-------------------+-------------------+
               |                   |                   |
@@ -44,6 +44,7 @@ Argus Fleet is a layer **above**, not a replacement for, `ExecutionEnvironment` 
 - aggregate ATES events from all running sessions;
 - support distributed matrix testing across OS/image/application combinations;
 - preserve Capsule isolation and fail-closed behavior when execution becomes remote;
+- require authenticated encryption for Fleet control, evidence/event, screen, and artifact traffic in production;
 - avoid implicit fallback to local host execution when a remote placement request cannot be satisfied.
 
 ## Components
@@ -140,7 +141,7 @@ Argus should expose two security roles/surfaces even if they share frontend comp
 
 Privileged operations:
 
-- register/remove nodes;
+- register/remove Nodes;
 - schedule/cancel tests;
 - configure images and placement policies;
 - manage queues;
@@ -160,6 +161,23 @@ Read-only operations:
 - view results and findings.
 
 Observer should receive a separate read-only credential and API surface.
+
+## Fleet transport security
+
+Production Fleet communication must use an **authenticated and encrypted channel**. TLS with mutually authenticated Node credentials is the expected baseline, although an equivalent transport may be used if it provides the same security properties.
+
+The confidentiality/integrity requirement applies to:
+
+- Node enrollment and credential provisioning;
+- heartbeats and capability advertisements;
+- privileged control/session requests;
+- ATES event transport;
+- live screen/frame transport;
+- logs and result metadata;
+- artifact upload/download;
+- administrative and Observer API traffic according to role.
+
+An authenticated-but-plaintext implementation is not a conforming production Fleet transport. Authorization and artifact hashes do not replace transport confidentiality.
 
 ## Live session monitoring
 
@@ -210,23 +228,51 @@ Fleet should support secure enrollment rather than trusting arbitrary network di
 
 Enrollment credentials are security-sensitive bootstrap secrets. They **must not be accepted as literal command-line argument values** because process listings, shell history, terminal logging, audit tooling, and diagnostic collectors can expose argv.
 
+### Enrollment identity and idempotency
+
+Before sending a bootstrap credential, a Node should generate:
+
+- a long-term Node keypair (or equivalent hardware/OS-backed identity key);
+- a stable random `enrollment_request_id` for this logical enrollment attempt;
+- a request containing the public-key fingerprint and intended Control Center identity.
+
 A conceptual flow:
 
 ```text
 1. Administrator creates a short-lived, single-use enrollment credential scoped to the intended Control Center.
-2. Administrator starts `argus-node join <control-center>` without placing the credential in argv.
-3. Node authenticates the Control Center before releasing the enrollment credential.
-4. The credential is supplied through a protected input path such as a hidden stdin prompt,
+2. Node generates its keypair and stable enrollment_request_id.
+3. Administrator starts `argus-node join <control-center>` without placing the credential in argv.
+4. Node authenticates the Control Center before releasing the enrollment credential.
+5. The credential is supplied through a protected input path such as hidden stdin,
    restricted file descriptor/file, or OS credential mechanism.
-5. Control Center validates and atomically consumes the enrollment credential.
-6. Control Center assigns a durable Node identity and provisions long-term Node credentials.
-7. Bootstrap credential material is erased from temporary storage as soon as practical.
-8. Node establishes authenticated heartbeats/control sessions using its durable identity.
+6. Control Center validates the request and, in one durable transaction:
+     - binds enrollment_request_id to the Node public-key fingerprint;
+     - allocates the durable Node identity;
+     - records the credential/provisioning result;
+     - consumes the bootstrap credential.
+7. Control Center returns the durable enrollment result.
+8. Node proves possession of the enrolled private key and acknowledges successful provisioning.
+9. Node establishes authenticated heartbeats/control sessions using the durable identity.
 ```
 
 A non-interactive implementation may support a dedicated option such as `--token-file <path>` or an inherited file descriptor, but the file must be access-restricted and the secret value itself must never appear in argv. Environment variables should not be the default bootstrap mechanism because they may also be exposed by process/debugging facilities on some systems.
 
-Enrollment credentials should be short-lived, single-use, audience-bound to the intended Control Center, and consumed atomically to reduce replay/race risk. A failed or ambiguous enrollment attempt must not silently mint multiple durable Node identities from one credential.
+### Lost-response recovery
+
+Enrollment completion must be **idempotent** across ambiguous network failures.
+
+If the Control Center has consumed the bootstrap credential and persisted the durable Node identity but the provisioning response is lost:
+
+- the Node retries with the same `enrollment_request_id` and public key;
+- the Control Center must not create a second Node identity;
+- the Node proves possession of the matching private key;
+- the Control Center returns/replays the same pending durable enrollment result within a bounded recovery window until the Node acknowledges it;
+- a reused request ID with a different key fingerprint is rejected as a protocol/security error;
+- replacing the bootstrap token must not silently create another identity for the same pending logical request.
+
+The replayable enrollment result must not expose reusable bootstrap material. Credential-delivery design should prefer issuing/deriving durable credentials in a way that can be safely recovered by proof of the enrolled private key, rather than depending on retransmitting a plaintext private credential.
+
+Enrollment credentials should remain short-lived, single-use, and audience-bound to the intended Control Center. Atomic consumption prevents token replay; request/key binding and idempotent result recovery prevent orphaned identities when the response is lost.
 
 Optional mDNS/LAN discovery may help users find an unregistered Node, but discovery must not equal trust. Production execution requires explicit authenticated enrollment.
 
@@ -309,7 +355,7 @@ Selecting a failure can show:
 - checkpoint/failure screenshot;
 - finding;
 - collected artifacts;
-- Failure Capsule retention state.
+- Failure Capsule retention state where the underlying execution path supports it.
 
 ## ATES integration
 
@@ -320,17 +366,17 @@ Node/Capsule
     |
     +--> local ATES evidence
     |
-    +--> authenticated event stream --> Control Center
-                                         |
-                                         +--> Observer
-                                         +--> fleet timeline
-                                         +--> final reports
-                                         +--> audit package
+    +--> encrypted authenticated event stream --> Control Center
+                                                    |
+                                                    +--> Observer
+                                                    +--> fleet timeline
+                                                    +--> final reports
+                                                    +--> audit package
 ```
 
 The Control Center should not rewrite Node facts as though it observed them directly. Provenance must identify which Node/environment emitted each event.
 
-Fleet transport must preserve the ATES event envelope: stable event IDs, monotonic per-run sequence numbers, idempotent retries, explicit gap detection, and conflict rejection. Canonical execution order comes from the producer's ATES sequence rather than network arrival order.
+Fleet transport must preserve the ATES event envelope: stable event IDs, canonical gap-free per-run sequences (or explicit ATES tombstones), idempotent retries, explicit gap detection, and conflict rejection. Canonical execution order comes from the producer's ATES sequence rather than network arrival order.
 
 ## Results and artifacts
 
@@ -338,19 +384,24 @@ The Control Center may index metadata centrally while large artifacts remain on 
 
 Any future central transfer protocol must preserve:
 
+- authenticated encryption in transit;
 - artifact identity;
-- digest verification;
+- digest verification after transport;
 - size limits/quotas;
 - authorization;
 - provenance;
 - ATES manifest references;
 - retention/deletion policy.
 
+If object storage is used, upload/download credentials must be scoped and short-lived where practical, and Observer access must remain read-only according to authorization policy.
+
 ## Failure Capsules
 
 Fleet should expose retained Failure Capsules as forensic resources, not as ordinary interactive remote desktops.
 
 The existing rule remains important: retained secure Failure Capsules contain disk/config evidence but do not persist live recovery bearer tokens or TLS private keys merely to make them resumable.
+
+Current Argus retention behavior is defined by the underlying execution path. Fleet must not imply retention for a run type that does not call the existing failure-recording lifecycle hook; unsupported paths must report retention as unavailable rather than pretending a forensic Capsule exists.
 
 Future discard/export workflows should use explicit privileged Control Center operations and be represented in the audit trail.
 
@@ -359,30 +410,32 @@ Future discard/export workflows should use explicit privileged Control Center op
 1. Node discovery is not authentication.
 2. Node enrollment is explicit and authenticated.
 3. Enrollment secrets never appear as literal argv values and are short-lived, single-use, and atomically consumed.
-4. Observer authorization is read-only by construction.
-5. Control Center privilege does not bypass Capsule guest policy accidentally.
-6. Node Agents enforce local provider/capability constraints.
-7. Remote placement never silently falls back to local execution.
-8. All control-plane mutations are auditable.
-9. ATES facts retain Node/session provenance and transport preserves ATES event identity/order.
-10. Credentials and guest-control secrets are not emitted into ATES evidence.
-11. Ambiguous distributed failures use reconciliation rather than destructive guesses.
+4. Enrollment is bound to a Node-generated key/request ID and is retry-idempotent after token consumption.
+5. Fleet control, ATES/event, screen, and artifact traffic uses authenticated encryption in production.
+6. Observer authorization is read-only by construction.
+7. Control Center privilege does not bypass Capsule guest policy accidentally.
+8. Node Agents enforce local provider/capability constraints.
+9. Remote placement never silently falls back to local execution.
+10. All control-plane mutations are auditable.
+11. ATES facts retain Node/session provenance and transport preserves ATES event identity/order.
+12. Credentials and guest-control secrets are not emitted into ATES evidence.
+13. Ambiguous distributed failures use reconciliation rather than destructive guesses.
 
 ## Initial implementation sequence
 
 Recommended order:
 
-1. define Node identity/capability models and enrollment credential semantics;
-2. implement Node Agent daemon and authenticated enrollment using protected secret input rather than argv;
-3. add heartbeat/capability registry to the Control Center;
+1. define Node identity/capability models, Node key ownership, enrollment request IDs, and bootstrap credential semantics;
+2. implement Node Agent daemon and authenticated/idempotent enrollment using protected secret input rather than argv;
+3. establish authenticated encrypted Fleet channels and add heartbeat/capability registry to the Control Center;
 4. implement remote session request/response around existing Capsule APIs;
 5. add reconciliation for disconnect/restart scenarios;
 6. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics;
 7. implement read-only Observer API;
-8. implement live screen transport;
+8. implement live screen transport over the protected Fleet channel;
 9. add scheduler/queue and placement requirements;
 10. add matrix execution and fleet timeline;
-11. add centralized artifact indexing/storage policies;
+11. add encrypted centralized artifact indexing/storage policies;
 12. later consider cloud/autoscaling workers.
 
 ## Relationship to current Argus
