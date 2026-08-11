@@ -21,10 +21,12 @@ ATES is designed to provide:
 - artifact-level sensitivity handling so binary evidence does not become a credential-exfiltration path;
 - provenance for execution intent/test definitions, Argus builds, models, execution environments, Nodes, Capsules, and artifacts;
 - cryptographic artifact digests for corruption/integrity detection;
+- source-identity commitments that do not turn low-entropy secrets into offline-verifiable public hashes;
 - a manifest model that becomes tamper-evident only when bound to a trusted external, immutable, or cryptographic trust boundary;
 - append-oriented audit history rather than silent mutation;
 - requirement-to-test-to-evidence traceability where a run is requirement-driven;
 - recoverable evidence from interrupted/crashed runs;
+- context-safe rendering of untrusted application/test evidence;
 - explicit trust status for rendered reports;
 - a stable machine-readable foundation for reports, dashboards, audit packages, and future compliance mappings.
 
@@ -41,6 +43,7 @@ ATES does not:
 - allow report configuration to suppress mandatory core evidence;
 - claim that a locally stored hash and locally stored manifest are tamper-evident without an independent trust boundary;
 - treat a rendered report as trusted merely because its source evidence manifest verifies;
+- allow untrusted evidence text to become executable HTML/Markdown/XML/report content by default;
 - require an interrupted run to fabricate an end timestamp or successful finalization event;
 - require every execution mode to invent a pre-authored scripted test-case identity.
 
@@ -122,7 +125,7 @@ Fields required from run creation include at least:
 - guest/host operating-system information where applicable;
 - model/provider identity;
 - effective evidence profile;
-- configuration fingerprint.
+- configuration fingerprint/commitment that follows the secret-safe source-identity rules below.
 
 #### Execution kind and source identity
 
@@ -135,37 +138,57 @@ ATES is always-on across Argus execution modes, so a Run must not assume that ev
 
 Future execution kinds may be added through schema evolution, but they must define their source/provenance requirements explicitly rather than borrowing fields from another kind.
 
-For a scripted run, source identity is mandatory and should include the immutable test/spec identity and digest, for example:
+For a scripted run, source identity is mandatory and should include the immutable test/spec identity plus a **secret-safe source commitment**, for example:
 
 ```yaml
 execution_kind: scripted
 source:
   kind: test_spec
   test_case_id: TEST-NETWORK-003
-  test_spec_digest: "sha256:..."
+  commitment:
+    method: sha256_redacted_canonical
+    value: "sha256:..."
+    canonicalization_profile: ates-source-v1
 ```
 
-For a roam run, **test-case identity/digest is not required and must not be fabricated**. Instead, the Run records the immutable inputs that define that exploratory session, for example:
+A plain SHA-256 digest of the raw authored specification is allowed only when the canonical source is known not to contain secret-bearing or otherwise sensitive low-entropy values. When a source can contain passwords, tokens, sensitive assertion values, private URLs, or similar material, ATES must use one of these approaches instead:
+
+- replace secret values with stable secret references/placeholders **before** canonical hashing;
+- hash a canonical redacted representation whose redaction semantics are recorded;
+- use a keyed commitment such as HMAC where the verification key is protected outside ordinary evidence;
+- use a salted commitment where the salt/verification material is protected according to policy and is not published in a way that restores cheap offline guessing.
+
+A low-entropy secret must not become publicly dictionary-checkable merely because ATES needs provenance. The commitment method, canonicalization/redaction profile, and verification requirements must be recorded so a verifier knows what identity property is actually being claimed.
+
+For a roam run, **test-case identity/digest is not required and must not be fabricated**. Instead, the Run records the immutable inputs that define that exploratory session, using the same secret-safe commitment rules, for example:
 
 ```yaml
 execution_kind: roam
 source:
   kind: roam_session
-  objective_digest: "sha256:..."
-  roam_config_digest: "sha256:..."
+  objective_commitment:
+    method: sha256_redacted_canonical
+    value: "sha256:..."
+  roam_config_commitment:
+    method: hmac-sha256
+    value: "hmac:..."
+    key_ref: protected://ates-source-key
   seed_or_policy_ref: "ROAM-POLICY-7"
 ```
 
 The exact roam source fields may evolve, but they must let a reviewer distinguish two materially different exploratory sessions without pretending that either was a scripted test case. If the user supplied no explicit objective, ATES may record an explicit `objective_present: false`/equivalent rather than inventing one. Any retained objective text remains subject to the same privacy/redaction policy as other evidence.
 
+Configuration fingerprints, prompt/template identifiers, and other Run-level digests follow the same rule: do not hash raw secret-bearing material into a public always-on record when that digest enables practical offline guessing.
+
 Requirement traceability is conditional in the same way: scripted runs may carry declared requirements and verification links; roam runs may produce Findings and evidence without falsely claiming requirement coverage.
 
-Completion fields are **not required until successful finalization**. These include:
+Completion fields that belong to canonical execution evidence are **not required until execution finalization**. These include:
 
 - `ended_at`;
 - `final_status`;
-- evidence-manifest revision/reference;
-- final manifest digest/binding status.
+- final canonical event/sequence information needed to close the execution stream.
+
+The evidence-manifest revision/digest that binds the finalized stream is **derived after the canonical execution bytes are closed** and is not embedded back into the same bound Run/`RUN_COMPLETED` bytes. Doing so would create a self-referential digest cycle.
 
 A run whose stream has no valid `RUN_COMPLETED` event remains a valid **incomplete/recoverable run**, not an invalid ATES record. Renderers and validators must preserve its available evidence and report that final status/end time are unknown rather than inventing them.
 
@@ -187,6 +210,8 @@ If Argus later performs recovery/reconciliation, it may append an explicit recov
 
 A Step represents execution intent at a point in the run. In scripted execution it normally corresponds to authored test intent; in roam execution it may represent an exploratory goal/subgoal emitted by the roam engine without implying a pre-authored test case.
 
+A non-sensitive example is:
+
 ```yaml
 step_id: STEP-0002
 sequence: 2
@@ -195,6 +220,28 @@ instruction:
   text: "Navigate to Network"
 status: passed
 ```
+
+Step instructions are subject to the **same schema-level secret handling as Actions and Assertions**. ATES Core must not persist an authored instruction such as `Type password123 into the password field` verbatim merely because the later Action payload is redacted.
+
+A sensitive Step can instead be represented as:
+
+```yaml
+step_id: STEP-0003
+sequence: 3
+instruction:
+  type: natural_language
+  text: "Type <redacted> into the password field"
+  sensitive_fields:
+    - text
+  redaction:
+    reason: secret_or_user_input
+    plaintext_persisted: false
+  secret_refs:
+    - SECRET-login-password
+status: passed
+```
+
+Where possible, authored tests should use explicit secret references/placeholders rather than embedding literal credentials in instruction text. If a literal is present, the canonical Step representation must be transformed/redacted **before** it is appended to always-on evidence. Low-entropy secret text must not be replaced with a public unsalted digest.
 
 A step may contain multiple actions and observations.
 
@@ -350,6 +397,12 @@ protection:
   plaintext_or_unredacted_persisted: false
 ```
 
+Artifact paths are **package-relative identifiers, not arbitrary filesystem paths**. A conforming `path` must be a canonical relative path rooted beneath the run's designated artifact directory (for example `artifacts/...`). Absolute paths, drive/UNC prefixes, `..` traversal, empty/ambiguous segments, encoded traversal aliases, or paths that escape the artifact root after normalization are invalid.
+
+Verifiers, renderers, importers, and package extractors must treat artifact paths as untrusted input and use race-safe rooted access. They must reject or safely ignore symlinks, junctions/reparse points, device nodes, FIFOs/sockets, and other non-regular targets where a regular artifact file is expected. Implementations should prefer directory-handle/rooted APIs (`openat`-style or platform equivalents), disable link following where available, and verify the opened object remains beneath the intended root rather than performing a check-then-open sequence vulnerable to races.
+
+Archive/package extraction must apply the same confinement before creating files: no member may overwrite or create content outside the designated evidence root, and link entries must not be used to redirect later extraction or hashing outside that root.
+
 Artifacts collected from Capsules must continue to obey the explicit staging/collection authority already enforced by the Capsule execution boundary.
 
 #### Artifact capture, sensitivity, and pre-write handling
@@ -437,6 +490,8 @@ RUN_MARKED_INCOMPLETE
 
 Not every adapter/environment or execution kind will emit every event.
 
+`RUN_COMPLETED` closes execution semantics (for example final status/end time/final sequence). It does **not** contain the digest of an evidence manifest whose input includes that same event. Evidence-manifest construction occurs after the canonical event range is closed.
+
 ### Event envelope and canonical ordering
 
 Every ATES event must carry a stable event identity and an ordered sequence within its run. The envelope should contain at least:
@@ -489,6 +544,8 @@ A possible on-disk layout is:
 
 `evidence.jsonl` is the canonical execution-event history. Reports are derived views and should be reproducible from canonical evidence where practical. `approvals.jsonl` is a detached audit ledger described below and does not mutate the immutable manifest revision it approves. Detached approval storage still requires authentication/integrity verification before a record is treated as a valid approval.
 
+A convenience/derived `run.json` may include detached references to finalized manifest revisions for navigation, but those references are not part of the evidence bytes bound by the referenced manifest unless a later outer/package revision explicitly binds both. A manifest must never bind a file that embeds that manifest's own digest.
+
 ## Integrity model
 
 ### Artifact hashing
@@ -510,6 +567,8 @@ An evidence-manifest revision should bind:
 - previous evidence-manifest revision/digest when a chained revision is created.
 
 Once published/finalized, an evidence-manifest revision and its digest are immutable. Additional audit material never rewrites the revision it references.
+
+The manifest's own digest is metadata **about** that immutable manifest object and is stored/referenced outside the byte range the digest covers. A chained later manifest may reference the previous manifest's digest, but no revision may require its own digest to appear inside its own hashed bytes.
 
 Rendered reports are derived outputs and are **not automatically covered** merely because their inputs are bound by an evidence manifest. Their trust boundary is defined separately below.
 
@@ -608,6 +667,24 @@ The report generator must derive claims from evidence references rather than cre
 
 Interrupted/incomplete runs must remain renderable. Such reports should identify the last canonical event/sequence, missing completion metadata, reconciliation state, and any available crash/failure evidence.
 
+### Renderer output safety
+
+All text/URLs/metadata originating from the application under test, test specification, model output, logs, artifacts, Findings, or imported evidence must be treated as **untrusted data**, not markup or executable report content.
+
+Every renderer must encode/escape values for its destination context at the final output boundary. Required semantics include:
+
+- HTML renderers use context-appropriate HTML/attribute/URL encoding and do not insert evidence through raw/unsafe HTML APIs;
+- active HTML such as `<script>`, event-handler attributes, inline executable content, `javascript:`/other unsafe URL schemes, and attacker-supplied embeds are prohibited by default rather than trusted because they came from canonical evidence;
+- Markdown renderers escape or structurally isolate untrusted values so embedded HTML, links, images, directives, or renderer-specific extensions cannot silently become active content; if the target Markdown engine permits raw HTML, generated reports must disable/sanitize it or render evidence as escaped text/code;
+- XML/JUnit renderers use XML-safe serializers, escape text/attribute values, reject or normalize characters illegal in the target XML version, and never concatenate untrusted strings into markup;
+- JSON or other structured renderers use format-native serializers rather than string concatenation;
+- URLs displayed as links are scheme-validated and policy-filtered; unsafe schemes are rendered as inert text;
+- report templates, syntax highlighting, or rich-text helpers must not introduce a bypass around the same output-context rules.
+
+Where HTML reports are served by the Control Center, defense in depth should include a restrictive Content Security Policy and isolation from privileged application origins/cookies where practical. Downloaded artifacts that may contain active content should not automatically execute in the report origin merely because they are referenced by evidence.
+
+Renderer safety is independent from evidence integrity: a cryptographically verified malicious string is still malicious input to a renderer.
+
 ### Rendered-report trust boundary
 
 A verified evidence manifest proves the integrity of the evidence snapshot it binds; it does **not** by itself prove that an arbitrary `report.html`, `report.md`, PDF, or JUnit file next to that evidence was produced faithfully or was not replaced later.
@@ -681,14 +758,18 @@ The runtime must define explicit redaction/retention rules for:
 - passwords;
 - TLS private keys;
 - session bootstrap secrets;
+- authored Step instructions/execution goals;
 - typed user input;
 - command arguments;
 - credential-bearing URLs;
 - sensitive application data;
 - screenshots and recordings;
-- binary/log artifacts that can contain application secrets.
+- binary/log artifacts that can contain application secrets;
+- source/configuration material used to build Run-level provenance commitments.
 
-The Action/Assertion/Observation schemas must carry redaction metadata rather than relying solely on a best-effort regex pass after plaintext has already been written to canonical evidence.
+The Step/Action/Assertion/Observation schemas must carry redaction metadata where applicable rather than relying solely on a best-effort regex pass after plaintext has already been written to canonical evidence.
+
+Run-level source/configuration commitments must follow the secret-safe commitment model above. A plain public digest of raw material is not an acceptable substitute for redaction when low-entropy secrets may be present.
 
 Binary Artifact capture must use the pre-write classification/redaction/protected/suppressed model defined above. Persisting raw screenshots to an ordinary artifact directory and redacting them afterward is not a conforming default capture pipeline.
 
@@ -732,14 +813,14 @@ Schema evolution should favor additive changes. Breaking changes require a new m
 
 Recommended implementation order:
 
-1. define typed ATES Core IDs, lifecycle states, `execution_kind`/conditional source identity, event envelope, redacted value model, artifact sensitivity/protection model, and schema version;
+1. define typed ATES Core IDs, lifecycle states, `execution_kind`/conditional secret-safe source identity, event envelope, Step/Action/Assertion redacted value model, artifact sensitivity/path-confinement model, and schema version;
 2. add append-only local event writer with atomic gap-free sequence assignment and duplicate/conflict invariants;
-3. emit run/step/action/observation/assertion lifecycle events from both scripted and roam execution paths, including interrupted-run recovery semantics;
-4. implement artifact pre-write classification/redaction/protected/suppressed handling **before** enabling default failure/checkpoint screenshot persistence;
+3. emit run/step/action/observation/assertion lifecycle events from both scripted and roam execution paths, including pre-write redaction and interrupted-run recovery semantics;
+4. implement artifact pre-write classification/redaction/protected/suppressed handling and race-safe evidence-root path confinement **before** enabling default failure/checkpoint screenshot persistence;
 5. implement failure evidence and explicit checkpoints using that artifact policy;
-6. hash canonical artifacts and generate immutable versioned evidence manifests;
+6. hash canonical artifacts and generate immutable versioned evidence manifests after the canonical event range is closed, keeping each manifest's own digest detached from the bytes it hashes;
 7. implement optional evidence-manifest binding mechanisms before advertising tamper-evident evidence;
-8. render the first Markdown/JSON Test Execution Report from verified/canonical evidence, including incomplete runs and execution-kind-aware source identity, and mark it `unverified_derived` unless regenerated/verified or separately bound;
+8. render the first Markdown/JSON Test Execution Report from verified/canonical evidence using context-safe encoding, including incomplete runs and execution-kind-aware source identity, and mark it `unverified_derived` unless regenerated/verified or separately bound;
 9. implement versioned package manifests (or verified regeneration flow) for rendered report outputs before distributing them with a verified trust indicator;
 10. add requirement traceability for applicable execution kinds;
 11. add authenticated detached approval/supersession records tied to immutable evidence-manifest revisions, with verification status enforced by renderers/gates;
