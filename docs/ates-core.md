@@ -19,23 +19,29 @@ PR #16 establishes dependency-free Core schema primitives only:
 - retained Artifact records that identify the capture policy applied to persisted bytes and bind to those final bytes by content commitment and byte size;
 - artifact-path schema confinement;
 - revisioned run outcome/finalization identity;
-- runtime normalization/validation for typed IDs, enum-backed fields, mutable provenance, and integer sequence/revision positions when Core records are constructed from decoded or otherwise untyped input.
+- runtime normalization/validation for typed IDs, enum-backed fields, mutable provenance, timestamps, and integer sequence/revision positions when Core records are constructed from decoded or otherwise untyped input.
 
 It does **not** yet persist `evidence.jsonl`, wire ATES into `argus run`/`argus roam`, capture screenshots, build manifests, render reports, or implement Fleet.
 
 ## Serialization and immutability boundary
 
-Python type annotations are not treated as an input-validation boundary. Core records may eventually be reconstructed from JSON, Fleet messages, plugins, or other untyped sources, so typed identifiers are reconstructed through their concrete `AtesId` subclasses, enum-backed fields are normalized to their canonical enum values (or rejected), secret-bearing text positions require `EvidenceValue` at runtime, mutable provenance sequences are snapshotted before validation, and sequence/revision counters use explicitly validated integer domains.
+Python type annotations are not treated as an input-validation boundary. Core records may eventually be reconstructed from JSON, Fleet messages, plugins, or other untyped sources, so typed identifiers are reconstructed through their concrete `AtesId` subclasses, enum-backed fields are normalized to their canonical enum values (or rejected), secret-bearing text positions require `EvidenceValue` at runtime, mutable provenance collections are snapshotted before validation, and sequence/revision counters use explicitly validated integer domains.
 
 This applies in particular to Run/Event/Step/Attempt/Action/Observation/Assertion/Artifact/Finding/finalization/correction identifiers, execution kinds, Step-attempt statuses, assertion results, evidence dispositions, verification statuses, run outcomes, and event types. A value with the wrong typed prefix is rejected even when it is otherwise a syntactically valid ATES identifier; for example an `EVT-*` value cannot become a `run_id`. The same rule prevents a serialized string such as `"failed"` from bypassing canonical status aggregation merely because identity comparisons expect `AssertionResult.FAILED`.
 
-Collection-valued provenance also rejects scalar strings before snapshotting. In particular, `correction_ids="CORR-..."` is not treated as a sequence of characters, and every supplied correction is normalized as an actual `CorrectionId` before it can participate in an authoritative re-finalization.
+Declared sequence fields reject scalar strings/bytes, mappings, sets, and other non-sequence impostors before snapshotting. This applies not only to finalization/correction collections but also to `StatusInputs.required_assertion_results`, secret references, Finding evidence references, Step/attempt/action/observation/assertion collections, and other Core collection boundaries. In particular, `correction_ids="CORR-..."` is not treated as a sequence of characters, `{}` is not silently interpreted as an empty evidence collection, and every supplied correction is normalized as an actual `CorrectionId` before it can participate in an authoritative re-finalization.
 
 Structured safe JSON is snapshotted into deeply immutable containers. Mapping snapshots use `FrozenDict`, which implements the read-only `Mapping` interface over immutable tuple storage and deliberately does **not** inherit from `dict`; builtin mutators such as `dict.__setitem__`, `dict.update`, or `dict.clear` therefore have no mutable dictionary storage to bypass. Nested sequences become tuples and nested mappings become `FrozenDict` recursively.
 
 `to_json_compatible()` is the explicit serialization boundary for ATES dataclasses, enums, aware datetimes, mappings, and sequences. It returns ordinary detached JSON containers, so mutating serialized output cannot mutate canonical evidence. `dataclasses.asdict()` may also obtain detached copies for convenience, but callers must never treat such detached mutable copies as canonical evidence state.
 
-Safe structured `EvidenceValue` mappings are snapshotted and frozen in one traversal: Core does not validate one view of an untrusted/custom `Mapping` and then read it a second time to create the retained value. Action parameter and Observation fact mappings follow the same rule: Core enumerates the supplied mapping exactly once, validates the resulting snapshot, and stores that exact immutable snapshot. This prevents custom mappings or concurrent mutation from presenting safe values during validation and different plaintext values during copying.
+Safe structured `EvidenceValue` mappings are snapshotted and frozen in one traversal: Core does not validate one view of an untrusted/custom `Mapping` and then read it a second time to create the retained value. Action parameter and Observation fact mappings follow the same rule. Core enumerates the supplied mapping exactly once, validates the resulting snapshot, and stores that exact immutable snapshot. This prevents custom mappings or concurrent mutation from presenting safe values during validation and different plaintext values during copying.
+
+## Canonical timestamps
+
+An aware Python `datetime` may itself reference a mutable custom `tzinfo` object. Merely freezing the enclosing dataclass therefore does not make the represented instant immutable.
+
+All canonical Core timestamps are normalized at construction to an immutable UTC `datetime` after reading the supplied timezone offset once. This applies to run start time, Step-attempt start/end times, Observation capture time, run finalization time, and Event occurrence time. Later mutation of a caller-owned/custom timezone object therefore cannot change serialized evidence or chronology comparisons. `to_json_compatible()` applies the same normalization rule when directly serializing an aware datetime.
 
 ## Secret-safe disposition reasons
 
@@ -68,25 +74,35 @@ For every logical `step_id`:
 
 This rejects histories such as attempts `1, 1, 3`, retries launched before their cause has finished, overlapping attempts, and time-reversed retry sequences.
 
-Opaque `StepAttemptId` values intentionally do not encode their parent step, so an isolated Action or Assertion cannot prove its foreign-key relationship by construction alone. Before a collection is treated as canonical evidence, `validate_step_evidence_relationships()` joins it against the validated Step-attempt history and returns immutable snapshots of the validated collection. It enforces that:
+Opaque `StepAttemptId` values intentionally do not encode their parent Step, so canonical multi-record evidence must validate both the logical execution intent and its derived records. `validate_step_evidence_relationships()` snapshots the supplied logical `StepRecord`s together with attempts/actions/observations/assertions and enforces that:
 
+- logical Step IDs are unique;
+- every Step attempt resolves to exactly one supplied logical Step;
 - every Action and Assertion references a known Step attempt and its declared `step_id` matches that attempt's owning Step;
 - every Observation references a known Step attempt;
 - an Assertion's optional `observation_id` names a known Observation from the same Step attempt;
 - Action, Observation, and Assertion identities are unique within the canonical collection;
 - every non-null `ActionOperationId` is unique across distinct canonical Action records, so provider/adapter deduplication cannot collapse two different side effects onto one operation identity. Transport retries reuse the original Action record and operation identity instead of creating a second distinct Action with that ID.
 
-Callers that persist, package, or report multi-record evidence should use the snapshots returned by this aggregate validator rather than validating one list and later consuming a separately mutable collection.
+The aggregate validator returns immutable snapshots of the logical Steps and every validated related collection. Callers that persist, package, or report multi-record evidence should consume those returned snapshots rather than validating one list and later consuming separately mutable input collections.
+
+## Finding classification
+
+`FindingRecord` stores both the machine-readable `classification` and `classification_source`. A producer can therefore preserve values such as `critical`, `informational`, or a project-specific category together with whether that value came from a model, deterministic policy engine, human reviewer, or imported tool. Consumers do not need to parse secret-safe Finding prose to recover severity/category semantics. The default `unclassified` value represents the absence of a stronger assigned classification; both fields must be nonempty strings.
 
 ## Artifact capture and byte integrity
 
 A retained `ArtifactRecord` records its sensitivity/protection disposition, the applied `capture_policy` identity, a `content_digest` commitment over the final persisted bytes, and `size_bytes`. The commitment may use an appropriate digest/keyed-commitment method represented by `SourceCommitment`; the byte size is a non-negative integer. Together these fields bind the canonical record to the retained representation so replacement, truncation, or same-path mutation is detectable by later manifest/report integrity checks.
 
-Artifact paths must already be canonical package-relative POSIX paths rooted below `artifacts/`. Encoded/traversal aliases, Windows separators, drive-like syntax, NULs, and other control characters are rejected before any later filesystem operation.
+Artifact paths must already be canonical package-relative POSIX paths rooted below `artifacts/`. Encoded/traversal aliases, Windows separators, drive-like syntax, NULs, and other control characters are rejected before any later filesystem operation. Because the evidence package is expected to work on both Windows and POSIX systems, Core also rejects Windows device-name components (for example `CON`, `AUX`, `COM1`, `LPT1`, including extension aliases), components ending in a dot or space, and Win32-invalid component characters. A path that is distinct as POSIX text must not silently normalize/collide or fail extraction when consumed on Windows.
 
 `SUPPRESSED` remains invalid for a retained-file record: suppression is represented by the `ARTIFACT_SUPPRESSED` event because no binary artifact exists to reference.
 
 A retained artifact marked `protected_ref` additionally carries explicit protected-storage controls: `protected_ref`, `access_policy`, `retention_policy`, and `authorization_ref`. These fields identify the protected evidence boundary and the policy/authorization context needed to access or retain it. Conversely, ordinary/redacted artifact records cannot carry protected-store metadata accidentally.
+
+## Status derivation boundary
+
+`StatusInputs` is itself the normalization/validation boundary for canonical status derivation. `derive_run_status()` requires an actual validated `StatusInputs` instance rather than accepting an attribute-shaped plugin/Fleet object. `required_assertion_results` must be a real sequence and is snapshotted once before every entry is normalized to `AssertionResult`; malformed empty strings, bytes, mappings, or other collection impostors therefore cannot collapse into an apparently empty successful assertion set.
 
 ## Post-completion corrections and run outcome revisions
 
@@ -103,9 +119,10 @@ ATES resolves this without rewriting history.
 7. Authentication is not authorization. A status-bearing successor additionally requires a verified `AuthorizationDecision` under an explicit versioned policy and the `run_outcome.refinalize` scope.
 8. Authorization decisions are not reusable bearer approvals. The decision names the authenticated subject and binds the exact proposed run ID, successor finalization ID, superseded finalization ID, correction IDs, effective status, evidence revision, and status-policy version. The subject must equal the actor authenticated by the successor's `Verification` record. A decision for an administrator therefore cannot be replayed by an unprivileged authenticated actor or onto a different run/outcome payload.
 9. Outcome revisions form a contiguous chain; a successor may not skip or fork the immediately prior authoritative finalization.
-10. `effective_outcome()` snapshots the supplied history and requires **every** item to be an actual validated `RunOutcomeRevision` before sorting, chaining, or selection. A plugin/Fleet object that merely exposes similarly named attributes cannot bypass the authentication/authorization invariants enforced during `RunOutcomeRevision` construction.
-11. Consumers that present the status for a particular evidence revision use the latest verified and authorized finalization applicable to that revision. They must not keep displaying revision-1 PASS after a valid successor re-finalizes the run as FAILED/ERROR/CANCELLED.
-12. Reports/audit views should preserve both the historical completion outcome and the later effective outcome when they differ.
+10. Successor finalization timestamps are monotonic: a revision may not claim a `finalized_at` earlier than the immediately prior authoritative revision.
+11. `effective_outcome()` snapshots the supplied history, rejects unsupported collection types, and requires **every** item to be an actual validated `RunOutcomeRevision` before sorting, chaining, or selection. A plugin/Fleet object that merely exposes similarly named attributes cannot bypass the authentication/authorization invariants enforced during `RunOutcomeRevision` construction.
+12. Consumers that present the status for a particular evidence revision use the latest verified and authorized finalization applicable to that revision. They must not keep displaying revision-1 PASS after a valid successor re-finalizes the run as FAILED/ERROR/CANCELLED.
+13. Reports/audit views should preserve both the historical completion outcome and the later effective outcome when they differ.
 
 Conceptually:
 
