@@ -40,7 +40,10 @@ Argus Fleet is a layer **above**, not a replacement for, `ExecutionEnvironment` 
 - schedule work according to host capabilities and available capacity;
 - keep test specifications independent of a specific physical host;
 - pin each scheduled Capsule image to an immutable content identity rather than trusting a mutable alias alone;
+- bind every staged input to immutable content identity before remote dispatch;
 - make remote session creation retry-idempotent so ambiguous network failures cannot launch a destructive test twice;
+- make cancellation causally safe so a delayed allocation cannot start after the logical session was cancelled;
+- make Node-side admission authoritative and atomic so concurrent placements cannot overcommit advertised capacity;
 - provide live monitoring of every active session;
 - make the Observer surface structurally read-only;
 - aggregate ATES events from all running sessions;
@@ -63,6 +66,7 @@ Responsibilities should include:
 - Capsule-image inventory metadata and immutable image identities;
 - scheduling and queues;
 - session lifecycle coordination and idempotent allocation requests;
+- immutable staged-input manifests for remote sessions;
 - test-plan and matrix expansion;
 - ATES event aggregation;
 - result and artifact indexing;
@@ -326,6 +330,23 @@ The immutable image identity used for the run must be recorded in session metada
 
 The scheduler should fail or queue when requirements cannot be met. It must not silently run the test locally on the Control Center.
 
+### Node-side admission and capacity reservation
+
+Heartbeat capacity is **advisory scheduling data**, not an allocation guarantee. Concurrent Control Center decisions may be based on the same stale heartbeat, so the Node Agent is the final authority for local admission.
+
+Before creating or starting a Capsule, the Node must atomically and durably reserve the requested execution capacity for the `session_request_id`. At minimum this includes a session slot against `max_sessions`; implementations should also account for enforced memory, disk, GPU, or provider-specific limits where those resources participate in placement.
+
+Required semantics:
+
+- admission check and reservation are one local atomic operation with respect to competing allocation requests;
+- a reservation is keyed by `session_request_id`, so an idempotent retry reuses the same reservation rather than consuming another slot;
+- if capacity is unavailable, the Node rejects or explicitly queues the allocation without creating/starting a Capsule;
+- the Control Center must accept a Node-side `capacity_unavailable` result even if its most recent heartbeat advertised free capacity, and may reschedule only as a new logical placement according to policy;
+- the reservation is held through allocation/start and is released only when the session reaches a defined terminal/released state or an allocation abort is durably completed;
+- Node restart/reconciliation must recover outstanding reservations sufficiently to avoid double-admission after restart.
+
+This prevents two concurrent placements from both consuming the same advertised free slot and protects already-running sessions from accidental overcommit.
+
 ## Remote session allocation idempotency
 
 Remote Capsule creation is a destructive side effect and must be **retry-idempotent before Fleet remote execution is considered implementable**.
@@ -334,9 +355,33 @@ Before dispatch, the Control Center must allocate:
 
 - the stable ATES `run_id` for the logical run;
 - a stable random `session_request_id` for the logical remote allocation request;
-- a canonical digest of the immutable session request, including the requested image digest, test/spec digest, staging authority, network/isolation policy, and other allocation-relevant inputs.
+- a canonical digest of the immutable session request, including the requested image digest, test/spec digest, **immutable staged-input manifest**, network/isolation policy, and other allocation-relevant inputs.
 
-The Node must durably associate `session_request_id` with the request digest and allocation result before or atomically with making the Capsule externally observable/runnable.
+### Immutable staged-input identity
+
+Fleet must not treat a staged source path or optional user-supplied checksum as sufficient identity for a remote run. Before the session request digest is finalized, the Control Center (or another trusted staging authority) must resolve **every staged input** to immutable content identity.
+
+The canonical staged-input manifest should include, for each file/object:
+
+```yaml
+logical_name: application-under-test
+stage_path: stage://app/build.zip
+size_bytes: 18429312
+sha256: "..."
+```
+
+Required semantics:
+
+- a cryptographic content digest (or an equivalently immutable content-addressed object identity) is required for every staged input included in a Fleet session, even if the source test specification omitted its optional `sha256` field;
+- the digest is computed from the actual bytes selected for dispatch, not merely from the source pathname, mtime, or mutable object name;
+- once the canonical session request digest is created, replacing source bytes cannot change what that logical request means;
+- transfer to the Node/guest must verify the expected content digest before the target is launched;
+- a missing/mismatched staged object fails the allocation/staging phase and must not silently substitute new bytes under the same `session_request_id` or `run_id`;
+- ATES provenance records the immutable staged-input identities used by the run where policy permits, without leaking secret content.
+
+If immutable identity cannot be established for a required staged input, the Fleet run fails closed before dispatch. The local non-Fleet syntax may continue to allow an omitted checksum where current behavior permits it; Fleet canonicalization is responsible for producing the required content identity before remote execution.
+
+The Node must durably associate `session_request_id` with the request digest, capacity reservation, cancellation state, and allocation result before or atomically with making the Capsule externally observable/runnable.
 
 Required retry semantics:
 
@@ -345,10 +390,26 @@ Required retry semantics:
 - a duplicate request with the same identity and digest returns/replays the original allocation result and current session state rather than creating another Capsule or starting the test again;
 - reuse of the same `session_request_id` with a different request digest or `run_id` is rejected as a protocol/security error;
 - the Node retains the request-to-allocation mapping through acknowledgement and for a bounded reconciliation/retention period sufficient to survive reconnect/restart scenarios;
-- retry processing must distinguish `allocated`, `starting`, `running`, `completed`, `failed`, `retained`, and `released` states so replay never means re-execution;
-- cancellation and teardown commands require their own idempotent operation identities when they can be retried.
+- retry processing must distinguish `allocated`, `starting`, `running`, `completed`, `failed`, `retained`, `cancelled`, and `released` states so replay never means re-execution.
 
-This contract prevents a lost HTTP/gRPC/WebSocket response from turning one destructive Fleet request into two independent test executions.
+### Cancellation tombstones and causal safety
+
+Cancellation must be safe even when messages arrive out of order across reconnects or partitions.
+
+A cancellation request must carry the target `session_request_id` plus its own stable idempotent operation identity. If cancellation reaches a Node before the corresponding allocation request is known, the Node must **persist a cancellation tombstone** for that `session_request_id` rather than treating the request as a no-op.
+
+Required semantics:
+
+- allocation/admission/start checks the cancellation tombstone before reserving capacity or creating/running a Capsule;
+- if a matching tombstone already exists, a later delayed allocation is recorded/replayed as cancelled and must not produce executable side effects;
+- cancellation of an already allocated/running session transitions it according to the explicit cancellation policy and remains idempotent on retry;
+- a reused cancellation operation ID with conflicting payload is rejected;
+- cancellation tombstones are retained at least as long as allocation deduplication/replay state for the same `session_request_id`, including across Node restart/reconciliation;
+- teardown/release operations that can be retried also require stable operation identities and must not erase the cancellation fact early enough to permit a delayed allocation to resurrect the session.
+
+This causal rule prevents a user-visible cancel from racing with a delayed allocation and later starting a destructive test that was already cancelled.
+
+This contract prevents a lost or reordered HTTP/gRPC/WebSocket exchange from turning one logical Fleet request into duplicate or resurrected execution.
 
 ## Matrix execution
 
@@ -367,7 +428,7 @@ matrix:
     - beta
 ```
 
-Before matrix cases are dispatched, mutable aliases must resolve to immutable image identities. Each expanded run receives its own `run_id` and `session_request_id`, and its ATES provenance records the resolved image digest/version. Two matrix cases that resolve to different image digests are different baselines even if their aliases are identical.
+Before matrix cases are dispatched, mutable aliases must resolve to immutable image identities and staged application/configuration inputs must resolve to immutable content identities. Each expanded run receives its own `run_id` and `session_request_id`, and its ATES provenance records the resolved image and staged-input digests/versions. Two matrix cases that resolve to different immutable inputs are different baselines even if their aliases or source paths are identical.
 
 The Control Center expands the logical plan into independently identified runs while preserving a parent plan/matrix identity.
 
@@ -453,14 +514,16 @@ Future discard/export workflows should use explicit privileged Control Center op
 5. Fleet control, ATES/event, screen, and artifact traffic uses authenticated encryption in production.
 6. Observer authorization is read-only by construction.
 7. Control Center privilege does not bypass Capsule guest policy accidentally.
-8. Node Agents enforce local provider/capability constraints.
+8. Node Agents enforce local provider/capability constraints and atomically reserve local capacity before allocation.
 9. Scheduled images are pinned to immutable identities and verified by the Node before allocation.
-10. Remote session allocation is idempotent by stable request identity; retries never create a second logical execution.
-11. Remote placement never silently falls back to local execution.
-12. All control-plane mutations are auditable.
-13. ATES facts retain Node/session/image provenance and transport preserves ATES event identity/order.
-14. Credentials and guest-control secrets are not emitted into ATES evidence.
-15. Ambiguous distributed failures use reconciliation rather than destructive guesses.
+10. Every staged Fleet input is content-addressed/cryptographically identified and verified before launch.
+11. Remote session allocation is idempotent by stable request identity; retries never create a second logical execution.
+12. Cancellation is persisted causally by `session_request_id`, including when cancel arrives before allocation.
+13. Remote placement never silently falls back to local execution.
+14. All control-plane mutations are auditable.
+15. ATES facts retain Node/session/image/input provenance and transport preserves ATES event identity/order.
+16. Credentials and guest-control secrets are not emitted into ATES evidence.
+17. Ambiguous distributed failures use reconciliation rather than destructive guesses.
 
 ## Initial implementation sequence
 
@@ -469,13 +532,13 @@ Recommended order:
 1. define Node identity/capability models, Node key ownership, enrollment request IDs, bootstrap credential semantics, and immutable image identity metadata;
 2. implement Node Agent daemon and authenticated/idempotent enrollment using protected secret input rather than argv;
 3. establish authenticated encrypted Fleet channels and add heartbeat/capability/image registry to the Control Center;
-4. define stable `session_request_id`, canonical request digests, durable Node-side deduplication, and allocation replay semantics;
-5. implement remote session request/response around existing Capsule APIs only after the idempotency contract above is enforced;
-6. add reconciliation for disconnect/restart scenarios;
-7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics and immutable image provenance;
+4. define stable `session_request_id`, immutable staged-input manifests, canonical request digests, cancellation tombstones, durable Node-side deduplication, and atomic capacity-reservation semantics;
+5. implement remote session request/response around existing Capsule APIs only after idempotent allocation, causal cancellation, staged-input verification, and Node-side admission are enforced;
+6. add reconciliation for disconnect/restart scenarios, including reservations and cancellation tombstones;
+7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics and immutable image/input provenance;
 8. implement read-only Observer API;
 9. implement live screen transport over the protected Fleet channel;
-10. add scheduler/queue and placement requirements with immutable image pinning;
+10. add scheduler/queue and placement requirements with immutable image pinning while treating heartbeat capacity as advisory;
 11. add matrix execution and fleet timeline;
 12. add encrypted centralized artifact indexing/storage policies;
 13. later consider cloud/autoscaling workers.
