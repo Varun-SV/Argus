@@ -28,7 +28,9 @@ The local authoritative writer enforces:
 - immutable payload snapshots before persistence;
 - `flush` + `fsync` before a successful append is returned;
 - parent-directory durability for newly created `.argus`, `runs`, run-directory, lock-file, and evidence-file entries where POSIX directory syncing is available;
-- replay of byte-identical already-committed events as an idempotent success;
+- a successful store open re-establishes an evidence-file durability barrier and syncs the run directory before existing history is accepted, including retries after an earlier initialization `fsync` failure;
+- evidence and writer-lock files must each have exactly one hard link; evidence link identity is checked again immediately before write/replay durability acknowledgement;
+- replay of a byte-identical already-committed event is acknowledged only after the current evidence handle is successfully flushed and fsynced again;
 - rejection of conflicting reuse of either an event identity or an existing sequence;
 - strict reopen validation before any further event can be appended.
 
@@ -38,12 +40,13 @@ Untyped API inputs also fail closed. A supplied payload is validated even when i
 
 ## Reopen and recovery
 
-Reopening `evidence.jsonl` validates the complete existing history before allocating the next sequence number.
+Reopening `evidence.jsonl` establishes the open-time durability barrier and then validates the complete existing history before allocating the next sequence number.
 
 A conforming stream must have:
 
 - valid UTF-8;
 - strict JSON with no duplicate object keys or `NaN`/infinite constants;
+- JSON nesting that can be decoded, converted into immutable canonical ATES payload values, and re-serialized without exceeding recursion limits; recursion failure at any of those persisted-record stages is `AtesStoreCorruption`;
 - exactly the current ATES event-envelope fields plus `payload`;
 - canonical serialization bytes, not merely semantically equivalent JSON;
 - canonical content that can be re-encoded as ATES UTF-8 JSON; an escaped but unencodable lone surrogate is persisted corruption, not a generic serialization exception;
@@ -63,12 +66,16 @@ This keeps repair narrow enough to distinguish an interrupted final write from a
 
 ## Ambiguous append failures
 
-A storage failure after an event identity and sequence have been selected can have an ambiguous outcome: the full line may already be visible/durable even though the final `fsync` reported an error.
+A storage failure or control-flow interruption after append I/O has begun can have an ambiguous outcome: the full line may already be visible/durable even though the final durability barrier did not complete.
 
-`AtesAppendError` therefore carries the exact `StoredEvent` identity and marks the writer poisoned. The writer cannot allocate later events until it is closed and reopened. Recovery then either:
+For ordinary storage/validation failures, `AtesAppendError` carries the exact `StoredEvent` identity and marks the writer poisoned. For control-flow `BaseException` values such as `KeyboardInterrupt` or `SystemExit`, the original exception is preserved rather than wrapped, but the store is still poisoned first once write I/O has begun. The writer cannot allocate later events until it is closed and reopened.
 
-- observes the exact canonical event and treats a retry of that identity as idempotent; or
+Recovery then either:
+
+- observes the exact canonical event and re-establishes durability; retrying that exact identity performs another evidence-file `flush` + `fsync` before idempotent success is returned; or
 - observes no complete record (or an explicit trailing torn record that must be repaired) and can safely reconcile before retrying the same logical event.
+
+A replay durability failure is itself ambiguous: it poisons the writer and, for ordinary storage failures, returns `AtesAppendError` with the same stable event identity. Visibility alone is never sufficient to acknowledge an event whose durability was previously uncertain.
 
 Callers must not respond to an uncertain append by inventing a new event ID for the same logical occurrence.
 
@@ -78,7 +85,7 @@ The store pins the project, `.argus`, `runs`, and run-directory chain for the wr
 
 On POSIX, child directories and files are created/opened relative to already-open directory descriptors with no-follow semantics where supported. This keeps the lock and `evidence.jsonl` bound to the validated run directory even if an attacker renames the visible path and replaces it with a symlink between validation and file open.
 
-On Windows, the hierarchy is retained through non-reparse directory handles opened without delete sharing, preventing rename/replacement while the store is active. Evidence and lock files are opened through validated Windows handles and reparse points are rejected. Files on all platforms must resolve as regular files, not devices/FIFOs/sockets/link targets.
+On Windows, the hierarchy is retained through non-reparse directory handles opened without delete sharing, preventing rename/replacement while the store is active. Evidence and lock files are opened through validated Windows handles and reparse points are rejected. Files on all platforms must resolve as regular files, not devices/FIFOs/sockets/link targets, and canonical store files with multiple hard links are rejected so separate run locks cannot become independent writer authorities over one underlying inode.
 
 A store object is also process-owned. On POSIX, an instance inherited through `fork()` is invalid in the child and must be closed/reopened there. The child cleanup path closes only its inherited descriptors and deliberately does not issue an explicit unlock that could release the parent writer's shared `flock` open-file description.
 
