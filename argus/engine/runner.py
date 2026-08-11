@@ -10,6 +10,11 @@ import uuid as _uuid
 
 from argus.adapters.base import Adapter, AdapterError
 from argus.engine.agent import run_turn
+from argus.engine.ates_runtime import (
+    AtesAdapterProxy,
+    AtesRuntimeRecorder,
+    resolve_runtime_project_dir,
+)
 from argus.engine.results import RunResult, StepResult
 from argus.engine.spec import AssertStep, NLStep, TestSpec
 from argus.providers.base import LLMProvider, ProviderError
@@ -215,6 +220,14 @@ def _set_transfer_error(result: RunResult, message: str) -> None:
         result.error = f"transfer failed: {message}"
 
 
+def _append_result_error(result: RunResult, message: str) -> None:
+    if result.error:
+        if message not in result.error:
+            result.error = f"{result.error}; {message}"
+    else:
+        result.error = message
+
+
 def run_test(
     spec: TestSpec,
     provider: LLMProvider,
@@ -238,12 +251,77 @@ def run_test(
     target = spec.launch or spec.name
     transfer_project_dir: Optional[Path] = None
 
+    ates: Optional[AtesRuntimeRecorder] = None
+    ates_closed = False
+    try:
+        ates_project_dir = resolve_runtime_project_dir(
+            project_dir,
+            spec_path=spec.path,
+        )
+        ates = AtesRuntimeRecorder.for_scripted(
+            ates_project_dir,
+            spec,
+            provider,
+            adapter,
+        )
+        # RunResult is kept backwards-compatible in this PR; expose the canonical
+        # ID to callers without changing the persisted legacy result schema yet.
+        result.ates_run_id = str(ates.run_id)
+        adapter = AtesAdapterProxy(adapter, ates)
+    except Exception as exc:
+        result.status = "error"
+        result.error = f"ATES initialization failed: {type(exc).__name__}: {exc}"
+        result.duration_s = time.monotonic() - started
+        result.tokens = provider.tracker.snapshot()
+        return result
+
+    def finish_ates(reason: str, execution_result: str) -> None:
+        nonlocal ates_closed
+        if ates is None or ates_closed:
+            return
+        try:
+            if ates.failed:
+                result.status = "error"
+                failure = ates.failure
+                _append_result_error(
+                    result,
+                    "ATES evidence failure"
+                    + (f": {type(failure).__name__}: {failure}" if failure else ""),
+                )
+                return
+            if ates.current_attempt_id is not None:
+                ates.complete_current("error")
+                result.status = "error"
+                _append_result_error(result, "ATES closed with an active step attempt")
+            if result.failure_capsule:
+                ates.failure_capsule_retained()
+            ates.environment_released()
+            ates.mark_incomplete(reason, execution_result=execution_result)
+        except Exception as exc:
+            result.status = "error"
+            _append_result_error(
+                result,
+                f"ATES finalization failed: {type(exc).__name__}: {exc}",
+            )
+        finally:
+            try:
+                ates.close()
+            except Exception as exc:
+                result.status = "error"
+                _append_result_error(
+                    result,
+                    f"ATES close failed: {type(exc).__name__}: {exc}",
+                )
+            ates_closed = True
+
     try:
         use_vision = provider.supports_vision()
     except ProviderError as exc:
         result.status = "error"
         result.error = f"provider check failed: {exc}"
         result.duration_s = time.monotonic() - started
+        result.tokens = provider.tracker.snapshot()
+        finish_ates("runtime.provider_check_failed", "error")
         return result
     if not use_vision and warn:
         warn(
@@ -267,6 +345,7 @@ def run_test(
                 pass
             result.failure_capsule = _retained_failure(adapter)
             result.failure_capsule_error = _retention_failure(adapter)
+            finish_ates("runtime.transfer_prepare_failed", "error")
             return result
 
     try:
@@ -278,6 +357,7 @@ def run_test(
         result.failure_capsule_error = _retention_failure(adapter)
         result.duration_s = time.monotonic() - started
         result.tokens = provider.tracker.snapshot()
+        finish_ates("runtime.target_launch_failed", "error")
         return result
 
     failed = False
@@ -354,6 +434,7 @@ def run_test(
                 continue
 
             if isinstance(step, AssertStep):
+                ates.begin_step(index, 1)
                 sr = check_assertion(
                     step,
                     adapter,
@@ -363,8 +444,11 @@ def run_test(
                     session_id=session_id,
                 )
                 sr.index = index
+                ates.record_assertion(step, sr.status, sr.actual is not None)
                 _attach_screenshot(sr, adapter, index, shots_dir)
+                ates.complete_current(sr.status)
             elif step.text == "close" and step.kind == "teardown":
+                ates.begin_step(index, 1)
                 # Non-close teardown steps may flush or export files. Collect at
                 # the last safe point: immediately before a declared close.
                 collect_once()
@@ -391,6 +475,7 @@ def run_test(
                         text="close target",
                         status="pass",
                     )
+                ates.complete_current(sr.status)
             else:
                 sr = _run_nl_step_with_retries(
                     step,
@@ -403,6 +488,7 @@ def run_test(
                     target=target,
                     session_id=session_id,
                     shots_dir=shots_dir,
+                    ates=ates,
                 )
 
             if step.kind == "teardown" and teardown_budget_reason:
@@ -418,6 +504,11 @@ def run_test(
             if on_step:
                 on_step(sr)
     except Exception as exc:
+        if ates is not None and not ates.failed and ates.current_attempt_id is not None:
+            try:
+                ates.complete_current("error")
+            except Exception:
+                pass
         execution_error = f"{type(exc).__name__}: {exc}"
         _record_environment_failure_reason(
             adapter,
@@ -461,6 +552,8 @@ def run_test(
         except Exception:
             pass
 
+    legacy_status = result.status
+    finish_ates("runtime.finalization_pending", legacy_status)
     return result
 
 
@@ -498,34 +591,63 @@ def _run_nl_step_with_retries(
     target: str = "",
     session_id: str = "",
     shots_dir: Optional[Path] = None,
+    ates: Optional[AtesRuntimeRecorder] = None,
 ) -> StepResult:
-    sr = _run_nl_step(
-        step,
-        index,
-        provider,
-        adapter,
-        use_vision,
-        knowledge_store=knowledge_store,
-        target=target,
-        session_id=session_id,
-        shots_dir=shots_dir,
-    )
+    def run_attempt(
+        ordinal: int,
+        *,
+        attempt_id=None,
+        retry: bool = False,
+    ) -> tuple[StepResult, object]:
+        current_id = None
+        if ates is not None:
+            current_id = ates.begin_step(
+                index,
+                ordinal,
+                attempt_id=attempt_id,
+                retry=retry,
+            )
+        try:
+            current_result = _run_nl_step(
+                step,
+                index,
+                provider,
+                adapter,
+                use_vision,
+                knowledge_store=knowledge_store,
+                target=target,
+                session_id=session_id,
+                shots_dir=shots_dir,
+            )
+        except Exception:
+            if ates is not None and not ates.failed:
+                ates.complete_current("error")
+            raise
+        if ates is not None:
+            ates.complete_current(current_result.status)
+        return current_result, current_id
+
+    sr, previous_attempt_id = run_attempt(1)
     if sr.status == "pass" or retries == 0:
         return sr
-    for attempt in range(retries):
-        retry_sr = _run_nl_step(
-            step,
-            index,
-            provider,
-            adapter,
-            use_vision,
-            knowledge_store=knowledge_store,
-            target=target,
-            session_id=session_id,
-            shots_dir=shots_dir,
+
+    for retry_index in range(retries):
+        ordinal = retry_index + 2
+        next_attempt_id = None
+        if ates is not None:
+            assert previous_attempt_id is not None
+            next_attempt_id = ates.schedule_retry(
+                index,
+                previous_attempt_id,
+                ordinal,
+            )
+        retry_sr, previous_attempt_id = run_attempt(
+            ordinal,
+            attempt_id=next_attempt_id,
+            retry=True,
         )
         if retry_sr.status == "pass":
-            retry_sr.flaky = attempt > 0 or sr.status != "pass"
+            retry_sr.flaky = True
             return retry_sr
     sr.flaky = True
     return sr
