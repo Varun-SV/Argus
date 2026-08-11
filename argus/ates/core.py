@@ -123,6 +123,22 @@ class FrozenDict(dict):
         return self
 
 
+def _snapshot_evidence_mapping(value: object, field_name: str) -> FrozenDict:
+    """Snapshot once, then validate and retain exactly that evidence mapping."""
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must map strings to EvidenceValue")
+    try:
+        snapshot = {key: child for key, child in value.items()}
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} could not be snapshotted safely") from exc
+    if not all(
+        isinstance(key, str) and isinstance(child, EvidenceValue)
+        for key, child in snapshot.items()
+    ):
+        raise ValueError(f"{field_name} must map strings to EvidenceValue")
+    return FrozenDict(snapshot)
+
+
 def _require_nonempty(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
@@ -521,9 +537,11 @@ class ActionRecord:
                 _normalize_id(self.operation_id, ActionOperationId, "operation_id"),
             )
         _require_nonempty(self.action_type, "action_type")
-        if not all(isinstance(key, str) and isinstance(value, EvidenceValue) for key, value in self.parameters.items()):
-            raise ValueError("action parameters must map strings to EvidenceValue")
-        object.__setattr__(self, "parameters", FrozenDict(dict(self.parameters)))
+        object.__setattr__(
+            self,
+            "parameters",
+            _snapshot_evidence_mapping(self.parameters, "action parameters"),
+        )
 
 
 @dataclass(frozen=True)
@@ -549,9 +567,11 @@ class ObservationRecord:
         require_aware_datetime(self.captured_at, "captured_at")
         _require_nonempty(self.source, "source")
         _require_nonempty(self.capture_policy, "capture_policy")
-        if not all(isinstance(key, str) and isinstance(value, EvidenceValue) for key, value in self.facts.items()):
-            raise ValueError("observation facts must map strings to EvidenceValue")
-        object.__setattr__(self, "facts", FrozenDict(dict(self.facts)))
+        object.__setattr__(
+            self,
+            "facts",
+            _snapshot_evidence_mapping(self.facts, "observation facts"),
+        )
 
 
 @dataclass(frozen=True)
@@ -598,6 +618,89 @@ class AssertionRecord:
         )
         if not isinstance(self.required, bool):
             raise ValueError("assertion required must be a boolean")
+
+
+def validate_step_evidence_relationships(
+    attempts: Sequence[StepAttemptRecord],
+    *,
+    actions: Sequence[ActionRecord] = (),
+    observations: Sequence[ObservationRecord] = (),
+    assertions: Sequence[AssertionRecord] = (),
+) -> tuple[
+    tuple[StepAttemptRecord, ...],
+    tuple[ActionRecord, ...],
+    tuple[ObservationRecord, ...],
+    tuple[AssertionRecord, ...],
+]:
+    """Validate and snapshot foreign-key relationships across step evidence."""
+    attempt_snapshot = validate_step_attempt_history(attempts)
+    for values, name in (
+        (actions, "actions"),
+        (observations, "observations"),
+        (assertions, "assertions"),
+    ):
+        if isinstance(values, (str, bytes, bytearray)):
+            raise ValueError(f"{name} must be a sequence of ATES records")
+
+    action_snapshot = tuple(actions)
+    observation_snapshot = tuple(observations)
+    assertion_snapshot = tuple(assertions)
+    attempt_owner = {
+        attempt.step_attempt_id: attempt.step_id for attempt in attempt_snapshot
+    }
+
+    def require_unique_ids(records: Sequence[object], attribute: str, label: str) -> None:
+        seen: set[object] = set()
+        for record in records:
+            identifier = getattr(record, attribute)
+            if identifier in seen:
+                raise ValueError(f"{label} IDs must be unique in canonical evidence")
+            seen.add(identifier)
+
+    for action in action_snapshot:
+        if not isinstance(action, ActionRecord):
+            raise ValueError("actions must contain only ActionRecord values")
+        owner = attempt_owner.get(action.step_attempt_id)
+        if owner is None:
+            raise ValueError("action references an unknown step_attempt_id")
+        if action.step_id != owner:
+            raise ValueError("action step_id does not match its step attempt owner")
+    require_unique_ids(action_snapshot, "action_id", "action")
+
+    observation_by_id: dict[ObservationId, ObservationRecord] = {}
+    for observation in observation_snapshot:
+        if not isinstance(observation, ObservationRecord):
+            raise ValueError("observations must contain only ObservationRecord values")
+        if observation.step_attempt_id not in attempt_owner:
+            raise ValueError("observation references an unknown step_attempt_id")
+        if observation.observation_id in observation_by_id:
+            raise ValueError("observation IDs must be unique in canonical evidence")
+        observation_by_id[observation.observation_id] = observation
+
+    for assertion in assertion_snapshot:
+        if not isinstance(assertion, AssertionRecord):
+            raise ValueError("assertions must contain only AssertionRecord values")
+        owner = attempt_owner.get(assertion.step_attempt_id)
+        if owner is None:
+            raise ValueError("assertion references an unknown step_attempt_id")
+        if assertion.step_id != owner:
+            raise ValueError("assertion step_id does not match its step attempt owner")
+        if assertion.observation_id is not None:
+            observation = observation_by_id.get(assertion.observation_id)
+            if observation is None:
+                raise ValueError("assertion references an unknown observation_id")
+            if observation.step_attempt_id != assertion.step_attempt_id:
+                raise ValueError(
+                    "assertion observation_id must belong to the same step attempt"
+                )
+    require_unique_ids(assertion_snapshot, "assertion_id", "assertion")
+
+    return (
+        attempt_snapshot,
+        action_snapshot,
+        observation_snapshot,
+        assertion_snapshot,
+    )
 
 
 @dataclass(frozen=True)
