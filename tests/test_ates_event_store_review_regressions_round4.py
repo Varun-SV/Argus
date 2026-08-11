@@ -239,9 +239,13 @@ def test_replacing_parent_authority_alone_still_cannot_mint_second_writer(
         with pytest.raises(AtesStoreBusy, match="authoritative ATES writer"):
             AtesEventStore(tmp_path, run_id)
 
-        # The first writer independently detects that its parent authority name
-        # no longer refers to the held lock object and therefore fails closed.
-        with pytest.raises(AtesStoreError, match="authority entry was replaced"):
+        # The first writer independently detects loss of the parent authority.
+        # Depending on which invariant observes the unlink first, this is either
+        # the held inode losing its sole hard link or the pathname identity swap.
+        with pytest.raises(
+            AtesStoreError,
+            match="exactly one hard link|authority entry was replaced",
+        ):
             first.append(
                 EventType.RUN_STARTED,
                 occurred_at=NOW,
