@@ -40,7 +40,7 @@ Argus Fleet is a layer **above**, not a replacement for, `ExecutionEnvironment` 
 - schedule work according to host capabilities and available capacity;
 - keep test specifications independent of a specific physical host;
 - pin each scheduled Capsule image to an immutable content identity rather than trusting a mutable alias alone;
-- bind every staged input to immutable content identity before remote dispatch;
+- bind every staged input to immutable content identity before remote dispatch while keeping low-entropy transfer digests out of ordinary evidence;
 - make remote session creation retry-idempotent so ambiguous network failures cannot launch a destructive test twice;
 - persist global placement ownership so Control Center failover cannot redispatch one logical session to two Nodes;
 - retain terminal allocation tombstones until the corresponding placement generation is durably retired, so delayed authenticated requests cannot resurrect completed work;
@@ -71,7 +71,7 @@ Responsibilities should include:
 - scheduling and queues;
 - session lifecycle coordination and idempotent allocation requests;
 - durable global placement ownership/fencing state, cancellation state, and generation retirement;
-- immutable staged-input manifests for remote sessions;
+- immutable staged-input manifests with protected transfer identities and secret-safe evidence commitments;
 - trusted receipt-time and Node clock-offset/uncertainty metadata for cross-Node evidence correlation;
 - test-plan and matrix expansion;
 - ATES event aggregation;
@@ -396,7 +396,6 @@ Required semantics:
 This prevents two concurrent placements from both consuming the same advertised free slot and protects already-running sessions from accidental overcommit.
 
 ## Remote session allocation idempotency
-
 Remote Capsule creation is a destructive side effect and must be **retry-idempotent before Fleet remote execution is considered implementable**.
 
 Before dispatch, the Control Center must allocate and durably persist:
@@ -446,25 +445,44 @@ An expiring lease may help detect stale coordinators, but **lease expiry alone i
 
 Fleet must not treat a staged source path or optional user-supplied checksum as sufficient identity for a remote run. Before the session request digest is finalized, the Control Center (or another trusted staging authority) must resolve **every staged input** to immutable content identity.
 
-The canonical staged-input manifest should include, for each file/object:
+Fleet distinguishes two related identities so transfer verification does not accidentally create an offline secret oracle in ordinary ATES evidence:
+
+1. **Protected transfer identity** — a cryptographic digest or immutable content-addressed identifier computed from the exact staged bytes and available only to the trusted Control Center/Node staging path as needed for dispatch and verification.
+2. **Evidence provenance identity** — a secret-safe commitment suitable for ATES/report exposure. For inputs that may be low-entropy or sensitive, this must not be an ordinary public digest of the raw bytes.
+
+A protected staged-input manifest may therefore contain:
 
 ```yaml
 logical_name: application-under-test
 stage_path: stage://app/build.zip
 size_bytes: 18429312
-sha256: "..."
+transfer_identity:
+  algorithm: sha256
+  digest: "sha256:..."
+  visibility: protected_fleet
+provenance_identity:
+  method: hmac-sha256
+  value: "hmac:..."
+  key_ref: protected://fleet-provenance-key
 ```
+
+For a public/non-sensitive build artifact, policy may allow the same raw SHA-256 digest to serve as both transfer and provenance identity. For a password-only configuration, license secret, token file, or another low-entropy sensitive object, ordinary ATES evidence must instead use a keyed commitment, protected-salt commitment, trusted opaque immutable object/version ID, or a redacted canonical commitment whose verification material is kept outside the public evidence set.
 
 Required semantics:
 
-- a cryptographic content digest (or an equivalently immutable content-addressed object identity) is required for every staged input included in a Fleet session, even if the source test specification omitted its optional `sha256` field;
-- the digest is computed from the actual bytes selected for dispatch, not merely from the source pathname, mtime, or mutable object name;
-- once the canonical session request digest is created, replacing source bytes cannot change what that logical request means;
-- transfer to the Node/guest must verify the expected content digest before the target is launched;
+- an immutable transfer identity is required for every staged input included in a Fleet session, even if the source test specification omitted its optional `sha256` field;
+- the transfer digest/identity is computed from the actual bytes selected for dispatch, not merely from the source pathname, mtime, or mutable object name;
+- the canonical session request binds the protected immutable transfer identity (or an equivalently strong immutable object identity), so replacing source bytes cannot change what that logical request means;
+- protected transfer digests and verification material travel only over the authenticated encrypted Fleet channel and are stored/access-controlled as sensitive coordination metadata when policy requires;
+- transfer to the Node/guest must verify the expected protected identity before the target is launched;
 - a missing/mismatched staged object fails the allocation/staging phase and must not silently substitute new bytes under the same `session_request_id` or `run_id`;
-- ATES provenance records the immutable staged-input identities used by the run where policy permits, without leaking secret content.
+- ATES provenance records the evidence-safe identity/commitment plus its method/profile, not automatically the raw transfer digest;
+- a consumer must not infer that two evidence commitments are directly comparable unless their commitment method/profile explicitly supports that comparison;
+- low-entropy secret content must not become dictionary-checkable merely because Fleet needs reproducible staging provenance.
 
-If immutable identity cannot be established for a required staged input, the Fleet run fails closed before dispatch. The local non-Fleet syntax may continue to allow an omitted checksum where current behavior permits it; Fleet canonicalization is responsible for producing the required content identity before remote execution.
+If immutable transfer identity cannot be established for a required staged input, the Fleet run fails closed before dispatch. If a secret-safe provenance identity cannot be produced for ordinary evidence, Fleet may retain only an opaque protected reference and record that public provenance was withheld by policy; it must not downgrade to publishing the raw low-entropy digest.
+
+The local non-Fleet syntax may continue to allow an omitted checksum where current behavior permits it; Fleet canonicalization is responsible for producing the protected immutable transfer identity before remote execution.
 
 The Node must durably associate `session_request_id` with the request digest, placement generation, capacity reservation, cancellation state, and allocation result before or atomically with making the Capsule externally observable/runnable.
 
@@ -569,7 +587,7 @@ matrix:
     - beta
 ```
 
-Before matrix cases are dispatched, mutable aliases must resolve to immutable image identities and staged application/configuration inputs must resolve to immutable content identities. Each expanded run receives its own `run_id` and `session_request_id`, and its ATES provenance records the resolved image and staged-input digests/versions. Two matrix cases that resolve to different immutable inputs are different baselines even if their aliases or source paths are identical.
+Before matrix cases are dispatched, mutable aliases must resolve to immutable image identities and staged application/configuration inputs must resolve to immutable protected transfer identities. Each expanded run receives its own `run_id` and `session_request_id`. ATES provenance records the resolved image identity and the staged input's **secret-safe provenance commitment/opaque immutable reference** according to policy, not automatically the raw transfer digest. Two matrix cases that resolve to different immutable inputs are different baselines even if their aliases or source paths are identical.
 
 The Control Center expands the logical plan into independently identified runs while preserving a parent plan/matrix identity.
 
@@ -662,7 +680,7 @@ Future discard/export workflows should use explicit privileged Control Center op
 7. Control Center privilege does not bypass Capsule guest policy accidentally.
 8. Node Agents enforce local provider/capability constraints and atomically reserve local capacity before allocation.
 9. Scheduled images are pinned to immutable identities and verified by the Node before allocation.
-10. Every staged Fleet input is content-addressed/cryptographically identified and verified before launch.
+10. Every staged Fleet input is immutably identified and verified before launch; protected transfer digests are not automatically exposed as ordinary ATES provenance for low-entropy/sensitive inputs.
 11. Remote session allocation is idempotent by stable request identity and globally pinned placement ownership; retries never create a second logical execution on the same or another Node.
 12. Cross-Node ownership transfer requires definitive fencing of the prior owner; heartbeat/lease expiry alone never authorizes redispatch.
 13. Terminal allocation/cancellation tombstones remain until their placement generation is durably retired or revoked and can no longer authorize execution.
@@ -671,8 +689,8 @@ Future discard/export workflows should use explicit privileged Control Center op
 16. Node producer timestamps are preserved, while Control Center receipt time plus measured offset/uncertainty governs any cross-Node timing claim; skewed/overlapping times are visibly qualified rather than falsely ordered.
 17. Remote placement never silently falls back to local execution.
 18. All control-plane mutations are auditable.
-19. ATES facts retain Node/session/image/input/placement provenance and transport preserves ATES event identity/order.
-20. Credentials and guest-control secrets are not emitted into ATES evidence.
+19. ATES facts retain Node/session/image/input/placement provenance using secret-safe input commitments where needed, and transport preserves ATES event identity/order.
+20. Credentials, guest-control secrets, and public offline-verifiable digests of low-entropy secret inputs are not emitted into ordinary ATES evidence.
 21. Ambiguous distributed failures use reconciliation rather than destructive guesses.
 
 ## Initial implementation sequence
@@ -682,10 +700,10 @@ Recommended order:
 1. define Node identity/capability models, Node key ownership, enrollment request IDs, bootstrap credential semantics, acknowledgment-persistent enrollment recovery, and immutable image identity metadata;
 2. implement Node Agent daemon and authenticated/idempotent enrollment using protected secret input rather than argv, with explicit recovery/revocation for unacknowledged identities;
 3. establish authenticated encrypted Fleet channels and add heartbeat/capability/image registry plus trusted receipt-time/clock-offset-and-uncertainty sampling to the Control Center;
-4. define stable `session_request_id`, durable global placement owner/generation/cancellation state, definitive fencing and generation-retirement rules, immutable staged-input manifests, canonical request digests, terminal/cancellation tombstones, durable Node-side deduplication, and atomic capacity-reservation semantics;
+4. define stable `session_request_id`, durable global placement owner/generation/cancellation state, definitive fencing and generation-retirement rules, immutable staged-input manifests with separate protected transfer identities and secret-safe evidence commitments, canonical request digests, terminal/cancellation tombstones, durable Node-side deduplication, and atomic capacity-reservation semantics;
 5. implement remote session request/response around existing Capsule APIs only after global placement ownership, authorization-lifetime terminal tombstones, globally durable pre-ack cancellation, idempotent allocation, causal Node cancellation, staged-input verification, and Node-side admission are enforced;
 6. add reconciliation for disconnect/restart scenarios, including ownership/fencing/retirement/cancellation state, reservations, terminal/cancellation tombstones, clock-state degradation/resampling, and unacknowledged enrollments;
-7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics, immutable image/input/placement provenance, producer `occurred_at`, central `received_at`, and clock offset/uncertainty metadata;
+7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics, immutable image/placement provenance and secret-safe staged-input provenance, producer `occurred_at`, central `received_at`, and clock offset/uncertainty metadata;
 8. implement read-only Observer API;
 9. implement live screen transport over the protected Fleet channel;
 10. add scheduler/queue and placement requirements with immutable image pinning while treating heartbeat capacity as advisory;
