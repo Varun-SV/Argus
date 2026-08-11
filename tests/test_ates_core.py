@@ -16,6 +16,7 @@ NOW = datetime(2026, 8, 11, 6, 0, tzinfo=timezone.utc)
 CONFIG_COMMITMENT = SourceCommitment(
     "hmac-sha256", "hmac:runtime-config", "ates-config-v1"
 )
+ARTIFACT_DIGEST = SourceCommitment("sha256", "sha256:final-persisted-bytes")
 
 
 def test_typed_ids_validate_prefix_and_generate_unique_values():
@@ -46,6 +47,27 @@ def test_event_envelope_requires_supported_version_positive_integer_sequence_and
         EventEnvelope(
             ATES_VERSION, RunId.new(), EventId.new(), 1, EventType.RUN_STARTED,
             datetime(2026, 8, 11, 6, 0),
+        )
+
+
+def test_event_envelope_normalizes_and_validates_typed_ids():
+    run_id = RunId.new()
+    event_id = EventId.new()
+    envelope = EventEnvelope(
+        ATES_VERSION, str(run_id), str(event_id), 1, EventType.RUN_STARTED, NOW  # type: ignore[arg-type]
+    )
+    assert isinstance(envelope.run_id, RunId)
+    assert isinstance(envelope.event_id, EventId)
+
+    with pytest.raises(ValueError, match="run_id"):
+        EventEnvelope(
+            ATES_VERSION, "EVT-wrong", str(event_id), 1,  # type: ignore[arg-type]
+            EventType.RUN_STARTED, NOW,
+        )
+    with pytest.raises(ValueError, match="event_id"):
+        EventEnvelope(
+            ATES_VERSION, str(run_id), "RUN-wrong", 1,  # type: ignore[arg-type]
+            EventType.RUN_STARTED, NOW,
         )
 
 
@@ -164,6 +186,11 @@ def test_secret_references_are_snapshotted_before_validation():
     )
     mutable_refs.clear()
     assert value.secret_refs == ("SECRET-login",)
+    with pytest.raises(ValueError, match="secret_refs"):
+        EvidenceValue(
+            "redacted", value="<redacted>", reason="secret",  # type: ignore[arg-type]
+            secret_refs="SECRET-login",  # type: ignore[arg-type]
+        )
 
 
 def test_step_instruction_requires_secret_safe_evidence_value():
@@ -184,6 +211,24 @@ def test_action_parameters_are_explicit_evidence_values():
             ActionId.new(), StepId.new(), StepAttemptId.new(), "type",
             {"text": "plaintext"},  # type: ignore[arg-type]
         )
+
+
+def test_core_records_normalize_typed_ids_at_runtime():
+    step_id = StepId.new()
+    attempt_id = StepAttemptId.new()
+    action_id = ActionId.new()
+    operation_id = ActionOperationId.new()
+    action = ActionRecord(
+        str(action_id), str(step_id), str(attempt_id), "click",  # type: ignore[arg-type]
+        {}, str(operation_id),  # type: ignore[arg-type]
+    )
+    assert isinstance(action.action_id, ActionId)
+    assert isinstance(action.step_id, StepId)
+    assert isinstance(action.step_attempt_id, StepAttemptId)
+    assert isinstance(action.operation_id, ActionOperationId)
+
+    with pytest.raises(ValueError, match="step_id"):
+        StepRecord("RUN-wrong", EvidenceValue.safe("Open"))  # type: ignore[arg-type]
 
 
 def test_assertion_result_and_evidence_fields_are_runtime_validated():
@@ -309,10 +354,13 @@ def test_artifact_paths_are_package_relative_and_confined():
     )
     artifact = ArtifactRecord(
         ArtifactId.new(), "screenshot", "artifacts/shot.png",
-        "internal", "capture-standard-v1", EvidenceDisposition.REDACTED,
+        "internal", "capture-standard-v1", ARTIFACT_DIGEST, 123,
+        EvidenceDisposition.REDACTED,
     )
     assert artifact.path == "artifacts/shot.png"
     assert artifact.capture_policy == "capture-standard-v1"
+    assert artifact.content_digest is ARTIFACT_DIGEST
+    assert artifact.size_bytes == 123
 
     for bad in (
         "/etc/passwd", "../outside", "artifacts/../outside",
@@ -328,21 +376,39 @@ def test_retained_artifact_requires_applied_capture_policy():
     with pytest.raises(ValueError, match="capture_policy"):
         ArtifactRecord(
             ArtifactId.new(), "screenshot", "artifacts/shot.png",
-            "internal", "", EvidenceDisposition.REDACTED,
+            "internal", "", ARTIFACT_DIGEST, 123, EvidenceDisposition.REDACTED,
         )
+
+
+def test_retained_artifact_is_bound_to_final_persisted_bytes():
+    with pytest.raises(ValueError, match="content_digest"):
+        ArtifactRecord(
+            ArtifactId.new(), "screenshot", "artifacts/shot.png",
+            "internal", "capture-standard-v1", "sha256:raw", 123,  # type: ignore[arg-type]
+            EvidenceDisposition.REDACTED,
+        )
+    for invalid_size in (-1, True, 1.5):
+        with pytest.raises(ValueError, match="size_bytes"):
+            ArtifactRecord(
+                ArtifactId.new(), "screenshot", "artifacts/shot.png",
+                "internal", "capture-standard-v1", ARTIFACT_DIGEST,
+                invalid_size, EvidenceDisposition.REDACTED,  # type: ignore[arg-type]
+            )
 
 
 def test_retained_artifact_record_cannot_claim_suppression():
     with pytest.raises(ValueError, match="ARTIFACT_SUPPRESSED"):
         ArtifactRecord(
             ArtifactId.new(), "screenshot", "artifacts/shot.png",
-            "secret", "capture-standard-v1", EvidenceDisposition.SUPPRESSED,
+            "secret", "capture-standard-v1", ARTIFACT_DIGEST, 123,
+            EvidenceDisposition.SUPPRESSED,
         )
 
     with pytest.raises(ValueError, match="ARTIFACT_SUPPRESSED"):
         ArtifactRecord(
             ArtifactId.new(), "screenshot", "artifacts/shot.png",
-            "secret", "capture-standard-v1", "suppressed",  # type: ignore[arg-type]
+            "secret", "capture-standard-v1", ARTIFACT_DIGEST, 123,
+            "suppressed",  # type: ignore[arg-type]
         )
 
 
@@ -439,6 +505,23 @@ def test_status_bearing_correction_requires_verified_refinalization():
     assert effective_outcome((first, second)).effective_status is RunStatus.FAILED
 
 
+def test_refinalization_requires_validated_verification_instance():
+    class ForgedVerification:
+        status = VerificationStatus.VERIFIED
+
+    run_id = RunId.new()
+    first = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
+    )
+    with pytest.raises(ValueError, match="validated Verification"):
+        RunOutcomeRevision(
+            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            supersedes_finalization_id=first.finalization_id,
+            correction_ids=(CorrectionId.new(),),
+            verification=ForgedVerification(),  # type: ignore[arg-type]
+        )
+
+
 def test_effective_status_is_normalized_and_invalid_values_are_rejected():
     run_id = RunId.new()
     normalized = RunOutcomeRevision(
@@ -480,6 +563,40 @@ def test_correction_ids_are_snapshotted_before_refinalization_validation():
     mutable_ids.clear()
     assert second.correction_ids == captured
     assert second.correction_ids
+
+
+def test_correction_ids_are_typed_before_authorizing_refinalization():
+    run_id = RunId.new()
+    first = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
+    )
+    verification = Verification(
+        VerificationStatus.VERIFIED, method="signature",
+        actor="qa-reviewer", binding_ref="sig://review/2",
+    )
+    raw_correction = str(CorrectionId.new())
+    normalized = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+        supersedes_finalization_id=first.finalization_id,
+        correction_ids=[raw_correction],  # type: ignore[arg-type]
+        verification=verification,
+    )
+    assert isinstance(normalized.correction_ids[0], CorrectionId)
+
+    with pytest.raises(ValueError, match="correction_id"):
+        RunOutcomeRevision(
+            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            supersedes_finalization_id=first.finalization_id,
+            correction_ids=["EVT-not-a-correction"],  # type: ignore[arg-type]
+            verification=verification,
+        )
+    with pytest.raises(ValueError, match="correction_ids"):
+        RunOutcomeRevision(
+            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            supersedes_finalization_id=first.finalization_id,
+            correction_ids=raw_correction,  # type: ignore[arg-type]
+            verification=verification,
+        )
 
 
 def test_effective_outcome_can_render_historical_evidence_revision():
