@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Mapping, Optional, Sequence, TypeVar, Union
+from typing import Optional, Sequence, TypeVar, Union
 
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
@@ -103,24 +105,54 @@ TEnum = TypeVar("TEnum", bound=Enum)
 TAtesId = TypeVar("TAtesId", bound=AtesId)
 
 
-class FrozenDict(dict):
-    """Immutable dict snapshot that remains compatible with asdict/json.dumps."""
+class FrozenDict(Mapping[str, object]):
+    """Truly immutable mapping backed only by an immutable tuple of entries."""
 
-    @staticmethod
-    def _immutable(*args: object, **kwargs: object) -> None:
+    __slots__ = ("_items",)
+
+    def __init__(
+        self,
+        source: Mapping[str, object] | Sequence[tuple[str, object]] = (),
+    ) -> None:
+        items = tuple(source.items()) if isinstance(source, Mapping) else tuple(source)
+        seen: set[str] = set()
+        for key, _ in items:
+            if not isinstance(key, str):
+                raise TypeError("FrozenDict keys must be strings")
+            if key in seen:
+                raise ValueError("FrozenDict keys must be unique")
+            seen.add(key)
+        object.__setattr__(self, "_items", items)
+
+    def __setattr__(self, name: str, value: object) -> None:
         raise TypeError("FrozenDict is immutable")
 
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
+    def __delattr__(self, name: str) -> None:
+        raise TypeError("FrozenDict is immutable")
 
-    def __ior__(self, other: object):
-        self._immutable()
-        return self
+    def __getitem__(self, key: str) -> object:
+        for candidate, value in self._items:
+            if candidate == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (key for key, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def items(self):
+        return self._items
+
+    def __deepcopy__(self, memo: dict[int, object]):
+        # dataclasses.asdict() receives a detached mutable copy; the canonical
+        # FrozenDict instance itself remains immutable. to_json_compatible() is
+        # the explicit supported serialization boundary.
+        return {key: deepcopy(value, memo) for key, value in self._items}
+
+    def __repr__(self) -> str:
+        return f"FrozenDict({dict(self._items)!r})"
 
 
 def _snapshot_evidence_mapping(value: object, field_name: str) -> FrozenDict:
@@ -128,14 +160,16 @@ def _snapshot_evidence_mapping(value: object, field_name: str) -> FrozenDict:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must map strings to EvidenceValue")
     try:
-        snapshot = {key: child for key, child in value.items()}
+        snapshot = tuple(value.items())
     except (RuntimeError, TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} could not be snapshotted safely") from exc
     if not all(
         isinstance(key, str) and isinstance(child, EvidenceValue)
-        for key, child in snapshot.items()
+        for key, child in snapshot
     ):
         raise ValueError(f"{field_name} must map strings to EvidenceValue")
+    if len({key for key, _ in snapshot}) != len(snapshot):
+        raise ValueError(f"{field_name} must not contain duplicate keys")
     return FrozenDict(snapshot)
 
 
@@ -192,34 +226,44 @@ def require_aware_datetime(value: datetime, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a timezone-aware datetime")
 
 
-def ensure_json_safe(value: JsonValue, path: str = "$") -> None:
+def _freeze_json(value: JsonValue, path: str) -> JsonValue:
     if value is None or isinstance(value, (str, bool, int)):
-        return
+        return value
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"{path} contains a non-finite float")
-        return
+        return value
     if isinstance(value, Mapping):
-        for key, child in value.items():
+        try:
+            snapshot = tuple(value.items())
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError(f"{path} mapping could not be snapshotted safely") from exc
+        frozen_items: list[tuple[str, JsonValue]] = []
+        seen: set[str] = set()
+        for key, child in snapshot:
             if not isinstance(key, str):
                 raise ValueError(f"{path} contains a non-string object key")
-            ensure_json_safe(child, f"{path}.{key}")
-        return
+            if key in seen:
+                raise ValueError(f"{path} contains a duplicate object key")
+            seen.add(key)
+            frozen_items.append((key, _freeze_json(child, f"{path}.{key}")))
+        return FrozenDict(frozen_items)  # type: ignore[return-value]
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for index, child in enumerate(value):
-            ensure_json_safe(child, f"{path}[{index}]")
-        return
+        snapshot = tuple(value)
+        return tuple(
+            _freeze_json(child, f"{path}[{index}]")
+            for index, child in enumerate(snapshot)
+        )
     raise ValueError(f"{path} contains unsupported JSON value {type(value).__name__}")
 
 
+def ensure_json_safe(value: JsonValue, path: str = "$") -> None:
+    _freeze_json(value, path)
+
+
 def freeze_json(value: JsonValue) -> JsonValue:
-    """Return an immutable, JSON-serializable copy of a JSON-compatible value."""
-    ensure_json_safe(value)
-    if isinstance(value, Mapping):
-        return FrozenDict({key: freeze_json(child) for key, child in value.items()})
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return tuple(freeze_json(child) for child in value)
-    return value
+    """Return a deeply immutable snapshot of a JSON-compatible value."""
+    return _freeze_json(value, "$")
 
 
 def to_json_compatible(value: object) -> JsonValue:
@@ -412,6 +456,13 @@ class RunRecord:
         _require_nonempty(self.adapter_type, "adapter_type")
         _require_nonempty(self.environment_type, "environment_type")
         _require_nonempty(self.evidence_profile, "evidence_profile")
+        for value, name in (
+            (self.provider, "provider"),
+            (self.model_provider, "model_provider"),
+            (self.model, "model"),
+        ):
+            if value is not None:
+                _require_nonempty(value, name)
         if not isinstance(self.configuration_commitment, SourceCommitment):
             raise ValueError("configuration_commitment must be a SourceCommitment")
         if self.execution_kind is ExecutionKind.SCRIPTED and not isinstance(self.source, ScriptedSource):
@@ -586,6 +637,7 @@ class AssertionRecord:
     observation_id: Optional[ObservationId] = None
     actual: Optional[EvidenceValue] = None
     required: bool = True
+    requirement: Optional["RequirementIdentity"] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -611,6 +663,10 @@ class AssertionRecord:
             raise ValueError("assertion expected value must be an EvidenceValue")
         if self.actual is not None and not isinstance(self.actual, EvidenceValue):
             raise ValueError("assertion actual value must be an EvidenceValue")
+        if self.requirement is not None and not isinstance(
+            self.requirement, RequirementIdentity
+        ):
+            raise ValueError("assertion requirement must be a RequirementIdentity")
         object.__setattr__(
             self,
             "result",
@@ -618,89 +674,6 @@ class AssertionRecord:
         )
         if not isinstance(self.required, bool):
             raise ValueError("assertion required must be a boolean")
-
-
-def validate_step_evidence_relationships(
-    attempts: Sequence[StepAttemptRecord],
-    *,
-    actions: Sequence[ActionRecord] = (),
-    observations: Sequence[ObservationRecord] = (),
-    assertions: Sequence[AssertionRecord] = (),
-) -> tuple[
-    tuple[StepAttemptRecord, ...],
-    tuple[ActionRecord, ...],
-    tuple[ObservationRecord, ...],
-    tuple[AssertionRecord, ...],
-]:
-    """Validate and snapshot foreign-key relationships across step evidence."""
-    attempt_snapshot = validate_step_attempt_history(attempts)
-    for values, name in (
-        (actions, "actions"),
-        (observations, "observations"),
-        (assertions, "assertions"),
-    ):
-        if isinstance(values, (str, bytes, bytearray)):
-            raise ValueError(f"{name} must be a sequence of ATES records")
-
-    action_snapshot = tuple(actions)
-    observation_snapshot = tuple(observations)
-    assertion_snapshot = tuple(assertions)
-    attempt_owner = {
-        attempt.step_attempt_id: attempt.step_id for attempt in attempt_snapshot
-    }
-
-    def require_unique_ids(records: Sequence[object], attribute: str, label: str) -> None:
-        seen: set[object] = set()
-        for record in records:
-            identifier = getattr(record, attribute)
-            if identifier in seen:
-                raise ValueError(f"{label} IDs must be unique in canonical evidence")
-            seen.add(identifier)
-
-    for action in action_snapshot:
-        if not isinstance(action, ActionRecord):
-            raise ValueError("actions must contain only ActionRecord values")
-        owner = attempt_owner.get(action.step_attempt_id)
-        if owner is None:
-            raise ValueError("action references an unknown step_attempt_id")
-        if action.step_id != owner:
-            raise ValueError("action step_id does not match its step attempt owner")
-    require_unique_ids(action_snapshot, "action_id", "action")
-
-    observation_by_id: dict[ObservationId, ObservationRecord] = {}
-    for observation in observation_snapshot:
-        if not isinstance(observation, ObservationRecord):
-            raise ValueError("observations must contain only ObservationRecord values")
-        if observation.step_attempt_id not in attempt_owner:
-            raise ValueError("observation references an unknown step_attempt_id")
-        if observation.observation_id in observation_by_id:
-            raise ValueError("observation IDs must be unique in canonical evidence")
-        observation_by_id[observation.observation_id] = observation
-
-    for assertion in assertion_snapshot:
-        if not isinstance(assertion, AssertionRecord):
-            raise ValueError("assertions must contain only AssertionRecord values")
-        owner = attempt_owner.get(assertion.step_attempt_id)
-        if owner is None:
-            raise ValueError("assertion references an unknown step_attempt_id")
-        if assertion.step_id != owner:
-            raise ValueError("assertion step_id does not match its step attempt owner")
-        if assertion.observation_id is not None:
-            observation = observation_by_id.get(assertion.observation_id)
-            if observation is None:
-                raise ValueError("assertion references an unknown observation_id")
-            if observation.step_attempt_id != assertion.step_attempt_id:
-                raise ValueError(
-                    "assertion observation_id must belong to the same step attempt"
-                )
-    require_unique_ids(assertion_snapshot, "assertion_id", "assertion")
-
-    return (
-        attempt_snapshot,
-        action_snapshot,
-        observation_snapshot,
-        assertion_snapshot,
-    )
 
 
 @dataclass(frozen=True)
@@ -837,6 +810,96 @@ class RequirementIdentity:
             self.source_revision,
             self.commitment.identity_key if self.commitment else None,
         )
+
+
+def validate_step_evidence_relationships(
+    attempts: Sequence[StepAttemptRecord],
+    *,
+    actions: Sequence[ActionRecord] = (),
+    observations: Sequence[ObservationRecord] = (),
+    assertions: Sequence[AssertionRecord] = (),
+) -> tuple[
+    tuple[StepAttemptRecord, ...],
+    tuple[ActionRecord, ...],
+    tuple[ObservationRecord, ...],
+    tuple[AssertionRecord, ...],
+]:
+    """Validate and snapshot foreign-key relationships across step evidence."""
+    attempt_snapshot = validate_step_attempt_history(attempts)
+    for values, name in (
+        (actions, "actions"),
+        (observations, "observations"),
+        (assertions, "assertions"),
+    ):
+        if isinstance(values, (str, bytes, bytearray)):
+            raise ValueError(f"{name} must be a sequence of ATES records")
+
+    action_snapshot = tuple(actions)
+    observation_snapshot = tuple(observations)
+    assertion_snapshot = tuple(assertions)
+    attempt_owner = {
+        attempt.step_attempt_id: attempt.step_id for attempt in attempt_snapshot
+    }
+
+    def require_unique_ids(records: Sequence[object], attribute: str, label: str) -> None:
+        seen: set[object] = set()
+        for record in records:
+            identifier = getattr(record, attribute)
+            if identifier in seen:
+                raise ValueError(f"{label} IDs must be unique in canonical evidence")
+            seen.add(identifier)
+
+    seen_operation_ids: set[ActionOperationId] = set()
+    for action in action_snapshot:
+        if not isinstance(action, ActionRecord):
+            raise ValueError("actions must contain only ActionRecord values")
+        owner = attempt_owner.get(action.step_attempt_id)
+        if owner is None:
+            raise ValueError("action references an unknown step_attempt_id")
+        if action.step_id != owner:
+            raise ValueError("action step_id does not match its step attempt owner")
+        if action.operation_id is not None:
+            if action.operation_id in seen_operation_ids:
+                raise ValueError(
+                    "operation IDs must be unique across distinct canonical actions"
+                )
+            seen_operation_ids.add(action.operation_id)
+    require_unique_ids(action_snapshot, "action_id", "action")
+
+    observation_by_id: dict[ObservationId, ObservationRecord] = {}
+    for observation in observation_snapshot:
+        if not isinstance(observation, ObservationRecord):
+            raise ValueError("observations must contain only ObservationRecord values")
+        if observation.step_attempt_id not in attempt_owner:
+            raise ValueError("observation references an unknown step_attempt_id")
+        if observation.observation_id in observation_by_id:
+            raise ValueError("observation IDs must be unique in canonical evidence")
+        observation_by_id[observation.observation_id] = observation
+
+    for assertion in assertion_snapshot:
+        if not isinstance(assertion, AssertionRecord):
+            raise ValueError("assertions must contain only AssertionRecord values")
+        owner = attempt_owner.get(assertion.step_attempt_id)
+        if owner is None:
+            raise ValueError("assertion references an unknown step_attempt_id")
+        if assertion.step_id != owner:
+            raise ValueError("assertion step_id does not match its step attempt owner")
+        if assertion.observation_id is not None:
+            observation = observation_by_id.get(assertion.observation_id)
+            if observation is None:
+                raise ValueError("assertion references an unknown observation_id")
+            if observation.step_attempt_id != assertion.step_attempt_id:
+                raise ValueError(
+                    "assertion observation_id must belong to the same step attempt"
+                )
+    require_unique_ids(assertion_snapshot, "assertion_id", "assertion")
+
+    return (
+        attempt_snapshot,
+        action_snapshot,
+        observation_snapshot,
+        assertion_snapshot,
+    )
 
 
 @dataclass(frozen=True)
