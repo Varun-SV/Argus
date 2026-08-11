@@ -160,7 +160,7 @@ class StoredEvent:
                 occurred_at=parsed_time,
             )
             return cls(envelope=envelope, payload=payload)  # type: ignore[arg-type]
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, RecursionError) as exc:
             raise AtesStoreCorruption(f"invalid canonical event: {exc}") from exc
 
 
@@ -173,7 +173,7 @@ def _canonical_json_bytes(value: object) -> bytes:
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError(
             f"value cannot be encoded as canonical ATES JSON: {exc}"
         ) from exc
@@ -927,7 +927,7 @@ class AtesEventStore:
                 )
             try:
                 canonical_line = event.canonical_line()
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, RecursionError) as exc:
                 raise AtesStoreCorruption(
                     f"record {index} cannot be canonicalized as ATES UTF-8 JSON: {exc}"
                 ) from exc
