@@ -1,6 +1,6 @@
 import json
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -27,14 +27,45 @@ VERIFIED_REVIEWER = Verification(
     actor="qa-reviewer",
     binding_ref="sig://review/authorized",
 )
-AUTHORIZED_REFINALIZATION = AuthorizationDecision(
-    True,
-    RUN_OUTCOME_REFINALIZATION_SCOPE,
-    "argus-evidence-authz",
-    "2026.08",
-    "authz://decision/authorized-refinalization",
-    VERIFIED_REVIEWER,
+VERIFIED_AUTHZ_SERVICE = Verification(
+    VerificationStatus.VERIFIED,
+    method="policy-signature",
+    actor="argus-authz-service",
+    binding_ref="sig://authz/service",
 )
+
+
+def authorization_for(
+    run_id: RunId,
+    finalization_id: FinalizationId,
+    supersedes_finalization_id: FinalizationId,
+    correction_ids: tuple[CorrectionId, ...],
+    *,
+    allowed: bool = True,
+    scope: str = RUN_OUTCOME_REFINALIZATION_SCOPE,
+    subject: str = "qa-reviewer",
+    effective_status: RunStatus = RunStatus.FAILED,
+    evidence_revision: int = 2,
+    status_policy_version: str = STATUS_POLICY_VERSION,
+    verification: Verification = VERIFIED_AUTHZ_SERVICE,
+    decision_ref: str = "authz://decision/refinalization",
+) -> AuthorizationDecision:
+    return AuthorizationDecision(
+        allowed,
+        scope,
+        "argus-evidence-authz",
+        "2026.08",
+        decision_ref,
+        verification,
+        subject,
+        run_id,
+        finalization_id,
+        supersedes_finalization_id,
+        correction_ids,
+        effective_status,
+        evidence_revision,
+        status_policy_version,
+    )
 
 
 def test_typed_ids_validate_prefix_and_generate_unique_values():
@@ -188,6 +219,14 @@ def test_sensitive_values_never_require_plaintext_in_ordinary_evidence():
         EvidenceValue(EvidenceDisposition.REDACTED, value="password123", reason="secret")
 
 
+def test_disposition_reasons_must_be_safe_reason_codes():
+    with pytest.raises(ValueError, match="policy/reason code"):
+        EvidenceValue.redacted("redacted because token=supersecret")
+    with pytest.raises(ValueError, match="policy/reason code"):
+        EvidenceValue.suppressed("token=supersecret")
+    assert EvidenceValue.redacted("secret_input").reason == "secret_input"
+
+
 def test_raw_disposition_is_normalized_before_secret_safety_validation():
     with pytest.raises(ValueError, match="exactly"):
         EvidenceValue("redacted", value="password123", reason="secret")  # type: ignore[arg-type]
@@ -311,6 +350,32 @@ def test_step_attempt_history_requires_unique_contiguous_ordinals_per_step():
     )
     with pytest.raises(ValueError, match="unique and contiguous"):
         validate_step_attempt_history((first, third))
+
+
+def test_step_attempt_history_rejects_unfinished_and_overlapping_retries():
+    step_id = StepId.new()
+    running = StepAttemptRecord(
+        StepAttemptId.new(), step_id, 1, StepAttemptStatus.RUNNING, NOW
+    )
+    retry = StepAttemptRecord(
+        StepAttemptId.new(), step_id, 2, StepAttemptStatus.PASSED,
+        NOW + timedelta(seconds=2), NOW + timedelta(seconds=3),
+        EvidenceValue.safe("retry after timeout"),
+    )
+    with pytest.raises(ValueError, match="prior attempt is terminal"):
+        validate_step_attempt_history((running, retry))
+
+    first = StepAttemptRecord(
+        StepAttemptId.new(), step_id, 1, StepAttemptStatus.ERROR,
+        NOW, NOW + timedelta(seconds=5),
+    )
+    overlapping = StepAttemptRecord(
+        StepAttemptId.new(), step_id, 2, StepAttemptStatus.PASSED,
+        NOW + timedelta(seconds=4), NOW + timedelta(seconds=6),
+        EvidenceValue.safe("retry after error"),
+    )
+    with pytest.raises(ValueError, match="cannot overlap"):
+        validate_step_attempt_history((first, overlapping))
 
 
 def test_step_attempt_status_is_normalized_before_lifecycle_validation():
@@ -459,6 +524,34 @@ def test_retained_artifact_is_bound_to_final_persisted_bytes():
             )
 
 
+def test_protected_artifact_requires_explicit_storage_controls():
+    with pytest.raises(ValueError, match="protected_ref"):
+        ArtifactRecord(
+            ArtifactId.new(), "screenshot", "artifacts/protected.stub",
+            "secret", "capture-protected-v1", ARTIFACT_DIGEST, 123,
+            EvidenceDisposition.PROTECTED_REF,
+        )
+
+    protected = ArtifactRecord(
+        ArtifactId.new(), "screenshot", "artifacts/protected.stub",
+        "secret", "capture-protected-v1", ARTIFACT_DIGEST, 123,
+        EvidenceDisposition.PROTECTED_REF,
+        protected_ref="protected://artifact/1",
+        access_policy="access-policy-v1",
+        retention_policy="retention-policy-v1",
+        authorization_ref="authz://artifact/1",
+    )
+    assert protected.protected_ref == "protected://artifact/1"
+
+    with pytest.raises(ValueError, match="only valid for protected_ref"):
+        ArtifactRecord(
+            ArtifactId.new(), "screenshot", "artifacts/shot.png",
+            "internal", "capture-standard-v1", ARTIFACT_DIGEST, 123,
+            EvidenceDisposition.REDACTED,
+            protected_ref="protected://artifact/not-applicable",
+        )
+
+
 def test_retained_artifact_record_cannot_claim_suppression():
     with pytest.raises(ValueError, match="ARTIFACT_SUPPRESSED"):
         ArtifactRecord(
@@ -563,52 +656,99 @@ def test_status_bearing_correction_requires_verified_and_authorized_refinalizati
             verification=VERIFIED_REVIEWER,
         )
 
-    denied = AuthorizationDecision(
-        False, RUN_OUTCOME_REFINALIZATION_SCOPE, "argus-evidence-authz", "2026.08",
-        "authz://decision/denied", VERIFIED_REVIEWER,
+    denied_id = FinalizationId.new()
+    denied_corrections = (CorrectionId.new(),)
+    denied = authorization_for(
+        run_id, denied_id, first.finalization_id, denied_corrections,
+        allowed=False, decision_ref="authz://decision/denied",
     )
     with pytest.raises(ValueError, match="not authorized"):
         RunOutcomeRevision(
-            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            denied_id, run_id, 2, RunStatus.FAILED, 2, NOW,
             supersedes_finalization_id=first.finalization_id,
-            correction_ids=(CorrectionId.new(),),
+            correction_ids=denied_corrections,
             verification=VERIFIED_REVIEWER,
             authorization=denied,
         )
 
+    second_id = FinalizationId.new()
+    second_corrections = (CorrectionId.new(),)
     second = RunOutcomeRevision(
-        FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+        second_id, run_id, 2, RunStatus.FAILED, 2, NOW,
         supersedes_finalization_id=first.finalization_id,
-        correction_ids=(CorrectionId.new(),),
+        correction_ids=second_corrections,
         verification=VERIFIED_REVIEWER,
-        authorization=AUTHORIZED_REFINALIZATION,
+        authorization=authorization_for(
+            run_id, second_id, first.finalization_id, second_corrections
+        ),
     )
     assert first.effective_status is RunStatus.PASSED
     assert effective_outcome((first, second)).effective_status is RunStatus.FAILED
 
 
 def test_refinalization_authorization_is_verified_versioned_and_scope_bound():
+    run_id = RunId.new()
+    first_id = FinalizationId.new()
+    finalization_id = FinalizationId.new()
+    corrections = (CorrectionId.new(),)
     with pytest.raises(ValueError, match="itself be verified"):
-        AuthorizationDecision(
-            True, RUN_OUTCOME_REFINALIZATION_SCOPE, "argus-evidence-authz", "2026.08",
-            "authz://decision/unverified", Verification(VerificationStatus.UNVERIFIED),
+        authorization_for(
+            run_id, finalization_id, first_id, corrections,
+            verification=Verification(VerificationStatus.UNVERIFIED),
         )
 
+    first = RunOutcomeRevision(
+        first_id, run_id, 1, RunStatus.PASSED, 1, NOW
+    )
+    wrong_scope = authorization_for(
+        run_id, finalization_id, first.finalization_id, corrections,
+        scope="evidence.supersede_finding",
+        decision_ref="authz://decision/wrong-scope",
+    )
+    with pytest.raises(ValueError, match="does not cover"):
+        RunOutcomeRevision(
+            finalization_id, run_id, 2, RunStatus.FAILED, 2, NOW,
+            supersedes_finalization_id=first.finalization_id,
+            correction_ids=corrections,
+            verification=VERIFIED_REVIEWER,
+            authorization=wrong_scope,
+        )
+
+
+def test_refinalization_authorization_binds_subject_and_exact_revision():
     run_id = RunId.new()
     first = RunOutcomeRevision(
         FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
     )
-    wrong_scope = AuthorizationDecision(
-        True, "evidence.supersede_finding", "argus-evidence-authz", "2026.08",
-        "authz://decision/wrong-scope", VERIFIED_REVIEWER,
+    finalization_id = FinalizationId.new()
+    corrections = (CorrectionId.new(),)
+    unprivileged = Verification(
+        VerificationStatus.VERIFIED, method="signature", actor="basic-user",
+        binding_ref="sig://review/basic-user",
     )
-    with pytest.raises(ValueError, match="does not cover"):
+    admin_decision = authorization_for(
+        run_id, finalization_id, first.finalization_id, corrections,
+        subject="qa-reviewer",
+    )
+    with pytest.raises(ValueError, match="authorization subject"):
         RunOutcomeRevision(
-            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            finalization_id, run_id, 2, RunStatus.FAILED, 2, NOW,
             supersedes_finalization_id=first.finalization_id,
-            correction_ids=(CorrectionId.new(),),
+            correction_ids=corrections,
+            verification=unprivileged,
+            authorization=admin_decision,
+        )
+
+    wrong_run_decision = authorization_for(
+        RunId.new(), finalization_id, first.finalization_id, corrections
+    )
+    with pytest.raises(ValueError, match="run_id"):
+        RunOutcomeRevision(
+            finalization_id, run_id, 2, RunStatus.FAILED, 2, NOW,
+            supersedes_finalization_id=first.finalization_id,
+            correction_ids=corrections,
             verification=VERIFIED_REVIEWER,
-            authorization=wrong_scope,
+            authorization=wrong_run_decision,
         )
 
 
@@ -620,13 +760,17 @@ def test_refinalization_requires_validated_verification_instance():
     first = RunOutcomeRevision(
         FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
     )
+    finalization_id = FinalizationId.new()
+    corrections = (CorrectionId.new(),)
     with pytest.raises(ValueError, match="validated Verification"):
         RunOutcomeRevision(
-            FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+            finalization_id, run_id, 2, RunStatus.FAILED, 2, NOW,
             supersedes_finalization_id=first.finalization_id,
-            correction_ids=(CorrectionId.new(),),
+            correction_ids=corrections,
             verification=ForgedVerification(),  # type: ignore[arg-type]
-            authorization=AUTHORIZED_REFINALIZATION,
+            authorization=authorization_for(
+                run_id, finalization_id, first.finalization_id, corrections
+            ),
         )
 
 
@@ -670,12 +814,16 @@ def test_correction_ids_are_snapshotted_before_refinalization_validation():
         FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
     )
     mutable_ids = [CorrectionId.new()]
+    finalization_id = FinalizationId.new()
+    authorization = authorization_for(
+        run_id, finalization_id, first.finalization_id, tuple(mutable_ids)
+    )
     second = RunOutcomeRevision(
-        FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+        finalization_id, run_id, 2, RunStatus.FAILED, 2, NOW,
         supersedes_finalization_id=first.finalization_id,
         correction_ids=mutable_ids,  # type: ignore[arg-type]
         verification=VERIFIED_REVIEWER,
-        authorization=AUTHORIZED_REFINALIZATION,
+        authorization=authorization,
     )
     captured = second.correction_ids
     mutable_ids.clear()
@@ -688,13 +836,18 @@ def test_correction_ids_are_typed_before_authorizing_refinalization():
     first = RunOutcomeRevision(
         FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
     )
-    raw_correction = str(CorrectionId.new())
+    typed_correction = CorrectionId.new()
+    raw_correction = str(typed_correction)
+    finalization_id = FinalizationId.new()
+    authorization = authorization_for(
+        run_id, finalization_id, first.finalization_id, (typed_correction,)
+    )
     normalized = RunOutcomeRevision(
-        FinalizationId.new(), run_id, 2, RunStatus.FAILED, 2, NOW,
+        finalization_id, run_id, 2, RunStatus.FAILED, 2, NOW,
         supersedes_finalization_id=first.finalization_id,
         correction_ids=[raw_correction],  # type: ignore[arg-type]
         verification=VERIFIED_REVIEWER,
-        authorization=AUTHORIZED_REFINALIZATION,
+        authorization=authorization,
     )
     assert isinstance(normalized.correction_ids[0], CorrectionId)
 
@@ -704,7 +857,7 @@ def test_correction_ids_are_typed_before_authorizing_refinalization():
             supersedes_finalization_id=first.finalization_id,
             correction_ids=["EVT-not-a-correction"],  # type: ignore[arg-type]
             verification=VERIFIED_REVIEWER,
-            authorization=AUTHORIZED_REFINALIZATION,
+            authorization=authorization,
         )
     with pytest.raises(ValueError, match="correction_ids"):
         RunOutcomeRevision(
@@ -712,7 +865,7 @@ def test_correction_ids_are_typed_before_authorizing_refinalization():
             supersedes_finalization_id=first.finalization_id,
             correction_ids=raw_correction,  # type: ignore[arg-type]
             verification=VERIFIED_REVIEWER,
-            authorization=AUTHORIZED_REFINALIZATION,
+            authorization=authorization,
         )
 
 
@@ -721,12 +874,17 @@ def test_effective_outcome_can_render_historical_evidence_revision():
     first = RunOutcomeRevision(
         FinalizationId.new(), run_id, 1, RunStatus.PASSED, 1, NOW
     )
+    finalization_id = FinalizationId.new()
+    corrections = (CorrectionId.new(),)
     second = RunOutcomeRevision(
-        FinalizationId.new(), run_id, 2, RunStatus.FAILED, 3, NOW,
+        finalization_id, run_id, 2, RunStatus.FAILED, 3, NOW,
         supersedes_finalization_id=first.finalization_id,
-        correction_ids=(CorrectionId.new(),),
+        correction_ids=corrections,
         verification=VERIFIED_REVIEWER,
-        authorization=AUTHORIZED_REFINALIZATION,
+        authorization=authorization_for(
+            run_id, finalization_id, first.finalization_id, corrections,
+            evidence_revision=3,
+        ),
     )
 
     assert effective_outcome(
