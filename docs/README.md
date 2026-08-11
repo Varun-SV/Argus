@@ -33,7 +33,7 @@ Read:
 - [Hyper-V Capsules](capsules-hyperv.md)
 - [Multi-OS Capsules and Linux libvirt](capsules-multi-os.md)
 
-Capsules provide the production isolation boundary. Their design includes secure guest control, explicit staging and artifact collection, provider capability checks, isolated networking, and optional forensic Failure Capsule retention.
+Capsules provide the production isolation boundary. Their design includes secure guest control, explicit staging and artifact collection, provider capability checks, isolated networking, and optional forensic Failure Capsule retention for supported scripted `argus run` failure paths. Current `argus roam` findings do not trigger the failure-recording lifecycle hook, so roam-triggered Capsule retention is not currently guaranteed.
 
 ### Lightweight mode: local execution
 
@@ -49,12 +49,12 @@ The current execution architecture includes:
 2. safe semantic Windows desktop input by default;
 3. an `ExecutionEnvironment` boundary separating placement from adapters;
 4. disposable Hyper-V Capsules;
-5. optional forensic Failure Capsule retention;
+5. optional forensic Failure Capsule retention for supported scripted `argus run` failure paths;
 6. explicit host-to-guest staging and guest-to-host artifact collection;
 7. pinned HTTPS control, per-session bearer rotation, network isolation, and Hyper-V side-channel restrictions;
 8. provider-aware multi-OS Capsules with Linux libvirt/QEMU/KVM support.
 
-These capabilities are implemented today.
+These capabilities are implemented today. Failure Capsule retention should not be inferred for execution paths that do not currently call the failure-recording hook, including `argus roam` findings.
 
 ## Next architecture
 
