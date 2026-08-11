@@ -82,8 +82,15 @@ def effective_outcome(
     *,
     evidence_revision: int | None = None,
 ) -> RunOutcomeRevision:
-    if not revisions:
+    if isinstance(revisions, (str, bytes, bytearray)):
+        raise ValueError("finalization history must contain RunOutcomeRevision values")
+    snapshot = tuple(revisions)
+    if not snapshot:
         raise ValueError("at least one finalization revision is required")
+    if not all(isinstance(item, RunOutcomeRevision) for item in snapshot):
+        raise ValueError(
+            "finalization history must contain only validated RunOutcomeRevision values"
+        )
     if evidence_revision is not None and (
         isinstance(evidence_revision, bool)
         or not isinstance(evidence_revision, int)
@@ -91,7 +98,7 @@ def effective_outcome(
     ):
         raise ValueError("evidence_revision must be a positive integer")
 
-    ordered = sorted(revisions, key=lambda item: item.revision)
+    ordered = sorted(snapshot, key=lambda item: item.revision)
     run_id = ordered[0].run_id
     if ordered[0].revision != 1:
         raise ValueError("finalization history must start at revision 1")
