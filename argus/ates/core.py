@@ -148,6 +148,12 @@ class EvidenceValue:
     protected_ref: Optional[str] = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.disposition, EvidenceDisposition):
+            try:
+                object.__setattr__(self, "disposition", EvidenceDisposition(self.disposition))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("disposition must be a valid EvidenceDisposition") from exc
+
         if self.disposition is EvidenceDisposition.SAFE:
             object.__setattr__(self, "value", freeze_json(self.value))
             if self.reason is not None or self.protected_ref is not None:
@@ -212,6 +218,15 @@ class SourceCommitment:
         if self.verification_ref is not None:
             _require_nonempty(self.verification_ref, "verification_ref")
 
+    @property
+    def identity_key(self) -> tuple[str, str, Optional[str], Optional[str]]:
+        return (
+            self.method,
+            self.value,
+            self.canonicalization_profile,
+            self.verification_ref,
+        )
+
 
 @dataclass(frozen=True)
 class ScriptedSource:
@@ -234,6 +249,8 @@ class RoamSource:
     def __post_init__(self) -> None:
         if self.objective_present and self.objective_commitment is None:
             raise ValueError("roam objective_present=true requires objective_commitment")
+        if not self.objective_present and self.objective_commitment is not None:
+            raise ValueError("roam objective_present=false forbids objective_commitment")
         if not any((self.objective_commitment, self.config_commitment, self.policy_ref)):
             raise ValueError("roam source requires an objective/config commitment or policy_ref")
         if self.policy_ref is not None:
@@ -287,16 +304,33 @@ class StepAttemptRecord:
     status: StepAttemptStatus
     started_at: datetime
     ended_at: Optional[datetime] = None
-    retry_reason: Optional[str] = None
+    retry_reason: Optional[EvidenceValue] = None
 
     def __post_init__(self) -> None:
         if self.attempt < 1:
             raise ValueError("attempt must be >= 1")
         require_aware_datetime(self.started_at, "started_at")
-        if self.ended_at is not None:
+
+        if self.status is StepAttemptStatus.RUNNING:
+            if self.ended_at is not None:
+                raise ValueError("running attempts cannot have ended_at")
+        else:
+            if self.ended_at is None:
+                raise ValueError("terminal attempts require ended_at")
             require_aware_datetime(self.ended_at, "ended_at")
             if self.ended_at < self.started_at:
                 raise ValueError("ended_at cannot precede started_at")
+
+        if self.attempt == 1:
+            if self.retry_reason is not None:
+                raise ValueError("first attempt cannot have retry_reason")
+        else:
+            if not isinstance(self.retry_reason, EvidenceValue):
+                raise ValueError("retry attempts require retry_reason as EvidenceValue")
+            if self.retry_reason.disposition is EvidenceDisposition.SAFE:
+                if not isinstance(self.retry_reason.value, str):
+                    raise ValueError("safe retry_reason must contain text")
+                _require_nonempty(self.retry_reason.value, "retry_reason")
 
 
 @dataclass(frozen=True)
@@ -372,6 +406,8 @@ def validate_artifact_path(path: str) -> str:
     candidate = PurePosixPath(path)
     if candidate.is_absolute():
         raise ValueError("artifact path must be relative")
+    if candidate.as_posix() != path:
+        raise ValueError("artifact path must already be in canonical POSIX-relative form")
     parts = candidate.parts
     if len(parts) < 2 or parts[0] != "artifacts":
         raise ValueError("artifact path must be rooted beneath artifacts/")
@@ -391,6 +427,19 @@ class ArtifactRecord:
     def __post_init__(self) -> None:
         _require_nonempty(self.kind, "kind")
         _require_nonempty(self.sensitivity, "sensitivity")
+        if not isinstance(self.protection_state, EvidenceDisposition):
+            try:
+                object.__setattr__(
+                    self, "protection_state", EvidenceDisposition(self.protection_state)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "protection_state must be a valid EvidenceDisposition"
+                ) from exc
+        if self.protection_state is EvidenceDisposition.SUPPRESSED:
+            raise ValueError(
+                "suppressed artifacts must use ARTIFACT_SUPPRESSED, not ArtifactRecord"
+            )
         validate_artifact_path(self.path)
 
 
@@ -413,13 +462,21 @@ class RequirementIdentity:
             _require_nonempty(self.source_revision, "source_revision")
 
     @property
-    def identity_key(self) -> tuple[str, str, Optional[str], Optional[str], Optional[str]]:
+    def identity_key(
+        self,
+    ) -> tuple[
+        str,
+        str,
+        Optional[str],
+        Optional[str],
+        Optional[tuple[str, str, Optional[str], Optional[str]]],
+    ]:
         return (
             self.source_system,
             self.requirement_id,
             self.version,
             self.source_revision,
-            self.commitment.value if self.commitment else None,
+            self.commitment.identity_key if self.commitment else None,
         )
 
 
@@ -454,6 +511,7 @@ class RunOutcomeRevision:
     verification: Optional[Verification] = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "correction_ids", tuple(self.correction_ids))
         if self.revision < 1 or self.evidence_revision < 1:
             raise ValueError("finalization/evidence revisions must be >= 1")
         require_aware_datetime(self.finalized_at, "finalized_at")
