@@ -7,10 +7,12 @@ PR #16 established the immutable ATES Core schema. PR #17 adds the first persist
 ## Layout
 
 ```text
-.argus/runs/<run-id>/
+.argus/runs/<filesystem-run-key>/
   .ates-writer.lock
   evidence.jsonl
 ```
+
+`<filesystem-run-key>` is an injective encoding of the canonical `RunId`, not a second run identity. Ordinary lowercase IDs keep their familiar spelling; uppercase suffix letters and underscores are escaped so distinct valid IDs such as `RUN-abc` and `RUN-ABC` cannot alias on case-insensitive filesystems. The canonical `run_id` remains the typed value recorded in every event and is verified again on reopen.
 
 Each line of `evidence.jsonl` is one canonical UTF-8 JSON object containing the ATES event envelope plus an object-valued `payload`.
 
@@ -25,11 +27,14 @@ The local authoritative writer enforces:
 - one newline-terminated event per record;
 - immutable payload snapshots before persistence;
 - `flush` + `fsync` before a successful append is returned;
+- parent-directory durability for newly created `.argus`, `runs`, run-directory, lock-file, and evidence-file entries where POSIX directory syncing is available;
 - replay of byte-identical already-committed events as an idempotent success;
 - rejection of conflicting reuse of either an event identity or an existing sequence;
 - strict reopen validation before any further event can be appended.
 
 The writer does **not** reserve a sequence number independently from its append. The next sequence becomes part of canonical history only when the corresponding event record is written through the durable append path.
+
+Untyped API inputs also fail closed. A supplied payload is validated even when it is falsy; only `payload=None` selects the empty-object default. Likewise, only `occurred_at=None` selects the current time. `repair_trailing_partial` must be an actual boolean rather than a truthy configuration value.
 
 ## Reopen and recovery
 
@@ -41,17 +46,18 @@ A conforming stream must have:
 - strict JSON with no duplicate object keys or `NaN`/infinite constants;
 - exactly the current ATES event-envelope fields plus `payload`;
 - canonical serialization bytes, not merely semantically equivalent JSON;
+- canonical content that can be re-encoded as ATES UTF-8 JSON; an escaped but unencodable lone surrogate is persisted corruption, not a generic serialization exception;
 - the same `run_id` on every event;
 - unique event IDs;
 - sequences exactly `1..N` with no gaps or duplicates.
 
-Malformed **complete** records fail closed and are never repaired automatically.
+Malformed **complete** records fail closed and are never repaired automatically. Initialization failures close already-open evidence, lock, and directory handles before propagating the original failure; partial lock-file initialization follows the same cleanup rule.
 
 ### Torn trailing write
 
 A final non-newline-terminated tail is treated as an uncommitted/torn record. Normal reopen fails closed.
 
-An operator/recovery path may explicitly request `repair_trailing_partial=True`. That operation truncates **only** bytes after the last committed newline and fsyncs the truncation. It does not skip, rewrite, or synthesize any complete event.
+An operator/recovery path may explicitly request `repair_trailing_partial=True`. That operation truncates **only** bytes after the last committed newline and fsyncs the truncation. It does not skip, rewrite, or synthesize any complete event. Non-boolean repair values are rejected before the store hierarchy is touched, so a string such as `"false"` cannot accidentally authorize destructive repair.
 
 This keeps repair narrow enough to distinguish an interrupted final write from arbitrary evidence corruption.
 
@@ -68,7 +74,13 @@ Callers must not respond to an uncertain append by inventing a new event ID for 
 
 ## Security / path boundary
 
-The store validates the project, `.argus`, `runs`, and `<run-id>` directory chain before opening evidence. Symlink/reparse redirects are rejected where exposed by the platform, the run directory must remain contained beneath `.argus/runs`, and evidence/lock files must be regular files. POSIX file opens use `O_NOFOLLOW` where available.
+The store pins the project, `.argus`, `runs`, and run-directory chain for the writer lifetime rather than validating path strings and later reopening them by name.
+
+On POSIX, child directories and files are created/opened relative to already-open directory descriptors with no-follow semantics where supported. This keeps the lock and `evidence.jsonl` bound to the validated run directory even if an attacker renames the visible path and replaces it with a symlink between validation and file open.
+
+On Windows, the hierarchy is retained through non-reparse directory handles opened without delete sharing, preventing rename/replacement while the store is active. Evidence and lock files are opened through validated Windows handles and reparse points are rejected. Files on all platforms must resolve as regular files, not devices/FIFOs/sockets/link targets.
+
+A store object is also process-owned. On POSIX, an instance inherited through `fork()` is invalid in the child and must be closed/reopened there. The child cleanup path closes only its inherited descriptors and deliberately does not issue an explicit unlock that could release the parent writer's shared `flock` open-file description.
 
 This is the local evidence path boundary only. Artifact path confinement remains part of ATES Core/artifact handling.
 
