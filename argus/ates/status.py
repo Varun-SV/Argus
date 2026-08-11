@@ -20,7 +20,10 @@ class StatusInputs:
 
 def derive_run_status(inputs: StatusInputs) -> RunStatus:
     assertion_error = any(
-        result in (AssertionResult.ERROR, AssertionResult.UNEVALUATED, AssertionResult.SKIPPED)
+        result is AssertionResult.ERROR for result in inputs.required_assertion_results
+    )
+    incomplete_assertion = any(
+        result in (AssertionResult.UNEVALUATED, AssertionResult.SKIPPED)
         for result in inputs.required_assertion_results
     )
     if (
@@ -28,7 +31,6 @@ def derive_run_status(inputs: StatusInputs) -> RunStatus:
         or inputs.evidence_integrity_error
         or inputs.execution_error
         or assertion_error
-        or not inputs.required_steps_satisfied
     ):
         return RunStatus.ERROR
 
@@ -40,12 +42,21 @@ def derive_run_status(inputs: StatusInputs) -> RunStatus:
     if inputs.cancelled:
         return RunStatus.CANCELLED
 
+    if incomplete_assertion or not inputs.required_steps_satisfied:
+        return RunStatus.ERROR
+
     return RunStatus.PASSED
 
 
-def effective_outcome(revisions: tuple[RunOutcomeRevision, ...]) -> RunOutcomeRevision:
+def effective_outcome(
+    revisions: tuple[RunOutcomeRevision, ...],
+    *,
+    evidence_revision: int | None = None,
+) -> RunOutcomeRevision:
     if not revisions:
         raise ValueError("at least one finalization revision is required")
+    if evidence_revision is not None and evidence_revision < 1:
+        raise ValueError("evidence_revision must be >= 1")
 
     ordered = sorted(revisions, key=lambda item: item.revision)
     run_id = ordered[0].run_id
@@ -69,4 +80,12 @@ def effective_outcome(revisions: tuple[RunOutcomeRevision, ...]) -> RunOutcomeRe
         seen_ids.add(item.finalization_id)
         previous = item
 
-    return ordered[-1]
+    if evidence_revision is None:
+        return ordered[-1]
+
+    applicable = [
+        item for item in ordered if item.evidence_revision <= evidence_revision
+    ]
+    if not applicable:
+        raise ValueError("no finalization applies to the requested evidence revision")
+    return applicable[-1]
