@@ -548,63 +548,124 @@ def _open_regular_file(directory: _PinnedDirectory, name: str):
 
 
 class _WriterLock:
-    """Cross-process single-authority lock retained for the store lifetime."""
+    """Cross-process single-authority lock retained for the store lifetime.
+
+    On POSIX, authority is anchored to the pinned run-directory inode before
+    the visible marker file is opened. Replacing or unlinking the marker
+    therefore cannot create a second conforming writer for the same run.
+    """
 
     def __init__(self, directory: _PinnedDirectory) -> None:
         path = directory.path / ".ates-writer.lock"
-        handle, created = _open_regular_file(directory, ".ates-writer.lock")
-        self._handle = handle
+        self._directory = directory
+        self._handle = None
         self._locked = False
+        self._directory_locked = False
         self._owner_pid = os.getpid()
 
-        try:
-            if created or os.fstat(self._handle.fileno()).st_size == 0:
-                self._handle.seek(0)
-                self._handle.write(b"\0")
-                self._handle.flush()
-                os.fsync(self._handle.fileno())
-                if created:
-                    directory.fsync()
-        except BaseException as exc:
-            self._handle.close()
-            if not isinstance(exc, Exception):
-                raise
-            if isinstance(exc, AtesStoreError):
-                raise
-            raise AtesStoreError(
-                f"cannot initialize ATES writer lock {path}: {exc}"
-            ) from exc
+        # Acquire the stable authority lock before touching the replaceable
+        # marker pathname. Separate opens of the same directory inode contend
+        # on flock even when they occur in the same process.
+        if os.name != "nt":
+            assert directory._fd is not None
+            import fcntl
 
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                self._handle.seek(0)
-                msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(
-                    self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
-                )
-        except BaseException as exc:
-            self._handle.close()
-            if not isinstance(exc, Exception):
-                raise
-            if isinstance(exc, OSError):
+            try:
+                fcntl.flock(directory._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
                 raise AtesStoreBusy(
                     f"another authoritative ATES writer owns {directory.path.name}"
                 ) from exc
-            raise
-        self._locked = True
+            self._directory_locked = True
 
-    def close(self) -> None:
-        if self._handle.closed:
+        try:
+            handle, created = _open_regular_file(directory, ".ates-writer.lock")
+            self._handle = handle
+
+            try:
+                if created or os.fstat(self._handle.fileno()).st_size == 0:
+                    self._handle.seek(0)
+                    self._handle.write(b"\0")
+                    self._handle.flush()
+                    os.fsync(self._handle.fileno())
+                    if created:
+                        directory.fsync()
+            except BaseException as exc:
+                if not isinstance(exc, Exception):
+                    raise
+                if isinstance(exc, AtesStoreError):
+                    raise
+                raise AtesStoreError(
+                    f"cannot initialize ATES writer lock {path}: {exc}"
+                ) from exc
+
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    self._handle.seek(0)
+                    msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    # Retain the marker flock as an additional compatibility
+                    # barrier and for the existing on-disk lock contract.
+                    fcntl.flock(
+                        self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                    )
+            except OSError as exc:
+                raise AtesStoreBusy(
+                    f"another authoritative ATES writer owns {directory.path.name}"
+                ) from exc
+            self._locked = True
+        except BaseException:
+            if self._handle is not None and not self._handle.closed:
+                try:
+                    self._handle.close()
+                except BaseException:
+                    pass
+            self._handle = None
+            self._release_directory_lock(suppress_errors=True)
+            raise
+
+    def assert_authoritative(self) -> None:
+        """Fail closed if this store no longer holds its authority handles."""
+        if os.getpid() != self._owner_pid:
+            raise AtesStoreError("ATES writer authority was inherited across a fork")
+        if self._handle is None or self._handle.closed or not self._locked:
+            raise AtesStoreError("ATES writer authority is no longer held")
+        if os.name != "nt" and not self._directory_locked:
+            raise AtesStoreError("ATES writer directory authority is no longer held")
+
+    def _release_directory_lock(self, *, suppress_errors: bool) -> None:
+        if not self._directory_locked:
             return
         inherited = os.getpid() != self._owner_pid
-        unlock_error: Optional[BaseException] = None
+        error: Optional[BaseException] = None
         try:
-            if self._locked and not inherited:
+            if not inherited and os.name != "nt":
+                import fcntl
+
+                assert self._directory._fd is not None
+                fcntl.flock(self._directory._fd, fcntl.LOCK_UN)
+        except BaseException as exc:
+            error = exc
+        finally:
+            self._directory_locked = False
+        if error is not None and not suppress_errors:
+            raise error
+
+    def close(self) -> None:
+        inherited = os.getpid() != self._owner_pid
+        first_error: Optional[BaseException] = None
+
+        try:
+            if (
+                self._handle is not None
+                and not self._handle.closed
+                and self._locked
+                and not inherited
+            ):
                 if os.name == "nt":
                     import msvcrt
 
@@ -615,12 +676,25 @@ class _WriterLock:
 
                     fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
         except BaseException as exc:
-            unlock_error = exc
+            first_error = exc
         finally:
             self._locked = False
-            self._handle.close()
-        if unlock_error is not None:
-            raise unlock_error
+            if self._handle is not None and not self._handle.closed:
+                try:
+                    self._handle.close()
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+            self._handle = None
+
+        try:
+            self._release_directory_lock(suppress_errors=False)
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+
+        if first_error is not None:
+            raise first_error
 
 
 class AtesEventStore:
@@ -875,6 +949,9 @@ class AtesEventStore:
                 "ATES event store is poisoned after an uncertain append; "
                 "close and reopen to reconcile"
             )
+        if self._writer_lock is None:
+            raise AtesStoreError("ATES writer authority is unavailable")
+        self._writer_lock.assert_authoritative()
 
     def _read_all(self) -> bytes:
         assert self._file is not None
