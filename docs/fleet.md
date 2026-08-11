@@ -47,6 +47,7 @@ Argus Fleet is a layer **above**, not a replacement for, `ExecutionEnvironment` 
 - persist cancellation in globally authoritative coordination state before acknowledging the request so coordinator failure cannot resurrect dispatch;
 - make cancellation causally safe so a delayed allocation cannot start after the logical session was cancelled where the owner has observed the cancellation/fence;
 - make Node-side admission authoritative and atomic so concurrent placements cannot overcommit advertised capacity;
+- preserve producer timestamps while recording a trusted Control Center receipt/clock-offset basis so cross-Node timelines do not silently misorder skewed clocks;
 - provide live monitoring of every active session;
 - make the Observer surface structurally read-only;
 - aggregate ATES events from all running sessions;
@@ -71,6 +72,7 @@ Responsibilities should include:
 - session lifecycle coordination and idempotent allocation requests;
 - durable global placement ownership/fencing state, cancellation state, and generation retirement;
 - immutable staged-input manifests for remote sessions;
+- trusted receipt-time and Node clock-offset/uncertainty metadata for cross-Node evidence correlation;
 - test-plan and matrix expansion;
 - ATES event aggregation;
 - result and artifact indexing;
@@ -308,10 +310,48 @@ Nodes should periodically report:
 - image availability including immutable image identity/digest;
 - virtualization/provider health;
 - active session IDs;
-- clock information sufficient to detect dangerous skew;
+- Node wall-clock timestamp plus clock synchronization source/status where available;
+- monotonic-clock sample/reference suitable for measuring intervals/restarts where available;
 - degraded conditions.
 
+The Control Center should measure and retain enough timing metadata to estimate Node-to-Control-Center clock offset and uncertainty, for example using authenticated request/response timing samples and observed round-trip bounds. Merely accepting a Node's self-reported wall clock as globally correct is not sufficient.
+
 Loss of the Control Center connection should have an explicit policy. Existing running Capsules should not be destroyed or abandoned based on an ambiguous network interruption without a defined reconciliation strategy.
+
+## Trusted Fleet time basis
+
+ATES per-run `sequence` remains the authoritative ordering **within one run**. Fleet, however, may display events from different Nodes on one wall-clock timeline, so cross-Node correlation needs an explicit trust model.
+
+Every ATES event received by the Control Center should preserve the producer's original `occurred_at` unchanged and record aggregation/transport metadata separately, conceptually:
+
+```yaml
+producer_time:
+  occurred_at: "2026-08-11T10:20:00.120+05:30"
+central_receipt:
+  received_at: "2026-08-11T10:20:00.287+05:30"
+clock_assessment:
+  offset_estimate_ms: 132
+  uncertainty_ms: 24
+  sample_age_ms: 1800
+  sync_status: healthy
+```
+
+The exact wire/storage shape may evolve, but these semantics are required:
+
+- `occurred_at` remains a Node-produced fact and is never silently rewritten to look like a trusted central timestamp;
+- the Control Center records an authenticated local `received_at` timestamp when it accepts the event;
+- clock offset estimates carry an uncertainty/error bound and measurement/sample age, not only a point estimate;
+- offset/uncertainty metadata is associated with the relevant Node/time interval so later reports can determine what timing knowledge was available;
+- Node clock steps, restarts, synchronization loss, excessive drift, or stale offset samples mark the affected cross-Node timing as degraded until a new trustworthy assessment is obtained;
+- receipt time may establish when the Control Center observed an event but does not prove the exact time the event happened before network delay;
+- producer times adjusted by an offset estimate may be used for visualization only when the uncertainty is acceptable for the requested comparison;
+- if two adjusted event-time intervals overlap within their uncertainty bounds, Fleet must not claim a definite causal/temporal order between those cross-Node events merely to draw a tidy timeline;
+- when skew/uncertainty exceeds policy thresholds, dashboards/reports visibly qualify timing as approximate/degraded or fall back to receipt-time presentation rather than silently presenting precise global order;
+- audit/report exports retain the producer timestamp, central receipt timestamp, and relevant offset/uncertainty assessment so the cross-Node ordering claim can be independently evaluated later.
+
+For example, if Node A's adjusted event is `10:20:00.200 ±40 ms` and Node B's is `10:20:00.230 ±50 ms`, the intervals overlap and Fleet cannot truthfully assert that A happened before B. Per-run sequence ordering remains exact for each individual producer even when cross-Node wall-clock order is uncertain.
+
+This timing metadata is aggregation/provenance evidence. The Control Center must not rewrite a Node's canonical ATES event as though the central service directly observed the underlying guest action.
 
 ## Scheduling
 
@@ -549,6 +589,8 @@ B1       |======================| PASS
 B2       |================..........| RUNNING
 ```
 
+The Fleet timeline must apply the **Trusted Fleet time basis** above. It may place cross-Node events on a common adjusted wall-clock axis only when the associated offset/uncertainty data supports that precision. Events with overlapping uncertainty intervals or degraded clock state must be shown as approximate/uncertain rather than assigned a false exact order. A receipt-time view may be offered separately and must be labeled as Control Center observation time, not execution time.
+
 Selecting a failure can show:
 
 - failed assertion;
@@ -556,6 +598,7 @@ Selecting a failure can show:
 - checkpoint/failure screenshot;
 - finding;
 - collected artifacts;
+- producer and central timing provenance when cross-Node timing matters;
 - Failure Capsule retention state where the underlying execution path supports it.
 
 ## ATES integration
@@ -578,6 +621,8 @@ Node/Capsule
 The Control Center should not rewrite Node facts as though it observed them directly. Provenance must identify which Node/environment emitted each event.
 
 Fleet transport must preserve the ATES event envelope: stable event IDs, canonical gap-free per-run sequences (or explicit ATES tombstones), idempotent retries, explicit gap detection, and conflict rejection. Canonical execution order comes from the producer's ATES sequence rather than network arrival order.
+
+The aggregator additionally records authenticated Control Center receipt timestamps and Node clock offset/uncertainty assessments as separate transport/provenance metadata. This metadata may support cross-run visualization/audit correlation but must not alter the producer event's `occurred_at` or invent a total cross-Node order when timing uncertainty overlaps.
 
 ## Results and artifacts
 
@@ -623,11 +668,12 @@ Future discard/export workflows should use explicit privileged Control Center op
 13. Terminal allocation/cancellation tombstones remain until their placement generation is durably retired or revoked and can no longer authorize execution.
 14. Cancellation is atomically persisted in global placement state before acceptance is acknowledged; recovered coordinators never re-dispatch a cancelled/pending-cancel session.
 15. Node-side cancellation tombstones preserve causal safety when cancellation and allocation arrive out of order; ambiguous in-flight execution remains visibly `cancellation_pending` until owner acknowledgment or fencing.
-16. Remote placement never silently falls back to local execution.
-17. All control-plane mutations are auditable.
-18. ATES facts retain Node/session/image/input/placement provenance and transport preserves ATES event identity/order.
-19. Credentials and guest-control secrets are not emitted into ATES evidence.
-20. Ambiguous distributed failures use reconciliation rather than destructive guesses.
+16. Node producer timestamps are preserved, while Control Center receipt time plus measured offset/uncertainty governs any cross-Node timing claim; skewed/overlapping times are visibly qualified rather than falsely ordered.
+17. Remote placement never silently falls back to local execution.
+18. All control-plane mutations are auditable.
+19. ATES facts retain Node/session/image/input/placement provenance and transport preserves ATES event identity/order.
+20. Credentials and guest-control secrets are not emitted into ATES evidence.
+21. Ambiguous distributed failures use reconciliation rather than destructive guesses.
 
 ## Initial implementation sequence
 
@@ -635,15 +681,15 @@ Recommended order:
 
 1. define Node identity/capability models, Node key ownership, enrollment request IDs, bootstrap credential semantics, acknowledgment-persistent enrollment recovery, and immutable image identity metadata;
 2. implement Node Agent daemon and authenticated/idempotent enrollment using protected secret input rather than argv, with explicit recovery/revocation for unacknowledged identities;
-3. establish authenticated encrypted Fleet channels and add heartbeat/capability/image registry to the Control Center;
+3. establish authenticated encrypted Fleet channels and add heartbeat/capability/image registry plus trusted receipt-time/clock-offset-and-uncertainty sampling to the Control Center;
 4. define stable `session_request_id`, durable global placement owner/generation/cancellation state, definitive fencing and generation-retirement rules, immutable staged-input manifests, canonical request digests, terminal/cancellation tombstones, durable Node-side deduplication, and atomic capacity-reservation semantics;
 5. implement remote session request/response around existing Capsule APIs only after global placement ownership, authorization-lifetime terminal tombstones, globally durable pre-ack cancellation, idempotent allocation, causal Node cancellation, staged-input verification, and Node-side admission are enforced;
-6. add reconciliation for disconnect/restart scenarios, including ownership/fencing/retirement/cancellation state, reservations, terminal/cancellation tombstones, and unacknowledged enrollments;
-7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics and immutable image/input/placement provenance;
+6. add reconciliation for disconnect/restart scenarios, including ownership/fencing/retirement/cancellation state, reservations, terminal/cancellation tombstones, clock-state degradation/resampling, and unacknowledged enrollments;
+7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics, immutable image/input/placement provenance, producer `occurred_at`, central `received_at`, and clock offset/uncertainty metadata;
 8. implement read-only Observer API;
 9. implement live screen transport over the protected Fleet channel;
 10. add scheduler/queue and placement requirements with immutable image pinning while treating heartbeat capacity as advisory;
-11. add matrix execution and fleet timeline;
+11. add matrix execution and a Fleet timeline that explicitly represents uncertain/degraded cross-Node temporal ordering;
 12. add encrypted centralized artifact indexing/storage policies;
 13. later consider cloud/autoscaling workers.
 
