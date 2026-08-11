@@ -24,10 +24,12 @@ ATES is designed to provide:
 - source-identity commitments that do not turn low-entropy secrets into offline-verifiable public hashes;
 - a manifest model that becomes tamper-evident only when bound to a trusted external, immutable, or cryptographic trust boundary;
 - append-oriented audit history rather than silent mutation;
+- authenticated/authorized supersession so a forged correction cannot silently replace audit evidence;
 - immutable/versioned requirement identities for requirement-to-test-to-evidence traceability;
 - recoverable evidence from interrupted/crashed runs, including ambiguous action dispatch outcomes;
 - immutable per-attempt identities so retries never overwrite prior execution history;
 - deterministic canonical final-status aggregation shared by renderers and Fleet;
+- transactional evidence finalization so a run is not exposed as passed before required integrity work durably commits;
 - schema-level pre-persistence redaction for all free-form evidence text and target-generated observations;
 - context-safe rendering of untrusted application/test evidence;
 - explicit trust status for rendered reports;
@@ -193,9 +195,9 @@ Completion fields that belong to canonical execution evidence are **not required
 - `final_status`;
 - final canonical event/sequence information needed to close the execution stream.
 
-The evidence-manifest revision/digest that binds the finalized stream is **derived after the canonical execution bytes are closed** and is not embedded back into the same bound Run/`RUN_COMPLETED` bytes. Doing so would create a self-referential digest cycle.
+The evidence-manifest revision/digest that binds the finalized stream is **derived from the exact final canonical bytes** and is not embedded back into the same bound Run/`RUN_COMPLETED` bytes. Doing so would create a self-referential digest cycle. The completion/finalization transaction below defines how Argus can prepare the exact candidate final event and manifest together before exposing the run as completed.
 
-A run whose stream has no valid `RUN_COMPLETED` event remains a valid **incomplete/recoverable run**, not an invalid ATES record. Renderers and validators must preserve its available evidence and report that final status/end time are unknown rather than inventing them.
+A run whose stream has no valid, durably committed `RUN_COMPLETED` event remains a valid **incomplete/recoverable run**, not an invalid ATES record. Renderers and validators must preserve its available evidence and report that final status/end time are unknown rather than inventing them.
 
 A derived `run.json` may expose lifecycle state such as:
 
@@ -231,12 +233,14 @@ Normative aggregation precedence is:
 3. **`cancelled`** if execution was explicitly cancelled before a normal result and neither `error` nor an already-established `failed` result has higher precedence under the active test policy;
 4. **`passed`** only when none of the above apply and every required assertion/step/acceptance condition that must complete has reached a passing/satisfied terminal state.
 
-A producer must **not** emit `passed` when any of these remain true:
+A producer must **not** emit or expose `passed` when any of these remain true:
 
 - a required assertion is failed, errored, missing, or unevaluated;
 - a required Step has no policy-satisfying terminal attempt;
 - a non-idempotent/destructive Action has an unresolved post-dispatch outcome;
 - canonical evidence has an unreconciled sequence gap/conflict or other integrity condition required for finalization;
+- required retained artifacts have not been closed and successfully hashed/validated for the final evidence snapshot;
+- the required evidence manifest/finalization transaction for the active profile has not durably committed;
 - execution encountered an environment/adapter/runner error that makes the intended result unreliable;
 - a declared deterministic or authenticated policy rule marks the run as failed/error.
 
@@ -697,7 +701,33 @@ RUN_MARKED_INCOMPLETE
 
 Not every adapter/environment or execution kind will emit every event.
 
-`RUN_COMPLETED` closes execution semantics (for example final status/end time/final sequence). Its `final_status` must be derived using the canonical aggregation rules above. It does **not** contain the digest of an evidence manifest whose input includes that same event. Evidence-manifest construction occurs after the canonical event range is closed.
+`RUN_COMPLETED` is the **commit record of successful run finalization**, not the first step of finalization. Its `final_status` must be derived using the canonical aggregation rules above. It does **not** contain the digest of an evidence manifest whose input includes that same event. Instead, the exact candidate `RUN_COMPLETED` bytes and the exact manifest that will bind the resulting final evidence snapshot are prepared together and durably published as one logical finalization transaction as described below.
+
+### Completion and integrity finalization transaction
+
+A run must not become canonically `completed`—and especially must not become `passed`—while required evidence-integrity work is still pending.
+
+Before exposing `RUN_COMPLETED`, the authoritative producer must:
+
+1. stop/close mutable artifact producers for the run and determine the exact persisted artifact representations governed by the capture/privacy policy;
+2. durably flush all prior canonical events and verify that required event sequences, action outcomes, assertions, and other completion preconditions are reconciled;
+3. hash/validate every retained artifact and canonical input that the active evidence profile requires in the final evidence manifest;
+4. derive the candidate canonical `final_status`, where any required integrity/finalization failure has `error` precedence rather than allowing `passed`;
+5. construct the **exact next `RUN_COMPLETED` event bytes** (including its final sequence/status/end time) without embedding the manifest digest, then construct the candidate final canonical evidence snapshot and immutable evidence-manifest bytes/digest that bind that event and the retained artifacts;
+6. durably commit/publish the final event and its required manifest as one **logical transaction** before readers, Fleet, or renderers are allowed to observe `lifecycle_state: completed`.
+
+A filesystem/database implementation does not need magical multi-file atomicity, but it must provide equivalent crash semantics—for example a staged finalization directory plus fsync/atomic rename, a database transaction, or a durable journal/commit marker. A reader must not treat a staged `RUN_COMPLETED` as authoritative until the corresponding finalization commit marker/manifest state is durable.
+
+Failure semantics are normative:
+
+- if artifact hashing, canonical-evidence validation, manifest construction, or required manifest persistence fails **before commit**, a `passed` completion must not become visible;
+- if the failure can itself be safely recorded, the producer recomputes the terminal outcome as `error` and performs a fresh finalization transaction over that exact terminal event;
+- if the storage/finalization mechanism is too broken to commit a trustworthy terminal record, the run remains `incomplete/recoverable` rather than claiming `passed` or fabricating success;
+- recovery after a crash inspects the durable finalization journal/commit state and either completes the already-prepared identical transaction or rolls it back/retries safely; it must not expose half of the transaction as a completed run;
+- optional external signatures/transparency bindings may occur after ordinary native finalization **only when the active profile does not require them**; if a profile requires a tamper-evidence binding as a completion condition, that binding (or durable proof that it committed) is part of the required finalization gate and failure cannot yield `passed` under that profile;
+- derived `run.json`, dashboards, JUnit, and Fleet must use the committed finalization state rather than assuming that the presence of candidate event bytes alone means completion.
+
+This avoids both failure modes: the manifest digest is not self-referential, and a later manifest/hash failure cannot leave behind a canonical `passed` run that never satisfied its required evidence-integrity contract.
 
 For Actions that can cause external side effects, `ACTION_DISPATCH_COMMITTED` is the durable pre-side-effect boundary. Once it exists without a confirmed terminal action outcome, recovery treats the operation as potentially executed and must apply the ambiguous-outcome rules above before any retry.
 
@@ -777,6 +807,8 @@ An evidence-manifest revision should bind:
 - relevant schema/version identifiers;
 - previous evidence-manifest revision/digest when a chained revision is created.
 
+For the terminal run snapshot, the manifest publication participates in the completion/finalization transaction above: the exact final event bytes and manifest inputs are prepared before completion becomes visible, and readers consider the run completed only after the logical transaction commits.
+
 Once published/finalized, an evidence-manifest revision and its digest are immutable. Additional audit material never rewrites the revision it references.
 
 The manifest's own digest is metadata **about** that immutable manifest object and is stored/referenced outside the byte range the digest covers. A chained later manifest may reference the previous manifest's digest, but no revision may require its own digest to appear inside its own hashed bytes.
@@ -810,17 +842,49 @@ A future regulated/audit profile may require one or more concrete binding mechan
 
 ## Audit history and supersession
 
-Corrections should be append-oriented.
+Corrections should be append-oriented, but append-only storage is not enough by itself: a correction that changes which record is treated as authoritative is a privileged audit action.
 
-A prior Finding, classification, approval, or interpretation should not silently disappear. A later record should supersede or annotate it with:
+A prior Finding, classification, approval, interpretation, traceability mapping, or other auditable record should not silently disappear. A later correction/supersession record should identify at least:
 
-- prior record ID;
-- new record ID;
+- `correction_id` / new record ID;
+- prior record ID and exact revision/manifest context being superseded;
 - reason;
-- actor;
-- timestamp.
+- claimed actor identity;
+- timestamp;
+- required authorization/role or policy scope;
+- verification status/method and the authenticated actor/credential reference.
 
-Corrections that alter execution evidence produce a **new evidence-manifest revision** rather than rewriting the revision already reviewed or approved.
+Conceptually:
+
+```yaml
+correction_id: CORR-0009
+supersedes: FINDING-0042
+reason: "Reviewer confirmed this was a test-environment issue"
+actor: reviewer@example.invalid
+corrected_at: "..."
+authorization:
+  required_permission: evidence.supersede_finding
+verification:
+  status: verified
+  method: signature
+  signer_key_id: "qa-reviewer-key-7"
+  binding_ref: "..."
+```
+
+Required semantics:
+
+- an actor name/string is descriptive only; it must not authorize a supersession by itself;
+- before a correction is applied as authoritative, the actor identity and permission to supersede that class/scope of record must be authenticated under the applicable versioned authorization policy;
+- every correction carries a verification state such as `verified`, `unverified`, or `invalid`;
+- an `unverified` correction may be retained as submitted audit material, but renderers, status aggregation, approval gates, traceability joins, and other consumers must **not apply it as the authoritative replacement**;
+- an `invalid` correction remains visible for audit/investigation where policy permits but must never change derived truth;
+- signing or hashing a later manifest that happens to contain a forged correction proves only that those bytes were bound; it does **not** authenticate the claimed actor unless the correction itself is signed/authenticated or an independently trusted append service authenticated and recorded the actor/authorization at submission time;
+- a verified correction records exactly what it supersedes and does not erase the prior record; reports can reconstruct the full chain and show verification state at each transition;
+- corrections that alter canonical execution evidence produce a **new evidence-manifest revision** rather than rewriting the revision already reviewed or approved;
+- corrections to detached approvals/audit records remain detached from the evidence revision they discuss and require their own authenticated/integrity-protected audit binding rather than rewriting the approved evidence manifest;
+- a correction cannot grant itself authority by claiming a stronger role; authorization is evaluated against trusted identity/policy state external to the submitted correction payload.
+
+This keeps append-oriented audit history useful without turning `actor: someone@example` into a security boundary.
 
 ## Approvals
 
@@ -1035,11 +1099,11 @@ Recommended implementation order:
 5. implement adapter/provider operation-id deduplication/status reconciliation where supported and fail safely for unknown non-idempotent action outcomes where it is not;
 6. implement Observation pre-append allow/redact/protect/suppress handling and artifact pre-write classification/redaction/protected/suppressed handling plus race-safe evidence-root path confinement **before** enabling default failure/checkpoint evidence persistence;
 7. implement failure evidence and explicit checkpoints using those evidence policies;
-8. hash canonical artifacts and generate immutable versioned evidence manifests after the canonical event range is closed, keeping each manifest's own digest detached from the bytes it hashes;
-9. implement optional evidence-manifest binding mechanisms before advertising tamper-evident evidence;
+8. implement the crash-safe completion/finalization transaction: close retained artifact producers, hash/validate required artifacts and canonical inputs, derive the terminal outcome, prepare the exact `RUN_COMPLETED` bytes plus final immutable evidence manifest, and durably commit them as one logical transaction before exposing `completed`/`passed`;
+9. implement optional evidence-manifest binding mechanisms before advertising tamper-evident evidence, and make any profile-required binding part of the finalization gate;
 10. render the first Markdown/JSON Test Execution Report from verified/canonical evidence using context-safe encoding, canonical final-status rules, complete retry-attempt history, incomplete-run handling, and execution-kind-aware source identity, and mark it `unverified_derived` unless regenerated/verified or separately bound;
 11. implement versioned package manifests (or verified regeneration flow) for rendered report outputs before distributing them with a verified trust indicator;
 12. add immutable/versioned requirement traceability joins and cross-run coverage for applicable execution kinds;
-13. add authenticated detached approval/supersession records tied to immutable evidence-manifest revisions, with verification status enforced by renderers/gates;
+13. add authenticated detached approval/supersession records tied to immutable evidence-manifest revisions, with actor authorization and verification status enforced by renderers/gates;
 14. integrate live event streaming with Argus Fleet using idempotent retry/reconciliation semantics;
 15. add external compliance mappings only after the native model is stable.
