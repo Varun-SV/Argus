@@ -17,10 +17,6 @@ def _events(project_dir, run_id):
         return tuple(store.events)
 
 
-def _event_docs(events):
-    return [event.to_document() for event in events]
-
-
 def _canonical_bytes(events):
     return b"".join(event.canonical_line() for event in events)
 
@@ -164,8 +160,11 @@ steps:
         [_action(action="type", text="ultra-private-input", element_id=1)]
     )
 
+    # An individual action failure does not necessarily fail the legacy step:
+    # the existing NL loop may recover on a later turn. ATES must preserve the
+    # ambiguous action outcome regardless of the eventual StepResult.
     result = run_test(spec, provider, RejectingAdapter(), project_dir=tmp_path)
-    assert result.status == "error"
+    assert result.status == "pass"
 
     events = _events(tmp_path, result.ates_run_id)
     types = [event.envelope.event_type for event in events]
