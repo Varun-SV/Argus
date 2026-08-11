@@ -33,6 +33,8 @@ Collection-valued provenance also rejects scalar strings before snapshotting. In
 
 Structured safe JSON is snapshotted into immutable-but-JSON-compatible containers, and `to_json_compatible()` provides an explicit conversion path for ATES dataclasses, enums, aware datetimes, mappings, and sequences. The Core therefore does not require callers to choose between immutable evidence snapshots and a working JSON serialization path.
 
+Action parameter and Observation fact mappings follow a stricter snapshot rule: Core enumerates the supplied mapping exactly once, validates the resulting snapshot, and stores that same immutable snapshot. Validation and storage never make separate reads from an untrusted or concurrently mutable `Mapping`, preventing a custom mapping from presenting safe `EvidenceValue` entries during validation and different plaintext entries during copying.
+
 ## Secret-safe disposition reasons
 
 The `reason` attached to `redacted`, `suppressed`, and `protected_ref` evidence is a **reason/policy code**, not a free-form diagnostic string. Core validation restricts it to a short lowercase code vocabulary (`a-z`, digits, `.`, `_`, `-`). Exception messages, model prose, credentials, tokens, and other free-form text must not be copied into this field; if explanatory evidence is needed it must be represented through its own secret-safe evidence channel.
@@ -43,7 +45,7 @@ This prevents an otherwise correctly redacted value from leaking the secret agai
 
 A committed scripted test source is not sufficient to identify a run's immutable inputs. `RunRecord.configuration_commitment` separately commits the effective runtime configuration using `SourceCommitment`, allowing callers to use a secret-redacted canonical commitment or a protected keyed commitment as appropriate. This keeps two runs of the same test specification distinguishable when provider, policy, environment, or other material runtime configuration differs without requiring plaintext secrets in ordinary evidence.
 
-## Step-attempt history
+## Step-attempt history and evidence relationships
 
 Individual `StepAttemptRecord` values enforce lifecycle consistency, while `validate_step_attempt_history()` enforces the cross-record retry invariants that cannot be decided by one record alone.
 
@@ -55,6 +57,15 @@ For every logical `step_id`:
 - the prior attempt must have a terminal `ended_at` no later than the next attempt's `started_at`.
 
 This rejects histories such as attempts `1, 1, 3`, retries launched before their cause has finished, overlapping attempts, and time-reversed retry sequences.
+
+Opaque `StepAttemptId` values intentionally do not encode their parent step, so an isolated Action or Assertion cannot prove its foreign-key relationship by construction alone. Before a collection is treated as canonical evidence, `validate_step_evidence_relationships()` joins it against the validated Step-attempt history and returns immutable snapshots of the validated collection. It enforces that:
+
+- every Action and Assertion references a known Step attempt and its declared `step_id` matches that attempt's owning Step;
+- every Observation references a known Step attempt;
+- an Assertion's optional `observation_id` names a known Observation from the same Step attempt;
+- Action, Observation, and Assertion identities are unique within the canonical collection.
+
+Callers that persist, package, or report multi-record evidence should use the snapshots returned by this aggregate validator rather than validating one list and later consuming a separately mutable collection.
 
 ## Artifact capture and byte integrity
 
