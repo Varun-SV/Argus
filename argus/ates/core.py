@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from types import MappingProxyType
 from typing import Mapping, Optional, Sequence, TypeVar, Union
 
 from .ids import (
@@ -17,6 +16,8 @@ from .ids import (
 
 ATES_VERSION = "0.1"
 STATUS_POLICY_VERSION = "ates-status-v1"
+SUPPORTED_STATUS_POLICY_VERSIONS = frozenset({STATUS_POLICY_VERSION})
+RUN_OUTCOME_REFINALIZATION_SCOPE = "run_outcome.refinalize"
 
 
 class ExecutionKind(str, Enum):
@@ -100,6 +101,26 @@ TEnum = TypeVar("TEnum", bound=Enum)
 TAtesId = TypeVar("TAtesId", bound=AtesId)
 
 
+class FrozenDict(dict):
+    """Immutable dict snapshot that remains compatible with asdict/json.dumps."""
+
+    @staticmethod
+    def _immutable(*args: object, **kwargs: object) -> None:
+        raise TypeError("FrozenDict is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+    def __ior__(self, other: object):
+        self._immutable()
+        return self
+
+
 def _require_nonempty(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
@@ -164,13 +185,43 @@ def ensure_json_safe(value: JsonValue, path: str = "$") -> None:
 
 
 def freeze_json(value: JsonValue) -> JsonValue:
-    """Return an immutable copy of a JSON-compatible value."""
+    """Return an immutable, JSON-serializable copy of a JSON-compatible value."""
     ensure_json_safe(value)
     if isinstance(value, Mapping):
-        return MappingProxyType({key: freeze_json(child) for key, child in value.items()})
+        return FrozenDict({key: freeze_json(child) for key, child in value.items()})
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return tuple(freeze_json(child) for child in value)
     return value
+
+
+def to_json_compatible(value: object) -> JsonValue:
+    """Convert ATES Core values to ordinary JSON-compatible containers/scalars."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: to_json_compatible(getattr(value, item.name))
+            for item in fields(value)
+        }
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, datetime):
+        require_aware_datetime(value, "datetime")
+        return value.isoformat()
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("JSON output cannot contain a non-finite float")
+        return value
+    if isinstance(value, Mapping):
+        converted: dict[str, JsonValue] = {}
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ValueError("JSON output mappings require string keys")
+            converted[key] = to_json_compatible(child)
+        return converted
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [to_json_compatible(child) for child in value]
+    raise ValueError(f"unsupported ATES JSON value {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -401,6 +452,33 @@ class StepAttemptRecord:
                 _require_nonempty(self.retry_reason.value, "retry_reason")
 
 
+def validate_step_attempt_history(
+    attempts: Sequence[StepAttemptRecord],
+) -> tuple[StepAttemptRecord, ...]:
+    """Validate per-step attempt ordinals as unique and contiguous from one."""
+    if isinstance(attempts, (str, bytes, bytearray)):
+        raise ValueError("attempt history must be a sequence of StepAttemptRecord values")
+    snapshot = tuple(attempts)
+    histories: dict[StepId, list[int]] = {}
+    seen_attempt_ids: set[StepAttemptId] = set()
+    for item in snapshot:
+        if not isinstance(item, StepAttemptRecord):
+            raise ValueError("attempt history must contain only StepAttemptRecord values")
+        if item.step_attempt_id in seen_attempt_ids:
+            raise ValueError("step attempt IDs must be unique across an attempt history")
+        seen_attempt_ids.add(item.step_attempt_id)
+        histories.setdefault(item.step_id, []).append(item.attempt)
+
+    for step_id, ordinals in histories.items():
+        ordered = sorted(ordinals)
+        expected = list(range(1, len(ordered) + 1))
+        if ordered != expected:
+            raise ValueError(
+                f"attempt ordinals for {step_id} must be unique and contiguous starting at 1"
+            )
+    return snapshot
+
+
 @dataclass(frozen=True)
 class ActionRecord:
     action_id: ActionId
@@ -427,7 +505,7 @@ class ActionRecord:
         _require_nonempty(self.action_type, "action_type")
         if not all(isinstance(key, str) and isinstance(value, EvidenceValue) for key, value in self.parameters.items()):
             raise ValueError("action parameters must map strings to EvidenceValue")
-        object.__setattr__(self, "parameters", MappingProxyType(dict(self.parameters)))
+        object.__setattr__(self, "parameters", FrozenDict(dict(self.parameters)))
 
 
 @dataclass(frozen=True)
@@ -455,7 +533,7 @@ class ObservationRecord:
         _require_nonempty(self.capture_policy, "capture_policy")
         if not all(isinstance(key, str) and isinstance(value, EvidenceValue) for key, value in self.facts.items()):
             raise ValueError("observation facts must map strings to EvidenceValue")
-        object.__setattr__(self, "facts", MappingProxyType(dict(self.facts)))
+        object.__setattr__(self, "facts", FrozenDict(dict(self.facts)))
 
 
 @dataclass(frozen=True)
@@ -530,6 +608,8 @@ class FindingRecord:
 
 def validate_artifact_path(path: str) -> str:
     _require_nonempty(path, "artifact path")
+    if any(ord(char) < 32 or ord(char) == 127 for char in path):
+        raise ValueError("artifact path cannot contain control characters")
     if "\\" in path or "%" in path or ":" in path:
         raise ValueError("artifact path must use canonical unencoded POSIX-relative syntax")
     candidate = PurePosixPath(path)
@@ -644,6 +724,28 @@ class Verification:
 
 
 @dataclass(frozen=True)
+class AuthorizationDecision:
+    allowed: bool
+    scope: str
+    policy_id: str
+    policy_version: str
+    decision_ref: str
+    verification: Verification
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.allowed, bool):
+            raise ValueError("authorization allowed must be a boolean")
+        _require_nonempty(self.scope, "authorization scope")
+        _require_nonempty(self.policy_id, "authorization policy_id")
+        _require_nonempty(self.policy_version, "authorization policy_version")
+        _require_nonempty(self.decision_ref, "authorization decision_ref")
+        if not isinstance(self.verification, Verification):
+            raise ValueError("authorization verification must be a validated Verification instance")
+        if self.verification.status is not VerificationStatus.VERIFIED:
+            raise ValueError("authorization decision must itself be verified")
+
+
+@dataclass(frozen=True)
 class RunOutcomeRevision:
     finalization_id: FinalizationId
     run_id: RunId
@@ -655,6 +757,7 @@ class RunOutcomeRevision:
     supersedes_finalization_id: Optional[FinalizationId] = None
     correction_ids: tuple[CorrectionId, ...] = ()
     verification: Optional[Verification] = None
+    authorization: Optional[AuthorizationDecision] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -682,6 +785,10 @@ class RunOutcomeRevision:
         object.__setattr__(self, "correction_ids", normalized_corrections)
         if self.verification is not None and not isinstance(self.verification, Verification):
             raise ValueError("verification must be a validated Verification instance")
+        if self.authorization is not None and not isinstance(
+            self.authorization, AuthorizationDecision
+        ):
+            raise ValueError("authorization must be a validated AuthorizationDecision instance")
         _require_positive_int(self.revision, "finalization revision")
         _require_positive_int(self.evidence_revision, "evidence revision")
         object.__setattr__(
@@ -690,7 +797,10 @@ class RunOutcomeRevision:
             _normalize_enum(self.effective_status, RunStatus, "effective_status"),
         )
         require_aware_datetime(self.finalized_at, "finalized_at")
-        _require_nonempty(self.status_policy_version, "status_policy_version")
+        if self.status_policy_version not in SUPPORTED_STATUS_POLICY_VERSIONS:
+            raise ValueError(
+                f"unsupported status_policy_version: {self.status_policy_version!r}"
+            )
         if self.revision == 1:
             if self.supersedes_finalization_id is not None or self.correction_ids:
                 raise ValueError("original finalization cannot supersede/cite corrections")
@@ -701,6 +811,14 @@ class RunOutcomeRevision:
                 raise ValueError("re-finalization requires at least one status-bearing correction")
             if self.verification is None or self.verification.status is not VerificationStatus.VERIFIED:
                 raise ValueError("status-bearing re-finalization must be authenticated/verified")
+            if self.authorization is None:
+                raise ValueError("status-bearing re-finalization requires an authorization decision")
+            if not self.authorization.allowed:
+                raise ValueError("status-bearing re-finalization is not authorized")
+            if self.authorization.scope != RUN_OUTCOME_REFINALIZATION_SCOPE:
+                raise ValueError(
+                    "authorization decision does not cover run-outcome re-finalization"
+                )
 
 
 @dataclass(frozen=True)
