@@ -11,8 +11,8 @@ from types import MappingProxyType
 from typing import Mapping, Optional, Sequence, TypeVar, Union
 
 from .ids import (
-    ActionId, ActionOperationId, ArtifactId, AssertionId, CorrectionId, EventId,
-    FinalizationId, FindingId, ObservationId, RunId, StepAttemptId, StepId,
+    ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
+    EventId, FinalizationId, FindingId, ObservationId, RunId, StepAttemptId, StepId,
 )
 
 ATES_VERSION = "0.1"
@@ -97,6 +97,7 @@ class EventType(str, Enum):
 JsonScalar = Union[str, int, float, bool, None]
 JsonValue = Union[JsonScalar, Sequence["JsonValue"], Mapping[str, "JsonValue"]]
 TEnum = TypeVar("TEnum", bound=Enum)
+TAtesId = TypeVar("TAtesId", bound=AtesId)
 
 
 def _require_nonempty(value: str, field_name: str) -> str:
@@ -111,6 +112,12 @@ def _require_positive_int(value: int, field_name: str) -> int:
     return value
 
 
+def _require_nonnegative_int(value: int, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
 def _normalize_enum(value: object, enum_type: type[TEnum], field_name: str) -> TEnum:
     if isinstance(value, enum_type):
         return value
@@ -118,6 +125,17 @@ def _normalize_enum(value: object, enum_type: type[TEnum], field_name: str) -> T
         return enum_type(value)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be a valid {enum_type.__name__}") from exc
+
+
+def _normalize_id(value: object, id_type: type[TAtesId], field_name: str) -> TAtesId:
+    if isinstance(value, id_type):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a valid {id_type.__name__}")
+    try:
+        return id_type(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a valid {id_type.__name__}") from exc
 
 
 def require_aware_datetime(value: datetime, field_name: str) -> None:
@@ -169,6 +187,8 @@ class EvidenceValue:
             "disposition",
             _normalize_enum(self.disposition, EvidenceDisposition, "disposition"),
         )
+        if isinstance(self.secret_refs, (str, bytes, bytearray)):
+            raise ValueError("secret_refs must be a sequence of reference strings")
         object.__setattr__(self, "secret_refs", tuple(self.secret_refs))
         for ref in self.secret_refs:
             _require_nonempty(ref, "secret_ref")
@@ -302,6 +322,7 @@ class RunRecord:
     model: Optional[str] = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "run_id", _normalize_id(self.run_id, RunId, "run_id"))
         object.__setattr__(
             self,
             "execution_kind",
@@ -327,6 +348,7 @@ class StepRecord:
     kind: str = "step"
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "step_id", _normalize_id(self.step_id, StepId, "step_id"))
         _require_nonempty(self.kind, "kind")
         if not isinstance(self.instruction, EvidenceValue):
             raise ValueError("step instruction must be an EvidenceValue")
@@ -343,6 +365,12 @@ class StepAttemptRecord:
     retry_reason: Optional[EvidenceValue] = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "step_attempt_id",
+            _normalize_id(self.step_attempt_id, StepAttemptId, "step_attempt_id"),
+        )
+        object.__setattr__(self, "step_id", _normalize_id(self.step_id, StepId, "step_id"))
         _require_positive_int(self.attempt, "attempt")
         object.__setattr__(
             self,
@@ -383,6 +411,19 @@ class ActionRecord:
     operation_id: Optional[ActionOperationId] = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "action_id", _normalize_id(self.action_id, ActionId, "action_id"))
+        object.__setattr__(self, "step_id", _normalize_id(self.step_id, StepId, "step_id"))
+        object.__setattr__(
+            self,
+            "step_attempt_id",
+            _normalize_id(self.step_attempt_id, StepAttemptId, "step_attempt_id"),
+        )
+        if self.operation_id is not None:
+            object.__setattr__(
+                self,
+                "operation_id",
+                _normalize_id(self.operation_id, ActionOperationId, "operation_id"),
+            )
         _require_nonempty(self.action_type, "action_type")
         if not all(isinstance(key, str) and isinstance(value, EvidenceValue) for key, value in self.parameters.items()):
             raise ValueError("action parameters must map strings to EvidenceValue")
@@ -399,6 +440,16 @@ class ObservationRecord:
     facts: Mapping[str, EvidenceValue]
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "observation_id",
+            _normalize_id(self.observation_id, ObservationId, "observation_id"),
+        )
+        object.__setattr__(
+            self,
+            "step_attempt_id",
+            _normalize_id(self.step_attempt_id, StepAttemptId, "step_attempt_id"),
+        )
         require_aware_datetime(self.captured_at, "captured_at")
         _require_nonempty(self.source, "source")
         _require_nonempty(self.capture_policy, "capture_policy")
@@ -421,6 +472,23 @@ class AssertionRecord:
     required: bool = True
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "assertion_id",
+            _normalize_id(self.assertion_id, AssertionId, "assertion_id"),
+        )
+        object.__setattr__(self, "step_id", _normalize_id(self.step_id, StepId, "step_id"))
+        object.__setattr__(
+            self,
+            "step_attempt_id",
+            _normalize_id(self.step_attempt_id, StepAttemptId, "step_attempt_id"),
+        )
+        if self.observation_id is not None:
+            object.__setattr__(
+                self,
+                "observation_id",
+                _normalize_id(self.observation_id, ObservationId, "observation_id"),
+            )
         _require_nonempty(self.kind, "kind")
         _require_nonempty(self.method, "method")
         if not isinstance(self.expected, EvidenceValue):
@@ -445,9 +513,16 @@ class FindingRecord:
     classification_source: str = "model"
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "finding_id",
+            _normalize_id(self.finding_id, FindingId, "finding_id"),
+        )
         _require_nonempty(self.classification_source, "classification_source")
         if not isinstance(self.title, EvidenceValue) or not isinstance(self.description, EvidenceValue):
             raise ValueError("finding title and description must be EvidenceValue records")
+        if isinstance(self.evidence_refs, (str, bytes, bytearray)):
+            raise ValueError("evidence_refs must be a sequence of reference strings")
         object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
         for ref in self.evidence_refs:
             _require_nonempty(ref, "evidence_ref")
@@ -477,12 +552,22 @@ class ArtifactRecord:
     path: str
     sensitivity: str
     capture_policy: str
+    content_digest: SourceCommitment
+    size_bytes: int
     protection_state: EvidenceDisposition
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "artifact_id",
+            _normalize_id(self.artifact_id, ArtifactId, "artifact_id"),
+        )
         _require_nonempty(self.kind, "kind")
         _require_nonempty(self.sensitivity, "sensitivity")
         _require_nonempty(self.capture_policy, "capture_policy")
+        if not isinstance(self.content_digest, SourceCommitment):
+            raise ValueError("content_digest must be a SourceCommitment over final persisted bytes")
+        _require_nonnegative_int(self.size_bytes, "size_bytes")
         object.__setattr__(
             self,
             "protection_state",
@@ -572,7 +657,31 @@ class RunOutcomeRevision:
     verification: Optional[Verification] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "correction_ids", tuple(self.correction_ids))
+        object.__setattr__(
+            self,
+            "finalization_id",
+            _normalize_id(self.finalization_id, FinalizationId, "finalization_id"),
+        )
+        object.__setattr__(self, "run_id", _normalize_id(self.run_id, RunId, "run_id"))
+        if self.supersedes_finalization_id is not None:
+            object.__setattr__(
+                self,
+                "supersedes_finalization_id",
+                _normalize_id(
+                    self.supersedes_finalization_id,
+                    FinalizationId,
+                    "supersedes_finalization_id",
+                ),
+            )
+        if isinstance(self.correction_ids, (str, bytes, bytearray)):
+            raise ValueError("correction_ids must be a sequence of CorrectionId values")
+        normalized_corrections = tuple(
+            _normalize_id(item, CorrectionId, "correction_id")
+            for item in self.correction_ids
+        )
+        object.__setattr__(self, "correction_ids", normalized_corrections)
+        if self.verification is not None and not isinstance(self.verification, Verification):
+            raise ValueError("verification must be a validated Verification instance")
         _require_positive_int(self.revision, "finalization revision")
         _require_positive_int(self.evidence_revision, "evidence revision")
         object.__setattr__(
@@ -606,6 +715,8 @@ class EventEnvelope:
     def __post_init__(self) -> None:
         if self.ates_version != ATES_VERSION:
             raise ValueError(f"unsupported ATES version: {self.ates_version!r}")
+        object.__setattr__(self, "run_id", _normalize_id(self.run_id, RunId, "run_id"))
+        object.__setattr__(self, "event_id", _normalize_id(self.event_id, EventId, "event_id"))
         _require_positive_int(self.sequence, "event sequence")
         object.__setattr__(
             self,
