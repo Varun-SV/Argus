@@ -26,6 +26,7 @@ from argus.ates import (
     StepAttemptRecord,
     StepAttemptStatus,
     StepId,
+    StepRecord,
     effective_outcome,
     to_json_compatible,
     validate_step_evidence_relationships,
@@ -113,6 +114,7 @@ def test_assertions_can_bind_an_immutable_requirement_identity():
 
 def test_distinct_actions_cannot_reuse_an_operation_id():
     step_id = StepId.new()
+    step = StepRecord(step_id, EvidenceValue.safe("Perform action"))
     attempt = StepAttemptRecord(
         StepAttemptId.new(), step_id, 1, StepAttemptStatus.RUNNING, NOW
     )
@@ -125,7 +127,9 @@ def test_distinct_actions_cannot_reuse_an_operation_id():
     )
 
     with pytest.raises(ValueError, match="operation IDs must be unique"):
-        validate_step_evidence_relationships((attempt,), actions=(first, second))
+        validate_step_evidence_relationships(
+            (attempt,), steps=(step,), actions=(first, second)
+        )
 
 
 def test_optional_run_identity_metadata_requires_nonempty_strings():
