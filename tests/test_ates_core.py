@@ -4,15 +4,18 @@ import pytest
 
 from argus.ates import (
     ATES_VERSION, ActionId, ActionOperationId, ActionRecord, ArtifactId, ArtifactRecord,
-    AssertionResult, CorrectionId, EventEnvelope, EventId, EventType, EvidenceDisposition,
-    EvidenceValue, ExecutionKind, FinalizationId, RequirementIdentity, RoamSource, RunId,
-    RunOutcomeRevision, RunRecord, RunStatus, ScriptedSource, SourceCommitment,
-    StatusInputs, StepAttemptId, StepAttemptRecord, StepAttemptStatus, StepId,
-    Verification, VerificationStatus, derive_run_status, effective_outcome,
-    validate_artifact_path,
+    AssertionId, AssertionRecord, AssertionResult, CorrectionId, EventEnvelope, EventId,
+    EventType, EvidenceDisposition, EvidenceValue, ExecutionKind, FinalizationId,
+    RequirementIdentity, RoamSource, RunId, RunOutcomeRevision, RunRecord, RunStatus,
+    ScriptedSource, SourceCommitment, StatusInputs, StepAttemptId, StepAttemptRecord,
+    StepAttemptStatus, StepId, StepRecord, Verification, VerificationStatus,
+    derive_run_status, effective_outcome, validate_artifact_path,
 )
 
 NOW = datetime(2026, 8, 11, 6, 0, tzinfo=timezone.utc)
+CONFIG_COMMITMENT = SourceCommitment(
+    "hmac-sha256", "hmac:runtime-config", "ates-config-v1"
+)
 
 
 def test_typed_ids_validate_prefix_and_generate_unique_values():
@@ -26,17 +29,34 @@ def test_typed_ids_validate_prefix_and_generate_unique_values():
         StepId("STEP-../escape")
 
 
-def test_event_envelope_requires_supported_version_positive_sequence_and_aware_time():
+def test_event_envelope_requires_supported_version_positive_integer_sequence_and_aware_time():
     envelope = EventEnvelope(
         ATES_VERSION, RunId.new(), EventId.new(), 1, EventType.RUN_STARTED, NOW
     )
     assert envelope.sequence == 1
-    with pytest.raises(ValueError, match="sequence"):
+    with pytest.raises(ValueError, match="positive integer"):
         EventEnvelope(ATES_VERSION, RunId.new(), EventId.new(), 0, EventType.RUN_STARTED, NOW)
+    for invalid_sequence in (True, 1.5):
+        with pytest.raises(ValueError, match="positive integer"):
+            EventEnvelope(
+                ATES_VERSION, RunId.new(), EventId.new(), invalid_sequence,
+                EventType.RUN_STARTED, NOW,
+            )
     with pytest.raises(ValueError, match="timezone-aware"):
         EventEnvelope(
             ATES_VERSION, RunId.new(), EventId.new(), 1, EventType.RUN_STARTED,
             datetime(2026, 8, 11, 6, 0),
+        )
+
+
+def test_event_type_is_normalized_from_serialized_input():
+    envelope = EventEnvelope(
+        ATES_VERSION, RunId.new(), EventId.new(), 1, "RUN_STARTED", NOW  # type: ignore[arg-type]
+    )
+    assert envelope.event_type is EventType.RUN_STARTED
+    with pytest.raises(ValueError, match="event_type"):
+        EventEnvelope(
+            ATES_VERSION, RunId.new(), EventId.new(), 1, "NOT_AN_EVENT", NOW  # type: ignore[arg-type]
         )
 
 
@@ -46,9 +66,10 @@ def test_run_source_identity_is_conditional_on_execution_kind():
     )
     scripted = RunRecord(
         RunId.new(), ExecutionKind.SCRIPTED, ScriptedSource("TEST-1", commitment),
-        NOW, "0.1.0", "desktop-gui", "capsule", "standard",
+        NOW, "0.1.0", "desktop-gui", "capsule", "standard", CONFIG_COMMITMENT,
     )
     assert scripted.source.test_case_id == "TEST-1"
+    assert scripted.configuration_commitment is CONFIG_COMMITMENT
 
     roam_source = RoamSource(
         objective_present=False,
@@ -56,14 +77,52 @@ def test_run_source_identity_is_conditional_on_execution_kind():
     )
     roam = RunRecord(
         RunId.new(), ExecutionKind.ROAM, roam_source, NOW, "0.1.0",
-        "desktop-gui", "capsule", "standard",
+        "desktop-gui", "capsule", "standard", CONFIG_COMMITMENT,
     )
     assert roam.source.kind == "roam_session"
 
     with pytest.raises(ValueError, match="ScriptedSource"):
         RunRecord(
             RunId.new(), ExecutionKind.SCRIPTED, roam_source, NOW, "0.1.0",
-            "desktop-gui", "local", "standard",
+            "desktop-gui", "local", "standard", CONFIG_COMMITMENT,
+        )
+
+
+def test_execution_kind_is_normalized_before_source_validation():
+    commitment = SourceCommitment(
+        "sha256_redacted_canonical", "sha256:abc", "ates-source-v1"
+    )
+    scripted_source = ScriptedSource("TEST-1", commitment)
+    record = RunRecord(
+        RunId.new(), "scripted", scripted_source, NOW, "0.1.0",  # type: ignore[arg-type]
+        "desktop-gui", "capsule", "standard", CONFIG_COMMITMENT,
+    )
+    assert record.execution_kind is ExecutionKind.SCRIPTED
+
+    roam_source = RoamSource(
+        objective_present=False,
+        config_commitment=SourceCommitment("hmac-sha256", "hmac:123"),
+    )
+    with pytest.raises(ValueError, match="ScriptedSource"):
+        RunRecord(
+            RunId.new(), "scripted", roam_source, NOW, "0.1.0",  # type: ignore[arg-type]
+            "desktop-gui", "capsule", "standard", CONFIG_COMMITMENT,
+        )
+    with pytest.raises(ValueError, match="execution_kind"):
+        RunRecord(
+            RunId.new(), "unknown", scripted_source, NOW, "0.1.0",  # type: ignore[arg-type]
+            "desktop-gui", "capsule", "standard", CONFIG_COMMITMENT,
+        )
+
+
+def test_scripted_run_requires_run_configuration_commitment():
+    source = ScriptedSource(
+        "TEST-1", SourceCommitment("sha256_redacted_canonical", "sha256:abc")
+    )
+    with pytest.raises(ValueError, match="configuration_commitment"):
+        RunRecord(
+            RunId.new(), ExecutionKind.SCRIPTED, source, NOW, "0.1.0",
+            "desktop-gui", "capsule", "standard", "raw-config",  # type: ignore[arg-type]
         )
 
 
@@ -97,6 +156,23 @@ def test_raw_disposition_is_normalized_before_secret_safety_validation():
     assert value.disposition is EvidenceDisposition.REDACTED
 
 
+def test_secret_references_are_snapshotted_before_validation():
+    mutable_refs = ["SECRET-login"]
+    value = EvidenceValue(
+        "redacted", value="<redacted>", reason="secret",  # type: ignore[arg-type]
+        secret_refs=mutable_refs,  # type: ignore[arg-type]
+    )
+    mutable_refs.clear()
+    assert value.secret_refs == ("SECRET-login",)
+
+
+def test_step_instruction_requires_secret_safe_evidence_value():
+    step = StepRecord(StepId.new(), EvidenceValue.safe("Open settings"))
+    assert step.instruction.value == "Open settings"
+    with pytest.raises(ValueError, match="instruction"):
+        StepRecord(StepId.new(), "Type password123")  # type: ignore[arg-type]
+
+
 def test_action_parameters_are_explicit_evidence_values():
     action = ActionRecord(
         ActionId.new(), StepId.new(), StepAttemptId.new(), "type",
@@ -110,15 +186,41 @@ def test_action_parameters_are_explicit_evidence_values():
         )
 
 
+def test_assertion_result_and_evidence_fields_are_runtime_validated():
+    assertion = AssertionRecord(
+        AssertionId.new(), StepId.new(), StepAttemptId.new(), "text_visible",
+        EvidenceValue.safe("Ready"), "failed", "deterministic",  # type: ignore[arg-type]
+    )
+    assert assertion.result is AssertionResult.FAILED
+    with pytest.raises(ValueError, match="expected value"):
+        AssertionRecord(
+            AssertionId.new(), StepId.new(), StepAttemptId.new(), "text_visible",
+            "Ready", AssertionResult.PASSED, "deterministic",  # type: ignore[arg-type]
+        )
+
+
 def test_step_attempts_have_immutable_identity_and_positive_ordinal():
     attempt = StepAttemptRecord(
         StepAttemptId.new(), StepId.new(), 2, StepAttemptStatus.PASSED,
         NOW, NOW, EvidenceValue.safe("first attempt assertion failed"),
     )
     assert attempt.attempt == 2
-    with pytest.raises(ValueError, match="attempt"):
+    for invalid_attempt in (0, True, 1.5):
+        with pytest.raises(ValueError, match="positive integer"):
+            StepAttemptRecord(
+                StepAttemptId.new(), StepId.new(), invalid_attempt,
+                StepAttemptStatus.RUNNING, NOW,  # type: ignore[arg-type]
+            )
+
+
+def test_step_attempt_status_is_normalized_before_lifecycle_validation():
+    attempt = StepAttemptRecord(
+        StepAttemptId.new(), StepId.new(), 1, "passed", NOW, NOW  # type: ignore[arg-type]
+    )
+    assert attempt.status is StepAttemptStatus.PASSED
+    with pytest.raises(ValueError, match="step attempt status"):
         StepAttemptRecord(
-            StepAttemptId.new(), StepId.new(), 0, StepAttemptStatus.RUNNING, NOW
+            StepAttemptId.new(), StepId.new(), 1, "unknown", NOW  # type: ignore[arg-type]
         )
 
 
@@ -186,15 +288,31 @@ def test_canonical_status_precedence(inputs, expected):
     assert derive_run_status(inputs) is expected
 
 
+def test_status_inputs_normalize_serialized_assertion_results():
+    failed = StatusInputs(required_assertion_results=("failed",))  # type: ignore[arg-type]
+    errored = StatusInputs(required_assertion_results=("error",))  # type: ignore[arg-type]
+    assert failed.required_assertion_results == (AssertionResult.FAILED,)
+    assert derive_run_status(failed) is RunStatus.FAILED
+    assert derive_run_status(errored) is RunStatus.ERROR
+    with pytest.raises(ValueError, match="AssertionResult"):
+        StatusInputs(required_assertion_results=("bogus",))  # type: ignore[arg-type]
+
+
+def test_status_inputs_require_real_booleans():
+    with pytest.raises(ValueError, match="cancelled"):
+        StatusInputs(cancelled="false")  # type: ignore[arg-type]
+
+
 def test_artifact_paths_are_package_relative_and_confined():
     assert validate_artifact_path("artifacts/STEP-1/screenshot.png") == (
         "artifacts/STEP-1/screenshot.png"
     )
     artifact = ArtifactRecord(
         ArtifactId.new(), "screenshot", "artifacts/shot.png",
-        "internal", EvidenceDisposition.REDACTED,
+        "internal", "capture-standard-v1", EvidenceDisposition.REDACTED,
     )
     assert artifact.path == "artifacts/shot.png"
+    assert artifact.capture_policy == "capture-standard-v1"
 
     for bad in (
         "/etc/passwd", "../outside", "artifacts/../outside",
@@ -206,17 +324,25 @@ def test_artifact_paths_are_package_relative_and_confined():
             validate_artifact_path(bad)
 
 
+def test_retained_artifact_requires_applied_capture_policy():
+    with pytest.raises(ValueError, match="capture_policy"):
+        ArtifactRecord(
+            ArtifactId.new(), "screenshot", "artifacts/shot.png",
+            "internal", "", EvidenceDisposition.REDACTED,
+        )
+
+
 def test_retained_artifact_record_cannot_claim_suppression():
     with pytest.raises(ValueError, match="ARTIFACT_SUPPRESSED"):
         ArtifactRecord(
             ArtifactId.new(), "screenshot", "artifacts/shot.png",
-            "secret", EvidenceDisposition.SUPPRESSED,
+            "secret", "capture-standard-v1", EvidenceDisposition.SUPPRESSED,
         )
 
     with pytest.raises(ValueError, match="ARTIFACT_SUPPRESSED"):
         ArtifactRecord(
             ArtifactId.new(), "screenshot", "artifacts/shot.png",
-            "secret", "suppressed",  # type: ignore[arg-type]
+            "secret", "capture-standard-v1", "suppressed",  # type: ignore[arg-type]
         )
 
 
@@ -275,10 +401,15 @@ def test_safe_nested_values_and_record_mappings_are_immutable_snapshots():
 def test_verified_records_require_independent_binding_reference():
     with pytest.raises(ValueError, match="binding_ref"):
         Verification(
-            VerificationStatus.VERIFIED,
+            "verified",  # type: ignore[arg-type]
             method="signature",
             actor="qa-reviewer",
         )
+    verified = Verification(
+        "verified", method="signature", actor="qa-reviewer",  # type: ignore[arg-type]
+        binding_ref="sig://review/1",
+    )
+    assert verified.status is VerificationStatus.VERIFIED
 
 
 def test_status_bearing_correction_requires_verified_refinalization():
@@ -306,6 +437,28 @@ def test_status_bearing_correction_requires_verified_refinalization():
     )
     assert first.effective_status is RunStatus.PASSED
     assert effective_outcome((first, second)).effective_status is RunStatus.FAILED
+
+
+def test_effective_status_is_normalized_and_invalid_values_are_rejected():
+    run_id = RunId.new()
+    normalized = RunOutcomeRevision(
+        FinalizationId.new(), run_id, 1, "passed", 1, NOW  # type: ignore[arg-type]
+    )
+    assert normalized.effective_status is RunStatus.PASSED
+    with pytest.raises(ValueError, match="effective_status"):
+        RunOutcomeRevision(
+            FinalizationId.new(), run_id, 1, "bogus", 1, NOW  # type: ignore[arg-type]
+        )
+
+
+def test_outcome_revision_numbers_require_positive_integers():
+    run_id = RunId.new()
+    for revision, evidence_revision in ((True, 1), (1.5, 1), (1, True), (1, 1.5)):
+        with pytest.raises(ValueError, match="positive integer"):
+            RunOutcomeRevision(
+                FinalizationId.new(), run_id, revision, RunStatus.PASSED,
+                evidence_revision, NOW,  # type: ignore[arg-type]
+            )
 
 
 def test_correction_ids_are_snapshotted_before_refinalization_validation():
@@ -353,8 +506,11 @@ def test_effective_outcome_can_render_historical_evidence_revision():
     assert effective_outcome(
         (first, second), evidence_revision=3
     ).effective_status is RunStatus.FAILED
-    with pytest.raises(ValueError, match="evidence_revision"):
-        effective_outcome((first, second), evidence_revision=0)
+    for invalid_revision in (0, True, 1.5):
+        with pytest.raises(ValueError, match="evidence_revision"):
+            effective_outcome(
+                (first, second), evidence_revision=invalid_revision  # type: ignore[arg-type]
+            )
 
 
 def test_effective_outcome_rejects_cross_run_revision_chains():
