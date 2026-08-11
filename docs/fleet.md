@@ -42,6 +42,7 @@ Argus Fleet is a layer **above**, not a replacement for, `ExecutionEnvironment` 
 - pin each scheduled Capsule image to an immutable content identity rather than trusting a mutable alias alone;
 - bind every staged input to immutable content identity before remote dispatch;
 - make remote session creation retry-idempotent so ambiguous network failures cannot launch a destructive test twice;
+- persist global placement ownership so Control Center failover cannot redispatch one logical session to two Nodes;
 - make cancellation causally safe so a delayed allocation cannot start after the logical session was cancelled;
 - make Node-side admission authoritative and atomic so concurrent placements cannot overcommit advertised capacity;
 - provide live monitoring of every active session;
@@ -66,6 +67,7 @@ Responsibilities should include:
 - Capsule-image inventory metadata and immutable image identities;
 - scheduling and queues;
 - session lifecycle coordination and idempotent allocation requests;
+- durable global placement ownership/fencing state;
 - immutable staged-input manifests for remote sessions;
 - test-plan and matrix expansion;
 - ATES event aggregation;
@@ -278,13 +280,17 @@ If the Control Center has consumed the bootstrap credential and persisted the du
 - the Node retries with the same `enrollment_request_id` and public key;
 - the Control Center must not create a second Node identity;
 - the Node proves possession of the matching private key;
-- the Control Center returns/replays the same pending durable enrollment result within a bounded recovery window until the Node acknowledges it;
+- the Control Center returns/replays the same pending durable enrollment result until the Node explicitly acknowledges successful provisioning, or until an authenticated administrative recovery/revocation operation definitively closes that pending enrollment;
 - a reused request ID with a different key fingerprint is rejected as a protocol/security error;
 - replacing the bootstrap token must not silently create another identity for the same pending logical request.
 
+Pending enrollment state **must not expire merely because a recovery timer elapsed** after the bootstrap credential was consumed. The Control Center must retain enough durable state to recover the same Node identity/result after restart or long disconnection. If an operator needs to abandon a never-acknowledged enrollment, that requires an authenticated, auditable revoke/recover operation that invalidates the pending durable identity before a replacement enrollment can be accepted.
+
+A recovery operation may issue a replacement credential/certificate only after the Node proves possession of the originally enrolled private key, or after an authenticated administrator explicitly revokes that identity. It must not depend on the already-consumed bootstrap secret becoming valid again.
+
 The replayable enrollment result must not expose reusable bootstrap material. Credential-delivery design should prefer issuing/deriving durable credentials in a way that can be safely recovered by proof of the enrolled private key, rather than depending on retransmitting a plaintext private credential.
 
-Enrollment credentials should remain short-lived, single-use, and audience-bound to the intended Control Center. Atomic consumption prevents token replay; request/key binding and idempotent result recovery prevent orphaned identities when the response is lost.
+Enrollment credentials should remain short-lived, single-use, and audience-bound to the intended Control Center. Atomic consumption prevents token replay; request/key binding plus acknowledgment-persistent recovery state prevents orphaned identities when a response is lost.
 
 Optional mDNS/LAN discovery may help users find an unregistered Node, but discovery must not equal trust. Production execution requires explicit authenticated enrollment.
 
@@ -351,11 +357,43 @@ This prevents two concurrent placements from both consuming the same advertised 
 
 Remote Capsule creation is a destructive side effect and must be **retry-idempotent before Fleet remote execution is considered implementable**.
 
-Before dispatch, the Control Center must allocate:
+Before dispatch, the Control Center must allocate and durably persist:
 
 - the stable ATES `run_id` for the logical run;
 - a stable random `session_request_id` for the logical remote allocation request;
-- a canonical digest of the immutable session request, including the requested image digest, test/spec digest, **immutable staged-input manifest**, network/isolation policy, and other allocation-relevant inputs.
+- a canonical digest of the immutable session request, including the requested image digest, test/spec digest, **immutable staged-input manifest**, network/isolation policy, and other allocation-relevant inputs;
+- the selected `owner_node_id` for this placement;
+- a monotonically increasing `placement_generation` / fencing token for this logical session.
+
+### Global placement ownership and fencing
+
+Node-local deduplication is necessary but not sufficient. A restarted/failing-over Control Center must not send the same `session_request_id` to a different Node merely because it did not receive the first Node's allocation response.
+
+Before the first dispatch, the Control Center must commit a **globally authoritative placement record** in durable coordination state, conceptually:
+
+```yaml
+session_request_id: SESSION-01K...
+run_id: RUN-01K...
+request_digest: "sha256:..."
+owner_node_id: NODE-0007
+placement_generation: 12
+state: dispatching
+```
+
+Required semantics:
+
+- creation or transfer of placement ownership is serialized/transactional for a `session_request_id`;
+- Control Center replicas/failover instances recover the same committed `owner_node_id` and generation before issuing allocation/start commands;
+- a retry while ownership is ambiguous is sent only to the committed owner Node; it is **not** opportunistically rescheduled to another Node;
+- the Node validates that the request names itself as owner and carries the current signed/authenticated placement generation/fencing token, and durably binds that generation to its local session mapping;
+- a stale generation is rejected and can never authorize a new allocation/start;
+- assigning a higher generation to another Node is allowed only after the previous owner's session is known to be terminal/released or the previous owner has been **definitively fenced** so it cannot continue/start the logical execution;
+- loss of heartbeat, lease expiry, Control Center restart, or inability to contact the owner is **not by itself proof of fencing** and must not authorize cross-Node redispatch;
+- acceptable fencing may include confirmed Node-side terminal/release state, authenticated provider/hypervisor termination verified by the authority controlling that host, or another deployment-specific mechanism that makes continued execution on the old owner impossible;
+- if the old owner cannot be reconciled or fenced, the logical session enters an `ownership_unknown`/reconciliation state and fails or waits according to policy rather than running on another Node;
+- ownership changes, fencing evidence, and generation transitions are auditable and become part of session/ATES provenance where appropriate.
+
+An expiring lease may help detect stale coordinators, but **lease expiry alone is not a safety proof** for destructive execution. The invariant is stronger: at most one Node may be permitted to execute a given logical `session_request_id` at a time, including across Control Center failover.
 
 ### Immutable staged-input identity
 
@@ -381,16 +419,17 @@ Required semantics:
 
 If immutable identity cannot be established for a required staged input, the Fleet run fails closed before dispatch. The local non-Fleet syntax may continue to allow an omitted checksum where current behavior permits it; Fleet canonicalization is responsible for producing the required content identity before remote execution.
 
-The Node must durably associate `session_request_id` with the request digest, capacity reservation, cancellation state, and allocation result before or atomically with making the Capsule externally observable/runnable.
+The Node must durably associate `session_request_id` with the request digest, placement generation, capacity reservation, cancellation state, and allocation result before or atomically with making the Capsule externally observable/runnable.
 
 Required retry semantics:
 
-- a first valid request may allocate at most one logical Capsule/session for that `session_request_id`;
-- if the allocation response is lost, the Control Center retries with the **same** `session_request_id`, `run_id`, and request digest;
-- a duplicate request with the same identity and digest returns/replays the original allocation result and current session state rather than creating another Capsule or starting the test again;
+- a first valid request may allocate at most one logical Capsule/session for that `session_request_id` on its committed owner;
+- if the allocation response is lost, the Control Center retries with the **same** `session_request_id`, `run_id`, request digest, owner, and placement generation;
+- a duplicate request with the same identity/digest/generation returns/replays the original allocation result and current session state rather than creating another Capsule or starting the test again;
 - reuse of the same `session_request_id` with a different request digest or `run_id` is rejected as a protocol/security error;
-- the Node retains the request-to-allocation mapping through acknowledgement and for a bounded reconciliation/retention period sufficient to survive reconnect/restart scenarios;
-- retry processing must distinguish `allocated`, `starting`, `running`, `completed`, `failed`, `retained`, `cancelled`, and `released` states so replay never means re-execution.
+- a request for a non-owner Node or stale placement generation is rejected;
+- the Node retains the request-to-allocation mapping through acknowledgement and for a bounded reconciliation/retention period sufficient to survive reconnect/restart scenarios, subject to the stronger global placement/fencing invariant above;
+- retry processing must distinguish `dispatching`, `allocated`, `starting`, `running`, `completed`, `failed`, `retained`, `cancelled`, `ownership_unknown`, and `released` states so replay never means re-execution.
 
 ### Cancellation tombstones and causal safety
 
@@ -409,7 +448,7 @@ Required semantics:
 
 This causal rule prevents a user-visible cancel from racing with a delayed allocation and later starting a destructive test that was already cancelled.
 
-This contract prevents a lost or reordered HTTP/gRPC/WebSocket exchange from turning one logical Fleet request into duplicate or resurrected execution.
+This contract prevents a lost or reordered HTTP/gRPC/WebSocket exchange from turning one logical Fleet request into duplicate, resurrected, or cross-Node execution.
 
 ## Matrix execution
 
@@ -510,32 +549,33 @@ Future discard/export workflows should use explicit privileged Control Center op
 1. Node discovery is not authentication.
 2. Node enrollment is explicit and authenticated.
 3. Enrollment secrets never appear as literal argv values and are short-lived, single-use, and atomically consumed.
-4. Enrollment is bound to a Node-generated key/request ID and is retry-idempotent after token consumption.
+4. Enrollment is bound to a Node-generated key/request ID; pending durable enrollment state remains recoverable until acknowledgment or explicit authenticated revocation.
 5. Fleet control, ATES/event, screen, and artifact traffic uses authenticated encryption in production.
 6. Observer authorization is read-only by construction.
 7. Control Center privilege does not bypass Capsule guest policy accidentally.
 8. Node Agents enforce local provider/capability constraints and atomically reserve local capacity before allocation.
 9. Scheduled images are pinned to immutable identities and verified by the Node before allocation.
 10. Every staged Fleet input is content-addressed/cryptographically identified and verified before launch.
-11. Remote session allocation is idempotent by stable request identity; retries never create a second logical execution.
-12. Cancellation is persisted causally by `session_request_id`, including when cancel arrives before allocation.
-13. Remote placement never silently falls back to local execution.
-14. All control-plane mutations are auditable.
-15. ATES facts retain Node/session/image/input provenance and transport preserves ATES event identity/order.
-16. Credentials and guest-control secrets are not emitted into ATES evidence.
-17. Ambiguous distributed failures use reconciliation rather than destructive guesses.
+11. Remote session allocation is idempotent by stable request identity and globally pinned placement ownership; retries never create a second logical execution on the same or another Node.
+12. Cross-Node ownership transfer requires definitive fencing of the prior owner; heartbeat/lease expiry alone never authorizes redispatch.
+13. Cancellation is persisted causally by `session_request_id`, including when cancel arrives before allocation.
+14. Remote placement never silently falls back to local execution.
+15. All control-plane mutations are auditable.
+16. ATES facts retain Node/session/image/input/placement provenance and transport preserves ATES event identity/order.
+17. Credentials and guest-control secrets are not emitted into ATES evidence.
+18. Ambiguous distributed failures use reconciliation rather than destructive guesses.
 
 ## Initial implementation sequence
 
 Recommended order:
 
-1. define Node identity/capability models, Node key ownership, enrollment request IDs, bootstrap credential semantics, and immutable image identity metadata;
-2. implement Node Agent daemon and authenticated/idempotent enrollment using protected secret input rather than argv;
+1. define Node identity/capability models, Node key ownership, enrollment request IDs, bootstrap credential semantics, acknowledgment-persistent enrollment recovery, and immutable image identity metadata;
+2. implement Node Agent daemon and authenticated/idempotent enrollment using protected secret input rather than argv, with explicit recovery/revocation for unacknowledged identities;
 3. establish authenticated encrypted Fleet channels and add heartbeat/capability/image registry to the Control Center;
-4. define stable `session_request_id`, immutable staged-input manifests, canonical request digests, cancellation tombstones, durable Node-side deduplication, and atomic capacity-reservation semantics;
-5. implement remote session request/response around existing Capsule APIs only after idempotent allocation, causal cancellation, staged-input verification, and Node-side admission are enforced;
-6. add reconciliation for disconnect/restart scenarios, including reservations and cancellation tombstones;
-7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics and immutable image/input provenance;
+4. define stable `session_request_id`, durable global placement owner/generation state, definitive fencing rules, immutable staged-input manifests, canonical request digests, cancellation tombstones, durable Node-side deduplication, and atomic capacity-reservation semantics;
+5. implement remote session request/response around existing Capsule APIs only after global placement ownership, idempotent allocation, causal cancellation, staged-input verification, and Node-side admission are enforced;
+6. add reconciliation for disconnect/restart scenarios, including ownership/fencing state, reservations, cancellation tombstones, and unacknowledged enrollments;
+7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics and immutable image/input/placement provenance;
 8. implement read-only Observer API;
 9. implement live screen transport over the protected Fleet channel;
 10. add scheduler/queue and placement requirements with immutable image pinning while treating heartbeat capacity as advisory;
