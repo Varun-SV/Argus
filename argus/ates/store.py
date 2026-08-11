@@ -510,8 +510,10 @@ class _RunDirectoryChain:
 
             project = _PinnedDirectory(project_path)
             self._directories.append(project)
+            self.project = project
             argus = project.ensure_child(".argus", ".argus")
             self._directories.append(argus)
+            self.argus = argus
             runs = argus.ensure_child("runs", ".argus/runs")
             self._directories.append(runs)
             self.runs = runs
@@ -535,12 +537,22 @@ class _RunDirectoryChain:
     def assert_authoritative(self) -> None:
         if self._namespace_lock is None:
             raise AtesStoreError("ATES run namespace authority is unavailable")
+
+        # A pinned descendant remains usable after an ancestor is renamed, so
+        # writer authority must prove the entire canonical descendant chain,
+        # not only the final run entry. Check ancestors on both sides of the
+        # inner authority proof so a replacement during validation cannot hide
+        # behind still-open descendant descriptors.
+        self.project.assert_child_identity(".argus", self.argus, ".argus")
+        self.argus.assert_child_identity("runs", self.runs, ".argus/runs")
         self._namespace_lock.assert_authoritative()
         self.runs.assert_child_identity(
             self.run_name,
             self.run,
             "ATES run directory",
         )
+        self.argus.assert_child_identity("runs", self.runs, ".argus/runs")
+        self.project.assert_child_identity(".argus", self.argus, ".argus")
 
     def close(self) -> None:
         first_error: Optional[BaseException] = None
