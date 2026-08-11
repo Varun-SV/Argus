@@ -111,6 +111,34 @@ def test_initialization_failure_closes_open_evidence_handle(
     assert opened["handle"].closed is True
 
 
+def test_writer_lock_initialization_failure_closes_its_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    opened = {}
+    original_open = store_module._open_regular_file
+    real_fsync = store_module.os.fsync
+
+    def tracked_open(directory, name):
+        handle, created = original_open(directory, name)
+        if name == ".ates-writer.lock":
+            opened["handle"] = handle
+        return handle, created
+
+    def fail_lock_fsync(fd: int) -> None:
+        handle = opened.get("handle")
+        if handle is not None and not handle.closed and fd == handle.fileno():
+            raise OSError("simulated lock fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(store_module, "_open_regular_file", tracked_open)
+    monkeypatch.setattr(store_module.os, "fsync", fail_lock_fsync)
+
+    with pytest.raises(AtesStoreError, match="initialize ATES writer lock"):
+        AtesEventStore(tmp_path, RunId("RUN-lock-init-cleanup"))
+
+    assert opened["handle"].closed is True
+
+
 def test_unencodable_persisted_text_is_store_corruption(tmp_path: Path):
     run_id = RunId("RUN-surrogate")
     with AtesEventStore(tmp_path, run_id) as store:
