@@ -7,6 +7,7 @@ remain later layers.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -283,10 +284,14 @@ def _windows_handle_info(path: Path, *, directory: bool, create: bool = False):
 
     is_directory = bool(info.dwFileAttributes & 0x00000010)
     is_reparse = bool(info.dwFileAttributes & 0x00000400)
-    if is_reparse or is_directory != directory:
+    if is_reparse:
+        kernel32.CloseHandle(handle)
+        label = "directory" if directory else "event-store file"
+        raise AtesStoreError(f"{label} cannot be a symlink or reparse point: {path}")
+    if is_directory != directory:
         kernel32.CloseHandle(handle)
         kind = "directory" if directory else "regular file"
-        raise AtesStoreError(f"filesystem object is not a non-reparse {kind}: {path}")
+        raise AtesStoreError(f"filesystem object is not a {kind}: {path}")
     return kernel32, handle, created
 
 
@@ -462,6 +467,10 @@ def _open_regular_file(directory: _PinnedDirectory, name: str):
         try:
             fd = os.open(name, flags, dir_fd=directory._fd)
         except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise AtesStoreError(
+                    f"event-store file cannot be a symlink or reparse point: {path}"
+                ) from exc
             raise AtesStoreError(
                 f"cannot open ATES event-store file {path}: {exc}"
             ) from exc
@@ -483,7 +492,6 @@ class _WriterLock:
     """Cross-process single-authority lock retained for the store lifetime."""
 
     def __init__(self, directory: _PinnedDirectory) -> None:
-        path = directory.path / ".ates-writer.lock"
         handle, created = _open_regular_file(directory, ".ates-writer.lock")
         self._handle = handle
         self._locked = False
