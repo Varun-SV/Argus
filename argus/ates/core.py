@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Mapping, Optional, Sequence, Union
+from typing import Mapping, Optional, Sequence, TypeVar, Union
 
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, CorrectionId, EventId,
@@ -96,12 +96,28 @@ class EventType(str, Enum):
 
 JsonScalar = Union[str, int, float, bool, None]
 JsonValue = Union[JsonScalar, Sequence["JsonValue"], Mapping[str, "JsonValue"]]
+TEnum = TypeVar("TEnum", bound=Enum)
 
 
 def _require_nonempty(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
     return value
+
+
+def _require_positive_int(value: int, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _normalize_enum(value: object, enum_type: type[TEnum], field_name: str) -> TEnum:
+    if isinstance(value, enum_type):
+        return value
+    try:
+        return enum_type(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a valid {enum_type.__name__}") from exc
 
 
 def require_aware_datetime(value: datetime, field_name: str) -> None:
@@ -148,11 +164,14 @@ class EvidenceValue:
     protected_ref: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.disposition, EvidenceDisposition):
-            try:
-                object.__setattr__(self, "disposition", EvidenceDisposition(self.disposition))
-            except (TypeError, ValueError) as exc:
-                raise ValueError("disposition must be a valid EvidenceDisposition") from exc
+        object.__setattr__(
+            self,
+            "disposition",
+            _normalize_enum(self.disposition, EvidenceDisposition, "disposition"),
+        )
+        object.__setattr__(self, "secret_refs", tuple(self.secret_refs))
+        for ref in self.secret_refs:
+            _require_nonempty(ref, "secret_ref")
 
         if self.disposition is EvidenceDisposition.SAFE:
             object.__setattr__(self, "value", freeze_json(self.value))
@@ -173,9 +192,6 @@ class EvidenceValue:
             if self.value is not None:
                 raise ValueError("protected evidence cannot copy plaintext into ordinary evidence")
             _require_nonempty(self.protected_ref or "", "protected_ref")
-
-        for ref in self.secret_refs:
-            _require_nonempty(ref, "secret_ref")
 
     @classmethod
     def safe(cls, value: JsonValue) -> "EvidenceValue":
@@ -236,6 +252,8 @@ class ScriptedSource:
 
     def __post_init__(self) -> None:
         _require_nonempty(self.test_case_id, "test_case_id")
+        if not isinstance(self.commitment, SourceCommitment):
+            raise ValueError("scripted source commitment must be a SourceCommitment")
 
 
 @dataclass(frozen=True)
@@ -247,6 +265,14 @@ class RoamSource:
     kind: str = field(default="roam_session", init=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.objective_present, bool):
+            raise ValueError("objective_present must be a boolean")
+        for commitment, name in (
+            (self.objective_commitment, "objective_commitment"),
+            (self.config_commitment, "config_commitment"),
+        ):
+            if commitment is not None and not isinstance(commitment, SourceCommitment):
+                raise ValueError(f"{name} must be a SourceCommitment")
         if self.objective_present and self.objective_commitment is None:
             raise ValueError("roam objective_present=true requires objective_commitment")
         if not self.objective_present and self.objective_commitment is not None:
@@ -270,16 +296,24 @@ class RunRecord:
     adapter_type: str
     environment_type: str
     evidence_profile: str
+    configuration_commitment: SourceCommitment
     provider: Optional[str] = None
     model_provider: Optional[str] = None
     model: Optional[str] = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "execution_kind",
+            _normalize_enum(self.execution_kind, ExecutionKind, "execution_kind"),
+        )
         require_aware_datetime(self.started_at, "started_at")
         _require_nonempty(self.argus_version, "argus_version")
         _require_nonempty(self.adapter_type, "adapter_type")
         _require_nonempty(self.environment_type, "environment_type")
         _require_nonempty(self.evidence_profile, "evidence_profile")
+        if not isinstance(self.configuration_commitment, SourceCommitment):
+            raise ValueError("configuration_commitment must be a SourceCommitment")
         if self.execution_kind is ExecutionKind.SCRIPTED and not isinstance(self.source, ScriptedSource):
             raise ValueError("scripted runs require ScriptedSource")
         if self.execution_kind is ExecutionKind.ROAM and not isinstance(self.source, RoamSource):
@@ -294,6 +328,8 @@ class StepRecord:
 
     def __post_init__(self) -> None:
         _require_nonempty(self.kind, "kind")
+        if not isinstance(self.instruction, EvidenceValue):
+            raise ValueError("step instruction must be an EvidenceValue")
 
 
 @dataclass(frozen=True)
@@ -307,8 +343,12 @@ class StepAttemptRecord:
     retry_reason: Optional[EvidenceValue] = None
 
     def __post_init__(self) -> None:
-        if self.attempt < 1:
-            raise ValueError("attempt must be >= 1")
+        _require_positive_int(self.attempt, "attempt")
+        object.__setattr__(
+            self,
+            "status",
+            _normalize_enum(self.status, StepAttemptStatus, "step attempt status"),
+        )
         require_aware_datetime(self.started_at, "started_at")
 
         if self.status is StepAttemptStatus.RUNNING:
@@ -383,6 +423,17 @@ class AssertionRecord:
     def __post_init__(self) -> None:
         _require_nonempty(self.kind, "kind")
         _require_nonempty(self.method, "method")
+        if not isinstance(self.expected, EvidenceValue):
+            raise ValueError("assertion expected value must be an EvidenceValue")
+        if self.actual is not None and not isinstance(self.actual, EvidenceValue):
+            raise ValueError("assertion actual value must be an EvidenceValue")
+        object.__setattr__(
+            self,
+            "result",
+            _normalize_enum(self.result, AssertionResult, "assertion result"),
+        )
+        if not isinstance(self.required, bool):
+            raise ValueError("assertion required must be a boolean")
 
 
 @dataclass(frozen=True)
@@ -395,6 +446,9 @@ class FindingRecord:
 
     def __post_init__(self) -> None:
         _require_nonempty(self.classification_source, "classification_source")
+        if not isinstance(self.title, EvidenceValue) or not isinstance(self.description, EvidenceValue):
+            raise ValueError("finding title and description must be EvidenceValue records")
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
         for ref in self.evidence_refs:
             _require_nonempty(ref, "evidence_ref")
 
@@ -422,20 +476,20 @@ class ArtifactRecord:
     kind: str
     path: str
     sensitivity: str
+    capture_policy: str
     protection_state: EvidenceDisposition
 
     def __post_init__(self) -> None:
         _require_nonempty(self.kind, "kind")
         _require_nonempty(self.sensitivity, "sensitivity")
-        if not isinstance(self.protection_state, EvidenceDisposition):
-            try:
-                object.__setattr__(
-                    self, "protection_state", EvidenceDisposition(self.protection_state)
-                )
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "protection_state must be a valid EvidenceDisposition"
-                ) from exc
+        _require_nonempty(self.capture_policy, "capture_policy")
+        object.__setattr__(
+            self,
+            "protection_state",
+            _normalize_enum(
+                self.protection_state, EvidenceDisposition, "protection_state"
+            ),
+        )
         if self.protection_state is EvidenceDisposition.SUPPRESSED:
             raise ValueError(
                 "suppressed artifacts must use ARTIFACT_SUPPRESSED, not ArtifactRecord"
@@ -460,6 +514,8 @@ class RequirementIdentity:
             _require_nonempty(self.version, "version")
         if self.source_revision is not None:
             _require_nonempty(self.source_revision, "source_revision")
+        if self.commitment is not None and not isinstance(self.commitment, SourceCommitment):
+            raise ValueError("requirement commitment must be a SourceCommitment")
 
     @property
     def identity_key(
@@ -488,6 +544,11 @@ class Verification:
     binding_ref: Optional[str] = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "status",
+            _normalize_enum(self.status, VerificationStatus, "verification status"),
+        )
         if self.status is VerificationStatus.VERIFIED:
             _require_nonempty(self.method or "", "verification method")
             _require_nonempty(self.actor or "", "verified actor")
@@ -512,8 +573,13 @@ class RunOutcomeRevision:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "correction_ids", tuple(self.correction_ids))
-        if self.revision < 1 or self.evidence_revision < 1:
-            raise ValueError("finalization/evidence revisions must be >= 1")
+        _require_positive_int(self.revision, "finalization revision")
+        _require_positive_int(self.evidence_revision, "evidence revision")
+        object.__setattr__(
+            self,
+            "effective_status",
+            _normalize_enum(self.effective_status, RunStatus, "effective_status"),
+        )
         require_aware_datetime(self.finalized_at, "finalized_at")
         _require_nonempty(self.status_policy_version, "status_policy_version")
         if self.revision == 1:
@@ -540,6 +606,10 @@ class EventEnvelope:
     def __post_init__(self) -> None:
         if self.ates_version != ATES_VERSION:
             raise ValueError(f"unsupported ATES version: {self.ates_version!r}")
-        if self.sequence < 1:
-            raise ValueError("event sequence must be >= 1")
+        _require_positive_int(self.sequence, "event sequence")
+        object.__setattr__(
+            self,
+            "event_type",
+            _normalize_enum(self.event_type, EventType, "event_type"),
+        )
         require_aware_datetime(self.occurred_at, "occurred_at")
