@@ -1,4 +1,4 @@
-"""Argus Test Evidence Specification (ATES) core schema."""
+"""Argus Test Evidence Specification (ATES) core schema and event storage."""
 
 from .core import (
     ATES_VERSION, RUN_OUTCOME_REFINALIZATION_SCOPE, STATUS_POLICY_VERSION,
@@ -16,18 +16,24 @@ from .ids import (
     EventId, FinalizationId, FindingId, ObservationId, RunId, StepAttemptId, StepId,
 )
 from .status import StatusInputs, derive_run_status, effective_outcome
+from .store import (
+    AtesAppendError, AtesEventConflict, AtesEventStore, AtesStoreBusy,
+    AtesStoreCorruption, AtesStoreError, StoredEvent,
+)
 
 __all__ = [
     "ATES_VERSION", "RUN_OUTCOME_REFINALIZATION_SCOPE", "STATUS_POLICY_VERSION",
     "SUPPORTED_STATUS_POLICY_VERSIONS", "ActionId", "ActionOperationId", "ActionRecord",
     "ArtifactId", "ArtifactRecord", "AssertionId", "AssertionRecord", "AssertionResult",
-    "AtesId", "AuthorizationDecision", "CorrectionId", "EventEnvelope", "EventId",
-    "EventType", "EvidenceDisposition", "EvidenceValue", "ExecutionKind", "FinalizationId",
-    "FindingId", "FindingRecord", "FrozenDict", "LifecycleState", "ObservationId",
-    "ObservationRecord", "RequirementIdentity", "RoamSource", "RunId",
-    "RunOutcomeRevision", "RunRecord", "RunStatus", "ScriptedSource", "SourceCommitment",
-    "StatusInputs", "StepAttemptId", "StepAttemptRecord", "StepAttemptStatus", "StepId",
-    "StepRecord", "Verification", "VerificationStatus", "derive_run_status",
-    "effective_outcome", "to_json_compatible", "validate_artifact_path",
-    "validate_step_attempt_history", "validate_step_evidence_relationships",
+    "AtesAppendError", "AtesEventConflict", "AtesEventStore", "AtesId", "AtesStoreBusy",
+    "AtesStoreCorruption", "AtesStoreError", "AuthorizationDecision", "CorrectionId",
+    "EventEnvelope", "EventId", "EventType", "EvidenceDisposition", "EvidenceValue",
+    "ExecutionKind", "FinalizationId", "FindingId", "FindingRecord", "FrozenDict",
+    "LifecycleState", "ObservationId", "ObservationRecord", "RequirementIdentity",
+    "RoamSource", "RunId", "RunOutcomeRevision", "RunRecord", "RunStatus",
+    "ScriptedSource", "SourceCommitment", "StatusInputs", "StepAttemptId",
+    "StepAttemptRecord", "StepAttemptStatus", "StepId", "StepRecord", "StoredEvent",
+    "Verification", "VerificationStatus", "derive_run_status", "effective_outcome",
+    "to_json_compatible", "validate_artifact_path", "validate_step_attempt_history",
+    "validate_step_evidence_relationships",
 ]
