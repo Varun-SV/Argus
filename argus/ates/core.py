@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, is_dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Optional, Sequence, TypeVar, Union
+from typing import Optional, TypeVar, Union
 
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
@@ -22,6 +22,15 @@ STATUS_POLICY_VERSION = "ates-status-v1"
 SUPPORTED_STATUS_POLICY_VERSIONS = frozenset({STATUS_POLICY_VERSION})
 RUN_OUTCOME_REFINALIZATION_SCOPE = "run_outcome.refinalize"
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+_WINDOWS_RESERVED_BASENAMES = frozenset(
+    {
+        "CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+        "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
+    }
+)
+_WINDOWS_INVALID_COMPONENT_CHARS = frozenset('<>"|?*')
 
 
 class ExecutionKind(str, Enum):
@@ -155,6 +164,19 @@ class FrozenDict(Mapping[str, object]):
         return f"FrozenDict({dict(self._items)!r})"
 
 
+def _snapshot_sequence(value: object, field_name: str) -> tuple[object, ...]:
+    """Snapshot a declared sequence once while rejecting scalar/mapping impostors."""
+    if (
+        isinstance(value, (str, bytes, bytearray, Mapping))
+        or not isinstance(value, Sequence)
+    ):
+        raise ValueError(f"{field_name} must be a sequence")
+    try:
+        return tuple(value)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} could not be snapshotted safely") from exc
+
+
 def _snapshot_evidence_mapping(value: object, field_name: str) -> FrozenDict:
     """Snapshot once, then validate and retain exactly that evidence mapping."""
     if not isinstance(value, Mapping):
@@ -221,9 +243,34 @@ def _normalize_id(value: object, id_type: type[TAtesId], field_name: str) -> TAt
         raise ValueError(f"{field_name} must be a valid {id_type.__name__}") from exc
 
 
-def require_aware_datetime(value: datetime, field_name: str) -> None:
-    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+def _snapshot_aware_datetime(value: object, field_name: str) -> datetime:
+    """Capture one timezone offset and retain the instant using immutable UTC tzinfo."""
+    if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError(f"{field_name} must be a timezone-aware datetime")
+    try:
+        offset = value.utcoffset()
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must have a valid timezone offset") from exc
+    if offset is None:
+        raise ValueError(f"{field_name} must be a timezone-aware datetime")
+    try:
+        local_naive = datetime(
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+            fold=value.fold,
+        )
+        return (local_naive - offset).replace(tzinfo=timezone.utc)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} could not be normalized safely") from exc
+
+
+def require_aware_datetime(value: datetime, field_name: str) -> None:
+    _snapshot_aware_datetime(value, field_name)
 
 
 def _freeze_json(value: JsonValue, path: str) -> JsonValue:
@@ -249,7 +296,10 @@ def _freeze_json(value: JsonValue, path: str) -> JsonValue:
             frozen_items.append((key, _freeze_json(child, f"{path}.{key}")))
         return FrozenDict(frozen_items)  # type: ignore[return-value]
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        snapshot = tuple(value)
+        try:
+            snapshot = tuple(value)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError(f"{path} sequence could not be snapshotted safely") from exc
         return tuple(
             _freeze_json(child, f"{path}[{index}]")
             for index, child in enumerate(snapshot)
@@ -276,8 +326,7 @@ def to_json_compatible(value: object) -> JsonValue:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, datetime):
-        require_aware_datetime(value, "datetime")
-        return value.isoformat()
+        return _snapshot_aware_datetime(value, "datetime").isoformat()
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
@@ -285,14 +334,24 @@ def to_json_compatible(value: object) -> JsonValue:
             raise ValueError("JSON output cannot contain a non-finite float")
         return value
     if isinstance(value, Mapping):
+        try:
+            snapshot = tuple(value.items())
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError("JSON output mapping could not be snapshotted safely") from exc
         converted: dict[str, JsonValue] = {}
-        for key, child in value.items():
+        for key, child in snapshot:
             if not isinstance(key, str):
                 raise ValueError("JSON output mappings require string keys")
+            if key in converted:
+                raise ValueError("JSON output mappings cannot contain duplicate keys")
             converted[key] = to_json_compatible(child)
         return converted
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [to_json_compatible(child) for child in value]
+        try:
+            snapshot = tuple(value)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError("JSON output sequence could not be snapshotted safely") from exc
+        return [to_json_compatible(child) for child in snapshot]
     raise ValueError(f"unsupported ATES JSON value {type(value).__name__}")
 
 
@@ -310,11 +369,10 @@ class EvidenceValue:
             "disposition",
             _normalize_enum(self.disposition, EvidenceDisposition, "disposition"),
         )
-        if isinstance(self.secret_refs, (str, bytes, bytearray)):
-            raise ValueError("secret_refs must be a sequence of reference strings")
-        object.__setattr__(self, "secret_refs", tuple(self.secret_refs))
-        for ref in self.secret_refs:
-            _require_nonempty(ref, "secret_ref")
+        refs = _snapshot_sequence(self.secret_refs, "secret_refs")
+        for ref in refs:
+            _require_nonempty(ref, "secret_ref")  # type: ignore[arg-type]
+        object.__setattr__(self, "secret_refs", tuple(refs))
 
         if self.disposition is EvidenceDisposition.SAFE:
             object.__setattr__(self, "value", freeze_json(self.value))
@@ -346,7 +404,7 @@ class EvidenceValue:
             EvidenceDisposition.REDACTED,
             value="<redacted>",
             reason=reason,
-            secret_refs=tuple(secret_refs),
+            secret_refs=secret_refs,  # type: ignore[arg-type]
         )
 
     @classmethod
@@ -451,7 +509,9 @@ class RunRecord:
             "execution_kind",
             _normalize_enum(self.execution_kind, ExecutionKind, "execution_kind"),
         )
-        require_aware_datetime(self.started_at, "started_at")
+        object.__setattr__(
+            self, "started_at", _snapshot_aware_datetime(self.started_at, "started_at")
+        )
         _require_nonempty(self.argus_version, "argus_version")
         _require_nonempty(self.adapter_type, "adapter_type")
         _require_nonempty(self.environment_type, "environment_type")
@@ -507,7 +567,9 @@ class StepAttemptRecord:
             "status",
             _normalize_enum(self.status, StepAttemptStatus, "step attempt status"),
         )
-        require_aware_datetime(self.started_at, "started_at")
+        object.__setattr__(
+            self, "started_at", _snapshot_aware_datetime(self.started_at, "started_at")
+        )
 
         if self.status is StepAttemptStatus.RUNNING:
             if self.ended_at is not None:
@@ -515,7 +577,9 @@ class StepAttemptRecord:
         else:
             if self.ended_at is None:
                 raise ValueError("terminal attempts require ended_at")
-            require_aware_datetime(self.ended_at, "ended_at")
+            object.__setattr__(
+                self, "ended_at", _snapshot_aware_datetime(self.ended_at, "ended_at")
+            )
             if self.ended_at < self.started_at:
                 raise ValueError("ended_at cannot precede started_at")
 
@@ -535,14 +599,16 @@ def validate_step_attempt_history(
     attempts: Sequence[StepAttemptRecord],
 ) -> tuple[StepAttemptRecord, ...]:
     """Validate per-step attempt identity, ordinals, and causal retry ordering."""
-    if isinstance(attempts, (str, bytes, bytearray)):
-        raise ValueError("attempt history must be a sequence of StepAttemptRecord values")
-    snapshot = tuple(attempts)
+    snapshot_raw = _snapshot_sequence(attempts, "attempt history")
+    snapshot: tuple[StepAttemptRecord, ...] = tuple(
+        item for item in snapshot_raw if isinstance(item, StepAttemptRecord)
+    )
+    if len(snapshot) != len(snapshot_raw):
+        raise ValueError("attempt history must contain only StepAttemptRecord values")
+
     histories: dict[StepId, list[StepAttemptRecord]] = {}
     seen_attempt_ids: set[StepAttemptId] = set()
     for item in snapshot:
-        if not isinstance(item, StepAttemptRecord):
-            raise ValueError("attempt history must contain only StepAttemptRecord values")
         if item.step_attempt_id in seen_attempt_ids:
             raise ValueError("step attempt IDs must be unique across an attempt history")
         seen_attempt_ids.add(item.step_attempt_id)
@@ -615,7 +681,11 @@ class ObservationRecord:
             "step_attempt_id",
             _normalize_id(self.step_attempt_id, StepAttemptId, "step_attempt_id"),
         )
-        require_aware_datetime(self.captured_at, "captured_at")
+        object.__setattr__(
+            self,
+            "captured_at",
+            _snapshot_aware_datetime(self.captured_at, "captured_at"),
+        )
         _require_nonempty(self.source, "source")
         _require_nonempty(self.capture_policy, "capture_policy")
         object.__setattr__(
@@ -683,6 +753,7 @@ class FindingRecord:
     description: EvidenceValue
     evidence_refs: tuple[str, ...] = ()
     classification_source: str = "model"
+    classification: str = "unclassified"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -691,13 +762,13 @@ class FindingRecord:
             _normalize_id(self.finding_id, FindingId, "finding_id"),
         )
         _require_nonempty(self.classification_source, "classification_source")
+        _require_nonempty(self.classification, "classification")
         if not isinstance(self.title, EvidenceValue) or not isinstance(self.description, EvidenceValue):
             raise ValueError("finding title and description must be EvidenceValue records")
-        if isinstance(self.evidence_refs, (str, bytes, bytearray)):
-            raise ValueError("evidence_refs must be a sequence of reference strings")
-        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
-        for ref in self.evidence_refs:
-            _require_nonempty(ref, "evidence_ref")
+        refs = _snapshot_sequence(self.evidence_refs, "evidence_refs")
+        for ref in refs:
+            _require_nonempty(ref, "evidence_ref")  # type: ignore[arg-type]
+        object.__setattr__(self, "evidence_refs", tuple(refs))
 
 
 def validate_artifact_path(path: str) -> str:
@@ -716,6 +787,14 @@ def validate_artifact_path(path: str) -> str:
         raise ValueError("artifact path must be rooted beneath artifacts/")
     if any(part in ("", ".", "..") for part in parts):
         raise ValueError("artifact path contains an ambiguous/traversal segment")
+    for part in parts[1:]:
+        if part.endswith((" ", ".")):
+            raise ValueError("artifact path components cannot end with a dot or space")
+        if any(char in _WINDOWS_INVALID_COMPONENT_CHARS for char in part):
+            raise ValueError("artifact path contains a character invalid on Windows")
+        basename = part.split(".", 1)[0].upper()
+        if basename in _WINDOWS_RESERVED_BASENAMES:
+            raise ValueError("artifact path contains a Windows-reserved device name")
     return path
 
 
@@ -815,28 +894,57 @@ class RequirementIdentity:
 def validate_step_evidence_relationships(
     attempts: Sequence[StepAttemptRecord],
     *,
+    steps: Sequence[StepRecord] = (),
     actions: Sequence[ActionRecord] = (),
     observations: Sequence[ObservationRecord] = (),
     assertions: Sequence[AssertionRecord] = (),
 ) -> tuple[
+    tuple[StepRecord, ...],
     tuple[StepAttemptRecord, ...],
     tuple[ActionRecord, ...],
     tuple[ObservationRecord, ...],
     tuple[AssertionRecord, ...],
 ]:
-    """Validate and snapshot foreign-key relationships across step evidence."""
-    attempt_snapshot = validate_step_attempt_history(attempts)
-    for values, name in (
-        (actions, "actions"),
-        (observations, "observations"),
-        (assertions, "assertions"),
-    ):
-        if isinstance(values, (str, bytes, bytearray)):
-            raise ValueError(f"{name} must be a sequence of ATES records")
+    """Validate and snapshot logical Steps plus foreign keys across step evidence."""
+    step_raw = _snapshot_sequence(steps, "steps")
+    step_snapshot: tuple[StepRecord, ...] = tuple(
+        item for item in step_raw if isinstance(item, StepRecord)
+    )
+    if len(step_snapshot) != len(step_raw):
+        raise ValueError("steps must contain only StepRecord values")
 
-    action_snapshot = tuple(actions)
-    observation_snapshot = tuple(observations)
-    assertion_snapshot = tuple(assertions)
+    step_by_id: dict[StepId, StepRecord] = {}
+    for step in step_snapshot:
+        if step.step_id in step_by_id:
+            raise ValueError("step IDs must be unique in canonical evidence")
+        step_by_id[step.step_id] = step
+
+    attempt_snapshot = validate_step_attempt_history(attempts)
+    for attempt in attempt_snapshot:
+        if attempt.step_id not in step_by_id:
+            raise ValueError("step attempt references an unknown logical step_id")
+
+    action_raw = _snapshot_sequence(actions, "actions")
+    action_snapshot: tuple[ActionRecord, ...] = tuple(
+        item for item in action_raw if isinstance(item, ActionRecord)
+    )
+    if len(action_snapshot) != len(action_raw):
+        raise ValueError("actions must contain only ActionRecord values")
+
+    observation_raw = _snapshot_sequence(observations, "observations")
+    observation_snapshot: tuple[ObservationRecord, ...] = tuple(
+        item for item in observation_raw if isinstance(item, ObservationRecord)
+    )
+    if len(observation_snapshot) != len(observation_raw):
+        raise ValueError("observations must contain only ObservationRecord values")
+
+    assertion_raw = _snapshot_sequence(assertions, "assertions")
+    assertion_snapshot: tuple[AssertionRecord, ...] = tuple(
+        item for item in assertion_raw if isinstance(item, AssertionRecord)
+    )
+    if len(assertion_snapshot) != len(assertion_raw):
+        raise ValueError("assertions must contain only AssertionRecord values")
+
     attempt_owner = {
         attempt.step_attempt_id: attempt.step_id for attempt in attempt_snapshot
     }
@@ -851,8 +959,6 @@ def validate_step_evidence_relationships(
 
     seen_operation_ids: set[ActionOperationId] = set()
     for action in action_snapshot:
-        if not isinstance(action, ActionRecord):
-            raise ValueError("actions must contain only ActionRecord values")
         owner = attempt_owner.get(action.step_attempt_id)
         if owner is None:
             raise ValueError("action references an unknown step_attempt_id")
@@ -868,8 +974,6 @@ def validate_step_evidence_relationships(
 
     observation_by_id: dict[ObservationId, ObservationRecord] = {}
     for observation in observation_snapshot:
-        if not isinstance(observation, ObservationRecord):
-            raise ValueError("observations must contain only ObservationRecord values")
         if observation.step_attempt_id not in attempt_owner:
             raise ValueError("observation references an unknown step_attempt_id")
         if observation.observation_id in observation_by_id:
@@ -877,8 +981,6 @@ def validate_step_evidence_relationships(
         observation_by_id[observation.observation_id] = observation
 
     for assertion in assertion_snapshot:
-        if not isinstance(assertion, AssertionRecord):
-            raise ValueError("assertions must contain only AssertionRecord values")
         owner = attempt_owner.get(assertion.step_attempt_id)
         if owner is None:
             raise ValueError("assertion references an unknown step_attempt_id")
@@ -895,6 +997,7 @@ def validate_step_evidence_relationships(
     require_unique_ids(assertion_snapshot, "assertion_id", "assertion")
 
     return (
+        step_snapshot,
         attempt_snapshot,
         action_snapshot,
         observation_snapshot,
@@ -919,7 +1022,11 @@ class Verification:
             _require_nonempty(self.method or "", "verification method")
             _require_nonempty(self.actor or "", "verified actor")
             _require_nonempty(self.binding_ref or "", "binding_ref")
-        for value, name in ((self.method, "verification method"), (self.actor, "actor"), (self.binding_ref, "binding_ref")):
+        for value, name in (
+            (self.method, "verification method"),
+            (self.actor, "actor"),
+            (self.binding_ref, "binding_ref"),
+        ):
             if value is not None:
                 _require_nonempty(value, name)
 
@@ -969,11 +1076,12 @@ class AuthorizationDecision:
                     "authorization supersedes_finalization_id",
                 ),
             )
-        if isinstance(self.correction_ids, (str, bytes, bytearray)):
-            raise ValueError("authorization correction_ids must be a sequence of CorrectionId values")
+        correction_raw = _snapshot_sequence(
+            self.correction_ids, "authorization correction_ids"
+        )
         normalized_corrections = tuple(
             _normalize_id(item, CorrectionId, "authorization correction_id")
-            for item in self.correction_ids
+            for item in correction_raw
         )
         if len(set(normalized_corrections)) != len(normalized_corrections):
             raise ValueError("authorization correction_ids must be unique")
@@ -984,6 +1092,7 @@ class AuthorizationDecision:
             _normalize_enum(self.effective_status, RunStatus, "authorization effective_status"),
         )
         _require_positive_int(self.evidence_revision, "authorization evidence revision")
+        _require_nonempty(self.status_policy_version, "authorization status_policy_version")
         if self.status_policy_version not in SUPPORTED_STATUS_POLICY_VERSIONS:
             raise ValueError(
                 f"unsupported authorization status_policy_version: {self.status_policy_version!r}"
@@ -1021,11 +1130,10 @@ class RunOutcomeRevision:
                     "supersedes_finalization_id",
                 ),
             )
-        if isinstance(self.correction_ids, (str, bytes, bytearray)):
-            raise ValueError("correction_ids must be a sequence of CorrectionId values")
+        correction_raw = _snapshot_sequence(self.correction_ids, "correction_ids")
         normalized_corrections = tuple(
             _normalize_id(item, CorrectionId, "correction_id")
-            for item in self.correction_ids
+            for item in correction_raw
         )
         if len(set(normalized_corrections)) != len(normalized_corrections):
             raise ValueError("correction_ids must be unique")
@@ -1043,7 +1151,12 @@ class RunOutcomeRevision:
             "effective_status",
             _normalize_enum(self.effective_status, RunStatus, "effective_status"),
         )
-        require_aware_datetime(self.finalized_at, "finalized_at")
+        object.__setattr__(
+            self,
+            "finalized_at",
+            _snapshot_aware_datetime(self.finalized_at, "finalized_at"),
+        )
+        _require_nonempty(self.status_policy_version, "status_policy_version")
         if self.status_policy_version not in SUPPORTED_STATUS_POLICY_VERSIONS:
             raise ValueError(
                 f"unsupported status_policy_version: {self.status_policy_version!r}"
@@ -1108,7 +1221,7 @@ class EventEnvelope:
     occurred_at: datetime
 
     def __post_init__(self) -> None:
-        if self.ates_version != ATES_VERSION:
+        if not isinstance(self.ates_version, str) or self.ates_version != ATES_VERSION:
             raise ValueError(f"unsupported ATES version: {self.ates_version!r}")
         object.__setattr__(self, "run_id", _normalize_id(self.run_id, RunId, "run_id"))
         object.__setattr__(self, "event_id", _normalize_id(self.event_id, EventId, "event_id"))
@@ -1118,4 +1231,8 @@ class EventEnvelope:
             "event_type",
             _normalize_enum(self.event_type, EventType, "event_type"),
         )
-        require_aware_datetime(self.occurred_at, "occurred_at")
+        object.__setattr__(
+            self,
+            "occurred_at",
+            _snapshot_aware_datetime(self.occurred_at, "occurred_at"),
+        )
