@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
@@ -18,6 +19,7 @@ ATES_VERSION = "0.1"
 STATUS_POLICY_VERSION = "ates-status-v1"
 SUPPORTED_STATUS_POLICY_VERSIONS = frozenset({STATUS_POLICY_VERSION})
 RUN_OUTCOME_REFINALIZATION_SCOPE = "run_outcome.refinalize"
+_REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
 
 class ExecutionKind(str, Enum):
@@ -124,6 +126,16 @@ class FrozenDict(dict):
 def _require_nonempty(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def _require_reason_code(value: str, field_name: str = "reason") -> str:
+    _require_nonempty(value, field_name)
+    if not _REASON_CODE_PATTERN.fullmatch(value):
+        raise ValueError(
+            f"{field_name} must be a safe policy/reason code using lowercase letters, "
+            "digits, '.', '_' or '-'"
+        )
     return value
 
 
@@ -250,7 +262,7 @@ class EvidenceValue:
                 raise ValueError("safe evidence values cannot carry redaction/protected metadata")
             return
 
-        _require_nonempty(self.reason or "", "reason")
+        _require_reason_code(self.reason or "")
         if self.disposition is EvidenceDisposition.REDACTED:
             if self.value != "<redacted>":
                 raise ValueError("redacted evidence must persist exactly '<redacted>'")
@@ -455,11 +467,11 @@ class StepAttemptRecord:
 def validate_step_attempt_history(
     attempts: Sequence[StepAttemptRecord],
 ) -> tuple[StepAttemptRecord, ...]:
-    """Validate per-step attempt ordinals as unique and contiguous from one."""
+    """Validate per-step attempt identity, ordinals, and causal retry ordering."""
     if isinstance(attempts, (str, bytes, bytearray)):
         raise ValueError("attempt history must be a sequence of StepAttemptRecord values")
     snapshot = tuple(attempts)
-    histories: dict[StepId, list[int]] = {}
+    histories: dict[StepId, list[StepAttemptRecord]] = {}
     seen_attempt_ids: set[StepAttemptId] = set()
     for item in snapshot:
         if not isinstance(item, StepAttemptRecord):
@@ -467,15 +479,21 @@ def validate_step_attempt_history(
         if item.step_attempt_id in seen_attempt_ids:
             raise ValueError("step attempt IDs must be unique across an attempt history")
         seen_attempt_ids.add(item.step_attempt_id)
-        histories.setdefault(item.step_id, []).append(item.attempt)
+        histories.setdefault(item.step_id, []).append(item)
 
-    for step_id, ordinals in histories.items():
-        ordered = sorted(ordinals)
+    for step_id, history in histories.items():
+        ordered = sorted(history, key=lambda item: item.attempt)
+        ordinals = [item.attempt for item in ordered]
         expected = list(range(1, len(ordered) + 1))
-        if ordered != expected:
+        if ordinals != expected:
             raise ValueError(
                 f"attempt ordinals for {step_id} must be unique and contiguous starting at 1"
             )
+        for previous, current in zip(ordered, ordered[1:]):
+            if previous.status is StepAttemptStatus.RUNNING or previous.ended_at is None:
+                raise ValueError("a retry cannot start before the prior attempt is terminal")
+            if previous.ended_at > current.started_at:
+                raise ValueError("retry attempts cannot overlap or move backward in time")
     return snapshot
 
 
@@ -635,6 +653,10 @@ class ArtifactRecord:
     content_digest: SourceCommitment
     size_bytes: int
     protection_state: EvidenceDisposition
+    protected_ref: Optional[str] = None
+    access_policy: Optional[str] = None
+    retention_policy: Optional[str] = None
+    authorization_ref: Optional[str] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -658,6 +680,19 @@ class ArtifactRecord:
         if self.protection_state is EvidenceDisposition.SUPPRESSED:
             raise ValueError(
                 "suppressed artifacts must use ARTIFACT_SUPPRESSED, not ArtifactRecord"
+            )
+        protected_metadata = (
+            (self.protected_ref, "protected_ref"),
+            (self.access_policy, "access_policy"),
+            (self.retention_policy, "retention_policy"),
+            (self.authorization_ref, "authorization_ref"),
+        )
+        if self.protection_state is EvidenceDisposition.PROTECTED_REF:
+            for value, name in protected_metadata:
+                _require_nonempty(value or "", name)
+        elif any(value is not None for value, _ in protected_metadata):
+            raise ValueError(
+                "protected-storage metadata is only valid for protected_ref artifacts"
             )
         validate_artifact_path(self.path)
 
@@ -731,6 +766,14 @@ class AuthorizationDecision:
     policy_version: str
     decision_ref: str
     verification: Verification
+    subject: str
+    run_id: RunId
+    finalization_id: FinalizationId
+    supersedes_finalization_id: Optional[FinalizationId]
+    correction_ids: tuple[CorrectionId, ...]
+    effective_status: RunStatus
+    evidence_revision: int
+    status_policy_version: str = STATUS_POLICY_VERSION
 
     def __post_init__(self) -> None:
         if not isinstance(self.allowed, bool):
@@ -739,10 +782,46 @@ class AuthorizationDecision:
         _require_nonempty(self.policy_id, "authorization policy_id")
         _require_nonempty(self.policy_version, "authorization policy_version")
         _require_nonempty(self.decision_ref, "authorization decision_ref")
+        _require_nonempty(self.subject, "authorization subject")
         if not isinstance(self.verification, Verification):
             raise ValueError("authorization verification must be a validated Verification instance")
         if self.verification.status is not VerificationStatus.VERIFIED:
             raise ValueError("authorization decision must itself be verified")
+        object.__setattr__(self, "run_id", _normalize_id(self.run_id, RunId, "authorization run_id"))
+        object.__setattr__(
+            self,
+            "finalization_id",
+            _normalize_id(self.finalization_id, FinalizationId, "authorization finalization_id"),
+        )
+        if self.supersedes_finalization_id is not None:
+            object.__setattr__(
+                self,
+                "supersedes_finalization_id",
+                _normalize_id(
+                    self.supersedes_finalization_id,
+                    FinalizationId,
+                    "authorization supersedes_finalization_id",
+                ),
+            )
+        if isinstance(self.correction_ids, (str, bytes, bytearray)):
+            raise ValueError("authorization correction_ids must be a sequence of CorrectionId values")
+        normalized_corrections = tuple(
+            _normalize_id(item, CorrectionId, "authorization correction_id")
+            for item in self.correction_ids
+        )
+        if len(set(normalized_corrections)) != len(normalized_corrections):
+            raise ValueError("authorization correction_ids must be unique")
+        object.__setattr__(self, "correction_ids", normalized_corrections)
+        object.__setattr__(
+            self,
+            "effective_status",
+            _normalize_enum(self.effective_status, RunStatus, "authorization effective_status"),
+        )
+        _require_positive_int(self.evidence_revision, "authorization evidence revision")
+        if self.status_policy_version not in SUPPORTED_STATUS_POLICY_VERSIONS:
+            raise ValueError(
+                f"unsupported authorization status_policy_version: {self.status_policy_version!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -782,6 +861,8 @@ class RunOutcomeRevision:
             _normalize_id(item, CorrectionId, "correction_id")
             for item in self.correction_ids
         )
+        if len(set(normalized_corrections)) != len(normalized_corrections):
+            raise ValueError("correction_ids must be unique")
         object.__setattr__(self, "correction_ids", normalized_corrections)
         if self.verification is not None and not isinstance(self.verification, Verification):
             raise ValueError("verification must be a validated Verification instance")
@@ -819,6 +900,36 @@ class RunOutcomeRevision:
                 raise ValueError(
                     "authorization decision does not cover run-outcome re-finalization"
                 )
+            if self.authorization.subject != self.verification.actor:
+                raise ValueError(
+                    "authorization subject must match the authenticated re-finalization actor"
+                )
+            binding_pairs = (
+                (self.authorization.run_id, self.run_id, "run_id"),
+                (self.authorization.finalization_id, self.finalization_id, "finalization_id"),
+                (
+                    self.authorization.supersedes_finalization_id,
+                    self.supersedes_finalization_id,
+                    "supersedes_finalization_id",
+                ),
+                (self.authorization.correction_ids, self.correction_ids, "correction_ids"),
+                (self.authorization.effective_status, self.effective_status, "effective_status"),
+                (
+                    self.authorization.evidence_revision,
+                    self.evidence_revision,
+                    "evidence_revision",
+                ),
+                (
+                    self.authorization.status_policy_version,
+                    self.status_policy_version,
+                    "status_policy_version",
+                ),
+            )
+            for authorized, actual, field_name in binding_pairs:
+                if authorized != actual:
+                    raise ValueError(
+                        f"authorization decision is not bound to this {field_name}"
+                    )
 
 
 @dataclass(frozen=True)
