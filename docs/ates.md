@@ -18,12 +18,14 @@ ATES is designed to provide:
 - step-by-step traceability from test intent to observed evidence;
 - clear separation between observed facts, deterministic assertions, executed actions, and AI interpretation;
 - failure and checkpoint evidence without capturing screenshots for every action by default;
+- artifact-level sensitivity handling so binary evidence does not become a credential-exfiltration path;
 - provenance for test definitions, Argus builds, models, execution environments, Nodes, Capsules, and artifacts;
 - cryptographic artifact digests for corruption/integrity detection;
 - a manifest model that becomes tamper-evident only when bound to a trusted external, immutable, or cryptographic trust boundary;
 - append-oriented audit history rather than silent mutation;
 - requirement-to-test-to-evidence traceability;
 - recoverable evidence from interrupted/crashed runs;
+- explicit trust status for rendered reports;
 - a stable machine-readable foundation for reports, dashboards, audit packages, and future compliance mappings.
 
 ## Non-goals
@@ -35,8 +37,10 @@ ATES does not:
 - require ISO/IEC material for native Argus operation;
 - claim compliance with a regulated standard merely because a report resembles one;
 - make screenshots mandatory for every normal action;
+- require persisting a screenshot when artifact privacy policy cannot safely retain it;
 - allow report configuration to suppress mandatory core evidence;
 - claim that a locally stored hash and locally stored manifest are tamper-evident without an independent trust boundary;
+- treat a rendered report as trusted merely because its source evidence manifest verifies;
 - require an interrupted run to fabricate an end timestamp or successful finalization event.
 
 ## ATES Core is always on
@@ -73,7 +77,7 @@ Captures:
 - selected application/test artifacts;
 - timing, retries, and execution-environment metadata.
 
-**Default screenshot policy:** screenshots are captured for failures and explicit checkpoints, not for every successful action.
+**Default screenshot policy:** Argus attempts screenshot evidence for failures and explicit checkpoints, not for every successful action. A screenshot is persisted only when the artifact-level sensitivity/capture policy permits it. When safe persistence is not possible, Argus must redact/mask before persistence, store it only in an explicitly authorized protected evidence class, or suppress the screenshot and record why it was not retained.
 
 ### `forensic`
 
@@ -89,7 +93,7 @@ May add:
 - environment and configuration fingerprints;
 - transport/session metadata that is safe to retain.
 
-Secrets, live bearer tokens, TLS private keys, and other credentials must never be included merely because forensic capture is enabled.
+Secrets, live bearer tokens, TLS private keys, and other credentials must never be included merely because forensic capture is enabled. Forensic profile changes retention/detail, not the requirement to classify and protect sensitive artifacts.
 
 ### `custom`
 
@@ -278,20 +282,20 @@ steps:
       text_visible: "Ethernet"
 ```
 
-A standard checkpoint should capture, where supported:
+A standard checkpoint should request, where supported and permitted by artifact policy:
 
-- screenshot;
+- screenshot or a documented suppressed/redacted substitute;
 - accessibility/DOM/CLI observation appropriate to the adapter;
 - timestamp;
 - current step/action relationship;
 - environment identity;
 - integrity metadata for generated artifacts.
 
-Checkpoint content remains subject to privacy/redaction policy.
+Checkpoint content remains subject to privacy/redaction policy. A checkpoint never overrides a rule that forbids persistence of sensitive binary evidence.
 
 ### Artifact
 
-Every retained file is represented by an Artifact record.
+Every retained file is represented by an Artifact record. Artifact metadata must describe not only integrity but also sensitivity/protection state.
 
 ```yaml
 artifact_id: ART-01892
@@ -300,9 +304,37 @@ path: artifacts/STEP-017-checkpoint.png
 sha256: "..."
 size_bytes: 381223
 source: capsule
+sensitivity: internal
+protection:
+  state: redacted
+  policy_id: EVIDENCE-POLICY-3
+  plaintext_or_unredacted_persisted: false
 ```
 
 Artifacts collected from Capsules must continue to obey the explicit staging/collection authority already enforced by the Capsule execution boundary.
+
+#### Artifact capture, sensitivity, and pre-write handling
+
+Binary evidence such as screenshots, recordings, logs, memory-adjacent diagnostics, and application-exported files can contain secrets that cannot be made safe by redacting only the surrounding JSON record. ATES therefore requires artifact-level handling before ordinary persistent storage.
+
+Every artifact-capable capture path must support a policy decision that results in one of the following states:
+
+- **persist-safe** — content is classified as allowed for the target evidence store;
+- **redacted/masked** — sensitive regions/fields are transformed before the persistent artifact is committed;
+- **protected** — unredacted content is retained only when explicitly authorized in an encrypted/access-restricted evidence class with separate access and retention policy;
+- **suppressed** — no binary artifact is persisted because it cannot be captured safely under the active policy.
+
+Required semantics:
+
+- sensitivity/classification and the applied capture policy are recorded in Artifact/checkpoint/failure metadata;
+- the normal artifact path must not receive an unredacted screenshot first and rely on a later cleanup/redaction pass;
+- if redaction requires transient raw pixels/bytes, processing must occur in protected ephemeral memory/storage and the raw form must be destroyed as soon as practical rather than entering canonical ordinary storage;
+- a protected unredacted artifact requires explicit authorization, encryption at rest where the deployment supports protected evidence, access-control metadata, and retention policy; merely selecting `forensic` is not authorization;
+- when capture is suppressed, ATES records an `ARTIFACT_SUPPRESSED`/equivalent evidence event containing the requested artifact kind, policy reason, timestamp, and related checkpoint/failure IDs without leaking the suppressed content;
+- hashes/manifests cover the **persisted representation** (for example the redacted image), while provenance records that transformation occurred;
+- renderers must not imply a missing/suppressed screenshot was captured when it was not.
+
+This rule applies before the default standard-profile failure/checkpoint screenshot is committed, so a visible password or token does not become an always-on evidence leak.
 
 ### Requirement
 
@@ -352,6 +384,7 @@ ACTION_POLICY_VALIDATED
 ACTION_EXECUTED
 ASSERTION_EVALUATED
 CHECKPOINT_CAPTURED
+ARTIFACT_SUPPRESSED
 FINDING_RECORDED
 ARTIFACT_COLLECTED
 TARGET_CLOSED
@@ -404,6 +437,7 @@ A possible on-disk layout is:
   run.json
   manifests/
     manifest-0001.json
+    package-manifest-0001.json
   approvals.jsonl
   artifacts/
   reports/
@@ -422,19 +456,21 @@ Retained artifacts should be hashed with SHA-256 and included in the applicable 
 
 A digest stored alongside mutable evidence detects accidental corruption and modification **only while the manifest/digest itself remains trusted**. A process that can replace both an artifact and its stored digest can recompute both, so hashes alone must not be described as tamper-evident.
 
-### Versioned immutable manifests
+### Versioned immutable evidence manifests
 
-Each finalized evidence snapshot is represented by an immutable manifest revision, for example `manifest-0001.json`.
+Each finalized evidence snapshot is represented by an immutable evidence-manifest revision, for example `manifest-0001.json`.
 
-A manifest revision should bind:
+An evidence-manifest revision should bind:
 
 - the canonical execution evidence snapshot/range it covers;
-- retained artifacts included in that revision;
-- report inputs where applicable;
+- retained canonical artifacts included in that revision;
+- renderer inputs/configuration identifiers where applicable;
 - relevant schema/version identifiers;
-- previous manifest revision/digest when a chained revision is created.
+- previous evidence-manifest revision/digest when a chained revision is created.
 
-Once published/finalized, a manifest revision and its digest are immutable. Additional audit material never rewrites the revision it references.
+Once published/finalized, an evidence-manifest revision and its digest are immutable. Additional audit material never rewrites the revision it references.
+
+Rendered reports are derived outputs and are **not automatically covered** merely because their inputs are bound by an evidence manifest. Their trust boundary is defined separately below.
 
 ### Tamper-evidence boundary
 
@@ -450,11 +486,11 @@ A native run without such a binding remains useful for integrity/corruption dete
 
 ATES should support cryptographic signing of manifest revisions without requiring signatures for ordinary users.
 
-Possible chain:
+Possible evidence chain:
 
 ```text
 artifact hashes
-    -> immutable manifest revision
+    -> immutable evidence-manifest revision
         -> manifest digest
             -> signature / trusted external digest / immutable binding
 ```
@@ -473,13 +509,13 @@ A prior Finding, classification, approval, or interpretation should not silently
 - actor;
 - timestamp.
 
-Corrections that alter execution evidence produce a **new manifest revision** rather than rewriting the revision already reviewed or approved.
+Corrections that alter execution evidence produce a **new evidence-manifest revision** rather than rewriting the revision already reviewed or approved.
 
 ## Approvals
 
 The schema should support optional human/organizational approvals from v1 even if Argus does not require them by default.
 
-Approvals are **detached audit records over an immutable manifest revision**. They are not included in the manifest digest they approve, which avoids a self-referential digest cycle. Detached does **not** mean unauthenticated: an `actor` string alone is never sufficient evidence that the named actor actually approved the revision.
+Approvals are **detached audit records over an immutable evidence-manifest revision**. They are not included in the manifest digest they approve, which avoids a self-referential digest cycle. Detached does **not** mean unauthenticated: an `actor` string alone is never sufficient evidence that the named actor actually approved the revision.
 
 Example logical record:
 
@@ -500,16 +536,16 @@ verification:
 
 Required semantics:
 
-- the referenced manifest revision must already be finalized and immutable;
+- the referenced evidence-manifest revision must already be finalized and immutable;
 - appending an approval does not mutate that revision or its digest;
 - every approval record carries a verification state such as `verified`, `unverified`, or `invalid`;
 - a record is treated as a **valid approval** only after the actor/decision/manifest reference are authenticated and the detached record is integrity-protected by an independently trusted mechanism;
 - acceptable verification mechanisms may include a cryptographic signature from a trusted reviewer identity, authenticated append to an independently integrity-protected audit/transparency service, or incorporation into a later independently bound audit/manifest revision where the approving actor was authenticated at append time;
 - until such verification/binding succeeds, a syntactically well-formed record remains `unverified` and must not satisfy an approval gate;
 - a forged or modified record whose verification fails is `invalid` and must never be presented as an approval;
-- the detached approval record may be incorporated into a **later** audit/manifest revision without mutating the evidence revision it approved;
-- if execution evidence changes, a new manifest revision is produced and prior approvals remain attached only to the revision they actually reviewed;
-- reports must show which manifest revision each approval applies to **and its verification status/method**;
+- the detached approval record may be incorporated into a **later** audit/package-manifest revision without mutating the evidence revision it approved;
+- if execution evidence changes, a new evidence-manifest revision is produced and prior approvals remain attached only to the revision they actually reviewed;
+- reports must show which evidence-manifest revision each approval applies to **and its verification status/method**;
 - regulated/audit profiles that require approval must require `verified` approvals and retain the verification evidence/reference needed to validate them later.
 
 A mutable local `approvals.jsonl` file by itself is therefore only a storage format, not an approval trust boundary. Reports may display unverified records for investigation, but must label them clearly as unverified and must not summarize them as “approved.”
@@ -531,6 +567,47 @@ The report generator must derive claims from evidence references rather than cre
 
 Interrupted/incomplete runs must remain renderable. Such reports should identify the last canonical event/sequence, missing completion metadata, reconciliation state, and any available crash/failure evidence.
 
+### Rendered-report trust boundary
+
+A verified evidence manifest proves the integrity of the evidence snapshot it binds; it does **not** by itself prove that an arbitrary `report.html`, `report.md`, PDF, or JUnit file next to that evidence was produced faithfully or was not replaced later.
+
+A rendered report must therefore carry an explicit trust state. At minimum:
+
+- **regenerated_verified** — the consumer/verifier regenerated the report from a successfully verified evidence-manifest revision using an identified renderer/version/configuration;
+- **bound_verified** — the exact rendered report bytes are hashed and bound by a separately verified outer/package-manifest revision that also references the source evidence-manifest digest and renderer identity;
+- **unverified_derived** — the report exists as a convenience rendering but has not been regenerated from verified evidence or independently bound;
+- **invalid** — a required digest/binding/renderer verification failed.
+
+For portable/exported evidence packages, the preferred model is:
+
+```text
+verified evidence manifest
+        |
+        +--> render report(s)
+        |
+        v
+package manifest
+  - source evidence-manifest digest
+  - renderer/version/config digest
+  - report.html SHA-256
+  - report.md SHA-256
+  - junit.xml SHA-256
+        |
+        v
+signature / trusted external digest / immutable binding (when required)
+```
+
+Required semantics:
+
+- a UI/report viewer must not show `unverified_derived` output with the same trust indicator as verified evidence;
+- if no outer/package binding exists, a security-sensitive consumer should regenerate the report from verified canonical evidence before treating its PASS/FAIL/approval claims as trusted;
+- when a package manifest binds rendered outputs, any byte change to a report invalidates that report's binding even if the underlying evidence manifest still verifies;
+- package manifests are versioned/immutable and must reference the exact source evidence-manifest revision/digest;
+- approvals over evidence remain approvals of the referenced evidence-manifest revision unless an approval explicitly and verifiably covers a package/report revision too;
+- renderer defects are not magically eliminated by hashing: binding proves which bytes were distributed, while regeneration/cross-checking against canonical evidence provides semantic validation.
+
+This prevents a forged PASS report from riding alongside an otherwise valid evidence package without a visible trust failure.
+
 ## Suggested standard report structure
 
 1. Test identification
@@ -548,8 +625,9 @@ Interrupted/incomplete runs must remain renderable. Such reports should identify
 13. Execution timeline
 14. Model/resource usage
 15. Failure Capsule information, if retained
-16. Approvals/review state, verification status, and manifest revision, if applicable
+16. Approvals/review state, verification status, and evidence-manifest revision, if applicable
 17. Evidence manifest and integrity/tamper-evidence status
+18. Rendered-report trust status and package-manifest reference, if applicable
 
 ## Privacy and secret handling
 
@@ -565,9 +643,13 @@ The runtime must define explicit redaction/retention rules for:
 - typed user input;
 - command arguments;
 - credential-bearing URLs;
-- sensitive application data.
+- sensitive application data;
+- screenshots and recordings;
+- binary/log artifacts that can contain application secrets.
 
 The Action/Assertion/Observation schemas must carry redaction metadata rather than relying solely on a best-effort regex pass after plaintext has already been written to canonical evidence.
+
+Binary Artifact capture must use the pre-write classification/redaction/protected/suppressed model defined above. Persisting raw screenshots to an ordinary artifact directory and redacting them afterward is not a conforming default capture pipeline.
 
 Capsule secrets that are intentionally non-persistent today must remain non-persistent under ATES.
 
@@ -609,14 +691,16 @@ Schema evolution should favor additive changes. Breaking changes require a new m
 
 Recommended implementation order:
 
-1. define typed ATES Core IDs, lifecycle states, event envelope, redacted value model, and schema version;
+1. define typed ATES Core IDs, lifecycle states, event envelope, redacted value model, artifact sensitivity/protection model, and schema version;
 2. add append-only local event writer with atomic gap-free sequence assignment and duplicate/conflict invariants;
 3. emit run/step/action/observation/assertion lifecycle events from the existing runner, including interrupted-run recovery semantics;
-4. implement failure evidence and explicit checkpoints;
-5. hash artifacts and generate immutable versioned manifests;
-6. implement optional manifest binding mechanisms before advertising tamper-evident evidence;
-7. render the first Markdown/JSON Test Execution Report from canonical evidence, including incomplete runs;
-8. add requirement traceability;
-9. add authenticated detached approval/supersession records tied to immutable manifest revisions, with verification status enforced by renderers/gates;
-10. integrate live event streaming with Argus Fleet using idempotent retry/reconciliation semantics;
-11. add external compliance mappings only after the native model is stable.
+4. implement artifact pre-write classification/redaction/protected/suppressed handling **before** enabling default failure/checkpoint screenshot persistence;
+5. implement failure evidence and explicit checkpoints using that artifact policy;
+6. hash canonical artifacts and generate immutable versioned evidence manifests;
+7. implement optional evidence-manifest binding mechanisms before advertising tamper-evident evidence;
+8. render the first Markdown/JSON Test Execution Report from verified/canonical evidence, including incomplete runs, and mark it `unverified_derived` unless regenerated/verified or separately bound;
+9. implement versioned package manifests (or verified regeneration flow) for rendered report outputs before distributing them with a verified trust indicator;
+10. add requirement traceability;
+11. add authenticated detached approval/supersession records tied to immutable evidence-manifest revisions, with verification status enforced by renderers/gates;
+12. integrate live event streaming with Argus Fleet using idempotent retry/reconciliation semantics;
+13. add external compliance mappings only after the native model is stable.
