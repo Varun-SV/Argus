@@ -28,6 +28,8 @@ The local authoritative writer enforces:
 - on POSIX, a per-`RunId` authority lock is acquired in the already-pinned `runs/` parent **before** the replaceable run-directory entry is created or opened;
 - the pinned run-directory inode and `.ates-writer.lock` retain their own exclusive `flock` barriers beneath that parent-scoped authority, so a single namespace-entry replacement does not mint another conforming writer;
 - the canonical run-directory name is revalidated against the pinned run-directory inode before use and around durability acknowledgements;
+- the canonical `evidence.jsonl` pathname is revalidated against the already-open evidence descriptor before and after durability barriers on POSIX;
+- the exact committed byte length of the validated stream is cached after reopen and checked before every new append and around replay/durability acknowledgement;
 - stable typed `run_id` / `event_id` identities;
 - consecutive, gap-free sequence assignment beginning at `1`;
 - canonical JSON serialization using sorted keys, compact separators, UTF-8, and no non-finite numeric values;
@@ -37,8 +39,8 @@ The local authoritative writer enforces:
 - on POSIX, every hierarchy traversal re-establishes the parent-directory durability barrier even when `.argus`, `runs`, or the run directory already exists; this recovers a retry where an earlier `mkdir` succeeded but its parent `fsync` failed;
 - created authority/lock/evidence entries are synced through their pinned parent directories before durable success is claimed;
 - a successful store open re-establishes an evidence-file durability barrier and syncs the run directory before existing history is accepted, including retries after an earlier initialization `fsync` failure;
-- canonical authority, evidence, and writer-lock files must have exactly one hard link where those files exist; evidence identity is checked again immediately before write/replay durability acknowledgement;
-- replay of a byte-identical already-committed event is acknowledged only after the current evidence handle is successfully flushed and fsynced again;
+- canonical authority, evidence, and writer-lock files must have exactly one hard link where those files exist; evidence identity and extent are checked again immediately before write/replay and after their durability barriers;
+- replay of a byte-identical already-committed event is acknowledged only after the current evidence handle is successfully flushed and fsynced again and its canonical pathname/extent are re-proven;
 - rejection of conflicting reuse of either an event identity or an existing sequence;
 - strict reopen validation before any further event can be appended.
 
@@ -48,7 +50,7 @@ Untyped API inputs also fail closed. A supplied payload is validated even when i
 
 ## Reopen and recovery
 
-Reopening `evidence.jsonl` re-establishes the namespace and durability barriers and then validates the complete existing history before allocating the next sequence number.
+Reopening `evidence.jsonl` re-establishes the namespace and durability barriers and then validates the complete existing history before allocating the next sequence number. The read path checks evidence identity before reading, verifies that the descriptor length still matches the bytes that were read, and checks identity/length again before accepting the history as the new cached committed extent.
 
 A conforming stream must have:
 
@@ -68,26 +70,36 @@ Malformed **complete** records fail closed and are never repaired automatically.
 
 A final non-newline-terminated tail is treated as an uncommitted/torn record. Normal reopen fails closed.
 
-An operator/recovery path may explicitly request `repair_trailing_partial=True`. That operation truncates **only** bytes after the last committed newline and fsyncs the truncation. It does not skip, rewrite, or synthesize any complete event. Non-boolean repair values are rejected before the store hierarchy is touched, so a string such as `"false"` cannot accidentally authorize destructive repair. Namespace authority is checked before the truncation and again after its durability barrier.
+An operator/recovery path may explicitly request `repair_trailing_partial=True`. That operation truncates **only** bytes after the last committed newline and fsyncs the truncation. It does not skip, rewrite, or synthesize any complete event. Non-boolean repair values are rejected before the store hierarchy is touched, so a string such as `"false"` cannot accidentally authorize destructive repair. Namespace authority plus canonical evidence identity/extent are checked before the truncation and again after its durability barrier.
 
 This keeps repair narrow enough to distinguish an interrupted final write from arbitrary evidence corruption.
 
 ## Ambiguous append failures
 
-A storage failure, control-flow interruption, or loss of canonical namespace identity after append I/O has begun can have an ambiguous outcome: the full line may already be visible/durable even though Argus can no longer safely acknowledge it as the canonical run history.
+A storage failure, control-flow interruption, loss of canonical namespace identity, or evidence identity/extent change after append I/O has begun can have an ambiguous outcome: the full line may already be visible/durable even though Argus can no longer safely acknowledge it as the canonical run history.
 
 For ordinary storage/validation/namespace failures, `AtesAppendError` carries the exact `StoredEvent` identity and marks the writer poisoned once append I/O has begun. For control-flow `BaseException` values such as `KeyboardInterrupt` or `SystemExit`, the original exception is preserved rather than wrapped, but the store is still poisoned first once write I/O has begun. The writer cannot allocate later events until it is closed and reopened.
 
-In particular, the POSIX run-directory namespace is checked again **after** the evidence `fsync`. If the canonical run-directory entry was renamed or replaced while that append was in flight, Argus does not return success: it poisons the writer and reports the stable event as an ambiguous append requiring reconciliation.
+In particular, the POSIX run-directory namespace and canonical `evidence.jsonl` inode are checked again **after** the evidence `fsync`. If either canonical entry was renamed or replaced while that append was in flight, Argus does not return success: it poisons the writer and reports the stable event as an ambiguous append requiring reconciliation. The expected post-append byte length is also checked after `fsync`, so a concurrent truncate cannot turn sequence `N+1` into a false success over a shortened stream.
+
+If evidence identity or committed length has already changed **before** a new append begins, no new append I/O is attempted. The active store is nevertheless poisoned because its cached history can no longer be trusted; the caller must close and reopen so the complete canonical stream is validated from disk again.
 
 Recovery then either:
 
-- observes the exact canonical event and re-establishes namespace plus durability authority; retrying that exact identity performs another evidence-file `flush` + `fsync` before idempotent success is returned; or
+- observes the exact canonical event and re-establishes namespace, evidence identity/extent, and durability authority; retrying that exact identity performs another evidence-file `flush` + `fsync` before idempotent success is returned; or
 - observes no complete record (or an explicit trailing torn record that must be repaired) and can safely reconcile before retrying the same logical event.
 
-A replay durability or namespace-authority failure is itself ambiguous: it poisons the writer and, for ordinary storage failures, returns `AtesAppendError` with the same stable event identity. Visibility alone is never sufficient to acknowledge an event whose durability or canonical namespace was previously uncertain.
+A replay durability, namespace-authority, evidence-identity, or evidence-extent failure is itself ambiguous: it poisons the writer and, for ordinary storage failures, returns `AtesAppendError` with the same stable event identity. Visibility alone is never sufficient to acknowledge an event whose durability or canonical namespace was previously uncertain.
 
 Callers must not respond to an uncertain append by inventing a new event ID for the same logical occurrence.
+
+## Lock failure classification and lifecycle
+
+POSIX non-blocking `flock` acquisition distinguishes actual contention from operational filesystem failures. Only `EACCES` / `EAGAIN` is reported as `AtesStoreBusy`. Unsupported-locking, I/O, descriptor, or other `flock` failures are surfaced as `AtesStoreError` so callers do not misreport them as another writer or retry forever under a false contention diagnosis. This classification applies to the parent-scoped per-run authority, run-directory inode lock, and marker-file lock.
+
+Explicit `close()` remains the preferred lifetime boundary. As a safety net, abandoned stores use best-effort finalization to close the evidence file, writer locks, and raw pinned directory descriptors so a dropped store cannot retain POSIX `flock` authority until process exit. Finalization performs no append, replay, repair, or durability work and suppresses cleanup errors because destructors cannot report a reliable operational result.
+
+The same finalization path preserves fork safety: inherited child resources are closed without issuing explicit `LOCK_UN` calls against the parent's shared open-file descriptions. A child must still reopen a fresh store before using ATES persistence.
 
 ## Security / path boundary
 
@@ -97,15 +109,17 @@ On POSIX, child directories and files are created/opened relative to already-ope
 
 After that parent-scoped authority is held, the store opens the canonical run-directory entry, verifies that its name still resolves to the pinned inode, locks the run-directory inode, and retains the `.ates-writer.lock` `flock`. Renaming the active run directory and recreating a normal directory at the same pathname therefore cannot give a second conforming `AtesEventStore` authority for the same `RunId`: the second writer is rejected at the parent-scoped authority before it can create/open a replacement run directory. The original writer also fails closed whenever the canonical name no longer resolves to its pinned run-directory inode.
 
+The canonical evidence file receives the same pathname-to-descriptor identity treatment on POSIX. Renaming `evidence.jsonl` and creating a replacement after the original descriptor was opened cannot be acknowledged as success merely because the old descriptor still fsyncs: the post-barrier identity check detects that the canonical name points at another inode. On Windows, evidence handles omit delete sharing, so the corresponding rename/replacement is denied while the handle is retained.
+
 The authority sidecar itself is treated as a canonical single-link regular file and its pathname-to-handle identity is revalidated. Replacing only that sidecar does not mint another writer because the existing run-directory inode remains independently locked; the original writer detects the lost authority and fails closed. Likewise, replacing or unlinking only `.ates-writer.lock` cannot mint another writer because the parent-scoped per-run authority and run-directory inode lock remain held.
 
 Every successful hierarchy traversal on POSIX fsyncs the parent directory even when the child already exists. This deliberately re-proves namespace durability after a prior attempt in which `mkdir` succeeded but its parent `fsync` failed; lower-level file fsyncs cannot substitute for durability of an ancestor directory entry.
 
-On Windows, the hierarchy is retained through non-reparse directory handles opened without delete sharing, preventing rename/replacement while the store is active. Evidence and lock files are opened through validated Windows handles and reparse points are rejected. The POSIX parent authority sidecar is therefore not needed on Windows. Files on all platforms must resolve as regular files, not devices/FIFOs/sockets/link targets, and canonical store files with multiple hard links are rejected so separate authorities cannot target one underlying file through aliases.
+On Windows, the hierarchy is retained through non-reparse directory handles opened without delete sharing, preventing rename/replacement while the store is active. Evidence and lock files are opened through validated Windows handles and reparse points are rejected. The POSIX parent authority sidecar is therefore not needed on Windows. Files on all platforms must resolve as regular files, not devices/FIFOs/sockets/link targets, and canonical store files with multiple hard links are rejected so separate authorities cannot target one underlying file through aliases. External write/truncate sharing is still guarded by the cached committed-length checks before and after append/replay barriers.
 
 A store object is also process-owned. On POSIX, an instance inherited through `fork()` is invalid in the child and must be closed/reopened there. The child cleanup path closes only its inherited descriptors and deliberately does not issue an explicit unlock for the parent-scoped authority, marker-file, or run-directory `flock`, which would release the parent's shared open-file-description authority.
 
-These mechanisms protect Argus against accidental cleanup/replacement races and the reviewed namespace/alias failure modes. They are not a substitute for OS permissions against an actor that already has unrestricted ability to rewrite every filesystem authority object under the same project tree.
+These mechanisms protect Argus against accidental cleanup/replacement races and the reviewed namespace/alias/extent failure modes. They are **not** a cryptographic tamper-detection mechanism for an actor that can deliberately rewrite bytes in place while preserving the same file identity and length, nor are they a substitute for OS permissions against an actor with unrestricted ability to rewrite every filesystem authority object under the project tree. Strong adversarial tamper evidence belongs in a later manifest/integrity layer.
 
 This is the local evidence path boundary only. Artifact path confinement remains part of ATES Core/artifact handling.
 
