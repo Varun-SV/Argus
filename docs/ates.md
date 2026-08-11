@@ -412,7 +412,7 @@ A possible on-disk layout is:
     junit.xml
 ```
 
-`evidence.jsonl` is the canonical execution-event history. Reports are derived views and should be reproducible from canonical evidence where practical. `approvals.jsonl` is a detached audit ledger described below and does not mutate the immutable manifest revision it approves.
+`evidence.jsonl` is the canonical execution-event history. Reports are derived views and should be reproducible from canonical evidence where practical. `approvals.jsonl` is a detached audit ledger described below and does not mutate the immutable manifest revision it approves. Detached approval storage still requires authentication/integrity verification before a record is treated as a valid approval.
 
 ## Integrity model
 
@@ -479,7 +479,7 @@ Corrections that alter execution evidence produce a **new manifest revision** ra
 
 The schema should support optional human/organizational approvals from v1 even if Argus does not require them by default.
 
-Approvals are **detached audit records over an immutable manifest revision**. They are not included in the manifest digest they approve, which avoids a self-referential digest cycle.
+Approvals are **detached audit records over an immutable manifest revision**. They are not included in the manifest digest they approve, which avoids a self-referential digest cycle. Detached does **not** mean unauthenticated: an `actor` string alone is never sufficient evidence that the named actor actually approved the revision.
 
 Example logical record:
 
@@ -491,15 +491,28 @@ decision: approved
 manifest_revision: 1
 manifest_digest: "..."
 approved_at: "..."
+verification:
+  status: verified
+  method: signature
+  signer_key_id: "qa-reviewer-key-7"
+  binding_ref: "..."
 ```
 
 Required semantics:
 
 - the referenced manifest revision must already be finalized and immutable;
 - appending an approval does not mutate that revision or its digest;
-- the detached approval record may itself be signed or incorporated into a **later** audit/manifest revision if required;
+- every approval record carries a verification state such as `verified`, `unverified`, or `invalid`;
+- a record is treated as a **valid approval** only after the actor/decision/manifest reference are authenticated and the detached record is integrity-protected by an independently trusted mechanism;
+- acceptable verification mechanisms may include a cryptographic signature from a trusted reviewer identity, authenticated append to an independently integrity-protected audit/transparency service, or incorporation into a later independently bound audit/manifest revision where the approving actor was authenticated at append time;
+- until such verification/binding succeeds, a syntactically well-formed record remains `unverified` and must not satisfy an approval gate;
+- a forged or modified record whose verification fails is `invalid` and must never be presented as an approval;
+- the detached approval record may be incorporated into a **later** audit/manifest revision without mutating the evidence revision it approved;
 - if execution evidence changes, a new manifest revision is produced and prior approvals remain attached only to the revision they actually reviewed;
-- reports must show which manifest revision each approval applies to.
+- reports must show which manifest revision each approval applies to **and its verification status/method**;
+- regulated/audit profiles that require approval must require `verified` approvals and retain the verification evidence/reference needed to validate them later.
+
+A mutable local `approvals.jsonl` file by itself is therefore only a storage format, not an approval trust boundary. Reports may display unverified records for investigation, but must label them clearly as unverified and must not summarize them as “approved.”
 
 Approval support is intended for auditable workflows. Authentication, electronic-signature requirements, and legal validity depend on the deployment and applicable regulation and must not be implied by the presence of this record alone.
 
@@ -535,7 +548,7 @@ Interrupted/incomplete runs must remain renderable. Such reports should identify
 13. Execution timeline
 14. Model/resource usage
 15. Failure Capsule information, if retained
-16. Approvals/review state and manifest revision, if applicable
+16. Approvals/review state, verification status, and manifest revision, if applicable
 17. Evidence manifest and integrity/tamper-evidence status
 
 ## Privacy and secret handling
@@ -604,6 +617,6 @@ Recommended implementation order:
 6. implement optional manifest binding mechanisms before advertising tamper-evident evidence;
 7. render the first Markdown/JSON Test Execution Report from canonical evidence, including incomplete runs;
 8. add requirement traceability;
-9. add detached approval/supersession records tied to manifest revisions;
+9. add authenticated detached approval/supersession records tied to immutable manifest revisions, with verification status enforced by renderers/gates;
 10. integrate live event streaming with Argus Fleet using idempotent retry/reconciliation semantics;
 11. add external compliance mappings only after the native model is stable.
