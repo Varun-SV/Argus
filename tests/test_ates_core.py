@@ -475,6 +475,21 @@ def test_status_inputs_require_real_booleans():
         StatusInputs(required_assertions_satisfied="true")  # type: ignore[arg-type]
 
 
+def test_derive_run_status_requires_validated_status_inputs():
+    class ShapedStatusInputs:
+        required_assertion_results = ("failed",)
+        required_steps_satisfied = True
+        required_assertions_satisfied = True
+        unresolved_action_outcome = False
+        evidence_integrity_error = False
+        execution_error = False
+        deterministic_failure = False
+        cancelled = False
+
+    with pytest.raises(ValueError, match="validated StatusInputs"):
+        derive_run_status(ShapedStatusInputs())  # type: ignore[arg-type]
+
+
 def test_artifact_paths_are_package_relative_and_confined():
     assert validate_artifact_path("artifacts/STEP-1/screenshot.png") == (
         "artifacts/STEP-1/screenshot.png"

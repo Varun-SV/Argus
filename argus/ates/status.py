@@ -44,6 +44,9 @@ class StatusInputs:
 
 
 def derive_run_status(inputs: StatusInputs) -> RunStatus:
+    if not isinstance(inputs, StatusInputs):
+        raise ValueError("status derivation requires validated StatusInputs")
+
     assertion_error = any(
         result is AssertionResult.ERROR for result in inputs.required_assertion_results
     )
