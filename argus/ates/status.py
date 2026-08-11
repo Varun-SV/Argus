@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from .core import AssertionResult, RunOutcomeRevision, RunStatus
@@ -19,15 +20,32 @@ class StatusInputs:
     cancelled: bool = False
 
     def __post_init__(self) -> None:
+        raw_results = self.required_assertion_results
+        if (
+            isinstance(raw_results, (str, bytes, bytearray, Mapping))
+            or not isinstance(raw_results, Sequence)
+        ):
+            raise ValueError(
+                "required_assertion_results must be a sequence of AssertionResult values"
+            )
+        try:
+            result_snapshot = tuple(raw_results)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "required_assertion_results could not be snapshotted safely"
+            ) from exc
+
         normalized_results = []
-        for result in tuple(self.required_assertion_results):
+        for result in result_snapshot:
             if isinstance(result, AssertionResult):
                 normalized_results.append(result)
                 continue
             try:
                 normalized_results.append(AssertionResult(result))
             except (TypeError, ValueError) as exc:
-                raise ValueError("required assertion results must be valid AssertionResult values") from exc
+                raise ValueError(
+                    "required assertion results must be valid AssertionResult values"
+                ) from exc
         object.__setattr__(self, "required_assertion_results", tuple(normalized_results))
 
         for field_name in (
@@ -81,13 +99,19 @@ def derive_run_status(inputs: StatusInputs) -> RunStatus:
 
 
 def effective_outcome(
-    revisions: tuple[RunOutcomeRevision, ...],
+    revisions: Sequence[RunOutcomeRevision],
     *,
     evidence_revision: int | None = None,
 ) -> RunOutcomeRevision:
-    if isinstance(revisions, (str, bytes, bytearray)):
-        raise ValueError("finalization history must contain RunOutcomeRevision values")
-    snapshot = tuple(revisions)
+    if (
+        isinstance(revisions, (str, bytes, bytearray, Mapping))
+        or not isinstance(revisions, Sequence)
+    ):
+        raise ValueError("finalization history must be a sequence of RunOutcomeRevision values")
+    try:
+        snapshot = tuple(revisions)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError("finalization history could not be snapshotted safely") from exc
     if not snapshot:
         raise ValueError("at least one finalization revision is required")
     if not all(isinstance(item, RunOutcomeRevision) for item in snapshot):
@@ -120,6 +144,8 @@ def effective_outcome(
                 raise ValueError("re-finalization must supersede the immediately prior finalization")
             if item.evidence_revision <= previous.evidence_revision:
                 raise ValueError("re-finalization must bind a newer evidence revision")
+            if item.finalized_at < previous.finalized_at:
+                raise ValueError("re-finalization cannot precede the prior finalization time")
         seen_ids.add(item.finalization_id)
         previous = item
 
