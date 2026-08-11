@@ -442,6 +442,29 @@ class _PinnedDirectory:
                 f"{self.path / name}"
             )
 
+    def assert_file_identity(self, name: str, fd: int, label: str) -> None:
+        """Require a named regular file to still refer to a pinned descriptor."""
+        if os.name == "nt":
+            # Windows files are opened without FILE_SHARE_DELETE, so replacing
+            # the canonical path is denied while the authoritative handle lives.
+            return
+        assert self._fd is not None
+        try:
+            named = os.stat(name, dir_fd=self._fd, follow_symlinks=False)
+            pinned = os.fstat(fd)
+        except OSError as exc:
+            raise AtesStoreError(
+                f"cannot verify {label} namespace identity: {self.path / name}: {exc}"
+            ) from exc
+        if (
+            not stat.S_ISREG(named.st_mode)
+            or (named.st_dev, named.st_ino) != (pinned.st_dev, pinned.st_ino)
+        ):
+            raise AtesStoreError(
+                f"{label} namespace no longer refers to the pinned file: "
+                f"{self.path / name}"
+            )
+
     def fsync(self) -> None:
         if os.name == "nt":
             return
@@ -459,6 +482,14 @@ class _PinnedDirectory:
             assert self._kernel32 is not None
             self._kernel32.CloseHandle(self._win_handle)
             self._win_handle = None
+
+    def __del__(self) -> None:
+        # Raw POSIX directory descriptors are integers and therefore do not
+        # close themselves when an abandoned store becomes unreachable.
+        try:
+            self.close()
+        except BaseException:
+            pass
 
 
 class _RunDirectoryChain:
@@ -541,6 +572,17 @@ def _validate_regular_file_descriptor(fd: int, path: Path) -> None:
         raise AtesStoreError(
             f"event-store file must have exactly one hard link: {path}"
         )
+
+
+def _raise_lock_acquisition_error(exc: OSError, owner: str) -> None:
+    """Classify only genuine non-blocking lock contention as store busy."""
+    if exc.errno in (errno.EACCES, errno.EAGAIN):
+        raise AtesStoreBusy(
+            f"another authoritative ATES writer owns {owner}"
+        ) from exc
+    raise AtesStoreError(
+        f"cannot acquire ATES writer authority for {owner}: {exc}"
+    ) from exc
 
 
 def _open_regular_file(directory: _PinnedDirectory, name: str):
@@ -638,9 +680,7 @@ class _RunNamespaceLock:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
-                raise AtesStoreBusy(
-                    f"another authoritative ATES writer owns {run_id}"
-                ) from exc
+                _raise_lock_acquisition_error(exc, str(run_id))
             self._locked = True
             self.assert_authoritative()
         except BaseException:
@@ -731,9 +771,7 @@ class _WriterLock:
             try:
                 fcntl.flock(directory._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
-                raise AtesStoreBusy(
-                    f"another authoritative ATES writer owns {directory.path.name}"
-                ) from exc
+                _raise_lock_acquisition_error(exc, directory.path.name)
             self._directory_locked = True
 
         try:
@@ -772,9 +810,7 @@ class _WriterLock:
                         self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
                     )
             except OSError as exc:
-                raise AtesStoreBusy(
-                    f"another authoritative ATES writer owns {directory.path.name}"
-                ) from exc
+                _raise_lock_acquisition_error(exc, directory.path.name)
             self._locked = True
         except BaseException:
             if self._handle is not None and not self._handle.closed:
@@ -879,6 +915,7 @@ class AtesEventStore:
         self._directories: Optional[_RunDirectoryChain] = None
         self._writer_lock: Optional[_WriterLock] = None
         self._file = None
+        self._committed_length: Optional[int] = None
 
         try:
             self._directories = _RunDirectoryChain(Path(project_dir), self.run_id)
@@ -924,6 +961,19 @@ class AtesEventStore:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+    def __del__(self) -> None:
+        # Abandoned stores must release raw pinned descriptors and their flocks.
+        # Do not take the thread RLock here: finalization can occur after fork or
+        # during interpreter teardown. Resource close methods already avoid an
+        # explicit LOCK_UN when they detect an inherited child process.
+        try:
+            if getattr(self, "_closed", True):
+                return
+            self._close_resources(suppress_errors=True)
+            self._closed = True
+        except BaseException:
+            pass
 
     def _close_resources(self, *, suppress_errors: bool) -> None:
         first_error: Optional[BaseException] = None
@@ -1030,13 +1080,27 @@ class AtesEventStore:
                     f"got {event.sequence}"
                 )
 
+            assert self._committed_length is not None
+            try:
+                self._assert_evidence_state(expected_length=self._committed_length)
+            except BaseException:
+                # The cached history can no longer be trusted, even though this
+                # append has not started I/O. Require a reopen/revalidation.
+                self._poisoned = True
+                raise
+
             line = event.canonical_line()
+            expected_after = self._committed_length + len(line)
             io_started = False
             try:
                 assert self._file is not None
                 assert self._directories is not None
-                _validate_regular_file_descriptor(self._file.fileno(), self.path)
-                self._file.seek(0, os.SEEK_END)
+                end = self._file.seek(0, os.SEEK_END)
+                if end != self._committed_length:
+                    raise AtesStoreError(
+                        "ATES evidence length changed before append: "
+                        f"expected {self._committed_length}, found {end}"
+                    )
                 io_started = True
                 written = self._file.write(line)
                 if written != len(line):
@@ -1045,10 +1109,11 @@ class AtesEventStore:
                     )
                 self._file.flush()
                 os.fsync(self._file.fileno())
-                # Re-check the parent authority and canonical run-directory
-                # namespace *after* the durability barrier. If a rename/swap
-                # raced the write, success cannot safely be reported.
+                # Re-check both authority namespaces and the canonical evidence
+                # entry *after* the durability barrier. A rename/replacement or
+                # truncation race cannot safely be reported as append success.
                 self._directories.assert_authoritative()
+                self._assert_evidence_state(expected_length=expected_after)
             except BaseException as exc:
                 if io_started:
                     # Any control-flow interruption after the write can leave
@@ -1068,18 +1133,44 @@ class AtesEventStore:
             self._events.append(event)
             self._event_by_id[event.event_id] = event
             self._next_sequence += 1
+            self._committed_length = expected_after
             return event
+
+    def _assert_evidence_state(self, *, expected_length: Optional[int]) -> None:
+        assert self._file is not None
+        assert self._directories is not None
+        fd = self._file.fileno()
+        _validate_regular_file_descriptor(fd, self.path)
+        self._directories.run.assert_file_identity(
+            "evidence.jsonl",
+            fd,
+            "ATES evidence file",
+        )
+        if expected_length is not None:
+            try:
+                actual_length = os.fstat(fd).st_size
+            except OSError as exc:
+                raise AtesStoreError(
+                    f"cannot inspect ATES evidence length {self.path}: {exc}"
+                ) from exc
+            if actual_length != expected_length:
+                raise AtesStoreError(
+                    "ATES evidence length changed outside the authoritative store: "
+                    f"expected {expected_length}, found {actual_length}"
+                )
 
     def _sync_evidence_durability(self, *, sync_directory: bool) -> None:
         assert self._file is not None
         assert self._directories is not None
+        expected_length = self._committed_length
         self._directories.assert_authoritative()
-        _validate_regular_file_descriptor(self._file.fileno(), self.path)
+        self._assert_evidence_state(expected_length=expected_length)
         self._file.flush()
         os.fsync(self._file.fileno())
         if sync_directory:
             self._directories.run.fsync()
         self._directories.assert_authoritative()
+        self._assert_evidence_state(expected_length=expected_length)
 
     def _acknowledge_replay(self, event: StoredEvent) -> StoredEvent:
         try:
@@ -1124,10 +1215,23 @@ class AtesEventStore:
 
     def _read_all(self) -> bytes:
         assert self._file is not None
+        self._assert_evidence_state(expected_length=None)
         self._file.seek(0)
         data = self._file.read()
         if not isinstance(data, bytes):
             raise AtesStoreCorruption("event-store read did not return bytes")
+        try:
+            actual_length = os.fstat(self._file.fileno()).st_size
+        except OSError as exc:
+            raise AtesStoreError(
+                f"cannot inspect ATES evidence after read {self.path}: {exc}"
+            ) from exc
+        if actual_length != len(data):
+            raise AtesStoreError(
+                "ATES evidence length changed while reopening history: "
+                f"read {len(data)} bytes, descriptor now has {actual_length}"
+            )
+        self._assert_evidence_state(expected_length=actual_length)
         return data
 
     def _load_existing(self, repair_trailing_partial: bool) -> list[StoredEvent]:
@@ -1141,11 +1245,13 @@ class AtesEventStore:
             assert self._file is not None
             assert self._directories is not None
             self._directories.assert_authoritative()
+            self._assert_evidence_state(expected_length=len(data))
             cut = data.rfind(b"\n") + 1
             self._file.truncate(cut)
             self._file.flush()
             os.fsync(self._file.fileno())
             self._directories.assert_authoritative()
+            self._assert_evidence_state(expected_length=cut)
             data = data[:cut]
 
         events: list[StoredEvent] = []
@@ -1186,4 +1292,7 @@ class AtesEventStore:
                 )
             seen_ids.add(event.event_id)
             events.append(event)
+
+        self._committed_length = len(data)
+        self._assert_evidence_state(expected_length=self._committed_length)
         return events
