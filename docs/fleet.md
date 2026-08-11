@@ -39,6 +39,8 @@ Argus Fleet is a layer **above**, not a replacement for, `ExecutionEnvironment` 
 - run Capsule-backed tests on many physical machines;
 - schedule work according to host capabilities and available capacity;
 - keep test specifications independent of a specific physical host;
+- pin each scheduled Capsule image to an immutable content identity rather than trusting a mutable alias alone;
+- make remote session creation retry-idempotent so ambiguous network failures cannot launch a destructive test twice;
 - provide live monitoring of every active session;
 - make the Observer surface structurally read-only;
 - aggregate ATES events from all running sessions;
@@ -58,9 +60,9 @@ Responsibilities should include:
 - Node enrollment and identity;
 - health/heartbeat tracking;
 - capability registry;
-- Capsule-image inventory metadata;
+- Capsule-image inventory metadata and immutable image identities;
 - scheduling and queues;
-- session lifecycle coordination;
+- session lifecycle coordination and idempotent allocation requests;
 - test-plan and matrix expansion;
 - ATES event aggregation;
 - result and artifact indexing;
@@ -87,11 +89,17 @@ capacity:
   max_sessions: 8
   active_sessions: 3
 images:
-  - win11-qa
-  - win10-legacy
+  - alias: win11-qa
+    image_id: IMG-WIN11-QA-2026-08
+    digest: "sha256:..."
+  - alias: win10-legacy
+    image_id: IMG-WIN10-LEGACY-2026-06
+    digest: "sha256:..."
 ```
 
 A Linux Node could advertise `libvirt` and its Linux golden images instead.
+
+Human-friendly image aliases are discovery/configuration conveniences, not sufficient execution identity. Every schedulable image advertisement must include an **immutable image identity**, preferably a cryptographic digest of the immutable golden-image content or an immutable version identifier that resolves to such a digest. Nodes advertising the same alias with different immutable identities are different execution baselines and must not be treated as interchangeable.
 
 The Agent is responsible for translating a centrally authorized session request into the local `ExecutionEnvironment` / Capsule provider APIs.
 
@@ -285,7 +293,7 @@ Nodes should periodically report:
 - provider availability;
 - capacity and current load;
 - disk pressure;
-- image availability;
+- image availability including immutable image identity/digest;
 - virtualization/provider health;
 - active session IDs;
 - clock information sufficient to detect dangerous skew;
@@ -305,13 +313,42 @@ execution:
   capsule:
     guest_os: windows
     image: win11-qa
+    image_digest: "sha256:..."
   placement:
     labels:
       gpu: nvidia
     min_memory_mb: 8192
 ```
 
+The human-friendly `image` alias may be used to select a desired baseline, but the Control Center must resolve it to an immutable image identity **before dispatch**. The session request sent to the Node must carry that immutable identity/digest. Before allocating a Capsule, the Node must verify that its local golden image matches the requested identity. A missing or mismatched image fails/queues the request; it must never silently substitute another image with the same alias.
+
+The immutable image identity used for the run must be recorded in session metadata and ATES provenance so reports can distinguish otherwise similarly named baselines.
+
 The scheduler should fail or queue when requirements cannot be met. It must not silently run the test locally on the Control Center.
+
+## Remote session allocation idempotency
+
+Remote Capsule creation is a destructive side effect and must be **retry-idempotent before Fleet remote execution is considered implementable**.
+
+Before dispatch, the Control Center must allocate:
+
+- the stable ATES `run_id` for the logical run;
+- a stable random `session_request_id` for the logical remote allocation request;
+- a canonical digest of the immutable session request, including the requested image digest, test/spec digest, staging authority, network/isolation policy, and other allocation-relevant inputs.
+
+The Node must durably associate `session_request_id` with the request digest and allocation result before or atomically with making the Capsule externally observable/runnable.
+
+Required retry semantics:
+
+- a first valid request may allocate at most one logical Capsule/session for that `session_request_id`;
+- if the allocation response is lost, the Control Center retries with the **same** `session_request_id`, `run_id`, and request digest;
+- a duplicate request with the same identity and digest returns/replays the original allocation result and current session state rather than creating another Capsule or starting the test again;
+- reuse of the same `session_request_id` with a different request digest or `run_id` is rejected as a protocol/security error;
+- the Node retains the request-to-allocation mapping through acknowledgement and for a bounded reconciliation/retention period sufficient to survive reconnect/restart scenarios;
+- retry processing must distinguish `allocated`, `starting`, `running`, `completed`, `failed`, `retained`, and `released` states so replay never means re-execution;
+- cancellation and teardown commands require their own idempotent operation identities when they can be retried.
+
+This contract prevents a lost HTTP/gRPC/WebSocket response from turning one destructive Fleet request into two independent test executions.
 
 ## Matrix execution
 
@@ -330,7 +367,9 @@ matrix:
     - beta
 ```
 
-The Control Center expands that into independently identified runs, each with its own ATES record, while preserving a parent plan/matrix identity.
+Before matrix cases are dispatched, mutable aliases must resolve to immutable image identities. Each expanded run receives its own `run_id` and `session_request_id`, and its ATES provenance records the resolved image digest/version. Two matrix cases that resolve to different image digests are different baselines even if their aliases are identical.
+
+The Control Center expands the logical plan into independently identified runs while preserving a parent plan/matrix identity.
 
 ## Fleet timeline
 
@@ -415,28 +454,31 @@ Future discard/export workflows should use explicit privileged Control Center op
 6. Observer authorization is read-only by construction.
 7. Control Center privilege does not bypass Capsule guest policy accidentally.
 8. Node Agents enforce local provider/capability constraints.
-9. Remote placement never silently falls back to local execution.
-10. All control-plane mutations are auditable.
-11. ATES facts retain Node/session provenance and transport preserves ATES event identity/order.
-12. Credentials and guest-control secrets are not emitted into ATES evidence.
-13. Ambiguous distributed failures use reconciliation rather than destructive guesses.
+9. Scheduled images are pinned to immutable identities and verified by the Node before allocation.
+10. Remote session allocation is idempotent by stable request identity; retries never create a second logical execution.
+11. Remote placement never silently falls back to local execution.
+12. All control-plane mutations are auditable.
+13. ATES facts retain Node/session/image provenance and transport preserves ATES event identity/order.
+14. Credentials and guest-control secrets are not emitted into ATES evidence.
+15. Ambiguous distributed failures use reconciliation rather than destructive guesses.
 
 ## Initial implementation sequence
 
 Recommended order:
 
-1. define Node identity/capability models, Node key ownership, enrollment request IDs, and bootstrap credential semantics;
+1. define Node identity/capability models, Node key ownership, enrollment request IDs, bootstrap credential semantics, and immutable image identity metadata;
 2. implement Node Agent daemon and authenticated/idempotent enrollment using protected secret input rather than argv;
-3. establish authenticated encrypted Fleet channels and add heartbeat/capability registry to the Control Center;
-4. implement remote session request/response around existing Capsule APIs;
-5. add reconciliation for disconnect/restart scenarios;
-6. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics;
-7. implement read-only Observer API;
-8. implement live screen transport over the protected Fleet channel;
-9. add scheduler/queue and placement requirements;
-10. add matrix execution and fleet timeline;
-11. add encrypted centralized artifact indexing/storage policies;
-12. later consider cloud/autoscaling workers.
+3. establish authenticated encrypted Fleet channels and add heartbeat/capability/image registry to the Control Center;
+4. define stable `session_request_id`, canonical request digests, durable Node-side deduplication, and allocation replay semantics;
+5. implement remote session request/response around existing Capsule APIs only after the idempotency contract above is enforced;
+6. add reconciliation for disconnect/restart scenarios;
+7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics and immutable image provenance;
+8. implement read-only Observer API;
+9. implement live screen transport over the protected Fleet channel;
+10. add scheduler/queue and placement requirements with immutable image pinning;
+11. add matrix execution and fleet timeline;
+12. add encrypted centralized artifact indexing/storage policies;
+13. later consider cloud/autoscaling workers.
 
 ## Relationship to current Argus
 
