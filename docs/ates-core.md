@@ -23,17 +23,19 @@ PR #16 establishes dependency-free Core schema primitives only:
 
 It does **not** yet persist `evidence.jsonl`, wire ATES into `argus run`/`argus roam`, capture screenshots, build manifests, render reports, or implement Fleet.
 
-## Serialization boundary
+## Serialization and immutability boundary
 
-Python type annotations are not treated as an input-validation boundary. Core records may eventually be reconstructed from JSON, Fleet messages, or other untyped sources, so typed identifiers are reconstructed through their concrete `AtesId` subclasses, enum-backed fields are normalized to their canonical enum values (or rejected), secret-bearing text positions require `EvidenceValue` at runtime, mutable provenance sequences are snapshotted before validation, and sequence/revision counters use explicitly validated integer domains.
+Python type annotations are not treated as an input-validation boundary. Core records may eventually be reconstructed from JSON, Fleet messages, plugins, or other untyped sources, so typed identifiers are reconstructed through their concrete `AtesId` subclasses, enum-backed fields are normalized to their canonical enum values (or rejected), secret-bearing text positions require `EvidenceValue` at runtime, mutable provenance sequences are snapshotted before validation, and sequence/revision counters use explicitly validated integer domains.
 
 This applies in particular to Run/Event/Step/Attempt/Action/Observation/Assertion/Artifact/Finding/finalization/correction identifiers, execution kinds, Step-attempt statuses, assertion results, evidence dispositions, verification statuses, run outcomes, and event types. A value with the wrong typed prefix is rejected even when it is otherwise a syntactically valid ATES identifier; for example an `EVT-*` value cannot become a `run_id`. The same rule prevents a serialized string such as `"failed"` from bypassing canonical status aggregation merely because identity comparisons expect `AssertionResult.FAILED`.
 
 Collection-valued provenance also rejects scalar strings before snapshotting. In particular, `correction_ids="CORR-..."` is not treated as a sequence of characters, and every supplied correction is normalized as an actual `CorrectionId` before it can participate in an authoritative re-finalization.
 
-Structured safe JSON is snapshotted into immutable-but-JSON-compatible containers, and `to_json_compatible()` provides an explicit conversion path for ATES dataclasses, enums, aware datetimes, mappings, and sequences. The Core therefore does not require callers to choose between immutable evidence snapshots and a working JSON serialization path.
+Structured safe JSON is snapshotted into deeply immutable containers. Mapping snapshots use `FrozenDict`, which implements the read-only `Mapping` interface over immutable tuple storage and deliberately does **not** inherit from `dict`; builtin mutators such as `dict.__setitem__`, `dict.update`, or `dict.clear` therefore have no mutable dictionary storage to bypass. Nested sequences become tuples and nested mappings become `FrozenDict` recursively.
 
-Action parameter and Observation fact mappings follow a stricter snapshot rule: Core enumerates the supplied mapping exactly once, validates the resulting snapshot, and stores that same immutable snapshot. Validation and storage never make separate reads from an untrusted or concurrently mutable `Mapping`, preventing a custom mapping from presenting safe `EvidenceValue` entries during validation and different plaintext entries during copying.
+`to_json_compatible()` is the explicit serialization boundary for ATES dataclasses, enums, aware datetimes, mappings, and sequences. It returns ordinary detached JSON containers, so mutating serialized output cannot mutate canonical evidence. `dataclasses.asdict()` may also obtain detached copies for convenience, but callers must never treat such detached mutable copies as canonical evidence state.
+
+Safe structured `EvidenceValue` mappings are snapshotted and frozen in one traversal: Core does not validate one view of an untrusted/custom `Mapping` and then read it a second time to create the retained value. Action parameter and Observation fact mappings follow the same rule: Core enumerates the supplied mapping exactly once, validates the resulting snapshot, and stores that exact immutable snapshot. This prevents custom mappings or concurrent mutation from presenting safe values during validation and different plaintext values during copying.
 
 ## Secret-safe disposition reasons
 
@@ -44,6 +46,14 @@ This prevents an otherwise correctly redacted value from leaking the secret agai
 ## Run configuration provenance
 
 A committed scripted test source is not sufficient to identify a run's immutable inputs. `RunRecord.configuration_commitment` separately commits the effective runtime configuration using `SourceCommitment`, allowing callers to use a secret-redacted canonical commitment or a protected keyed commitment as appropriate. This keeps two runs of the same test specification distinguishable when provider, policy, environment, or other material runtime configuration differs without requiring plaintext secrets in ordinary evidence.
+
+Optional run identity metadata (`provider`, `model_provider`, and `model`) is validated at the same decoded-input boundary. When present, each value must be a nonempty string; lists, objects, empty strings, and other untyped values cannot enter canonical run provenance merely because the Python annotation is optional.
+
+## Requirement traceability
+
+`RequirementIdentity` is the immutable meaning of a requirement reference: source system, display ID, version/source revision, and optional complete `SourceCommitment` semantics participate in its identity. Two values such as `REQ-42@v2` and `REQ-42@v3` therefore remain distinct even if their display ID is the same.
+
+`AssertionRecord.requirement` optionally binds an assertion directly to that frozen `RequirementIdentity`. Requirement-backed scripted assertions can therefore prove exactly which requirement meaning was evaluated, while runtime assertions that are not requirement coverage do not have to fabricate a requirement association. Coverage/reporting consumers should use the associated `RequirementIdentity.identity_key` rather than grouping only by display ID.
 
 ## Step-attempt history and evidence relationships
 
@@ -63,7 +73,8 @@ Opaque `StepAttemptId` values intentionally do not encode their parent step, so 
 - every Action and Assertion references a known Step attempt and its declared `step_id` matches that attempt's owning Step;
 - every Observation references a known Step attempt;
 - an Assertion's optional `observation_id` names a known Observation from the same Step attempt;
-- Action, Observation, and Assertion identities are unique within the canonical collection.
+- Action, Observation, and Assertion identities are unique within the canonical collection;
+- every non-null `ActionOperationId` is unique across distinct canonical Action records, so provider/adapter deduplication cannot collapse two different side effects onto one operation identity. Transport retries reuse the original Action record and operation identity instead of creating a second distinct Action with that ID.
 
 Callers that persist, package, or report multi-record evidence should use the snapshots returned by this aggregate validator rather than validating one list and later consuming a separately mutable collection.
 
@@ -92,8 +103,9 @@ ATES resolves this without rewriting history.
 7. Authentication is not authorization. A status-bearing successor additionally requires a verified `AuthorizationDecision` under an explicit versioned policy and the `run_outcome.refinalize` scope.
 8. Authorization decisions are not reusable bearer approvals. The decision names the authenticated subject and binds the exact proposed run ID, successor finalization ID, superseded finalization ID, correction IDs, effective status, evidence revision, and status-policy version. The subject must equal the actor authenticated by the successor's `Verification` record. A decision for an administrator therefore cannot be replayed by an unprivileged authenticated actor or onto a different run/outcome payload.
 9. Outcome revisions form a contiguous chain; a successor may not skip or fork the immediately prior authoritative finalization.
-10. Consumers that present the status for a particular evidence revision use the latest verified and authorized finalization applicable to that revision. They must not keep displaying revision-1 PASS after a valid successor re-finalizes the run as FAILED/ERROR/CANCELLED.
-11. Reports/audit views should preserve both the historical completion outcome and the later effective outcome when they differ.
+10. `effective_outcome()` snapshots the supplied history and requires **every** item to be an actual validated `RunOutcomeRevision` before sorting, chaining, or selection. A plugin/Fleet object that merely exposes similarly named attributes cannot bypass the authentication/authorization invariants enforced during `RunOutcomeRevision` construction.
+11. Consumers that present the status for a particular evidence revision use the latest verified and authorized finalization applicable to that revision. They must not keep displaying revision-1 PASS after a valid successor re-finalizes the run as FAILED/ERROR/CANCELLED.
+12. Reports/audit views should preserve both the historical completion outcome and the later effective outcome when they differ.
 
 Conceptually:
 
