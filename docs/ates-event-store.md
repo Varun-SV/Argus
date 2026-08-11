@@ -20,7 +20,8 @@ Each line of `evidence.jsonl` is one canonical UTF-8 JSON object containing the 
 
 The local authoritative writer enforces:
 
-- exactly one writer authority for a run at a time, with an in-process lock plus a cross-process lock;
+- exactly one writer authority for a run at a time, with an in-process lock plus cross-process authority locking;
+- on POSIX, exclusive writer authority is anchored to the already-pinned run-directory inode **before** the replaceable `.ates-writer.lock` pathname is opened, with the marker-file `flock` retained as an additional lock;
 - stable typed `run_id` / `event_id` identities;
 - consecutive, gap-free sequence assignment beginning at `1`;
 - canonical JSON serialization using sorted keys, compact separators, UTF-8, and no non-finite numeric values;
@@ -54,7 +55,7 @@ A conforming stream must have:
 - unique event IDs;
 - sequences exactly `1..N` with no gaps or duplicates.
 
-Malformed **complete** records fail closed and are never repaired automatically. Initialization failures close already-open evidence, lock, and directory handles before propagating the original failure; partial lock-file initialization follows the same cleanup rule.
+Malformed **complete** records fail closed and are never repaired automatically. Initialization failures close already-open evidence, lock, and directory handles before propagating the original failure; partial lock-file initialization follows the same cleanup rule. If POSIX writer initialization fails after acquiring the run-directory authority lock, that authority is released during constructor cleanup so a later valid writer is not left permanently busy.
 
 ### Torn trailing write
 
@@ -83,11 +84,11 @@ Callers must not respond to an uncertain append by inventing a new event ID for 
 
 The store pins the project, `.argus`, `runs`, and run-directory chain for the writer lifetime rather than validating path strings and later reopening them by name.
 
-On POSIX, child directories and files are created/opened relative to already-open directory descriptors with no-follow semantics where supported. This keeps the lock and `evidence.jsonl` bound to the validated run directory even if an attacker renames the visible path and replaces it with a symlink between validation and file open.
+On POSIX, child directories and files are created/opened relative to already-open directory descriptors with no-follow semantics where supported. The writer then acquires an exclusive non-blocking `flock` on the pinned run-directory descriptor before opening `.ates-writer.lock`. Unlinking or replacing the visible marker therefore does not transfer current writer authority: another conforming store opening the same run directory must contend on the stable directory inode first and is rejected before it can recreate or lock the marker. The marker-file `flock` remains as an additional on-disk locking barrier. Descriptor-relative opens also keep the lock and `evidence.jsonl` bound to the validated run directory if the visible path is renamed and replaced with a symlink between validation and file open.
 
 On Windows, the hierarchy is retained through non-reparse directory handles opened without delete sharing, preventing rename/replacement while the store is active. Evidence and lock files are opened through validated Windows handles and reparse points are rejected. Files on all platforms must resolve as regular files, not devices/FIFOs/sockets/link targets, and canonical store files with multiple hard links are rejected so separate run locks cannot become independent writer authorities over one underlying inode.
 
-A store object is also process-owned. On POSIX, an instance inherited through `fork()` is invalid in the child and must be closed/reopened there. The child cleanup path closes only its inherited descriptors and deliberately does not issue an explicit unlock that could release the parent writer's shared `flock` open-file description.
+A store object is also process-owned. On POSIX, an instance inherited through `fork()` is invalid in the child and must be closed/reopened there. The child cleanup path closes only its inherited descriptors and deliberately does not issue an explicit unlock for either the marker-file or run-directory `flock`, which would release the parent's shared open-file-description authority.
 
 This is the local evidence path boundary only. Artifact path confinement remains part of ATES Core/artifact handling.
 
