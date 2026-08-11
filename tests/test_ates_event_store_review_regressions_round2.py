@@ -69,12 +69,25 @@ def test_hard_link_added_after_open_is_rejected_before_append(tmp_path: Path):
         store.close()
 
 
+def test_decode_recursion_is_classified_as_store_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_decode(*args, **kwargs):
+        raise RecursionError("simulated decoder recursion")
+
+    monkeypatch.setattr(store_module.json, "loads", fail_decode)
+    with pytest.raises(AtesStoreCorruption, match="strict JSON"):
+        store_module._decode_json_object(b"{}")
+
+
 def test_deeply_nested_persisted_json_is_store_corruption(tmp_path: Path):
     run_id = RunId("RUN-deep-json")
     with AtesEventStore(tmp_path, run_id) as store:
         path = store.path
 
-    # This is valid JSON but exceeds CPython's JSON decoder recursion budget.
+    # Different CPython versions can hit their recursion boundary in the JSON
+    # decoder, immutable payload freezing, or canonical re-serialization. The
+    # persisted-store contract is the same at every stage: fail as corruption.
     nested = '{"x":' * 3000 + "0" + "}" * 3000
     document = (
         "{"
@@ -89,7 +102,7 @@ def test_deeply_nested_persisted_json_is_store_corruption(tmp_path: Path):
     )
     path.write_bytes(document.encode("utf-8"))
 
-    with pytest.raises(AtesStoreCorruption, match="strict JSON"):
+    with pytest.raises(AtesStoreCorruption):
         AtesEventStore(tmp_path, run_id)
 
 
