@@ -11,14 +11,31 @@ PR #16 establishes dependency-free Core schema primitives only:
 - typed stable IDs;
 - ATES schema version and event envelope;
 - scripted versus roam execution-source identity;
+- a secret-safe run-level configuration commitment so equivalent test sources executed under materially different runtime configuration remain distinguishable;
 - immutable logical Step and Step-attempt identity;
 - canonical run-status values and precedence;
 - secret-safe evidence value dispositions;
 - Action, Observation, Assertion, Finding, Artifact, and Requirement identity records;
+- retained Artifact records that identify the capture policy applied to persisted bytes;
 - artifact-path schema confinement;
-- revisioned run outcome/finalization identity.
+- revisioned run outcome/finalization identity;
+- runtime normalization/validation for enum-backed fields and integer sequence/revision positions when Core records are constructed from decoded or otherwise untyped input.
 
 It does **not** yet persist `evidence.jsonl`, wire ATES into `argus run`/`argus roam`, capture screenshots, build manifests, render reports, or implement Fleet.
+
+## Serialization boundary
+
+Python type annotations are not treated as an input-validation boundary. Core records may eventually be reconstructed from JSON, Fleet messages, or other untyped sources, so enum-backed fields are normalized to their canonical enum values (or rejected), secret-bearing text positions require `EvidenceValue` at runtime, mutable provenance sequences are snapshotted before validation, and sequence/revision counters must be non-boolean positive integers.
+
+This applies in particular to execution kinds, Step-attempt statuses, assertion results, evidence dispositions, verification statuses, run outcomes, and event types. The same rule prevents a serialized string such as `"failed"` from bypassing canonical status aggregation merely because identity comparisons expect `AssertionResult.FAILED`.
+
+## Run configuration provenance
+
+A committed scripted test source is not sufficient to identify a run's immutable inputs. `RunRecord.configuration_commitment` separately commits the effective runtime configuration using `SourceCommitment`, allowing callers to use a secret-redacted canonical commitment or a protected keyed commitment as appropriate. This keeps two runs of the same test specification distinguishable when provider, policy, environment, or other material runtime configuration differs without requiring plaintext secrets in ordinary evidence.
+
+## Artifact capture provenance
+
+A retained `ArtifactRecord` records both its sensitivity/protection disposition and the applied `capture_policy` identity. `SUPPRESSED` remains invalid for a retained-file record: suppression is represented by the `ARTIFACT_SUPPRESSED` event because no binary artifact exists to reference.
 
 ## Post-completion corrections and run outcome revisions
 
