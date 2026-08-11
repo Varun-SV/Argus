@@ -17,6 +17,29 @@ class StatusInputs:
     deterministic_failure: bool = False
     cancelled: bool = False
 
+    def __post_init__(self) -> None:
+        normalized_results = []
+        for result in tuple(self.required_assertion_results):
+            if isinstance(result, AssertionResult):
+                normalized_results.append(result)
+                continue
+            try:
+                normalized_results.append(AssertionResult(result))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("required assertion results must be valid AssertionResult values") from exc
+        object.__setattr__(self, "required_assertion_results", tuple(normalized_results))
+
+        for field_name in (
+            "required_steps_satisfied",
+            "unresolved_action_outcome",
+            "evidence_integrity_error",
+            "execution_error",
+            "deterministic_failure",
+            "cancelled",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise ValueError(f"{field_name} must be a boolean")
+
 
 def derive_run_status(inputs: StatusInputs) -> RunStatus:
     assertion_error = any(
@@ -55,8 +78,12 @@ def effective_outcome(
 ) -> RunOutcomeRevision:
     if not revisions:
         raise ValueError("at least one finalization revision is required")
-    if evidence_revision is not None and evidence_revision < 1:
-        raise ValueError("evidence_revision must be >= 1")
+    if evidence_revision is not None and (
+        isinstance(evidence_revision, bool)
+        or not isinstance(evidence_revision, int)
+        or evidence_revision < 1
+    ):
+        raise ValueError("evidence_revision must be a positive integer")
 
     ordered = sorted(revisions, key=lambda item: item.revision)
     run_id = ordered[0].run_id
