@@ -44,7 +44,8 @@ Argus Fleet is a layer **above**, not a replacement for, `ExecutionEnvironment` 
 - make remote session creation retry-idempotent so ambiguous network failures cannot launch a destructive test twice;
 - persist global placement ownership so Control Center failover cannot redispatch one logical session to two Nodes;
 - retain terminal allocation tombstones until the corresponding placement generation is durably retired, so delayed authenticated requests cannot resurrect completed work;
-- make cancellation causally safe so a delayed allocation cannot start after the logical session was cancelled;
+- persist cancellation in globally authoritative coordination state before acknowledging the request so coordinator failure cannot resurrect dispatch;
+- make cancellation causally safe so a delayed allocation cannot start after the logical session was cancelled where the owner has observed the cancellation/fence;
 - make Node-side admission authoritative and atomic so concurrent placements cannot overcommit advertised capacity;
 - provide live monitoring of every active session;
 - make the Observer surface structurally read-only;
@@ -68,7 +69,7 @@ Responsibilities should include:
 - Capsule-image inventory metadata and immutable image identities;
 - scheduling and queues;
 - session lifecycle coordination and idempotent allocation requests;
-- durable global placement ownership/fencing state and generation retirement;
+- durable global placement ownership/fencing state, cancellation state, and generation retirement;
 - immutable staged-input manifests for remote sessions;
 - test-plan and matrix expansion;
 - ATES event aggregation;
@@ -364,7 +365,8 @@ Before dispatch, the Control Center must allocate and durably persist:
 - a stable random `session_request_id` for the logical remote allocation request;
 - a canonical digest of the immutable session request, including the requested image digest, test/spec digest, **immutable staged-input manifest**, network/isolation policy, and other allocation-relevant inputs;
 - the selected `owner_node_id` for this placement;
-- a monotonically increasing `placement_generation` / fencing token for this logical session.
+- a monotonically increasing `placement_generation` / fencing token for this logical session;
+- authoritative cancellation state/operation identity for the logical session.
 
 ### Global placement ownership and fencing
 
@@ -379,20 +381,24 @@ request_digest: "sha256:..."
 owner_node_id: NODE-0007
 placement_generation: 12
 state: dispatching
+cancellation:
+  state: none
+  operation_id: null
 ```
 
 Required semantics:
 
 - creation or transfer of placement ownership is serialized/transactional for a `session_request_id`;
-- Control Center replicas/failover instances recover the same committed `owner_node_id` and generation before issuing allocation/start commands;
+- Control Center replicas/failover instances recover the same committed `owner_node_id`, generation, and cancellation state before issuing allocation/start commands;
 - a retry while ownership is ambiguous is sent only to the committed owner Node; it is **not** opportunistically rescheduled to another Node;
+- dispatch/start is forbidden when the authoritative cancellation state is `requested`, `pending_owner_ack`, `cancelled`, or another policy-defined non-startable cancellation state;
 - the Node validates that the request names itself as owner and carries the current signed/authenticated placement generation/fencing token, and durably binds that generation to its local session mapping;
 - a stale generation is rejected and can never authorize a new allocation/start;
 - assigning a higher generation to another Node is allowed only after the previous owner's session is known to be terminal/released or the previous owner has been **definitively fenced** so it cannot continue/start the logical execution;
 - loss of heartbeat, lease expiry, Control Center restart, or inability to contact the owner is **not by itself proof of fencing** and must not authorize cross-Node redispatch;
 - acceptable fencing may include confirmed Node-side terminal/release state, authenticated provider/hypervisor termination verified by the authority controlling that host, or another deployment-specific mechanism that makes continued execution on the old owner impossible;
 - if the old owner cannot be reconciled or fenced, the logical session enters an `ownership_unknown`/reconciliation state and fails or waits according to policy rather than running on another Node;
-- ownership changes, fencing evidence, generation transitions, and generation retirement are auditable and become part of session/ATES provenance where appropriate.
+- ownership changes, cancellation transitions, fencing evidence, generation transitions, and generation retirement are auditable and become part of session/ATES provenance where appropriate.
 
 An expiring lease may help detect stale coordinators, but **lease expiry alone is not a safety proof** for destructive execution. The invariant is stronger: at most one Node may be permitted to execute a given logical `session_request_id` at a time, including across Control Center failover.
 
@@ -426,11 +432,12 @@ Required retry semantics:
 
 - a first valid request may allocate at most one logical Capsule/session for that `session_request_id` on its committed owner;
 - if the allocation response is lost, the Control Center retries with the **same** `session_request_id`, `run_id`, request digest, owner, and placement generation;
+- before any retry of allocation/start, the Control Center re-reads/validates the globally authoritative cancellation state and must not dispatch if cancellation has been durably requested;
 - a duplicate request with the same identity/digest/generation returns/replays the original allocation result and current session state rather than creating another Capsule or starting the test again;
 - reuse of the same `session_request_id` with a different request digest or `run_id` is rejected as a protocol/security error;
 - a request for a non-owner Node or stale placement generation is rejected;
 - the Node retains active request-to-allocation state through execution and transitions it to a durable terminal allocation tombstone when the logical session becomes terminal/released;
-- retry processing must distinguish `dispatching`, `allocated`, `starting`, `running`, `completed`, `failed`, `retained`, `cancelled`, `ownership_unknown`, and `released` states so replay never means re-execution.
+- retry processing must distinguish `dispatching`, `allocated`, `starting`, `running`, `cancellation_pending`, `completed`, `failed`, `retained`, `cancelled`, `ownership_unknown`, and `released` states so replay never means re-execution.
 
 ### Terminal allocation tombstones and generation retirement
 
@@ -461,24 +468,49 @@ Required semantics:
 
 This makes deduplication lifetime a function of **authorization lifetime**, not an arbitrary cleanup timer. A request cannot become “new” again while the credentials/generation that made it valid are still capable of reaching the Node.
 
-### Cancellation tombstones and causal safety
+### Globally durable cancellation and Node tombstones
 
-Cancellation must be safe even when messages arrive out of order across reconnects or partitions.
+Cancellation must be safe across message reordering, Control Center crash/failover, Node disconnects, and ambiguous delivery.
 
-A cancellation request must carry the target `session_request_id` plus its own stable idempotent operation identity. If cancellation reaches a Node before the corresponding allocation request is known, the Node must **persist a cancellation tombstone** for that `session_request_id` rather than treating the request as a no-op.
+A cancellation request must carry the target `session_request_id` plus its own stable idempotent `cancellation_operation_id`.
 
-Required semantics:
+**Before the Control Center acknowledges that the cancellation request has been accepted**, it must atomically/durably transition the globally authoritative placement record to a non-startable cancellation state and persist the operation identity, for example:
 
-- allocation/admission/start checks the cancellation tombstone before reserving capacity or creating/running a Capsule;
+```yaml
+session_request_id: SESSION-01K...
+placement_generation: 12
+state: cancellation_pending
+cancellation:
+  state: requested
+  operation_id: CANCEL-01K...
+  requested_at: "..."
+```
+
+Required Control Center semantics:
+
+- the durable global cancellation transition is serialized with placement/dispatch state changes for the same `session_request_id`;
+- an API/UI response that says cancellation was **accepted** is returned only after that transition commits;
+- after the transition commits, every coordinator replica/recovered coordinator must treat allocation/start as forbidden and must never resend an allocation/start merely because an earlier request was ambiguous;
+- dispatch workers must re-check authoritative cancellation state immediately before issuing/reissuing a start-capable operation, not rely on an earlier cached scheduling decision;
+- cancellation delivery to the owner Node is retry-idempotent using the same operation ID;
+- if the owner Node is unreachable, the global state remains `cancellation_pending`/equivalent rather than reverting to `dispatching` or pretending the execution is definitively stopped;
+- `cancellation_pending` means the Control Center will not authorize new start/dispatch activity, but an already delivered/in-flight command may still require owner acknowledgment or definitive fencing before the UI can claim the execution is stopped;
+- the final `cancelled` state requires authenticated Node acknowledgment/terminal evidence, or definitive fencing/provider termination evidence proving that continued execution on the owner is impossible;
+- Control Center restart/failover recovers the durable cancellation operation and resumes delivery/reconciliation rather than recreating the earlier dispatch intent;
+- conflicting reuse of a cancellation operation ID is rejected and all transitions are auditable.
+
+Required Node semantics:
+
+- if cancellation reaches a Node before the corresponding allocation request is known, the Node must **persist a cancellation tombstone** for that `session_request_id`/generation rather than treating the request as a no-op;
+- allocation/admission/start checks the local cancellation tombstone before reserving capacity or creating/running a Capsule;
 - if a matching tombstone already exists, a later delayed allocation is recorded/replayed as cancelled and must not produce executable side effects;
 - cancellation of an already allocated/running session transitions it according to the explicit cancellation policy and remains idempotent on retry;
-- a reused cancellation operation ID with conflicting payload is rejected;
 - cancellation tombstones transition into/are retained with the terminal allocation tombstone and are not garbage-collected until the corresponding placement generation is durably retired/revoked so stale allocation/start requests cannot authenticate;
 - teardown/release operations that can be retried also require stable operation identities and must not erase the cancellation fact early enough to permit a delayed allocation to resurrect the session.
 
-This causal rule prevents a user-visible cancel from racing with a delayed allocation and later starting a destructive test that was already cancelled.
+The durable Control Center state closes the coordinator-crash window; the Node tombstone closes the cancel-before-allocation delivery race. Neither mechanism alone is sufficient. If the Node has not yet observed cancellation and an old command may already be in flight, Fleet reports `cancellation_pending` until reconciliation/fencing resolves that uncertainty rather than overstating safety.
 
-This contract prevents a lost or reordered HTTP/gRPC/WebSocket exchange from turning one logical Fleet request into duplicate, resurrected, or cross-Node execution.
+This contract prevents a lost or reordered HTTP/gRPC/WebSocket exchange from turning one logical Fleet request into duplicate, resurrected, coordinator-reissued, or cross-Node execution.
 
 ## Matrix execution
 
@@ -589,12 +621,13 @@ Future discard/export workflows should use explicit privileged Control Center op
 11. Remote session allocation is idempotent by stable request identity and globally pinned placement ownership; retries never create a second logical execution on the same or another Node.
 12. Cross-Node ownership transfer requires definitive fencing of the prior owner; heartbeat/lease expiry alone never authorizes redispatch.
 13. Terminal allocation/cancellation tombstones remain until their placement generation is durably retired or revoked and can no longer authorize execution.
-14. Cancellation is persisted causally by `session_request_id`, including when cancel arrives before allocation.
-15. Remote placement never silently falls back to local execution.
-16. All control-plane mutations are auditable.
-17. ATES facts retain Node/session/image/input/placement provenance and transport preserves ATES event identity/order.
-18. Credentials and guest-control secrets are not emitted into ATES evidence.
-19. Ambiguous distributed failures use reconciliation rather than destructive guesses.
+14. Cancellation is atomically persisted in global placement state before acceptance is acknowledged; recovered coordinators never re-dispatch a cancelled/pending-cancel session.
+15. Node-side cancellation tombstones preserve causal safety when cancellation and allocation arrive out of order; ambiguous in-flight execution remains visibly `cancellation_pending` until owner acknowledgment or fencing.
+16. Remote placement never silently falls back to local execution.
+17. All control-plane mutations are auditable.
+18. ATES facts retain Node/session/image/input/placement provenance and transport preserves ATES event identity/order.
+19. Credentials and guest-control secrets are not emitted into ATES evidence.
+20. Ambiguous distributed failures use reconciliation rather than destructive guesses.
 
 ## Initial implementation sequence
 
@@ -603,9 +636,9 @@ Recommended order:
 1. define Node identity/capability models, Node key ownership, enrollment request IDs, bootstrap credential semantics, acknowledgment-persistent enrollment recovery, and immutable image identity metadata;
 2. implement Node Agent daemon and authenticated/idempotent enrollment using protected secret input rather than argv, with explicit recovery/revocation for unacknowledged identities;
 3. establish authenticated encrypted Fleet channels and add heartbeat/capability/image registry to the Control Center;
-4. define stable `session_request_id`, durable global placement owner/generation state, definitive fencing and generation-retirement rules, immutable staged-input manifests, canonical request digests, terminal/cancellation tombstones, durable Node-side deduplication, and atomic capacity-reservation semantics;
-5. implement remote session request/response around existing Capsule APIs only after global placement ownership, authorization-lifetime terminal tombstones, idempotent allocation, causal cancellation, staged-input verification, and Node-side admission are enforced;
-6. add reconciliation for disconnect/restart scenarios, including ownership/fencing/retirement state, reservations, terminal/cancellation tombstones, and unacknowledged enrollments;
+4. define stable `session_request_id`, durable global placement owner/generation/cancellation state, definitive fencing and generation-retirement rules, immutable staged-input manifests, canonical request digests, terminal/cancellation tombstones, durable Node-side deduplication, and atomic capacity-reservation semantics;
+5. implement remote session request/response around existing Capsule APIs only after global placement ownership, authorization-lifetime terminal tombstones, globally durable pre-ack cancellation, idempotent allocation, causal Node cancellation, staged-input verification, and Node-side admission are enforced;
+6. add reconciliation for disconnect/restart scenarios, including ownership/fencing/retirement/cancellation state, reservations, terminal/cancellation tombstones, and unacknowledged enrollments;
 7. add ATES event transport once ATES Core exists, preserving event ID/sequence retry semantics and immutable image/input/placement provenance;
 8. implement read-only Observer API;
 9. implement live screen transport over the protected Fleet channel;
