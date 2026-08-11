@@ -31,15 +31,40 @@ This applies in particular to Run/Event/Step/Attempt/Action/Observation/Assertio
 
 Collection-valued provenance also rejects scalar strings before snapshotting. In particular, `correction_ids="CORR-..."` is not treated as a sequence of characters, and every supplied correction is normalized as an actual `CorrectionId` before it can participate in an authoritative re-finalization.
 
+Structured safe JSON is snapshotted into immutable-but-JSON-compatible containers, and `to_json_compatible()` provides an explicit conversion path for ATES dataclasses, enums, aware datetimes, mappings, and sequences. The Core therefore does not require callers to choose between immutable evidence snapshots and a working JSON serialization path.
+
+## Secret-safe disposition reasons
+
+The `reason` attached to `redacted`, `suppressed`, and `protected_ref` evidence is a **reason/policy code**, not a free-form diagnostic string. Core validation restricts it to a short lowercase code vocabulary (`a-z`, digits, `.`, `_`, `-`). Exception messages, model prose, credentials, tokens, and other free-form text must not be copied into this field; if explanatory evidence is needed it must be represented through its own secret-safe evidence channel.
+
+This prevents an otherwise correctly redacted value from leaking the secret again through metadata such as `reason="redacted because token=..."`.
+
 ## Run configuration provenance
 
 A committed scripted test source is not sufficient to identify a run's immutable inputs. `RunRecord.configuration_commitment` separately commits the effective runtime configuration using `SourceCommitment`, allowing callers to use a secret-redacted canonical commitment or a protected keyed commitment as appropriate. This keeps two runs of the same test specification distinguishable when provider, policy, environment, or other material runtime configuration differs without requiring plaintext secrets in ordinary evidence.
+
+## Step-attempt history
+
+Individual `StepAttemptRecord` values enforce lifecycle consistency, while `validate_step_attempt_history()` enforces the cross-record retry invariants that cannot be decided by one record alone.
+
+For every logical `step_id`:
+
+- attempt IDs are unique;
+- ordinals are unique and contiguous from 1;
+- a later retry cannot begin while the prior attempt is still `RUNNING`;
+- the prior attempt must have a terminal `ended_at` no later than the next attempt's `started_at`.
+
+This rejects histories such as attempts `1, 1, 3`, retries launched before their cause has finished, overlapping attempts, and time-reversed retry sequences.
 
 ## Artifact capture and byte integrity
 
 A retained `ArtifactRecord` records its sensitivity/protection disposition, the applied `capture_policy` identity, a `content_digest` commitment over the final persisted bytes, and `size_bytes`. The commitment may use an appropriate digest/keyed-commitment method represented by `SourceCommitment`; the byte size is a non-negative integer. Together these fields bind the canonical record to the retained representation so replacement, truncation, or same-path mutation is detectable by later manifest/report integrity checks.
 
+Artifact paths must already be canonical package-relative POSIX paths rooted below `artifacts/`. Encoded/traversal aliases, Windows separators, drive-like syntax, NULs, and other control characters are rejected before any later filesystem operation.
+
 `SUPPRESSED` remains invalid for a retained-file record: suppression is represented by the `ARTIFACT_SUPPRESSED` event because no binary artifact exists to reference.
+
+A retained artifact marked `protected_ref` additionally carries explicit protected-storage controls: `protected_ref`, `access_policy`, `retention_policy`, and `authorization_ref`. These fields identify the protected evidence boundary and the policy/authorization context needed to access or retain it. Conversely, ordinary/redacted artifact records cannot carry protected-store metadata accidentally.
 
 ## Post-completion corrections and run outcome revisions
 
@@ -53,9 +78,11 @@ ATES resolves this without rewriting history.
 4. Applying a verified status-bearing correction requires a **new authenticated run outcome/finalization revision** over a newer evidence revision.
 5. That successor names the immediately prior finalization, the typed correction record(s) that caused re-evaluation, the status-policy version, and the newly derived effective status.
 6. Unverified or invalid corrections cannot create an authoritative successor outcome. The `verification` field must be an actual validated `Verification` record; an arbitrary object that merely exposes `status=VERIFIED` is not authentication.
-7. Outcome revisions form a contiguous chain; a successor may not skip or fork the immediately prior authoritative finalization.
-8. Consumers that present the status for a particular evidence revision use the latest verified finalization applicable to that revision. They must not keep displaying revision-1 PASS after a valid successor re-finalizes the run as FAILED/ERROR/CANCELLED.
-9. Reports/audit views should preserve both the historical completion outcome and the later effective outcome when they differ.
+7. Authentication is not authorization. A status-bearing successor additionally requires a verified `AuthorizationDecision` under an explicit versioned policy and the `run_outcome.refinalize` scope.
+8. Authorization decisions are not reusable bearer approvals. The decision names the authenticated subject and binds the exact proposed run ID, successor finalization ID, superseded finalization ID, correction IDs, effective status, evidence revision, and status-policy version. The subject must equal the actor authenticated by the successor's `Verification` record. A decision for an administrator therefore cannot be replayed by an unprivileged authenticated actor or onto a different run/outcome payload.
+9. Outcome revisions form a contiguous chain; a successor may not skip or fork the immediately prior authoritative finalization.
+10. Consumers that present the status for a particular evidence revision use the latest verified and authorized finalization applicable to that revision. They must not keep displaying revision-1 PASS after a valid successor re-finalizes the run as FAILED/ERROR/CANCELLED.
+11. Reports/audit views should preserve both the historical completion outcome and the later effective outcome when they differ.
 
 Conceptually:
 
@@ -65,6 +92,7 @@ execution evidence
     +--> FINAL-1 / evidence revision 1 / PASSED
              |
              | verified CORR-7 changes required assertion
+             | authenticated subject + exact authorization binding
              v
          FINAL-2 / evidence revision 2 / FAILED
 ```
