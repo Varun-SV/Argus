@@ -24,9 +24,11 @@ ATES is designed to provide:
 - source-identity commitments that do not turn low-entropy secrets into offline-verifiable public hashes;
 - a manifest model that becomes tamper-evident only when bound to a trusted external, immutable, or cryptographic trust boundary;
 - append-oriented audit history rather than silent mutation;
-- requirement-to-test-to-evidence traceability where a run is requirement-driven;
+- immutable/versioned requirement identities for requirement-to-test-to-evidence traceability;
 - recoverable evidence from interrupted/crashed runs, including ambiguous action dispatch outcomes;
-- schema-level pre-persistence redaction for all free-form evidence text, including model/human interpretations and findings;
+- immutable per-attempt identities so retries never overwrite prior execution history;
+- deterministic canonical final-status aggregation shared by renderers and Fleet;
+- schema-level pre-persistence redaction for all free-form evidence text and target-generated observations;
 - context-safe rendering of untrusted application/test evidence;
 - explicit trust status for rendered reports;
 - a stable machine-readable foundation for reports, dashboards, audit packages, and future compliance mappings.
@@ -46,7 +48,9 @@ ATES does not:
 - treat a rendered report as trusted merely because its source evidence manifest verifies;
 - allow untrusted evidence text to become executable HTML/Markdown/XML/report content by default;
 - require an interrupted run to fabricate an end timestamp or successful finalization event;
-- require every execution mode to invent a pre-authored scripted test-case identity.
+- require every execution mode to invent a pre-authored scripted test-case identity;
+- let a later retry erase or rewrite evidence from an earlier attempt;
+- let a mutable requirement ID silently stand in for multiple historical requirement meanings.
 
 ## ATES Core is always on
 
@@ -207,19 +211,50 @@ last_sequence: 84
 
 If Argus later performs recovery/reconciliation, it may append an explicit recovery/terminal event such as `RUN_MARKED_INCOMPLETE`, including the actor/recovery process and reason. Recovery must never synthesize a normal `RUN_COMPLETED` event for execution that was not observed to complete.
 
+#### Canonical final status
+
+`final_status` is a **derived canonical outcome**, not an arbitrary producer label. All ATES producers, Fleet aggregation, Markdown/HTML/JUnit renderers, and audit tooling must apply the same aggregation semantics to the same canonical event history.
+
+A normal `RUN_COMPLETED` event may use these initial terminal values:
+
+- `passed` — execution completed reliably and every pass precondition below is satisfied;
+- `failed` — execution completed reliably enough to evaluate the intended test, but one or more required deterministic/declared acceptance conditions failed;
+- `error` — infrastructure, runner, adapter/provider, evidence-integrity, or unresolved execution uncertainty prevents a reliable pass/fail evaluation;
+- `cancelled` — an explicit cancellation terminated execution before normal completion, with no higher-precedence error condition.
+
+An interrupted stream without a valid `RUN_COMPLETED` keeps `final_status: null` and `lifecycle_state: incomplete`; `RUN_MARKED_INCOMPLETE` is recovery metadata and must not invent a normal terminal result.
+
+Normative aggregation precedence is:
+
+1. **`error`** if a required execution/evidence condition is unreliable or unresolved, including an unreconciled `ACTION_OUTCOME_UNKNOWN`, an unreconciled canonical event gap/conflict, a required environment/adapter failure, or another policy-defined condition that prevents trustworthy evaluation;
+2. **`failed`** if evaluation is reliable but any required assertion/acceptance condition is failed, or a deterministic/policy-validated fail condition is present;
+3. **`cancelled`** if execution was explicitly cancelled before a normal result and neither `error` nor an already-established `failed` result has higher precedence under the active test policy;
+4. **`passed`** only when none of the above apply and every required assertion/step/acceptance condition that must complete has reached a passing/satisfied terminal state.
+
+A producer must **not** emit `passed` when any of these remain true:
+
+- a required assertion is failed, errored, missing, or unevaluated;
+- a required Step has no policy-satisfying terminal attempt;
+- a non-idempotent/destructive Action has an unresolved post-dispatch outcome;
+- canonical evidence has an unreconciled sequence gap/conflict or other integrity condition required for finalization;
+- execution encountered an environment/adapter/runner error that makes the intended result unreliable;
+- a declared deterministic or authenticated policy rule marks the run as failed/error.
+
+Model-generated Findings/Interpretations do **not** automatically convert a deterministic pass into failure. A Finding affects canonical `final_status` only when the test specification or an explicit validated policy maps that Finding/classification to a fail/error condition; an unverified model inference alone is not sufficient to override deterministic assertion evidence.
+
+Renderers may present additional labels such as warning, flaky, quarantined, or findings-present, but those are annotations unless a versioned policy explicitly maps them into the canonical status rules above.
+
 ### Step
 
-A Step represents execution intent at a point in the run. In scripted execution it normally corresponds to authored test intent; in roam execution it may represent an exploratory goal/subgoal emitted by the roam engine without implying a pre-authored test case.
+A Step represents stable logical execution intent at a point in the run. In scripted execution it normally corresponds to authored test intent; in roam execution it may represent an exploratory goal/subgoal emitted by the roam engine without implying a pre-authored test case.
 
-A non-sensitive example is:
+A non-sensitive logical Step example is:
 
 ```yaml
 step_id: STEP-0002
-sequence: 2
 instruction:
   type: natural_language
   text: "Navigate to Network"
-status: passed
 ```
 
 Step instructions are subject to the **same schema-level secret handling as Actions and Assertions**. ATES Core must not persist an authored instruction such as `Type password123 into the password field` verbatim merely because the later Action payload is redacted.
@@ -228,7 +263,6 @@ A sensitive Step can instead be represented as:
 
 ```yaml
 step_id: STEP-0003
-sequence: 3
 instruction:
   type: natural_language
   text: "Type <redacted> into the password field"
@@ -239,12 +273,47 @@ instruction:
     plaintext_persisted: false
   secret_refs:
     - SECRET-login-password
-status: passed
 ```
 
 Where possible, authored tests should use explicit secret references/placeholders rather than embedding literal credentials in instruction text. If a literal is present, the canonical Step representation must be transformed/redacted **before** it is appended to always-on evidence. Low-entropy secret text must not be replaced with a public unsalted digest.
 
-A step may contain multiple actions and observations.
+#### Step attempts and retries
+
+`step_id` identifies the stable logical intent. Every actual execution of that intent has its own immutable `step_attempt_id` and monotonically increasing attempt ordinal beneath that Step.
+
+Conceptually:
+
+```yaml
+step_id: STEP-0003
+step_attempt_id: STEPATT-01K-A
+attempt: 1
+started_at: "..."
+ended_at: "..."
+status: failed
+```
+
+A retry creates a **new** attempt rather than mutating the prior one:
+
+```yaml
+step_id: STEP-0003
+step_attempt_id: STEPATT-01K-B
+attempt: 2
+started_at: "..."
+status: running
+```
+
+Required semantics:
+
+- `step_id` is stable across retries; `step_attempt_id` is globally/run-unique and never reused for another attempt;
+- attempt ordinals are consecutive for the logical Step and never renumbered after evidence is appended;
+- `STEP_STARTED`, attempt completion/failure/retry events and all Actions, Observations, Assertions, checkpoints, errors, and timing generated inside an attempt reference the exact `step_attempt_id` in addition to the logical `step_id` where applicable;
+- a failed/errored/ambiguous first attempt remains immutable evidence after a later retry passes; producers must not overwrite it with the later result;
+- each attempt records its own lifecycle, status, start/end/duration, retry reason, and relevant evidence references;
+- the logical Step's derived status is computed from its attempt history plus the versioned retry policy (for example, pass-on-any-success versus all-attempts-must-pass), while reports must still expose the complete attempt history;
+- an ambiguous Action outcome remains attached to the attempt that dispatched it and may block creation of a new attempt until the action-level reconciliation policy says retry is safe;
+- a retry triggered by infrastructure error, assertion failure, policy decision, or human action records that reason rather than presenting the new attempt as the first execution.
+
+This preserves retry chronology, durations, and causal ownership of evidence without conflating a logical Step with one particular execution attempt.
 
 ### Action
 
@@ -255,6 +324,7 @@ A safe example is:
 ```yaml
 action_id: ACTION-0041
 step_id: STEP-0002
+step_attempt_id: STEPATT-01K-A
 type: click
 target:
   name: "Network & Internet"
@@ -308,6 +378,7 @@ event_type: ACTION_DISPATCH_COMMITTED
 payload:
   action_id: ACTION-0042
   action_operation_id: ACTOP-01K...
+  step_attempt_id: STEPATT-01K-A
   policy_result_ref: POLICY-0091
 ```
 
@@ -326,12 +397,18 @@ The conservative boundary is intentional: a crash after `ACTION_DISPATCH_COMMITT
 
 ### Observation
 
-An Observation records data directly measured or captured from the execution environment.
+An Observation records data directly measured or captured from the execution environment. Target-generated text and values are **untrusted and potentially sensitive by default**; ATES must not assume that accessibility, DOM, CLI, log, URL, form-field, or application text is safe merely because it is directly observed.
+
+A non-sensitive permitted example is:
 
 ```yaml
 observation_id: OBS-0042
+step_attempt_id: STEPATT-01K-A
 source: accessibility_tree
 captured_at: 2026-08-11T01:21:43.819+05:30
+capture_policy: OBS-POLICY-3
+sensitivity:
+  state: classified_safe
 facts:
   visible_text:
     - "Network & Internet"
@@ -339,15 +416,47 @@ facts:
     - "Ethernet"
 ```
 
-Observations are evidence. They are not AI conclusions. Observation capture is also subject to privacy/redaction policy when an application surface itself contains secrets.
+Observation payloads use a **pre-append capture decision**. A conforming producer must decide, before ordinary canonical persistence, whether each potentially sensitive payload/field is allowed, redacted, structurally summarized, protected, or suppressed. Merely saying that an Observation is "subject to policy" after raw text has already been written is not sufficient.
+
+Required conservative semantics:
+
+- every Observation records the capture/redaction policy or policy version that governed the persisted representation;
+- application/target-derived values that may contain credentials, tokens, private URLs, customer data, personal data, form values, headers, environment values, CLI output, or similar secrets are not automatically persisted verbatim;
+- known password/secret input values, credential-bearing URL components, authorization headers, environment secrets, clipboard-like secret values, and equivalent high-risk fields default to **redacted or suppressed** in ordinary ATES Core;
+- if sensitivity cannot be classified with sufficient confidence for a policy-designated high-risk source/field, the default is omission/redaction/structural metadata rather than plaintext persistence;
+- explicit source metadata/sensitivity markers from the adapter/application/test policy are honored and cannot be widened by the model;
+- a deterministic assertion may retain a safe boolean/result/reference instead of copying a sensitive observed value into `facts`;
+- when a field is redacted/suppressed, the Observation records field-level metadata/reason without preserving a public unsalted digest of a low-entropy secret;
+- explicitly authorized unredacted sensitive observations belong only in a protected evidence class with the same access/encryption/retention controls used for protected artifacts; authorization is not implied by `standard` or `forensic` profile alone;
+- model instructions, checkpoints, or report configuration cannot override the Observation capture policy and force forbidden plaintext into canonical evidence.
+
+A redacted Observation can therefore look like:
+
+```yaml
+observation_id: OBS-0043
+source: dom
+capture_policy: OBS-POLICY-3
+facts:
+  username_field_present: true
+  password_field_present: true
+  password_value: "<redacted>"
+sensitive_fields:
+  - facts.password_value
+redaction:
+  reason: secret_input
+  plaintext_persisted: false
+```
+
+Observations are evidence. They are not AI conclusions, but direct observation does not make the payload non-sensitive.
 
 ### Assertion
 
-Assertions are recorded independently from AI interpretation.
+Assertions are recorded independently from AI interpretation and should reference the exact Step attempt that produced/evaluated them where applicable.
 
 ```yaml
 assertion_id: ASSERT-0008
 step_id: STEP-0003
+step_attempt_id: STEPATT-01K-B
 kind: text_visible
 expected: "Ethernet"
 result: passed
@@ -355,7 +464,7 @@ method: deterministic
 observation_id: OBS-0043
 ```
 
-Sensitive assertion inputs/expected values must use the same redaction model when retaining plaintext would expose secrets.
+Sensitive assertion inputs/expected/actual values must use the same redaction model when retaining plaintext would expose secrets. Required assertions participate in canonical final-status aggregation.
 
 ### Interpretation
 
@@ -405,6 +514,8 @@ Findings should reference the evidence supporting them and state whether their s
 
 Finding titles, descriptions, reproduction summaries, suggested remediations, human notes, and other free-form fields are subject to the **same pre-persistence sensitivity/redaction contract** as Interpretations. This applies regardless of whether the text came from a model, a human, an imported tool, or application-derived content. Known secret plaintext must not be persisted in ordinary ATES Core fields, and low-entropy secrets must not be replaced with public unsalted hashes.
 
+A Finding only affects canonical `final_status` through an explicit versioned deterministic/authenticated test or policy rule; a model-inferred Finding alone is not a normative failure result.
+
 ### Free-form evidence text safety
 
 The redaction requirement is schema-wide, not limited to a fixed list of record types. Any canonical field that can contain model-generated, human-authored, imported, or application-derived free-form text must support sensitivity classification and a safe persisted representation **before append**. This includes at least:
@@ -437,16 +548,16 @@ steps:
       text_visible: "Ethernet"
 ```
 
-A standard checkpoint should request, where supported and permitted by artifact policy:
+A standard checkpoint should request, where supported and permitted by artifact/Observation policy:
 
 - screenshot or a documented suppressed/redacted substitute;
-- accessibility/DOM/CLI observation appropriate to the adapter;
+- accessibility/DOM/CLI observation appropriate to the adapter with the secret-safe Observation capture rules above;
 - timestamp;
-- current step/action relationship;
+- current step/attempt/action relationship;
 - environment identity;
 - integrity metadata for generated artifacts.
 
-Checkpoint content remains subject to privacy/redaction policy. A checkpoint never overrides a rule that forbids persistence of sensitive binary evidence.
+Checkpoint content remains subject to privacy/redaction policy. A checkpoint never overrides a rule that forbids persistence of sensitive binary or structured evidence.
 
 ### Artifact
 
@@ -499,35 +610,58 @@ This rule applies before the default standard-profile failure/checkpoint screens
 
 ### Requirement
 
-ATES should support first-class requirement traceability for executions that declare requirements.
+ATES should support first-class requirement traceability for executions that declare requirements, but traceability must bind to an **immutable requirement meaning**, not merely a human-friendly ID that may be reused after the requirement changes.
 
-A future scripted test may declare:
+A future scripted test may declare a requirement identity such as:
 
 ```yaml
 requirements:
-  - id: REQ-NET-042
+  - requirement_id: REQ-NET-042
+    version: "3"
+    source:
+      system: product-requirements
+      revision: "release-2026.08"
+    commitment:
+      method: sha256_redacted_canonical
+      value: "sha256:..."
+      canonicalization_profile: ates-requirement-v1
     description: "The application shall display the active network connection."
 ```
 
-An assertion may then record:
+The stable display ID (`REQ-NET-042`) is not sufficient by itself. The immutable identity is the tuple of the declared requirement namespace/source plus version/revision and/or a secret-safe canonical commitment that fixes the exact meaning/acceptance criteria reviewed for that run.
+
+If the requirement wording, acceptance criteria, normative source revision, or other meaning-bearing content changes, the new material receives a **new immutable requirement identity** even when the organization keeps the same display ID.
+
+An assertion references the exact immutable requirement identity, for example:
 
 ```yaml
 verifies:
-  - REQ-NET-042
+  - requirement_id: REQ-NET-042
+    version: "3"
+    commitment: "sha256:..."
 ```
 
 This creates a traceability chain such as:
 
 ```text
-REQ-NET-042
+REQ-NET-042@v3/sha256:...
   -> TEST-NETWORK-003
   -> RUN-...
+  -> STEP-...
+  -> STEPATT-...
   -> ASSERT-0007
   -> OBS-0019
   -> ART-0004
 ```
 
-A roam run without declared requirements does not fabricate this chain; it records exploratory Findings/evidence and may later be linked to requirements through an explicit authenticated/superseding record if a reviewer performs that mapping.
+Required semantics:
+
+- reports may display the friendly requirement ID/description, but joins, coverage calculations, approvals, and cross-run historical comparisons use the immutable identity;
+- a historical run that verified `REQ-NET-042@v2` must never be silently presented as evidence for changed `REQ-NET-042@v3`;
+- requirement importers/connectors record the external source system and immutable source revision where available;
+- requirement commitments follow the same secret-safe commitment rules as test/source identity if requirement text can contain sensitive low-entropy values;
+- mapping an old run to a new/changed requirement requires an explicit authenticated/superseding traceability record rather than rewriting the historical assertion;
+- a roam run without declared requirements does not fabricate this chain; it records exploratory Findings/evidence and may later be linked through an explicit authenticated mapping record.
 
 ## Event stream
 
@@ -540,7 +674,7 @@ RUN_STARTED
 ENVIRONMENT_PREPARED
 CAPSULE_CREATED
 TARGET_LAUNCHED
-STEP_STARTED
+STEP_ATTEMPT_STARTED
 OBSERVATION_CAPTURED
 ACTION_PROPOSED
 ACTION_POLICY_VALIDATED
@@ -548,6 +682,8 @@ ACTION_DISPATCH_COMMITTED
 ACTION_EXECUTED
 ACTION_OUTCOME_UNKNOWN
 ASSERTION_EVALUATED
+STEP_ATTEMPT_COMPLETED
+STEP_RETRY_SCHEDULED
 CHECKPOINT_CAPTURED
 ARTIFACT_SUPPRESSED
 FINDING_RECORDED
@@ -561,9 +697,11 @@ RUN_MARKED_INCOMPLETE
 
 Not every adapter/environment or execution kind will emit every event.
 
-`RUN_COMPLETED` closes execution semantics (for example final status/end time/final sequence). It does **not** contain the digest of an evidence manifest whose input includes that same event. Evidence-manifest construction occurs after the canonical event range is closed.
+`RUN_COMPLETED` closes execution semantics (for example final status/end time/final sequence). Its `final_status` must be derived using the canonical aggregation rules above. It does **not** contain the digest of an evidence manifest whose input includes that same event. Evidence-manifest construction occurs after the canonical event range is closed.
 
 For Actions that can cause external side effects, `ACTION_DISPATCH_COMMITTED` is the durable pre-side-effect boundary. Once it exists without a confirmed terminal action outcome, recovery treats the operation as potentially executed and must apply the ambiguous-outcome rules above before any retry.
+
+Step-attempt lifecycle events carry both the stable logical `step_id` and immutable `step_attempt_id`, so transport/replay and later renderers cannot conflate retries.
 
 ### Event envelope and canonical ordering
 
@@ -736,7 +874,7 @@ ATES should define standard renderers for:
 - Audit Report;
 - Fleet Execution Report.
 
-The report generator must derive claims from evidence references rather than create unsupported factual statements.
+The report generator must derive claims from evidence references rather than create unsupported factual statements. Renderers must consume the canonical final-status aggregation rules above rather than independently deciding whether the same run passed or failed.
 
 Interrupted/incomplete runs must remain renderable. Such reports should identify the last canonical event/sequence, missing completion metadata, reconciliation state, and any available crash/failure evidence.
 
@@ -802,16 +940,16 @@ This prevents a forged PASS report from riding alongside an otherwise valid evid
 ## Suggested standard report structure
 
 1. Execution identification and kind
-2. Executive summary
+2. Executive summary and canonical final-status basis
 3. Execution objective / test objective where applicable
-4. Requirements/traceability scope where applicable
+4. Versioned requirements/traceability scope where applicable
 5. Test environment
 6. Execution configuration
-7. Execution intent, scripted test case/steps or roam goals/subgoals
+7. Execution intent, logical Steps and complete per-attempt retry history
 8. Assertions
 9. Checkpoints and evidence
 10. Findings/anomalies
-11. Failures
+11. Failures/errors/ambiguous outcomes
 12. Collected artifacts
 13. Execution timeline
 14. Model/resource usage
@@ -835,16 +973,18 @@ The runtime must define explicit redaction/retention rules for:
 - typed user input;
 - command arguments;
 - credential-bearing URLs;
-- sensitive application data;
+- sensitive application/Observation data;
 - model/human-generated Interpretations and Findings;
 - error/exception/operator-note free-form text;
 - screenshots and recordings;
 - binary/log artifacts that can contain application secrets;
-- source/configuration material used to build Run-level provenance commitments.
+- source/configuration/requirement material used to build provenance commitments.
 
-Any canonical free-form text field—including Step, Action, Assertion, Observation, Interpretation, Finding, error/log excerpt, and future human/model annotation fields—must support schema-level sensitivity/redaction metadata where applicable rather than relying solely on a best-effort regex pass after plaintext has already been written to canonical evidence.
+Any canonical free-form or target-generated value field—including Step, Action, Assertion, Observation, Interpretation, Finding, error/log excerpt, and future human/model annotation fields—must support schema-level sensitivity/redaction metadata where applicable rather than relying solely on a best-effort regex pass after plaintext has already been written to canonical evidence.
 
-Run-level source/configuration commitments must follow the secret-safe commitment model above. A plain public digest of raw material is not an acceptable substitute for redaction when low-entropy secrets may be present.
+Observation capture specifically follows a conservative pre-append allow/redact/protect/suppress decision; unknown high-risk target-generated values are not persisted verbatim by default.
+
+Run-level source/configuration and requirement commitments must follow the secret-safe commitment model above. A plain public digest of raw material is not an acceptable substitute for redaction when low-entropy secrets may be present.
 
 Binary Artifact capture must use the pre-write classification/redaction/protected/suppressed model defined above. Persisting raw screenshots to an ordinary artifact directory and redacting them afterward is not a conforming default capture pipeline.
 
@@ -856,7 +996,7 @@ ATES is also the planned protocol-level foundation for Argus Fleet observation.
 
 A Node can stream ATES events to the Control Center while retaining canonical local evidence. The read-only Observer UI can then display live progress from the same event vocabulary later used to render final reports.
 
-Fleet transport must preserve the event-envelope semantics above: retries retain identity, out-of-order delivery does not change canonical order, and gaps/conflicts/tombstones are reconciled explicitly rather than hidden.
+Fleet transport must preserve the event-envelope semantics above: retries retain identity, out-of-order delivery does not change canonical order, and gaps/conflicts/tombstones are reconciled explicitly rather than hidden. Fleet also consumes the same canonical final-status aggregation and Step-attempt identities rather than deriving incompatible outcomes centrally.
 
 That avoids creating one schema for execution, another for dashboards, and a third for documentation.
 
@@ -882,23 +1022,24 @@ ATES records should carry an explicit schema version, for example:
 ates_version: "0.1"
 ```
 
-Schema evolution should favor additive changes. Breaking changes require a new major evidence-schema version and migration/rendering rules for retained historical runs.
+Schema evolution should favor additive changes. Breaking changes require a new major evidence-schema version and migration/rendering rules for retained historical runs. Final-status aggregation rules, retry/attempt semantics, and requirement-identity canonicalization are versioned parts of the evidence contract; changing their meaning requires explicit schema/policy versioning rather than silent reinterpretation of historical runs.
 
 ## Initial implementation sequence
 
 Recommended implementation order:
 
-1. define typed ATES Core IDs, lifecycle states, `execution_kind`/conditional secret-safe source identity, event envelope, schema-wide redacted-value model (including Interpretation/Finding/free-form text), artifact sensitivity/path-confinement model, and schema version;
+1. define typed ATES Core IDs, lifecycle states, canonical final-status values/precedence, `execution_kind`/conditional secret-safe source identity, immutable Step-attempt IDs/ordinals, event envelope, schema-wide redacted-value model (including secret-safe Observation/Interpretation/Finding/free-form text), immutable requirement identity/commitment, artifact sensitivity/path-confinement model, and schema version;
 2. add append-only local event writer with atomic gap-free sequence assignment and duplicate/conflict invariants;
-3. emit run/step/action/observation/assertion/interpretation/finding lifecycle events from both scripted and roam execution paths, including pre-write redaction, durable pre-dispatch `ACTION_DISPATCH_COMMITTED` operation identities, ambiguous-action recovery semantics, and interrupted-run recovery;
-4. implement adapter/provider operation-id deduplication/status reconciliation where supported and fail safely for unknown non-idempotent action outcomes where it is not;
-5. implement artifact pre-write classification/redaction/protected/suppressed handling and race-safe evidence-root path confinement **before** enabling default failure/checkpoint screenshot persistence;
-6. implement failure evidence and explicit checkpoints using that artifact policy;
-7. hash canonical artifacts and generate immutable versioned evidence manifests after the canonical event range is closed, keeping each manifest's own digest detached from the bytes it hashes;
-8. implement optional evidence-manifest binding mechanisms before advertising tamper-evident evidence;
-9. render the first Markdown/JSON Test Execution Report from verified/canonical evidence using context-safe encoding, including incomplete runs and execution-kind-aware source identity, and mark it `unverified_derived` unless regenerated/verified or separately bound;
-10. implement versioned package manifests (or verified regeneration flow) for rendered report outputs before distributing them with a verified trust indicator;
-11. add requirement traceability for applicable execution kinds;
-12. add authenticated detached approval/supersession records tied to immutable evidence-manifest revisions, with verification status enforced by renderers/gates;
-13. integrate live event streaming with Argus Fleet using idempotent retry/reconciliation semantics;
-14. add external compliance mappings only after the native model is stable.
+3. emit run/logical-step/step-attempt/action/observation/assertion/interpretation/finding lifecycle events from both scripted and roam execution paths, including pre-write redaction, durable pre-dispatch `ACTION_DISPATCH_COMMITTED` operation identities, ambiguous-action recovery semantics, retry reasons, and interrupted-run recovery;
+4. implement canonical run/Step status aggregation from immutable event/attempt history and ensure all renderers/Fleet consume it rather than recomputing incompatible outcomes;
+5. implement adapter/provider operation-id deduplication/status reconciliation where supported and fail safely for unknown non-idempotent action outcomes where it is not;
+6. implement Observation pre-append allow/redact/protect/suppress handling and artifact pre-write classification/redaction/protected/suppressed handling plus race-safe evidence-root path confinement **before** enabling default failure/checkpoint evidence persistence;
+7. implement failure evidence and explicit checkpoints using those evidence policies;
+8. hash canonical artifacts and generate immutable versioned evidence manifests after the canonical event range is closed, keeping each manifest's own digest detached from the bytes it hashes;
+9. implement optional evidence-manifest binding mechanisms before advertising tamper-evident evidence;
+10. render the first Markdown/JSON Test Execution Report from verified/canonical evidence using context-safe encoding, canonical final-status rules, complete retry-attempt history, incomplete-run handling, and execution-kind-aware source identity, and mark it `unverified_derived` unless regenerated/verified or separately bound;
+11. implement versioned package manifests (or verified regeneration flow) for rendered report outputs before distributing them with a verified trust indicator;
+12. add immutable/versioned requirement traceability joins and cross-run coverage for applicable execution kinds;
+13. add authenticated detached approval/supersession records tied to immutable evidence-manifest revisions, with verification status enforced by renderers/gates;
+14. integrate live event streaming with Argus Fleet using idempotent retry/reconciliation semantics;
+15. add external compliance mappings only after the native model is stable.
