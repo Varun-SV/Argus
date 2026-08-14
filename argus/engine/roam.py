@@ -33,13 +33,19 @@ _original_add_finding = _impl._add_finding
 
 
 def _recording_add_finding(session, finding, screenshot_png, shots_dir, emit) -> None:
-    """Preserve legacy finding handling and append its structural ATES record."""
+    """Preserve legacy finding handling and append its privacy-classified ATES record."""
     _original_add_finding(session, finding, screenshot_png, shots_dir, emit)
     recorder = _active_recorder.get()
     if recorder is not None and not recorder.failed:
         recorder.record_finding(
             source=finding.source,
             classification=finding.severity,
+            title=finding.title,
+            description={
+                "expected": finding.expected,
+                "actual": finding.actual,
+                "detail": finding.detail,
+            },
         )
 
 
