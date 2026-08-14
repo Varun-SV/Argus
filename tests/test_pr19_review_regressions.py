@@ -142,14 +142,15 @@ steps:
     assert note == "guest dispatched"
     assert calls == ["guest_prepare", "ates_commit", "guest_dispatch"]
 
-    events = _events(tmp_path, str(recorder.run_id))
+    run_id = str(recorder.run_id)
+    recorder.complete_current("pass")
+    recorder.close()
+
+    events = _events(tmp_path, run_id)
     types = [event.envelope.event_type for event in events]
     assert EventType.ACTION_POLICY_VALIDATED in types
     assert EventType.ACTION_DISPATCH_COMMITTED in types
     assert EventType.ACTION_EXECUTED in types
-
-    recorder.complete_current("pass")
-    recorder.close()
 
 
 def test_capsule_guest_prepare_rejection_never_crosses_ates_commit(tmp_path):
@@ -185,15 +186,16 @@ steps:
     with pytest.raises(AdapterError, match="guest platform rejected before dispatch"):
         proxy.act({"action": "type", "text": "private-value", "element_id": 1})
 
-    events = _events(tmp_path, str(recorder.run_id))
+    run_id = str(recorder.run_id)
+    recorder.complete_current("error")
+    recorder.close()
+
+    events = _events(tmp_path, run_id)
     types = [event.envelope.event_type for event in events]
     assert EventType.ACTION_PROPOSED in types
     assert EventType.ACTION_POLICY_VALIDATED not in types
     assert EventType.ACTION_DISPATCH_COMMITTED not in types
     assert EventType.ACTION_OUTCOME_UNKNOWN not in types
-
-    recorder.complete_current("error")
-    recorder.close()
 
 
 def test_roam_unresolved_dispatch_stops_cleanly_and_writes_outputs(tmp_path, monkeypatch):
