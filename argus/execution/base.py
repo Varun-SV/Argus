@@ -166,6 +166,14 @@ class LocalExecutionEnvironment(ExecutionEnvironment):
     def validate_action(self, action: dict) -> None:
         self.adapter.validate_action(action)
 
+    def prepare_action(self, action: dict) -> dict:
+        """Prepare exactly once on the contained adapter before ATES commit."""
+        return self.adapter.prepare_action(action)
+
+    def dispatch_prepared_action(self, action: dict) -> str:
+        """Dispatch the exact action returned by :meth:`prepare_action`."""
+        return self.adapter.dispatch_prepared_action(action)
+
     def act(self, action: dict) -> str:
         from argus.adapters.base import PolicyAdapter
 

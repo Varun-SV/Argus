@@ -51,6 +51,10 @@ _impl._add_finding = _recording_add_finding
 
 def _attempt_status(stopped_reason: str) -> str:
     reason = (stopped_reason or "").lower()
+    if "ates evidence failure" in reason or "ates finalization failed" in reason:
+        return "error"
+    if "action outcome unresolved" in reason:
+        return "outcome_unknown"
     if "stopped by user" in reason:
         return "cancelled"
     if "provider" in reason:
@@ -58,6 +62,17 @@ def _attempt_status(stopped_reason: str) -> str:
     if "crash" in reason or "unresponsive" in reason or "action failure" in reason:
         return "fail"
     return "pass"
+
+
+def roam_exit_code(session: RoamSession) -> int:
+    """Return a shell-safe result code for a completed roam session."""
+    status = str(
+        getattr(session, "execution_status", "")
+        or _attempt_status(getattr(session, "stopped_reason", ""))
+    )
+    if status in {"fail", "error", "outcome_unknown"}:
+        return 1
+    return 1 if session.findings else 0
 
 
 def _finish(
@@ -140,9 +155,17 @@ def roam(
         session.ates_run_id = run_id
         if evidence_error:
             session.stopped_reason = evidence_error
+            status = "error"
+        session.execution_status = status
         return session
     finally:
         _active_recorder.reset(token)
 
 
-__all__ = ["Finding", "RoamSession", "ROAM_SYSTEM_PROMPT", "roam"]
+__all__ = [
+    "Finding",
+    "RoamSession",
+    "ROAM_SYSTEM_PROMPT",
+    "roam",
+    "roam_exit_code",
+]

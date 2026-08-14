@@ -331,11 +331,21 @@ def roam(
                         prev_state_id = current_state_id
                         if not obs.process_alive:
                             break  # exit batch, outer crash detector fires next iteration
-                except AdapterError as exc:
+                except BaseException as exc:
+                    unresolved_operation_id = getattr(adapter, "unresolved_operation_id", None)
+                    if unresolved_operation_id is None and not isinstance(exc, AdapterError):
+                        raise
                     session.actions.append({"action": action, "error": str(exc)})
                     consecutive_action_failures += 1
                     emit(f"#{len(session.actions)} action failed: {exc}")
                     history.append(f"{kind} FAILED: {exc}")
+                    if unresolved_operation_id is not None:
+                        session.stopped_reason = (
+                            "action outcome unresolved after durable dispatch commit"
+                            f" ({unresolved_operation_id}) — stopping safely"
+                        )
+                        emit(session.stopped_reason)
+                        break
                     if consecutive_action_failures >= _ACTION_FAIL_STOP_AT:
                         session.stopped_reason = (
                             f"stopped after {_ACTION_FAIL_STOP_AT} consecutive action failures"

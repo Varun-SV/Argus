@@ -221,7 +221,7 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
                 "move the host mouse, inject keyboard input, and change foreground focus."
             )
 
-    from argus.engine.roam import roam as run_roam
+    from argus.engine.roam import roam as run_roam, roam_exit_code
 
     ks = cfg.make_knowledge_store()
 
@@ -246,7 +246,7 @@ def roam(target: str, minutes: Optional[float], max_tokens: Optional[int],
         f"{session.tokens.get('total_tokens', 0)} tokens"
     )
     console.print(f"report: [cyan]{session_dir / 'report.md'}[/cyan]")
-    sys.exit(0 if not session.findings else 1)
+    sys.exit(roam_exit_code(session))
 
 
 # ---------------------------------------------------------------- watch ----

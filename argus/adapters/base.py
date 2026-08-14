@@ -162,8 +162,14 @@ class Adapter(ABC):
                     f"action blocked: adapter '{self.type_name}' requires command for '{kind}'"
                 )
 
-    def execute(self, action: dict) -> str:
-        """Validate, authorize and execute one model-generated action."""
+    def prepare_action(self, action: dict) -> dict:
+        """Normalize and authorize *action* without performing its side effect.
+
+        The returned mapping is the exact action that is permitted to cross the
+        dispatch boundary. Splitting preparation from dispatch gives ATES a
+        durable commit point after all schema/policy/capability/platform checks
+        but before any target-visible mutation can begin.
+        """
         from argus.actions import ActionValidationError, validate_action
         from argus.policy import ActionPolicyError, enforce_action_policy
 
@@ -175,10 +181,24 @@ class Adapter(ABC):
 
         self._authorize_capability(normalized)
         self.validate_action(normalized)
-        return self.act(normalized)
+        return normalized
+
+    def dispatch_prepared_action(self, action: dict) -> str:
+        """Execute an action already returned by :meth:`prepare_action`.
+
+        Callers must never use this as a validation bypass for untrusted model
+        output. It exists so a durable evidence writer can commit dispatch
+        intent between authorization and the actual side effect.
+        """
+        return self.act(action)
+
+    def execute(self, action: dict) -> str:
+        """Validate, authorize and execute one model-generated action."""
+        normalized = self.prepare_action(action)
+        return self.dispatch_prepared_action(normalized)
 
     def validate_action(self, action: dict) -> None:
-        """Platform-specific policy hook invoked immediately before ``act``."""
+        """Platform-specific policy hook invoked immediately before dispatch."""
 
     @abstractmethod
     def act(self, action: dict) -> str:
@@ -194,7 +214,7 @@ class PolicyAdapter(Adapter):
 
     The runner and roam engine historically call ``adapter.act`` directly.
     Wrapping adapters here means those calls still pass through the inner
-    adapter's :meth:`execute` safety boundary without a broad engine rewrite.
+    adapter's validation/authorization boundary without a broad engine rewrite.
     """
 
     def __init__(self, inner: Adapter) -> None:
@@ -212,8 +232,15 @@ class PolicyAdapter(Adapter):
     def capabilities(self) -> dict:
         return self.inner.capabilities()
 
+    def prepare_action(self, action: dict) -> dict:
+        return self.inner.prepare_action(action)
+
+    def dispatch_prepared_action(self, action: dict) -> str:
+        return self.inner.dispatch_prepared_action(action)
+
     def act(self, action: dict) -> str:
-        return self.inner.execute(action)
+        normalized = self.prepare_action(action)
+        return self.dispatch_prepared_action(normalized)
 
     def validate_action(self, action: dict) -> None:
         self.inner.validate_action(action)

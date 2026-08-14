@@ -37,6 +37,16 @@ from argus.execution.base import (
 )
 
 
+class _GuestPreparedAction(dict):
+    """Host handle for one exact action validated and retained by the guest."""
+
+    __slots__ = ("prepared_token",)
+
+    def __init__(self, action: Mapping[str, object], prepared_token: str) -> None:
+        super().__init__(action)
+        self.prepared_token = prepared_token
+
+
 class CapsuleExecutionEnvironment(ExecutionEnvironment):
     """Run the target and all UI/CLI/browser input inside a disposable VM."""
 
@@ -426,6 +436,52 @@ class CapsuleExecutionEnvironment(ExecutionEnvironment):
         if self._adapter is None:
             raise ExecutionEnvironmentError("Capsule target is not launched")
         self._adapter.validate_action(action)
+
+    def _guest_control_request(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, object],
+    ) -> dict:
+        if self._client is None or self._adapter is None:
+            raise ExecutionEnvironmentError("Capsule target is not launched")
+        request = getattr(self._client, "_request", None)
+        if not callable(request):
+            raise ExecutionEnvironmentError(
+                "Capsule guest client does not support the prepared-action protocol"
+            )
+        data = request(method, path, dict(payload))
+        if not isinstance(data, dict):
+            raise ExecutionEnvironmentError("Capsule guest returned an invalid action response")
+        return data
+
+    def prepare_action(self, action: dict) -> dict:
+        """Have the guest validate and retain the exact action before ATES commit."""
+        data = self._guest_control_request(
+            "POST",
+            "/v1/action/prepare",
+            {"action": action},
+        )
+        normalized = data.get("action")
+        token = str(data.get("prepared_token") or "").strip()
+        if not isinstance(normalized, dict) or not token:
+            raise ExecutionEnvironmentError(
+                "Capsule guest did not return a valid prepared action/token"
+            )
+        return _GuestPreparedAction(normalized, token)
+
+    def dispatch_prepared_action(self, action: dict) -> str:
+        """Dispatch only the one-shot guest operation prepared before ATES commit."""
+        if not isinstance(action, _GuestPreparedAction) or not action.prepared_token:
+            raise ExecutionEnvironmentError(
+                "Capsule dispatch requires the exact action prepared by the guest"
+            )
+        data = self._guest_control_request(
+            "POST",
+            "/v1/action/dispatch",
+            {"prepared_token": action.prepared_token},
+        )
+        return str(data.get("note", ""))
 
     def act(self, action: dict) -> str:
         if self._adapter is None:

@@ -112,6 +112,7 @@ class GuestAgentState:
         self._uploads: dict[str, dict] = {}
         self._staged_total = 0
         self._collection_snapshots: dict[str, dict] = {}
+        self._prepared_actions: dict[str, dict] = {}
 
     def begin_files(self, session_id: str) -> dict:
         session_id = validate_session_id(session_id)
@@ -444,6 +445,37 @@ class GuestAgentState:
                 raise AdapterError("no guest target session is active")
             return self.adapter.observe(include_screenshot=include_screenshot)
 
+    def prepare_action(self, action: dict) -> dict:
+        """Validate and retain one exact action without performing its side effect."""
+        with self._lock:
+            if self.adapter is None:
+                raise AdapterError("no guest target session is active")
+            if self._prepared_actions:
+                raise AdapterError("a guest action is already prepared for dispatch")
+            normalized = self.adapter.prepare_action(action)
+            token = uuid.uuid4().hex
+            retained = dict(normalized)
+            self._prepared_actions[token] = retained
+            return {
+                "prepared_token": token,
+                "action": dict(retained),
+            }
+
+    def dispatch_prepared_action(self, prepared_token: str) -> str:
+        """Consume and dispatch exactly one previously validated guest action."""
+        token = str(prepared_token or "").strip()
+        if not token:
+            raise AdapterError("prepared action token is required")
+        with self._lock:
+            if self.adapter is None:
+                raise AdapterError("no guest target session is active")
+            action = self._prepared_actions.pop(token, None)
+            if action is None:
+                raise AdapterError("prepared action token is unknown or already consumed")
+            # Consume the token before the target call. If dispatch or its reply
+            # becomes ambiguous, the same operation cannot be replayed blindly.
+            return self.adapter.dispatch_prepared_action(action)
+
     def act(self, action: dict) -> str:
         with self._lock:
             if self.adapter is None:
@@ -454,6 +486,7 @@ class GuestAgentState:
         with self._lock:
             adapter = self.adapter
             self.adapter = None
+            self._prepared_actions.clear()
             try:
                 if adapter is not None:
                     adapter.close()
@@ -604,6 +637,21 @@ class GuestAgentHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     {"ok": True, "observation": _observation_to_dict(obs)},
                 )
+                return
+            if self.command == "POST" and parsed.path == "/v1/action/prepare":
+                body = self._payload()
+                action = body.get("action")
+                if not isinstance(action, dict):
+                    raise AdapterError("action must be a JSON object")
+                data = self.server.state.prepare_action(action)
+                self._send(HTTPStatus.OK, {"ok": True, **data})
+                return
+            if self.command == "POST" and parsed.path == "/v1/action/dispatch":
+                body = self._payload()
+                note = self.server.state.dispatch_prepared_action(
+                    str(body.get("prepared_token") or "")
+                )
+                self._send(HTTPStatus.OK, {"ok": True, "note": note})
                 return
             if self.command == "POST" and parsed.path == "/v1/act":
                 body = self._payload()
