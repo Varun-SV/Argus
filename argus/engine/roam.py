@@ -51,6 +51,8 @@ _impl._add_finding = _recording_add_finding
 
 def _attempt_status(stopped_reason: str) -> str:
     reason = (stopped_reason or "").lower()
+    if "action outcome unresolved" in reason:
+        return "outcome_unknown"
     if "stopped by user" in reason:
         return "cancelled"
     if "provider" in reason:
