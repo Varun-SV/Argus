@@ -189,9 +189,8 @@ class EvidencePrivacyPolicy:
         if value is None:
             return EvidenceValue.safe(None)
 
-        if isinstance(value, str) and len(value) >= 4:
-            if any(value in ref for ref in refs):
-                raise PrivacyPolicyError("secret_refs must be opaque references")
+        if any(self._reference_contains_raw_value(ref, value) for ref in refs):
+            raise PrivacyPolicyError("secret_refs must be opaque references")
 
         if context in self.config.protected_contexts:
             return self._protect(value, context=context, field_name=field_name)
@@ -215,8 +214,17 @@ class EvidencePrivacyPolicy:
         Before validation every model-controlled value is treated as sensitive.
         After validation, only a small structural vocabulary is admitted as
         ordinary ``safe`` evidence; text/URL/command/menu/report prose remains
-        redacted or protected according to policy.
+        redacted or protected according to policy.  An explicit protected
+        ACTION_PARAMETER context always wins over safe-fact promotion.
         """
+        if EvidenceContext.ACTION_PARAMETER in self.config.protected_contexts:
+            return self.capture(
+                value,
+                context=EvidenceContext.ACTION_PARAMETER,
+                field_name=parameter,
+                secret_refs=secret_refs,
+            )
+
         if not validated:
             return self.capture(
                 value,
@@ -264,6 +272,12 @@ class EvidencePrivacyPolicy:
         return self.capture(value, context=EvidenceContext.FINDING_DESCRIPTION)
 
     def error_text(self, value: object) -> EvidenceValue:
+        # Exception instances are runtime objects, not JSON evidence.  Project
+        # them to text before the generic capture/protected-sink path so an
+        # ERROR_TEXT-protected deployment receives the actual failure message
+        # without ever placing it in ordinary evidence metadata.
+        if isinstance(value, BaseException):
+            value = str(value)
         return self.capture(value, context=EvidenceContext.ERROR_TEXT)
 
     def _protect(
@@ -334,15 +348,28 @@ class EvidencePrivacyPolicy:
             ) from exc
 
     @classmethod
-    def _reference_contains_raw_value(cls, reference: str, value: JsonValue) -> bool:
+    def _reference_contains_raw_value(cls, reference: str, value: object) -> bool:
+        """Return whether a reference copies any JSON scalar or mapping key.
+
+        References are metadata that enters ordinary JSONL, so even very short
+        strings, numeric values, booleans, and object keys must not be copied
+        into them.  Empty strings and ``None`` carry no identifying token and
+        are ignored.
+        """
         if isinstance(value, str):
-            return len(value) >= 4 and value in reference
+            return bool(value) and value in reference
+        if isinstance(value, bool):
+            token = "true" if value else "false"
+            return token in reference.lower()
+        if isinstance(value, (int, float)):
+            return str(value) in reference
         if isinstance(value, dict):
             return any(
-                cls._reference_contains_raw_value(reference, child)
-                for child in value.values()
+                cls._reference_contains_raw_value(reference, key)
+                or cls._reference_contains_raw_value(reference, child)
+                for key, child in value.items()
             )
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return any(
                 cls._reference_contains_raw_value(reference, child)
                 for child in value
@@ -388,7 +415,36 @@ class EvidencePrivacyPolicy:
                 canonical = canonicalize_key_chord(value)
             except (ActionValidationError, TypeError, ValueError):
                 return _NOT_STRUCTURAL
-            return value if canonical == value else _NOT_STRUCTURAL
+            if canonical != value:
+                return _NOT_STRUCTURAL
+
+            parts = canonical.split("+")
+            modifiers = set(parts[:-1])
+            key = parts[-1]
+            content_keys = {
+                "space",
+                "minus",
+                "equals",
+                "comma",
+                "period",
+                "slash",
+                "semicolon",
+                "quote",
+                "backquote",
+                "bracketleft",
+                "bracketright",
+                "backslash",
+            }
+            is_printable = (
+                len(key) == 1 and key.isascii() and key.isalnum()
+            ) or key in content_keys
+            # Bare and shift-only printable keys can enter arbitrary content
+            # into the focused control one character at a time.  Keep those
+            # redacted.  Ctrl/Alt chords and non-printing/navigation keys are
+            # structural interactions and may be admitted after validation.
+            if is_printable and not (modifiers & {"ctrl", "alt"}):
+                return _NOT_STRUCTURAL
+            return value
 
         if action_type == "report_bug" and parameter == "severity":
             if value in {"low", "medium", "high", "critical"}:
