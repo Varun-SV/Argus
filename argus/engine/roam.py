@@ -103,7 +103,12 @@ def roam(
 ) -> RoamSession:
     """Run the existing explorer while recording canonical structural ATES."""
     root = resolve_runtime_project_dir(project_dir, session_dir=session_dir)
-    recorder = AtesRuntimeRecorder.for_roam(root, provider, adapter)
+    recorder = AtesRuntimeRecorder.for_roam(
+        root,
+        provider,
+        adapter,
+        target=target,
+    )
     run_id = str(recorder.run_id)
     wrapped = AtesAdapterProxy(adapter, recorder)
     token = _active_recorder.set(recorder)
