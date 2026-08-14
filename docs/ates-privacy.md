@@ -64,13 +64,18 @@ only a narrow structural vocabulary can be recorded exactly:
 - validated scroll direction and amount;
 - validated wait duration;
 - `done.success` boolean;
-- the already-canonical Argus key chord;
+- validated non-content key interactions, such as navigation keys and
+  `ctrl`/`alt` shortcuts;
 - allow-listed `report_bug` severity.
 
-Typed text, commands, URLs, menu paths and report prose remain redacted even
-after the action is authorized.  The durable `ACTION_DISPATCH_COMMITTED` event
-therefore gains useful structural FACTs without becoming a credential or data
-exfiltration channel.
+Bare or shift-only printable key presses remain redacted even when their chord
+syntax is canonical, because they can enter arbitrary content into the focused
+control one character at a time.  Typed text, commands, URLs, menu paths and
+report prose likewise remain redacted after the action is authorized.  An
+explicit protected `ACTION_PARAMETER` policy also takes precedence over safe
+fact promotion, so selected deployments still emit only protected references.
+The durable `ACTION_DISPATCH_COMMITTED` event therefore gains useful structural
+FACTs without becoming a credential or data exfiltration channel.
 
 ## Protected evidence
 
@@ -89,13 +94,16 @@ context requires protected storage and no usable sink is configured, the
 pipeline fails closed rather than falling back to plaintext ordinary evidence.
 
 Protected references are syntax-checked and must be opaque.  A sink may not
-return the raw value as its reference.
+copy any protected JSON scalar or mapping key into the reference, including
+short strings, numbers, or booleans.
 
 ## Secret references and reason metadata
 
 Redacted evidence may carry opaque secret references of the form
 `secret://<namespace>/<opaque-id>`.  Arbitrary free-form strings are rejected so
-metadata cannot become a second path for leaking the secret itself.
+metadata cannot become a second path for leaking the secret itself.  The same
+opacity check applies to every JSON scalar and mapping key represented by the
+redacted value; short strings and non-string scalars are not exempt.
 
 Disposition reasons are controlled policy codes such as
 `privacy.action_value`, not user-, target- or model-authored prose.  This builds
@@ -117,7 +125,8 @@ basis for treating it as safe evidence.
 Assertion results and methods remain deterministic structural evidence.  The
 expected value is redacted and the observed/actual value is suppressed by
 default.  Deployments that explicitly require the actual value may route that
-context to a protected sink.
+context to a protected sink; the runner passes the real `StepResult.actual`
+through that boundary rather than substituting a presence marker.
 
 Finding source and allow-listed classification remain machine-readable.  Model
 or runtime prose—title, expected/actual details and explanation—is classified
