@@ -146,7 +146,12 @@ def test_failed_action_is_recorded_as_unknown_without_action_payload(tmp_path):
     from argus.adapters.base import AdapterError
 
     class RejectingAdapter(FakeAdapter):
+        def __init__(self):
+            super().__init__()
+            self.dispatches = 0
+
         def act(self, action):
+            self.dispatches += 1
             raise AdapterError("blocked private-secret-detail")
 
     spec = parse_spec(
@@ -158,22 +163,31 @@ steps:
 """
     )
     provider = FakeProvider(
-        [_action(action="type", text="ultra-private-input", element_id=1)]
+        [
+            _action(action="type", text="ultra-private-input", element_id=1),
+            _action(action="type", text="must-not-blindly-retry", element_id=1),
+            _action(action="done", success=True),
+        ]
     )
 
-    # An individual action failure does not necessarily fail the legacy step:
-    # the existing NL loop may recover on a later turn. ATES must preserve the
-    # ambiguous action outcome regardless of the eventual StepResult.
-    result = run_test(spec, provider, RejectingAdapter(), project_dir=tmp_path)
-    assert result.status == "pass"
+    # Once a validated action has a durable dispatch commit, a dispatch failure
+    # is ambiguous: the target may already have observed the side effect. PR #19
+    # therefore stops rather than allowing a later model turn to mask or retry it.
+    adapter = RejectingAdapter()
+    result = run_test(spec, provider, adapter, project_dir=tmp_path)
+    assert result.status == "error"
+    assert adapter.dispatches == 1
 
     events = _events(tmp_path, result.ates_run_id)
     types = [event.envelope.event_type for event in events]
-    assert EventType.ACTION_PROPOSED in types
+    assert types.count(EventType.ACTION_PROPOSED) == 1
+    assert EventType.ACTION_POLICY_VALIDATED in types
+    assert EventType.ACTION_DISPATCH_COMMITTED in types
     assert EventType.ACTION_OUTCOME_UNKNOWN in types
     assert EventType.ACTION_EXECUTED not in types
     persisted = _canonical_bytes(events)
     assert b"ultra-private-input" not in persisted
+    assert b"must-not-blindly-retry" not in persisted
     assert b"blocked private-secret-detail" not in persisted
 
 
