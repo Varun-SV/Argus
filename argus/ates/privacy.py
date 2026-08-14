@@ -11,6 +11,7 @@ remain the responsibility of the protected artifact pipeline.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from dataclasses import dataclass
@@ -85,7 +86,7 @@ class EvidencePrivacyConfig:
                 item if isinstance(item, EvidenceContext) else EvidenceContext(item)
                 for item in self.protected_contexts
             )
-        except (TypeError, ValueError) as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             raise ValueError("protected_contexts contains an unsupported evidence context") from exc
         object.__setattr__(self, "protected_contexts", contexts)
 
@@ -96,7 +97,6 @@ _SECRET_REF_RE = re.compile(
 _PROTECTED_REF_RE = re.compile(
     r"^protected://[a-z0-9][a-z0-9._-]{0,31}/[A-Za-z0-9._-]{1,160}$"
 )
-_SAFE_KEY_RE = re.compile(r"^[a-z0-9+]{1,64}$")
 
 _REASON_BY_CONTEXT = {
     EvidenceContext.STEP_INSTRUCTION: "privacy.authored_text",
@@ -154,7 +154,19 @@ class EvidencePrivacyPolicy:
 
     @property
     def policy_id(self) -> str:
-        return self.config.policy_id
+        """Stable identity of the effective privacy decision configuration.
+
+        The standard policy retains the human-readable version verbatim.  Once
+        contexts are routed to protected storage, a deterministic suffix binds
+        that actual context set so two materially different policies cannot
+        silently share run provenance just because a caller reused a base ID.
+        """
+        contexts = tuple(sorted(context.value for context in self.config.protected_contexts))
+        if not contexts:
+            return self.config.policy_id
+        descriptor = "\x1f".join(contexts).encode("utf-8")
+        suffix = hashlib.sha256(descriptor).hexdigest()[:12]
+        return f"{self.config.policy_id}.{suffix}"
 
     def capture(
         self,
@@ -176,6 +188,10 @@ class EvidencePrivacyPolicy:
 
         if value is None:
             return EvidenceValue.safe(None)
+
+        if isinstance(value, str) and len(value) >= 4:
+            if any(value in ref for ref in refs):
+                raise PrivacyPolicyError("secret_refs must be opaque references")
 
         if context in self.config.protected_contexts:
             return self._protect(value, context=context, field_name=field_name)
@@ -275,6 +291,8 @@ class EvidencePrivacyPolicy:
             ) from exc
         if not isinstance(protected_ref, str) or not _PROTECTED_REF_RE.fullmatch(protected_ref):
             raise PrivacyPolicyError("protected evidence sink returned an invalid opaque reference")
+        if self._reference_contains_raw_value(protected_ref, snapshot):
+            raise PrivacyPolicyError("protected evidence sink returned a non-opaque reference")
         return EvidenceValue.protected(
             protected_ref,
             _REASON_BY_CONTEXT[context],
@@ -295,7 +313,7 @@ class EvidencePrivacyPolicy:
             raise PrivacyPolicyError("secret_refs must be a sequence of opaque references")
         try:
             refs = tuple(values)
-        except (TypeError, ValueError) as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             raise PrivacyPolicyError("secret_refs could not be snapshotted safely") from exc
         for ref in refs:
             if not isinstance(ref, str) or not _SECRET_REF_RE.fullmatch(ref):
@@ -314,6 +332,22 @@ class EvidencePrivacyPolicy:
             raise PrivacyPolicyError(
                 "protected text/JSON evidence contains an unsupported value"
             ) from exc
+
+    @classmethod
+    def _reference_contains_raw_value(cls, reference: str, value: JsonValue) -> bool:
+        if isinstance(value, str):
+            return len(value) >= 4 and value in reference
+        if isinstance(value, dict):
+            return any(
+                cls._reference_contains_raw_value(reference, child)
+                for child in value.values()
+            )
+        if isinstance(value, list):
+            return any(
+                cls._reference_contains_raw_value(reference, child)
+                for child in value
+            )
+        return False
 
     @staticmethod
     def _safe_action_scalar(action_type: str, parameter: str, value: object) -> object:
@@ -346,9 +380,15 @@ class EvidencePrivacyPolicy:
             return value if isinstance(value, bool) else _NOT_STRUCTURAL
 
         if action_type == "key" and parameter == "keys":
-            if isinstance(value, str) and _SAFE_KEY_RE.fullmatch(value):
-                return value
-            return _NOT_STRUCTURAL
+            if not isinstance(value, str):
+                return _NOT_STRUCTURAL
+            try:
+                from argus.actions import ActionValidationError, canonicalize_key_chord
+
+                canonical = canonicalize_key_chord(value)
+            except (ActionValidationError, TypeError, ValueError):
+                return _NOT_STRUCTURAL
+            return value if canonical == value else _NOT_STRUCTURAL
 
         if action_type == "report_bug" and parameter == "severity":
             if value in {"low", "medium", "high", "critical"}:
