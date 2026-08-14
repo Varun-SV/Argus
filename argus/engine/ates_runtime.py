@@ -9,7 +9,9 @@ and artifact PRs provide policy-aware capture.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +55,26 @@ _ACTION_REASON = "runtime.action_value"
 _ASSERTION_REASON = "runtime.assertion_value"
 _FINDING_REASON = "runtime.finding_text"
 _RETRY_REASON = "runtime.retry_reason"
+_IDENTITY_KEY_FILENAME = ".ates-runtime-identity.key"
+_IDENTITY_KEY_SIZE = 32
+_IDENTITY_VERIFICATION_REF = "protected://ates-runtime-identity-key"
+_SAFE_FINDING_CLASSIFICATIONS = frozenset({"low", "medium", "high", "critical"})
+_SAFE_FINDING_SOURCES = frozenset({"model", "crash", "dialog", "hang", "runtime"})
+_ACTION_PARAMETER_KEYS: dict[str, tuple[str, ...]] = {
+    "click": ("element_id", "x", "y"),
+    "double_click": ("element_id", "x", "y"),
+    "right_click": ("element_id", "x", "y"),
+    "type": ("text", "element_id"),
+    "key": ("keys",),
+    "scroll": ("direction", "amount"),
+    "menu": ("path",),
+    "wait": ("seconds",),
+    "done": ("success",),
+    "navigate": ("url",),
+    "run": ("command",),
+    "execute": ("command",),
+    "report_bug": ("title", "severity", "expected", "actual", "why"),
+}
 
 
 class AtesRuntimeError(RuntimeError):
@@ -63,25 +85,113 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _commitment(value: object) -> SourceCommitment:
-    """Create a secret-safe commitment over an already-redacted structure."""
-    encoded = json.dumps(
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
         value,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
+
+
+def _commitment(value: object) -> SourceCommitment:
+    """Create a public commitment over an already-redacted/safe structure."""
     return SourceCommitment(
         method="sha256_redacted_canonical",
-        value="sha256:" + hashlib.sha256(encoded).hexdigest(),
+        value="sha256:" + hashlib.sha256(_canonical_bytes(value)).hexdigest(),
         canonicalization_profile="ates-runtime-redacted-v1",
     )
+
+
+def _identity_key(project_dir: Path) -> bytes:
+    """Load or atomically create the project-local protected identity key.
+
+    Runtime source/model commitments must distinguish real inputs without
+    publishing dictionary-checkable hashes of low-entropy secrets.  The key is
+    therefore kept beside ignored runtime evidence, never inside canonical
+    ATES JSONL.  A corrupt/partial key fails closed instead of weakening the
+    commitment silently.
+    """
+    project_root = Path(project_dir).resolve(strict=True)
+    key_dir = project_root / ".argus" / "runs"
+    key_dir.mkdir(parents=True, exist_ok=True)
+    if key_dir.resolve(strict=True).parents[1] != project_root:
+        raise AtesRuntimeError("ATES runtime identity-key directory escapes project root")
+    key_path = key_dir / _IDENTITY_KEY_FILENAME
+    if key_path.is_symlink():
+        raise AtesRuntimeError("ATES runtime identity key must not be a symlink")
+
+    try:
+        key = key_path.read_bytes()
+    except FileNotFoundError:
+        candidate = os.urandom(_IDENTITY_KEY_SIZE)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        try:
+            fd = os.open(key_path, flags, 0o600)
+        except FileExistsError:
+            key = key_path.read_bytes()
+        else:
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(candidate)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except BaseException:
+                try:
+                    key_path.unlink()
+                except OSError:
+                    pass
+                raise
+            key = candidate
+            try:
+                key_path.chmod(0o600)
+            except OSError:
+                # Windows ACLs do not map cleanly to POSIX chmod; the file is
+                # still kept outside canonical evidence and ignored by git.
+                pass
+
+    if len(key) != _IDENTITY_KEY_SIZE:
+        raise AtesRuntimeError("ATES runtime identity key is invalid or incomplete")
+    return key
+
+
+def _protected_commitment(
+    key: bytes,
+    value: object,
+    *,
+    profile: str,
+) -> SourceCommitment:
+    digest = hmac.new(key, _canonical_bytes(value), hashlib.sha256).hexdigest()
+    return SourceCommitment(
+        method="hmac-sha256",
+        value="hmac:" + digest,
+        canonicalization_profile=profile,
+        verification_ref=_IDENTITY_VERIFICATION_REF,
+    )
+
+
+def _opaque_identity(key: bytes, namespace: str, value: object) -> str:
+    digest = hmac.new(
+        key,
+        _canonical_bytes({"namespace": namespace, "value": value}),
+        hashlib.sha256,
+    ).hexdigest()
+    return digest[:24]
 
 
 def _provider_type(provider) -> str:
     value = getattr(provider, "type_name", None) or type(provider).__name__
     return str(value).strip() or "unknown-provider"
+
+
+def _provider_model(provider) -> str:
+    value = getattr(provider, "model", None)
+    return str(value).strip() if value is not None and str(value).strip() else "unknown-model"
+
+
+def _model_identity(key: bytes, provider) -> str:
+    return "MODEL-" + _opaque_identity(key, "model", _provider_model(provider))
 
 
 def _adapter_type(adapter: Adapter) -> str:
@@ -137,6 +247,7 @@ def resolve_runtime_project_dir(
 
 
 def _scripted_source_shape(spec: TestSpec) -> dict[str, object]:
+    """Canonical in-memory source shape; never persisted in plaintext."""
     steps: list[dict[str, object]] = []
     for step in spec.steps:
         if isinstance(step, AssertStep):
@@ -145,19 +256,49 @@ def _scripted_source_shape(spec: TestSpec) -> dict[str, object]:
                     "kind": step.kind,
                     "type": "assertion",
                     "assertion": step.assertion,
+                    "expected": step.expected,
                 }
             )
         else:
-            steps.append({"kind": step.kind, "type": "natural_language"})
+            steps.append(
+                {
+                    "kind": step.kind,
+                    "type": "natural_language",
+                    "text": step.text,
+                }
+            )
     return {
         "kind": "test_spec",
+        "name": spec.name,
         "adapter": spec.adapter,
+        "launch": spec.launch,
         "steps": steps,
         "continue_on_failure": bool(spec.continue_on_failure),
         "retries": int(spec.retries),
-        "staging_count": len(spec.staging),
-        "collect_count": len(spec.collect),
-        "authored_values": "<redacted>",
+        "staging": [
+            {
+                "source": item.source,
+                "destination": item.destination,
+                "sha256": item.sha256,
+            }
+            for item in spec.staging
+        ],
+        "collect": list(spec.collect),
+    }
+
+
+def _scripted_test_identity_shape(project_dir: Path, spec: TestSpec) -> dict[str, object]:
+    path_identity: Optional[str] = None
+    if spec.path is not None:
+        path = Path(spec.path)
+        try:
+            path_identity = path.resolve().relative_to(Path(project_dir).resolve()).as_posix()
+        except (OSError, ValueError):
+            path_identity = path.name
+    return {
+        "kind": "test_case",
+        "name": spec.name,
+        "path": path_identity,
     }
 
 
@@ -166,18 +307,40 @@ def _configuration_shape(
     execution_kind: ExecutionKind,
     provider,
     adapter: Adapter,
+    model_identity: str,
     extra: Optional[Mapping[str, object]] = None,
 ) -> dict[str, object]:
     environment = _environment_shape(adapter)
     value: dict[str, object] = {
         "execution_kind": execution_kind.value,
         "provider_type": _provider_type(provider),
+        "model_identity": model_identity,
         "adapter_type": _adapter_type(adapter),
         **environment,
     }
     if extra:
         value.update(dict(extra))
     return value
+
+
+def _safe_action_structure(action: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
+    """Return only allow-listed model-independent action structure."""
+    raw_kind = action.get("action")
+    kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else ""
+    allowed = _ACTION_PARAMETER_KEYS.get(kind)
+    if allowed is None:
+        return "invalid", ()
+    return kind, tuple(key for key in allowed if key in action)
+
+
+def _safe_finding_source(value: str) -> str:
+    candidate = str(value or "runtime").strip().lower()
+    return candidate if candidate in _SAFE_FINDING_SOURCES else "runtime"
+
+
+def _safe_finding_classification(value: str) -> str:
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in _SAFE_FINDING_CLASSIFICATIONS else "unclassified"
 
 
 def _step_status(value: str) -> StepAttemptStatus:
@@ -254,26 +417,38 @@ class AtesRuntimeRecorder:
         provider,
         adapter: Adapter,
     ) -> "AtesRuntimeRecorder":
-        source_shape = _scripted_source_shape(spec)
-        source_commitment = _commitment(source_shape)
-        test_case_id = "TEST-" + source_commitment.value.split(":", 1)[1][:20]
+        identity_key = _identity_key(project_dir)
+        source_commitment = _protected_commitment(
+            identity_key,
+            _scripted_source_shape(spec),
+            profile="ates-runtime-scripted-source-v1",
+        )
+        test_case_id = "TEST-" + _opaque_identity(
+            identity_key,
+            "test-case",
+            _scripted_test_identity_shape(project_dir, spec),
+        )
         source = ScriptedSource(
             test_case_id=test_case_id,
             commitment=source_commitment,
         )
         environment = _environment_shape(adapter)
-        config = _commitment(
+        model_identity = _model_identity(identity_key, provider)
+        config = _protected_commitment(
+            identity_key,
             _configuration_shape(
                 execution_kind=ExecutionKind.SCRIPTED,
                 provider=provider,
                 adapter=adapter,
+                model_identity=model_identity,
                 extra={
                     "continue_on_failure": bool(spec.continue_on_failure),
                     "retries": int(spec.retries),
                     "staging_count": len(spec.staging),
                     "collect_count": len(spec.collect),
                 },
-            )
+            ),
+            profile="ates-runtime-config-v1",
         )
         run_record = RunRecord(
             run_id=RunId.new(),
@@ -286,6 +461,8 @@ class AtesRuntimeRecorder:
             evidence_profile=_RUNTIME_PROFILE,
             configuration_commitment=config,
             provider=_provider_type(provider),
+            model_provider=_provider_type(provider),
+            model=model_identity,
         )
         steps = tuple(
             StepRecord(
@@ -303,25 +480,38 @@ class AtesRuntimeRecorder:
         project_dir: Path,
         provider,
         adapter: Adapter,
+        *,
+        target: str,
     ) -> "AtesRuntimeRecorder":
+        identity_key = _identity_key(project_dir)
         environment = _environment_shape(adapter)
-        objective_commitment = _commitment(
+        model_identity = _model_identity(identity_key, provider)
+        target_identity = "TARGET-" + _opaque_identity(identity_key, "roam-target", target)
+        source_config = _protected_commitment(
+            identity_key,
             {
-                "kind": "roam_objective",
-                "target": "<redacted>",
-            }
+                "kind": "roam_session",
+                "target": target,
+                "provider_type": _provider_type(provider),
+                "provider_model": _provider_model(provider),
+                "adapter_type": _adapter_type(adapter),
+            },
+            profile="ates-runtime-roam-source-v1",
         )
         source = RoamSource(
-            objective_present=True,
-            objective_commitment=objective_commitment,
+            objective_present=False,
+            config_commitment=source_config,
         )
-        config = _commitment(
+        config = _protected_commitment(
+            identity_key,
             _configuration_shape(
                 execution_kind=ExecutionKind.ROAM,
                 provider=provider,
                 adapter=adapter,
-                extra={"objective": "<redacted>"},
-            )
+                model_identity=model_identity,
+                extra={"target_identity": target_identity},
+            ),
+            profile="ates-runtime-config-v1",
         )
         run_record = RunRecord(
             run_id=RunId.new(),
@@ -334,6 +524,8 @@ class AtesRuntimeRecorder:
             evidence_profile=_RUNTIME_PROFILE,
             configuration_commitment=config,
             provider=_provider_type(provider),
+            model_provider=_provider_type(provider),
+            model=model_identity,
         )
         roam_step = StepRecord(
             step_id=StepId.new(),
@@ -526,13 +718,10 @@ class AtesRuntimeRecorder:
         current = self._current
         if current is None:
             raise AtesRuntimeError("action occurred outside an active step attempt")
-        kind = str(action.get("action") or "").strip()
-        if not kind:
-            raise AtesRuntimeError("action proposal has no action kind")
+        kind, parameter_keys = _safe_action_structure(action)
         parameters = {
-            str(key): EvidenceValue.suppressed(_ACTION_REASON)
-            for key in action
-            if key != "action"
+            key: EvidenceValue.suppressed(_ACTION_REASON)
+            for key in parameter_keys
         }
         record = ActionRecord(
             action_id=ActionId.new(),
@@ -603,8 +792,8 @@ class AtesRuntimeRecorder:
             title=EvidenceValue.suppressed(_FINDING_REASON),
             description=EvidenceValue.suppressed(_FINDING_REASON),
             evidence_refs=refs,
-            classification_source=str(source or "runtime"),
-            classification=str(classification or "unclassified"),
+            classification_source=_safe_finding_source(source),
+            classification=_safe_finding_classification(classification),
         )
         self._append(
             EventType.FINDING_RECORDED,
