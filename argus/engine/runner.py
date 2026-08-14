@@ -9,6 +9,7 @@ from typing import Callable, Optional
 import uuid as _uuid
 
 from argus.adapters.base import Adapter, AdapterError
+from argus.ates import EvidencePrivacyPolicy
 from argus.engine.agent import run_turn
 from argus.engine.ates_runtime import (
     AtesAdapterProxy,
@@ -238,6 +239,7 @@ def run_test(
     knowledge_store=None,
     shots_dir: Optional[Path] = None,
     project_dir: Optional[Path] = None,
+    privacy_policy: Optional[EvidencePrivacyPolicy] = None,
 ) -> RunResult:
     result = RunResult(
         test_name=spec.name,
@@ -263,6 +265,7 @@ def run_test(
             spec,
             provider,
             adapter,
+            privacy_policy=privacy_policy,
         )
         # RunResult is kept backwards-compatible in this PR; expose the canonical
         # ID to callers without changing the persisted legacy result schema yet.
@@ -444,7 +447,12 @@ def run_test(
                     session_id=session_id,
                 )
                 sr.index = index
-                ates.record_assertion(step, sr.status, sr.actual is not None)
+                ates.record_assertion(
+                    step,
+                    sr.status,
+                    sr.actual is not None,
+                    actual_value=sr.actual,
+                )
                 _attach_screenshot(sr, adapter, index, shots_dir)
                 ates.complete_current(sr.status)
             elif step.text == "close" and step.kind == "teardown":
