@@ -336,6 +336,14 @@ def roam(
                     consecutive_action_failures += 1
                     emit(f"#{len(session.actions)} action failed: {exc}")
                     history.append(f"{kind} FAILED: {exc}")
+                    unresolved_operation_id = getattr(adapter, "unresolved_operation_id", None)
+                    if unresolved_operation_id is not None:
+                        session.stopped_reason = (
+                            "action outcome unresolved after durable dispatch commit"
+                            f" ({unresolved_operation_id}) — stopping safely"
+                        )
+                        emit(session.stopped_reason)
+                        break
                     if consecutive_action_failures >= _ACTION_FAIL_STOP_AT:
                         session.stopped_reason = (
                             f"stopped after {_ACTION_FAIL_STOP_AT} consecutive action failures"
