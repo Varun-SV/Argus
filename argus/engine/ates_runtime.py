@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from argus import __version__
-from argus.adapters.base import Adapter, Observation
+from argus.adapters.base import Adapter, AdapterError, Observation
 from argus.ates import (
     ActionId,
     ActionOperationId,
@@ -79,6 +79,10 @@ _ACTION_PARAMETER_KEYS: dict[str, tuple[str, ...]] = {
 
 class AtesRuntimeError(RuntimeError):
     """Raised when mandatory runtime evidence cannot be represented safely."""
+
+
+class ActionOutcomeUnresolvedError(AdapterError):
+    """Raised when a committed side effect has no trusted terminal outcome."""
 
 
 def _utc_now() -> datetime:
@@ -714,6 +718,26 @@ class AtesRuntimeRecorder:
         self._latest_observation_id = record.observation_id
         return record.observation_id
 
+    def _normalized_action_record(
+        self,
+        action: ActionRecord,
+        normalized: Mapping[str, object],
+    ) -> ActionRecord:
+        kind, parameter_keys = _safe_action_structure(normalized)
+        if kind == "invalid":
+            raise AtesRuntimeError("validated action cannot have an invalid structural kind")
+        return ActionRecord(
+            action_id=action.action_id,
+            step_id=action.step_id,
+            step_attempt_id=action.step_attempt_id,
+            action_type=kind,
+            parameters={
+                key: EvidenceValue.suppressed(_ACTION_REASON)
+                for key in parameter_keys
+            },
+            operation_id=action.operation_id,
+        )
+
     def record_action_proposed(self, action: Mapping[str, object]) -> ActionRecord:
         current = self._current
         if current is None:
@@ -736,6 +760,30 @@ class AtesRuntimeRecorder:
             {"action": to_json_compatible(record)},
         )
         return record
+
+    def record_action_policy_validated(
+        self,
+        action: ActionRecord,
+        normalized: Mapping[str, object],
+    ) -> ActionRecord:
+        validated = self._normalized_action_record(action, normalized)
+        self._append(
+            EventType.ACTION_POLICY_VALIDATED,
+            {"action": to_json_compatible(validated)},
+        )
+        return validated
+
+    def record_action_dispatch_committed(
+        self,
+        action: ActionRecord,
+        normalized: Mapping[str, object],
+    ) -> ActionRecord:
+        committed = self._normalized_action_record(action, normalized)
+        self._append(
+            EventType.ACTION_DISPATCH_COMMITTED,
+            {"action": to_json_compatible(committed)},
+        )
+        return committed
 
     def record_action_executed(self, action: ActionRecord) -> None:
         self._append(
@@ -809,7 +857,7 @@ class AtesRuntimeRecorder:
 
 
 class AtesAdapterProxy(Adapter):
-    """Observe the existing Adapter boundary without changing its semantics."""
+    """Bind real Adapter dispatch to durable ATES action evidence."""
 
     def __init__(self, inner: Adapter, recorder: AtesRuntimeRecorder) -> None:
         self.inner = inner
@@ -817,6 +865,24 @@ class AtesAdapterProxy(Adapter):
         self.type_name = getattr(inner, "type_name", "adapter")
         self._launched = False
         self._closed_event_emitted = False
+        self._unresolved_action: Optional[ActionRecord] = None
+
+    @property
+    def unresolved_operation_id(self) -> Optional[ActionOperationId]:
+        if self._unresolved_action is None:
+            return None
+        return self._unresolved_action.operation_id
+
+    def _ensure_no_unresolved_dispatch(self) -> None:
+        unresolved = self._unresolved_action
+        if unresolved is None:
+            return
+        operation_id = unresolved.operation_id
+        raise ActionOutcomeUnresolvedError(
+            "action outcome unresolved after durable dispatch commit"
+            + (f" ({operation_id})" if operation_id else "")
+            + "; refusing further target interaction until reconciled"
+        )
 
     def launch(self, target: str) -> None:
         self.inner.launch(target)
@@ -824,6 +890,7 @@ class AtesAdapterProxy(Adapter):
         self.recorder.target_launched()
 
     def observe(self, include_screenshot: bool = True) -> Observation:
+        self._ensure_no_unresolved_dispatch()
         obs = self.inner.observe(include_screenshot=include_screenshot)
         if self.recorder.current_attempt_id is not None and not self.recorder.failed:
             self.recorder.record_observation(obs, self.type_name)
@@ -836,17 +903,41 @@ class AtesAdapterProxy(Adapter):
         self.inner.validate_action(action)
 
     def act(self, action: dict) -> str:
+        self._ensure_no_unresolved_dispatch()
         proposed = self.recorder.record_action_proposed(action)
+
+        # No target-visible side effect is permitted before this preparation
+        # succeeds. Validation failures therefore remain safely retryable and
+        # intentionally do not produce a dispatch-commit event.
+        normalized = self.inner.prepare_action(action)
+        validated = self.recorder.record_action_policy_validated(proposed, normalized)
+
+        # This append is the durable point of no return. If it fails, dispatch
+        # never begins. If it succeeds, recovery must conservatively assume the
+        # operation may have reached the target until a terminal outcome proves
+        # otherwise.
+        committed = self.recorder.record_action_dispatch_committed(validated, normalized)
+
         try:
-            note = self.inner.act(action)
+            note = self.inner.dispatch_prepared_action(normalized)
         except BaseException as exc:
+            self._unresolved_action = committed
             if not self.recorder.failed:
                 try:
-                    self.recorder.record_action_outcome_unknown(proposed)
+                    self.recorder.record_action_outcome_unknown(committed)
                 except BaseException as evidence_exc:
                     raise evidence_exc from exc
             raise
-        self.recorder.record_action_executed(proposed)
+
+        try:
+            self.recorder.record_action_executed(committed)
+        except BaseException:
+            # The side effect returned successfully but canonical terminal
+            # evidence is not durable/known. On recovery a commit without a
+            # trusted terminal record is indistinguishable from an ambiguous
+            # dispatch, so block all further target interaction.
+            self._unresolved_action = committed
+            raise
         return note
 
     def close(self) -> None:
