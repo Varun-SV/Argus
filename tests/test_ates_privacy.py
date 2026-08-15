@@ -46,31 +46,34 @@ def test_default_policy_redacts_authored_values_and_suppresses_target_generated_
     assert "target-secret" not in json.dumps(to_json_compatible(target))
 
 
-def test_secret_references_are_opaque_and_strict():
+def test_secret_references_are_policy_issued_and_strict():
     policy = EvidencePrivacyPolicy.standard()
+    secret_ref = policy.issue_secret_ref()
     value = policy.capture(
         "private-value",
         context=EvidenceContext.ACTION_PARAMETER,
-        secret_refs=("secret://vault/customer-token",),
+        secret_refs=(secret_ref,),
     )
-    assert value.secret_refs == ("secret://vault/customer-token",)
+    assert value.secret_refs == (secret_ref,)
     assert value.value == "<redacted>"
+    assert secret_ref.startswith("secret://ates/")
 
-    with pytest.raises(PrivacyPolicyError):
+    with pytest.raises(PrivacyPolicyError, match="policy-issued opaque references"):
         policy.capture(
             "private-value",
             context=EvidenceContext.ACTION_PARAMETER,
-            secret_refs=("customer-token-is-secret",),
+            secret_refs=("secret://ates/00000000000000000000000000000000",),
         )
 
 
 class _ProtectedSink:
     def __init__(self):
         self.calls = []
+        self.refs = []
 
-    def put(self, value, *, context, field_name):
+    def put(self, value, *, context, field_name, protected_ref):
         self.calls.append((value, context, field_name))
-        return f"protected://test/{len(self.calls)}"
+        self.refs.append(protected_ref)
 
 
 def test_protected_context_never_copies_plaintext_to_ordinary_evidence():
@@ -86,7 +89,8 @@ def test_protected_context_never_copies_plaintext_to_ordinary_evidence():
 
     assert value.disposition is EvidenceDisposition.PROTECTED_REF
     assert value.value is None
-    assert value.protected_ref == "protected://test/1"
+    assert value.protected_ref == sink.refs[0]
+    assert value.protected_ref.startswith("protected://ates/")
     assert sink.calls == [
         ("very-private-output", EvidenceContext.OBSERVATION_STDOUT, "stdout")
     ]
@@ -104,8 +108,8 @@ def test_protected_context_fails_closed_without_valid_sink():
     assert "do-not-repeat-this-secret" not in str(exc_info.value)
 
     class BadSink:
-        def put(self, value, *, context, field_name):
-            return value
+        def put(self, value, *, context, field_name, protected_ref):
+            raise OSError("protected store unavailable")
 
     policy = EvidencePrivacyPolicy(
         EvidencePrivacyConfig(
@@ -174,8 +178,6 @@ steps:
 
     result = run_test(spec, provider, adapter, project_dir=tmp_path)
     assert result.status == "pass"
-    # The evidence projection must not redact or otherwise rewrite the action
-    # that actually crosses the adapter dispatch boundary.
     assert app.text_content == secret
 
     events = _events(tmp_path, result.ates_run_id)
@@ -316,8 +318,8 @@ def test_runtime_protected_sink_gets_text_but_never_screenshot_bytes(tmp_path):
     assert b"protected-finding-title" not in persisted
     assert b"suppressed-finding-description" not in persisted
     assert b"must-never-enter-text-privacy-sink" not in persisted
-    assert b"protected://test/1" in persisted
-    assert b"protected://test/2" in persisted
+    assert sink.refs[0].encode() in persisted
+    assert sink.refs[1].encode() in persisted
 
 
 def test_privacy_policy_identity_changes_run_configuration_commitment(tmp_path):
