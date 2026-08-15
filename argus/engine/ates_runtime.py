@@ -599,18 +599,18 @@ class AtesRuntimeRecorder:
     def close(self) -> None:
         self._store.close()
 
-    def target_launched(self) -> None:
+    def prepare_target_evidence(self) -> EvidenceValue:
+        """Classify target evidence before any target-visible launch side effect."""
+        return self.privacy.capture(
+            self._target_value,
+            context=EvidenceContext.TARGET,
+            field_name="target",
+        )
+
+    def target_launched(self, target_evidence: EvidenceValue) -> None:
         self._append(
             EventType.TARGET_LAUNCHED,
-            {
-                "target": to_json_compatible(
-                    self.privacy.capture(
-                        self._target_value,
-                        context=EvidenceContext.TARGET,
-                        field_name="target",
-                    )
-                )
-            },
+            {"target": to_json_compatible(target_evidence)},
         )
 
     def target_closed(self) -> None:
@@ -961,9 +961,22 @@ class AtesAdapterProxy(Adapter):
         )
 
     def launch(self, target: str) -> None:
+        try:
+            target_evidence = self.recorder.prepare_target_evidence()
+        except Exception as exc:
+            raise AdapterError("ATES target evidence preparation failed") from exc
+
         self.inner.launch(target)
         self._launched = True
-        self.recorder.target_launched()
+        try:
+            self.recorder.target_launched(target_evidence)
+        except Exception as exc:
+            try:
+                self.inner.close()
+            except Exception:
+                pass
+            self._launched = False
+            raise AdapterError("ATES target launch evidence failed; target was rolled back") from exc
 
     def observe(self, include_screenshot: bool = True) -> Observation:
         self._ensure_no_unresolved_dispatch()
