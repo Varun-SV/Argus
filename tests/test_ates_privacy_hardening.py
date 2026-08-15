@@ -4,13 +4,15 @@ from argus.ates import (
     EvidenceContext,
     EvidencePrivacyConfig,
     EvidencePrivacyPolicy,
-    PrivacyPolicyError,
 )
 
 
-class _EchoingProtectedSink:
-    def put(self, value, *, context, field_name):
-        return f"protected://vault/{value}"
+class _RecordingProtectedSink:
+    def __init__(self):
+        self.refs = []
+
+    def put(self, value, *, context, field_name, protected_ref):
+        self.refs.append(protected_ref)
 
 
 def test_effective_policy_identity_binds_protected_context_set():
@@ -32,18 +34,20 @@ def test_effective_policy_identity_binds_protected_context_set():
     assert stdout_policy.policy_id != finding_policy.policy_id
 
 
-def test_protected_reference_cannot_echo_raw_protected_text():
+def test_protected_reference_is_generated_independently_of_protected_text():
+    sink = _RecordingProtectedSink()
     policy = EvidencePrivacyPolicy(
         EvidencePrivacyConfig(
             protected_contexts=frozenset({EvidenceContext.FINDING_TITLE})
         ),
-        protected_sink=_EchoingProtectedSink(),
+        protected_sink=sink,
     )
 
-    with pytest.raises(PrivacyPolicyError, match="non-opaque reference") as exc_info:
-        policy.finding_title("private-customer-value")
+    value = policy.finding_title("private-customer-value")
 
-    assert "private-customer-value" not in str(exc_info.value)
+    assert value.protected_ref == sink.refs[0]
+    assert value.protected_ref.startswith("protected://ates/")
+    assert "private-customer-value" not in value.protected_ref
 
 
 def test_direct_safe_key_fact_uses_real_argus_key_grammar():
