@@ -136,7 +136,7 @@ class EvidencePrivacyPolicy:
     Configuration and protected-sink bindings are read-only after construction.
     ``snapshot()`` creates a distinct policy instance for one run so later state
     on a caller-owned policy cannot change committed run provenance or storage
-    routing.
+    routing. Retry correlation state is deliberately not copied into snapshots.
     """
 
     def __init__(
@@ -149,6 +149,8 @@ class EvidencePrivacyPolicy:
         self._protected_sink = protected_sink
         self._issued_secret_refs: set[str] = set()
         self._issued_protected_refs: set[str] = set()
+        self._prepared_retry_reason: Optional[EvidenceValue] = None
+        self._prepared_retry_reuses = 0
 
     @classmethod
     def standard(cls) -> "EvidencePrivacyPolicy":
@@ -172,8 +174,8 @@ class EvidencePrivacyPolicy:
             protected_sink=self._protected_sink,
         )
         # Secret aliases may be issued before a run is constructed. Preserve
-        # only that validation provenance; protected references are always
-        # generated afresh inside the run-local snapshot.
+        # only that validation provenance; protected refs and transient retry
+        # correlation state are always fresh in the run-local snapshot.
         snap._issued_secret_refs.update(self._issued_secret_refs)
         return snap
 
@@ -194,6 +196,19 @@ class EvidencePrivacyPolicy:
                 self._issued_secret_refs.add(ref)
                 return ref
 
+    def prepare_retry_reason(self, value: object) -> EvidenceValue:
+        """Classify one retry cause for reuse within this policy instance only."""
+        self._prepared_retry_reason = None
+        self._prepared_retry_reuses = 0
+        evidence = self._capture_classified(
+            value,
+            context=EvidenceContext.RETRY_REASON,
+            field_name="reason",
+            secret_refs=(),
+        )
+        self._prepared_retry_reason = evidence
+        return evidence
+
     def capture(
         self,
         value: object,
@@ -203,6 +218,17 @@ class EvidencePrivacyPolicy:
         secret_refs: Sequence[str] = (),
     ) -> EvidenceValue:
         context = self._context(context)
+        if (
+            context is EvidenceContext.RETRY_REASON
+            and value == "retry"
+            and self._prepared_retry_reason is not None
+        ):
+            evidence = self._prepared_retry_reason
+            self._prepared_retry_reuses += 1
+            if self._prepared_retry_reuses >= 2:
+                self._prepared_retry_reason = None
+                self._prepared_retry_reuses = 0
+            return evidence
         return self._capture_classified(
             value,
             context=context,
