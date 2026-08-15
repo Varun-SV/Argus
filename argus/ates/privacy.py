@@ -349,29 +349,60 @@ class EvidencePrivacyPolicy:
 
     @classmethod
     def _reference_contains_raw_value(cls, reference: str, value: object) -> bool:
-        """Return whether a reference copies any JSON scalar or mapping key.
+        """Return whether a reference meaningfully copies protected payload data.
 
-        References are metadata that enters ordinary JSONL, so even very short
-        strings, numeric values, booleans, and object keys must not be copied
-        into them.  Empty strings and ``None`` carry no identifying token and
-        are ignored.
+        Only the dynamic URI payload is examined; the fixed ``secret://`` or
+        ``protected://`` scheme must never cause a match.  Short values are
+        compared as complete path segments/components so incidental characters
+        inside an opaque identifier do not fail closed.  Longer text values are
+        also rejected when embedded verbatim in a dynamic segment.  String
+        comparisons are case-folded so case-normalizing a secret is not a
+        bypass.
         """
+        _scheme, separator, payload = reference.partition("://")
+        if not separator:
+            return False
+        segments = tuple(
+            segment.casefold()
+            for segment in payload.split("/")
+            if segment
+        )
+        components = tuple(
+            component
+            for segment in segments
+            for component in re.findall(r"[a-z0-9]+", segment)
+        )
+        return cls._value_matches_reference(segments, components, value)
+
+    @classmethod
+    def _value_matches_reference(
+        cls,
+        segments: tuple[str, ...],
+        components: tuple[str, ...],
+        value: object,
+    ) -> bool:
         if isinstance(value, str):
-            return bool(value) and value in reference
+            token = value.casefold()
+            if not token:
+                return False
+            if len(token) <= 3:
+                return token in segments or token in components
+            return any(token in segment for segment in segments)
         if isinstance(value, bool):
             token = "true" if value else "false"
-            return token in reference.lower()
+            return token in segments or token in components
         if isinstance(value, (int, float)):
-            return str(value) in reference
+            token = str(value).casefold()
+            return token in segments or token in components
         if isinstance(value, dict):
             return any(
-                cls._reference_contains_raw_value(reference, key)
-                or cls._reference_contains_raw_value(reference, child)
+                cls._value_matches_reference(segments, components, key)
+                or cls._value_matches_reference(segments, components, child)
                 for key, child in value.items()
             )
         if isinstance(value, (list, tuple)):
             return any(
-                cls._reference_contains_raw_value(reference, child)
+                cls._value_matches_reference(segments, components, child)
                 for child in value
             )
         return False
