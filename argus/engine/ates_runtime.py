@@ -146,8 +146,6 @@ def _identity_key(project_dir: Path) -> bytes:
             try:
                 key_path.chmod(0o600)
             except OSError:
-                # Windows ACLs do not map cleanly to POSIX chmod; the file is
-                # still kept outside canonical evidence and ignored by git.
                 pass
 
     if len(key) != _IDENTITY_KEY_SIZE:
@@ -323,7 +321,6 @@ def _configuration_shape(
 
 
 def _safe_action_structure(action: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
-    """Return only allow-listed model-independent action structure."""
     raw_kind = action.get("action")
     kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else ""
     allowed = _ACTION_PARAMETER_KEYS.get(kind)
@@ -422,7 +419,7 @@ class AtesRuntimeRecorder:
         *,
         privacy_policy: Optional[EvidencePrivacyPolicy] = None,
     ) -> "AtesRuntimeRecorder":
-        privacy = privacy_policy or EvidencePrivacyPolicy.standard()
+        privacy = (privacy_policy or EvidencePrivacyPolicy.standard()).snapshot()
         identity_key = _identity_key(project_dir)
         source_commitment = _protected_commitment(
             identity_key,
@@ -502,7 +499,7 @@ class AtesRuntimeRecorder:
         target: str,
         privacy_policy: Optional[EvidencePrivacyPolicy] = None,
     ) -> "AtesRuntimeRecorder":
-        privacy = privacy_policy or EvidencePrivacyPolicy.standard()
+        privacy = (privacy_policy or EvidencePrivacyPolicy.standard()).snapshot()
         identity_key = _identity_key(project_dir)
         environment = _environment_shape(adapter)
         model_identity = _model_identity(identity_key, provider)
@@ -600,7 +597,6 @@ class AtesRuntimeRecorder:
         self._store.close()
 
     def prepare_target_evidence(self) -> EvidenceValue:
-        """Classify target evidence before any target-visible launch side effect."""
         return self.privacy.capture(
             self._target_value,
             context=EvidenceContext.TARGET,
@@ -813,10 +809,7 @@ class AtesRuntimeRecorder:
             operation_id=ActionOperationId.new(),
         )
         record = self._project_action_record(seed, action, validated=False)
-        self._append(
-            EventType.ACTION_PROPOSED,
-            {"action": to_json_compatible(record)},
-        )
+        self._append(EventType.ACTION_PROPOSED, {"action": to_json_compatible(record)})
         return record
 
     def record_action_policy_validated(
@@ -951,7 +944,6 @@ class AtesAdapterProxy(Adapter):
 
     @property
     def target_may_be_running(self) -> bool:
-        """Whether launch succeeded without a confirmed successful close."""
         return self._launched
 
     def _ensure_no_unresolved_dispatch(self) -> None:
@@ -993,8 +985,6 @@ class AtesAdapterProxy(Adapter):
                     "ATES target launch evidence failed; initial rollback failed but cleanup retry succeeded"
                 ) from cleanup_error
 
-            # Both cleanup attempts failed.  Preserve launched state so callers
-            # can make a later recovery attempt and never claim rollback success.
             assert cleanup_error is not None
             raise AdapterError(
                 "ATES target launch evidence failed; rollback failed after cleanup retry; target may still be running"
@@ -1016,17 +1006,8 @@ class AtesAdapterProxy(Adapter):
     def act(self, action: dict) -> str:
         self._ensure_no_unresolved_dispatch()
         proposed = self.recorder.record_action_proposed(action)
-
-        # No target-visible side effect is permitted before this preparation
-        # succeeds. Validation failures therefore remain safely retryable and
-        # intentionally do not produce a dispatch-commit event.
         normalized = self.inner.prepare_action(action)
         validated = self.recorder.record_action_policy_validated(proposed, normalized)
-
-        # This append is the durable point of no return. If it fails, dispatch
-        # never begins. If it succeeds, recovery must conservatively assume the
-        # operation may have reached the target until a terminal outcome proves
-        # otherwise.
         committed = self.recorder.record_action_dispatch_committed(validated, normalized)
 
         try:
@@ -1043,10 +1024,6 @@ class AtesAdapterProxy(Adapter):
         try:
             self.recorder.record_action_executed(committed)
         except BaseException:
-            # The side effect returned successfully but canonical terminal
-            # evidence is not durable/known. On recovery a commit without a
-            # trusted terminal record is indistinguishable from an ambiguous
-            # dispatch, so block all further target interaction.
             self._unresolved_action = committed
             raise
         return note
@@ -1055,11 +1032,7 @@ class AtesAdapterProxy(Adapter):
         self.inner.close()
         was_launched = self._launched
         self._launched = False
-        if (
-            was_launched
-            and not self._closed_event_emitted
-            and not self.recorder.failed
-        ):
+        if was_launched and not self._closed_event_emitted and not self.recorder.failed:
             self.recorder.target_closed()
             self._closed_event_emitted = True
 
