@@ -21,16 +21,11 @@ from tests.conftest import FakeAdapter, FakeApp, FakeProvider
 class _OpaqueSink:
     def __init__(self):
         self.calls = []
-        self._refs = iter((
-            "protected://test/refalpha",
-            "protected://test/refbeta",
-            "protected://test/refgamma",
-            "protected://test/refdelta",
-        ))
+        self.refs = []
 
-    def put(self, value, *, context, field_name):
+    def put(self, value, *, context, field_name, protected_ref):
         self.calls.append((value, context, field_name))
-        return next(self._refs)
+        self.refs.append(protected_ref)
 
 
 def _events(project_dir, run_id):
@@ -60,7 +55,8 @@ def test_protected_action_parameter_override_wins_after_validation():
 
     assert projected.disposition is EvidenceDisposition.PROTECTED_REF
     assert projected.value is None
-    assert projected.protected_ref == "protected://test/refalpha"
+    assert projected.protected_ref == sink.refs[0]
+    assert projected.protected_ref.startswith("protected://ates/")
     assert sink.calls == [(7, EvidenceContext.ACTION_PARAMETER, "element_id")]
 
 
@@ -78,16 +74,10 @@ def test_content_producing_key_values_stay_redacted_after_validation():
         assert projected.value == "<redacted>"
 
     shortcut = policy.action_parameter(
-        "key",
-        "keys",
-        "ctrl+s",
-        validated=True,
+        "key", "keys", "ctrl+s", validated=True
     )
     navigation = policy.action_parameter(
-        "key",
-        "keys",
-        "enter",
-        validated=True,
+        "key", "keys", "enter", validated=True
     )
     assert shortcut.disposition is EvidenceDisposition.SAFE
     assert shortcut.value == "ctrl+s"
@@ -96,45 +86,45 @@ def test_content_producing_key_values_stay_redacted_after_validation():
 
 
 @pytest.mark.parametrize(
-    ("value", "reference"),
+    "value",
     (
-        ("123", "protected://vault/123"),
-        (1234, "protected://vault/1234"),
-        (True, "protected://vault/true"),
-        ({"cvv": "masked"}, "protected://vault/cvv"),
+        "123",
+        1234,
+        True,
+        {"cvv": "masked"},
     ),
 )
-def test_protected_reference_rejects_every_raw_scalar_and_mapping_key(value, reference):
-    class EchoSink:
-        def put(self, value, *, context, field_name):
-            return reference
-
+def test_protected_reference_is_independent_for_every_raw_scalar_and_mapping_key(value):
+    sink = _OpaqueSink()
     policy = EvidencePrivacyPolicy(
         EvidencePrivacyConfig(
             protected_contexts=frozenset({EvidenceContext.OPERATOR_ANNOTATION})
         ),
-        protected_sink=EchoSink(),
+        protected_sink=sink,
     )
 
-    with pytest.raises(PrivacyPolicyError, match="non-opaque reference"):
-        policy.capture(value, context=EvidenceContext.OPERATOR_ANNOTATION)
+    projected = policy.capture(value, context=EvidenceContext.OPERATOR_ANNOTATION)
+
+    assert projected.disposition is EvidenceDisposition.PROTECTED_REF
+    assert projected.protected_ref == sink.refs[0]
+    assert projected.protected_ref.startswith("protected://ates/")
 
 
 @pytest.mark.parametrize(
-    ("value", "reference"),
+    "reference",
     (
-        ("123", "secret://vault/123"),
-        (1234, "secret://vault/1234"),
-        (False, "secret://vault/false"),
-        ({"pin": "masked"}, "secret://vault/pin"),
+        "secret://ates/12300000000000000000000000000000",
+        "secret://ates/12340000000000000000000000000000",
+        "secret://ates/false000000000000000000000000000",
+        "secret://ates/pin00000000000000000000000000000",
     ),
 )
-def test_secret_refs_reject_every_raw_scalar_and_mapping_key(value, reference):
+def test_secret_refs_reject_caller_constructed_opaque_looking_values(reference):
     policy = EvidencePrivacyPolicy.standard()
 
-    with pytest.raises(PrivacyPolicyError, match="opaque references"):
+    with pytest.raises(PrivacyPolicyError, match="policy-issued opaque references"):
         policy.capture(
-            value,
+            {"pin": "123"},
             context=EvidenceContext.ACTION_PARAMETER,
             secret_refs=(reference,),
         )
@@ -184,7 +174,7 @@ steps:
         if event.envelope.event_type is EventType.ASSERTION_EVALUATED
     )
     assert assertion["actual"]["disposition"] == "protected_ref"
-    assert assertion["actual"]["protected_ref"] == "protected://test/refalpha"
+    assert assertion["actual"]["protected_ref"] == sink.refs[0]
     assert expected_actual.encode() not in _canonical_bytes(events)
 
 
@@ -230,5 +220,5 @@ def test_dispatch_failure_projects_exception_text_to_protected_sink(tmp_path):
         if event.envelope.event_type is EventType.ACTION_OUTCOME_UNKNOWN
     )
     assert outcome["error"]["disposition"] == "protected_ref"
-    assert outcome["error"]["protected_ref"] == "protected://test/refalpha"
+    assert outcome["error"]["protected_ref"] == sink.refs[0]
     assert secret_error.encode() not in _canonical_bytes(events)
