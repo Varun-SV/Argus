@@ -31,95 +31,65 @@ def _events(project_dir, run_id):
 
 
 class _FixedSink:
-    def __init__(self, reference):
-        self.reference = reference
+    def __init__(self):
         self.calls = []
+        self.refs = []
 
-    def put(self, value, *, context, field_name):
+    def put(self, value, *, context, field_name, protected_ref):
         self.calls.append((value, context, field_name))
-        return self.reference
+        self.refs.append(protected_ref)
 
 
-def test_reference_opacity_catches_case_normalized_short_leaks_without_short_value_false_positives():
+def test_policy_issued_references_avoid_short_value_false_positives_and_copying():
     policy = EvidencePrivacyPolicy.standard()
 
-    with pytest.raises(PrivacyPolicyError, match="opaque references"):
-        policy.capture(
-            "ABC",
-            context=EvidenceContext.ACTION_PARAMETER,
-            secret_refs=("secret://vault/abc",),
-        )
-    with pytest.raises(PrivacyPolicyError, match="opaque references"):
-        policy.capture(
-            "ABC",
-            context=EvidenceContext.ACTION_PARAMETER,
-            secret_refs=("secret://vault/xabcx",),
-        )
-    with pytest.raises(PrivacyPolicyError, match="opaque references"):
-        policy.capture(
-            12,
-            context=EvidenceContext.ACTION_PARAMETER,
-            secret_refs=("secret://vault/id12x",),
-        )
-
+    text_ref = policy.issue_secret_ref()
     short_text = policy.capture(
         "e",
         context=EvidenceContext.ACTION_PARAMETER,
-        secret_refs=("secret://vault/evidence-record-8e7f",),
+        secret_refs=(text_ref,),
     )
     assert short_text.disposition is EvidenceDisposition.REDACTED
+    assert short_text.secret_refs == (text_ref,)
 
+    numeric_ref = policy.issue_secret_ref()
     short_number = policy.capture(
         1,
         context=EvidenceContext.ACTION_PARAMETER,
-        secret_refs=("secret://vault/record-a1b2c3",),
+        secret_refs=(numeric_ref,),
     )
     assert short_number.disposition is EvidenceDisposition.REDACTED
+    assert short_number.secret_refs == (numeric_ref,)
 
-    leaking_sink = _FixedSink("protected://vault/abc")
+    # Even syntactically valid aliases are rejected unless this policy instance
+    # issued them independently of the payload.
+    for forged in (
+        "secret://ates/abc00000000000000000000000000000",
+        "secret://ates/01200000000000000000000000000000",
+    ):
+        with pytest.raises(PrivacyPolicyError, match="policy-issued opaque references"):
+            policy.capture(
+                "ABC",
+                context=EvidenceContext.ACTION_PARAMETER,
+                secret_refs=(forged,),
+            )
+
+    sink = _FixedSink()
     protected = EvidencePrivacyPolicy(
         EvidencePrivacyConfig(
             protected_contexts=frozenset({EvidenceContext.FINDING_TITLE})
         ),
-        protected_sink=leaking_sink,
+        protected_sink=sink,
     )
-    with pytest.raises(PrivacyPolicyError, match="non-opaque reference"):
-        protected.finding_title("ABC")
-
-    embedded_sink = _FixedSink("protected://vault/xabcx")
-    embedded_policy = EvidencePrivacyPolicy(
-        EvidencePrivacyConfig(
-            protected_contexts=frozenset({EvidenceContext.FINDING_TITLE})
-        ),
-        protected_sink=embedded_sink,
-    )
-    with pytest.raises(PrivacyPolicyError, match="non-opaque reference"):
-        embedded_policy.finding_title("ABC")
-
-    embedded_numeric_sink = _FixedSink("protected://vault/id12x")
-    embedded_numeric_policy = EvidencePrivacyPolicy(
-        EvidencePrivacyConfig(
-            protected_contexts=frozenset({EvidenceContext.ASSERTION_ACTUAL})
-        ),
-        protected_sink=embedded_numeric_sink,
-    )
-    with pytest.raises(PrivacyPolicyError, match="non-opaque reference"):
-        embedded_numeric_policy.assertion_actual(12)
-
-    numeric_sink = _FixedSink("protected://vault/record-a1b2c3")
-    numeric_policy = EvidencePrivacyPolicy(
-        EvidencePrivacyConfig(
-            protected_contexts=frozenset({EvidenceContext.ASSERTION_ACTUAL})
-        ),
-        protected_sink=numeric_sink,
-    )
-    numeric = numeric_policy.assertion_actual(1)
-    assert numeric.disposition is EvidenceDisposition.PROTECTED_REF
-    assert numeric.protected_ref == "protected://vault/record-a1b2c3"
+    projected = protected.finding_title("ABC")
+    assert projected.disposition is EvidenceDisposition.PROTECTED_REF
+    assert projected.protected_ref == sink.refs[0]
+    assert projected.protected_ref.startswith("protected://ates/")
+    assert "abc" not in projected.protected_ref
 
 
 class _FailingTargetSink:
-    def put(self, value, *, context, field_name):
+    def put(self, value, *, context, field_name, protected_ref):
         assert context is EvidenceContext.TARGET
         raise OSError("protected target store unavailable")
 
@@ -240,8 +210,6 @@ steps:
     assert "target may still be running" in result.error
     assert "ATES evidence failure" in result.error
 
-    # The underlying adapter remains available to the caller for explicit
-    # recovery after Argus reports the unresolved launch cleanup state.
     adapter.failures = 2
     adapter.close()
     assert adapter.app.alive is False
@@ -250,10 +218,11 @@ steps:
 class _RecordingProtectedSink:
     def __init__(self):
         self.calls = []
+        self.refs = []
 
-    def put(self, value, *, context, field_name):
+    def put(self, value, *, context, field_name, protected_ref):
         self.calls.append((value, context, field_name))
-        return f"protected://review/opaque-{len(self.calls)}"
+        self.refs.append(protected_ref)
 
 
 def test_public_roam_accepts_privacy_policy_and_protects_findings(tmp_path, monkeypatch):
@@ -318,8 +287,8 @@ def test_public_roam_accepts_privacy_policy_and_protects_findings(tmp_path, monk
     finding = to_json_compatible(finding_event.payload)["finding"]
     assert finding["title"]["disposition"] == "protected_ref"
     assert finding["description"]["disposition"] == "protected_ref"
-    assert finding["title"]["protected_ref"] == "protected://review/opaque-1"
-    assert finding["description"]["protected_ref"] == "protected://review/opaque-2"
+    assert finding["title"]["protected_ref"] == sink.refs[0]
+    assert finding["description"]["protected_ref"] == sink.refs[1]
 
     persisted = b"".join(event.canonical_line() for event in events)
     for secret in (
