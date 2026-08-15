@@ -97,6 +97,10 @@ _SECRET_REF_RE = re.compile(
 _PROTECTED_REF_RE = re.compile(
     r"^protected://[a-z0-9][a-z0-9._-]{0,31}/[A-Za-z0-9._-]{1,160}$"
 )
+_UUID_LIKE_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_LONG_HEX_RE = re.compile(r"^[0-9a-f]{24,}$")
 
 _REASON_BY_CONTEXT = {
     EvidenceContext.STEP_INSTRUCTION: "privacy.authored_text",
@@ -352,12 +356,12 @@ class EvidencePrivacyPolicy:
         """Return whether a reference meaningfully copies protected payload data.
 
         Only the dynamic URI payload is examined; the fixed ``secret://`` or
-        ``protected://`` scheme must never cause a match.  Short values are
-        compared as complete path segments/components so incidental characters
-        inside an opaque identifier do not fail closed.  Longer text values are
-        also rejected when embedded verbatim in a dynamic segment.  String
-        comparisons are case-folded so case-normalizing a secret is not a
-        bypass.
+        ``protected://`` scheme never participates in matching.  Exact dynamic
+        components are always rejected.  Longer values are rejected anywhere
+        inside a dynamic segment.  For short values, obvious deliberate
+        embedding is rejected while UUID/long-hex identifier segments are
+        treated as random-looking to avoid failing on incidental coincidences.
+        Comparisons are case-folded so case-normalizing a value is not a bypass.
         """
         _scheme, separator, payload = reference.partition("://")
         if not separator:
@@ -374,6 +378,40 @@ class EvidencePrivacyPolicy:
         )
         return cls._value_matches_reference(segments, components, value)
 
+    @staticmethod
+    def _random_looking_segment(segment: str) -> bool:
+        return bool(_UUID_LIKE_RE.fullmatch(segment) or _LONG_HEX_RE.fullmatch(segment))
+
+    @classmethod
+    def _token_matches_reference(
+        cls,
+        segments: tuple[str, ...],
+        components: tuple[str, ...],
+        token: str,
+    ) -> bool:
+        if not token:
+            return False
+        if token in segments or token in components:
+            return True
+        if len(token) >= 4:
+            return any(token in segment for segment in segments)
+
+        # A one-character value is too collision-prone for arbitrary substring
+        # matching.  Still reject obvious padding such as ``x1x`` / ``aea``.
+        if len(token) == 1:
+            return any(
+                token in component and len(component) <= 3
+                for component in components
+            )
+
+        # Two- and three-character values are rejected when embedded in normal
+        # dynamic components (``id12x``, ``xabcx``).  Do not substring-scan
+        # UUID/long-hex identifiers, where such short coincidences are expected.
+        return any(
+            token in segment and not cls._random_looking_segment(segment)
+            for segment in segments
+        )
+
     @classmethod
     def _value_matches_reference(
         cls,
@@ -382,18 +420,20 @@ class EvidencePrivacyPolicy:
         value: object,
     ) -> bool:
         if isinstance(value, str):
-            token = value.casefold()
-            if not token:
-                return False
-            if len(token) <= 3:
-                return token in segments or token in components
-            return any(token in segment for segment in segments)
+            return cls._token_matches_reference(
+                segments,
+                components,
+                value.casefold(),
+            )
         if isinstance(value, bool):
             token = "true" if value else "false"
-            return token in segments or token in components
+            return cls._token_matches_reference(segments, components, token)
         if isinstance(value, (int, float)):
-            token = str(value).casefold()
-            return token in segments or token in components
+            return cls._token_matches_reference(
+                segments,
+                components,
+                str(value).casefold(),
+            )
         if isinstance(value, dict):
             return any(
                 cls._value_matches_reference(segments, components, key)
