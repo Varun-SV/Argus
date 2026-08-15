@@ -13,6 +13,7 @@ from argus.ates import (
     RunId,
     to_json_compatible,
 )
+from argus.engine.ates_runtime import AtesRuntimeRecorder
 from argus.engine.roam import roam
 from argus.engine.runner import run_test
 from argus.engine.spec import parse_spec
@@ -48,6 +49,18 @@ def test_reference_opacity_catches_case_normalized_short_leaks_without_short_val
             context=EvidenceContext.ACTION_PARAMETER,
             secret_refs=("secret://vault/abc",),
         )
+    with pytest.raises(PrivacyPolicyError, match="opaque references"):
+        policy.capture(
+            "ABC",
+            context=EvidenceContext.ACTION_PARAMETER,
+            secret_refs=("secret://vault/xabcx",),
+        )
+    with pytest.raises(PrivacyPolicyError, match="opaque references"):
+        policy.capture(
+            12,
+            context=EvidenceContext.ACTION_PARAMETER,
+            secret_refs=("secret://vault/id12x",),
+        )
 
     short_text = policy.capture(
         "e",
@@ -72,6 +85,26 @@ def test_reference_opacity_catches_case_normalized_short_leaks_without_short_val
     )
     with pytest.raises(PrivacyPolicyError, match="non-opaque reference"):
         protected.finding_title("ABC")
+
+    embedded_sink = _FixedSink("protected://vault/xabcx")
+    embedded_policy = EvidencePrivacyPolicy(
+        EvidencePrivacyConfig(
+            protected_contexts=frozenset({EvidenceContext.FINDING_TITLE})
+        ),
+        protected_sink=embedded_sink,
+    )
+    with pytest.raises(PrivacyPolicyError, match="non-opaque reference"):
+        embedded_policy.finding_title("ABC")
+
+    embedded_numeric_sink = _FixedSink("protected://vault/id12x")
+    embedded_numeric_policy = EvidencePrivacyPolicy(
+        EvidencePrivacyConfig(
+            protected_contexts=frozenset({EvidenceContext.ASSERTION_ACTUAL})
+        ),
+        protected_sink=embedded_numeric_sink,
+    )
+    with pytest.raises(PrivacyPolicyError, match="non-opaque reference"):
+        embedded_numeric_policy.assertion_actual(12)
 
     numeric_sink = _FixedSink("protected://vault/record-a1b2c3")
     numeric_policy = EvidencePrivacyPolicy(
@@ -136,6 +169,82 @@ steps:
     assert EventType.TARGET_LAUNCHED not in types
     assert EventType.ENVIRONMENT_RELEASED in types
     assert types[-1] is EventType.RUN_MARKED_INCOMPLETE
+
+
+class _RollbackRetryAdapter(FakeAdapter):
+    def __init__(self, failures):
+        super().__init__()
+        self.failures = failures
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+        if self.close_calls <= self.failures:
+            raise OSError(f"rollback close failure {self.close_calls}")
+        super().close()
+
+
+def _fail_target_launched_append(monkeypatch):
+    original_append = AtesRuntimeRecorder._append
+
+    def failing_append(self, event_type, payload):
+        if event_type is EventType.TARGET_LAUNCHED:
+            failure = OSError("target launch evidence unavailable")
+            self._failed = True
+            self._failure = failure
+            raise failure
+        return original_append(self, event_type, payload)
+
+    monkeypatch.setattr(AtesRuntimeRecorder, "_append", failing_append)
+
+
+def test_target_launch_evidence_failure_retries_failed_rollback(tmp_path, monkeypatch):
+    _fail_target_launched_append(monkeypatch)
+    spec = parse_spec(
+        """\
+name: target launch evidence rollback retry
+target: {adapter: desktop-gui, launch: private-target.exe}
+steps:
+  - "Do nothing"
+"""
+    )
+    adapter = _RollbackRetryAdapter(failures=1)
+
+    result = run_test(spec, FakeProvider([]), adapter, project_dir=tmp_path)
+
+    assert result.status == "error"
+    assert adapter.close_calls == 2
+    assert adapter.app.alive is False
+    assert "initial rollback failed but cleanup retry succeeded" in result.error
+    assert "ATES evidence failure" in result.error
+
+
+def test_target_launch_evidence_failure_surfaces_unrecoverable_rollback(tmp_path, monkeypatch):
+    _fail_target_launched_append(monkeypatch)
+    spec = parse_spec(
+        """\
+name: target launch evidence rollback failure
+target: {adapter: desktop-gui, launch: private-target.exe}
+steps:
+  - "Do nothing"
+"""
+    )
+    adapter = _RollbackRetryAdapter(failures=2)
+
+    result = run_test(spec, FakeProvider([]), adapter, project_dir=tmp_path)
+
+    assert result.status == "error"
+    assert adapter.close_calls == 2
+    assert adapter.app.alive is True
+    assert "rollback failed after cleanup retry" in result.error
+    assert "target may still be running" in result.error
+    assert "ATES evidence failure" in result.error
+
+    # The underlying adapter remains available to the caller for explicit
+    # recovery after Argus reports the unresolved launch cleanup state.
+    adapter.failures = 2
+    adapter.close()
+    assert adapter.app.alive is False
 
 
 class _RecordingProtectedSink:
