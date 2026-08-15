@@ -1,11 +1,11 @@
 """Pre-persistence privacy policy for canonical ATES evidence.
 
-The privacy boundary is deliberately separate from execution objects.  Runtime
+The privacy boundary is deliberately separate from execution objects. Runtime
 values are projected into :class:`EvidenceValue` records before they are handed
 to the ATES event store; the original action/observation object is never mutated
 for logging or redaction purposes.
 
-PR #20 covers JSON/text evidence only.  Binary screenshots and collected files
+PR #20 covers JSON/text evidence only. Binary screenshots and collected files
 remain the responsibility of the protected artifact pipeline.
 """
 
@@ -14,11 +14,12 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import secrets
 from dataclasses import dataclass
 from enum import Enum
 from typing import FrozenSet, Optional, Protocol, Sequence
 
-from .core import EvidenceValue, JsonValue, to_json_compatible
+from .core import EvidenceValue, JsonValue, freeze_json, to_json_compatible
 
 PRIVACY_POLICY_VERSION = "ates-privacy-v1"
 
@@ -53,9 +54,10 @@ class EvidenceContext(str, Enum):
 class ProtectedEvidenceSink(Protocol):
     """Authorized sink for evidence that may not appear in ordinary JSONL.
 
-    Implementations must persist the supplied JSON value in a protected store
-    and return an opaque reference.  The returned reference itself is validated
-    before it is admitted into canonical ATES evidence.
+    Argus creates an opaque protected reference *before* the plaintext value is
+    handed to the sink. Implementations must persist ``value`` under the supplied
+    ``protected_ref``. The sink never chooses canonical evidence metadata, so a
+    payload-derived or mutating sink cannot copy plaintext back into JSONL.
     """
 
     def put(
@@ -64,7 +66,8 @@ class ProtectedEvidenceSink(Protocol):
         *,
         context: EvidenceContext,
         field_name: Optional[str],
-    ) -> str:
+        protected_ref: str,
+    ) -> None:
         ...
 
 
@@ -91,16 +94,8 @@ class EvidencePrivacyConfig:
         object.__setattr__(self, "protected_contexts", contexts)
 
 
-_SECRET_REF_RE = re.compile(
-    r"^secret://[A-Za-z0-9._-]{1,64}(?:/[A-Za-z0-9._-]{1,128})+$"
-)
-_PROTECTED_REF_RE = re.compile(
-    r"^protected://[a-z0-9][a-z0-9._-]{0,31}/[A-Za-z0-9._-]{1,160}$"
-)
-_UUID_LIKE_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-)
-_LONG_HEX_RE = re.compile(r"^[0-9a-f]{24,}$")
+_SECRET_REF_RE = re.compile(r"^secret://ates/[0-9a-f]{32}$")
+_PROTECTED_REF_RE = re.compile(r"^protected://ates/[0-9a-f]{32}$")
 
 _REASON_BY_CONTEXT = {
     EvidenceContext.STEP_INSTRUCTION: "privacy.authored_text",
@@ -124,7 +119,7 @@ _REASON_BY_CONTEXT = {
 }
 
 # Authored/execution inputs are represented as redacted placeholders by default
-# so canonical evidence can retain the fact that a value was present.  Values
+# so canonical evidence can retain the fact that a value was present. Values
 # originating from the target/model/log stream are higher risk and are omitted
 # entirely unless a protected sink is explicitly configured.
 _REDACT_BY_DEFAULT = frozenset(
@@ -150,6 +145,8 @@ class EvidencePrivacyPolicy:
     ) -> None:
         self.config = config or EvidencePrivacyConfig()
         self.protected_sink = protected_sink
+        self._issued_secret_refs: set[str] = set()
+        self._issued_protected_refs: set[str] = set()
 
     @classmethod
     def standard(cls) -> "EvidencePrivacyPolicy":
@@ -160,7 +157,7 @@ class EvidencePrivacyPolicy:
     def policy_id(self) -> str:
         """Stable identity of the effective privacy decision configuration.
 
-        The standard policy retains the human-readable version verbatim.  Once
+        The standard policy retains the human-readable version verbatim. Once
         contexts are routed to protected storage, a deterministic suffix binds
         that actual context set so two materially different policies cannot
         silently share run provenance just because a caller reused a base ID.
@@ -171,6 +168,21 @@ class EvidencePrivacyPolicy:
         descriptor = "\x1f".join(contexts).encode("utf-8")
         suffix = hashlib.sha256(descriptor).hexdigest()[:12]
         return f"{self.config.policy_id}.{suffix}"
+
+    def issue_secret_ref(self) -> str:
+        """Issue a payload-independent opaque alias for external secret storage.
+
+        Callers that need a ``secret_ref`` must ask the active policy for the
+        alias first and use that alias as the external secret-store key. Raw
+        caller-constructed reference strings are rejected, which removes the
+        impossible task of guessing from syntax whether a short secret was
+        copied into a purportedly opaque identifier.
+        """
+        while True:
+            ref = f"secret://ates/{secrets.token_hex(16)}"
+            if ref not in self._issued_secret_refs:
+                self._issued_secret_refs.add(ref)
+                return ref
 
     def capture(
         self,
@@ -183,7 +195,7 @@ class EvidencePrivacyPolicy:
         """Classify *value* before ordinary ATES persistence.
 
         This function never includes the raw value in an exception message.
-        ``None`` is safe structural absence.  All other values follow the
+        ``None`` is safe structural absence. All other values follow the
         context policy unless the context is explicitly routed to a protected
         sink.
         """
@@ -193,8 +205,11 @@ class EvidencePrivacyPolicy:
         if value is None:
             return EvidenceValue.safe(None)
 
-        if any(self._reference_contains_raw_value(ref, value) for ref in refs):
-            raise PrivacyPolicyError("secret_refs must be opaque references")
+        # When references accompany a redacted value, validate the whole JSON
+        # surface once. freeze_json handles arbitrary Mapping/Sequence
+        # implementations and yields an immutable detached snapshot.
+        if refs:
+            self._freeze_json_snapshot(value)
 
         if context in self.config.protected_contexts:
             return self._protect(value, context=context, field_name=field_name)
@@ -218,7 +233,7 @@ class EvidencePrivacyPolicy:
         Before validation every model-controlled value is treated as sensitive.
         After validation, only a small structural vocabulary is admitted as
         ordinary ``safe`` evidence; text/URL/command/menu/report prose remains
-        redacted or protected according to policy.  An explicit protected
+        redacted or protected according to policy. An explicit protected
         ACTION_PARAMETER context always wins over safe-fact promotion.
         """
         if EvidenceContext.ACTION_PARAMETER in self.config.protected_contexts:
@@ -276,7 +291,7 @@ class EvidencePrivacyPolicy:
         return self.capture(value, context=EvidenceContext.FINDING_DESCRIPTION)
 
     def error_text(self, value: object) -> EvidenceValue:
-        # Exception instances are runtime objects, not JSON evidence.  Project
+        # Exception instances are runtime objects, not JSON evidence. Project
         # them to text before the generic capture/protected-sink path so an
         # ERROR_TEXT-protected deployment receives the actual failure message
         # without ever placing it in ordinary evidence metadata.
@@ -296,25 +311,38 @@ class EvidencePrivacyPolicy:
             raise PrivacyPolicyError(
                 f"protected evidence sink is required for {context.value}"
             )
-        snapshot = self._json_snapshot(value)
+
+        # Freeze first so validation is anchored to an immutable pre-sink value.
+        # A detached ordinary JSON copy is then handed to potentially untrusted
+        # sink code. Mutating that copy cannot change what Argus classified.
+        frozen_snapshot = self._freeze_json_snapshot(value)
+        sink_snapshot = to_json_compatible(frozen_snapshot)
+        protected_ref = self._issue_protected_ref()
         try:
-            protected_ref = sink.put(
-                snapshot,
+            sink.put(
+                sink_snapshot,
                 context=context,
                 field_name=field_name,
+                protected_ref=protected_ref,
             )
         except Exception as exc:
             raise PrivacyPolicyError(
                 f"protected evidence sink failed for {context.value}"
             ) from exc
-        if not isinstance(protected_ref, str) or not _PROTECTED_REF_RE.fullmatch(protected_ref):
-            raise PrivacyPolicyError("protected evidence sink returned an invalid opaque reference")
-        if self._reference_contains_raw_value(protected_ref, snapshot):
-            raise PrivacyPolicyError("protected evidence sink returned a non-opaque reference")
+
         return EvidenceValue.protected(
             protected_ref,
             _REASON_BY_CONTEXT[context],
         )
+
+    def _issue_protected_ref(self) -> str:
+        while True:
+            ref = f"protected://ates/{secrets.token_hex(16)}"
+            if ref not in self._issued_protected_refs:
+                if not _PROTECTED_REF_RE.fullmatch(ref):
+                    raise PrivacyPolicyError("generated protected reference is invalid")
+                self._issued_protected_refs.add(ref)
+                return ref
 
     @staticmethod
     def _context(value: EvidenceContext) -> EvidenceContext:
@@ -325,8 +353,7 @@ class EvidencePrivacyPolicy:
         except (TypeError, ValueError) as exc:
             raise PrivacyPolicyError("unsupported evidence privacy context") from exc
 
-    @staticmethod
-    def _secret_refs(values: Sequence[str]) -> tuple[str, ...]:
+    def _secret_refs(self, values: Sequence[str]) -> tuple[str, ...]:
         if isinstance(values, (str, bytes, bytearray)):
             raise PrivacyPolicyError("secret_refs must be a sequence of opaque references")
         try:
@@ -334,118 +361,24 @@ class EvidencePrivacyPolicy:
         except (RuntimeError, TypeError, ValueError) as exc:
             raise PrivacyPolicyError("secret_refs could not be snapshotted safely") from exc
         for ref in refs:
-            if not isinstance(ref, str) or not _SECRET_REF_RE.fullmatch(ref):
-                raise PrivacyPolicyError("secret_refs contains an invalid opaque reference")
+            if (
+                not isinstance(ref, str)
+                or not _SECRET_REF_RE.fullmatch(ref)
+                or ref not in self._issued_secret_refs
+            ):
+                raise PrivacyPolicyError(
+                    "secret_refs must be policy-issued opaque references"
+                )
         return refs
 
     @staticmethod
-    def _json_snapshot(value: object) -> JsonValue:
-        # Core's SAFE constructor is reused only as a validation/snapshot
-        # primitive here.  The resulting plaintext object is passed solely to
-        # the protected sink and is never emitted into ordinary evidence.
+    def _freeze_json_snapshot(value: object) -> JsonValue:
         try:
-            frozen = EvidenceValue.safe(value).value  # type: ignore[arg-type]
-            return to_json_compatible(frozen)
+            return freeze_json(value)  # type: ignore[arg-type]
         except (TypeError, ValueError) as exc:
             raise PrivacyPolicyError(
-                "protected text/JSON evidence contains an unsupported value"
+                "protected/redacted text/JSON evidence contains an unsupported value"
             ) from exc
-
-    @classmethod
-    def _reference_contains_raw_value(cls, reference: str, value: object) -> bool:
-        """Return whether a reference meaningfully copies protected payload data.
-
-        Only the dynamic URI payload is examined; the fixed ``secret://`` or
-        ``protected://`` scheme never participates in matching.  Exact dynamic
-        components are always rejected.  Longer values are rejected anywhere
-        inside a dynamic segment.  For short values, obvious deliberate
-        embedding is rejected while UUID/long-hex identifier segments are
-        treated as random-looking to avoid failing on incidental coincidences.
-        Comparisons are case-folded so case-normalizing a value is not a bypass.
-        """
-        _scheme, separator, payload = reference.partition("://")
-        if not separator:
-            return False
-        segments = tuple(
-            segment.casefold()
-            for segment in payload.split("/")
-            if segment
-        )
-        components = tuple(
-            component
-            for segment in segments
-            for component in re.findall(r"[a-z0-9]+", segment)
-        )
-        return cls._value_matches_reference(segments, components, value)
-
-    @staticmethod
-    def _random_looking_segment(segment: str) -> bool:
-        return bool(_UUID_LIKE_RE.fullmatch(segment) or _LONG_HEX_RE.fullmatch(segment))
-
-    @classmethod
-    def _token_matches_reference(
-        cls,
-        segments: tuple[str, ...],
-        components: tuple[str, ...],
-        token: str,
-    ) -> bool:
-        if not token:
-            return False
-        if token in segments or token in components:
-            return True
-        if len(token) >= 4:
-            return any(token in segment for segment in segments)
-
-        # A one-character value is too collision-prone for arbitrary substring
-        # matching.  Still reject obvious padding such as ``x1x`` / ``aea``.
-        if len(token) == 1:
-            return any(
-                token in component and len(component) <= 3
-                for component in components
-            )
-
-        # Two- and three-character values are rejected when embedded in normal
-        # dynamic components (``id12x``, ``xabcx``).  Do not substring-scan
-        # UUID/long-hex identifiers, where such short coincidences are expected.
-        return any(
-            token in segment and not cls._random_looking_segment(segment)
-            for segment in segments
-        )
-
-    @classmethod
-    def _value_matches_reference(
-        cls,
-        segments: tuple[str, ...],
-        components: tuple[str, ...],
-        value: object,
-    ) -> bool:
-        if isinstance(value, str):
-            return cls._token_matches_reference(
-                segments,
-                components,
-                value.casefold(),
-            )
-        if isinstance(value, bool):
-            token = "true" if value else "false"
-            return cls._token_matches_reference(segments, components, token)
-        if isinstance(value, (int, float)):
-            return cls._token_matches_reference(
-                segments,
-                components,
-                str(value).casefold(),
-            )
-        if isinstance(value, dict):
-            return any(
-                cls._value_matches_reference(segments, components, key)
-                or cls._value_matches_reference(segments, components, child)
-                for key, child in value.items()
-            )
-        if isinstance(value, (list, tuple)):
-            return any(
-                cls._value_matches_reference(segments, components, child)
-                for child in value
-            )
-        return False
 
     @staticmethod
     def _safe_action_scalar(action_type: str, parameter: str, value: object) -> object:
@@ -510,8 +443,8 @@ class EvidencePrivacyPolicy:
                 len(key) == 1 and key.isascii() and key.isalnum()
             ) or key in content_keys
             # Bare and shift-only printable keys can enter arbitrary content
-            # into the focused control one character at a time.  Keep those
-            # redacted.  Ctrl/Alt chords and non-printing/navigation keys are
+            # into the focused control one character at a time. Keep those
+            # redacted. Ctrl/Alt chords and non-printing/navigation keys are
             # structural interactions and may be admitted after validation.
             if is_printable and not (modifiers & {"ctrl", "alt"}):
                 return _NOT_STRUCTURAL
