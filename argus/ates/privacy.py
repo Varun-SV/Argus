@@ -131,7 +131,13 @@ _REDACT_BY_DEFAULT = frozenset(
 
 
 class EvidencePrivacyPolicy:
-    """Convert runtime values into secret-safe :class:`EvidenceValue` records."""
+    """Convert runtime values into secret-safe :class:`EvidenceValue` records.
+
+    Configuration and protected-sink bindings are read-only after construction.
+    ``snapshot()`` creates a distinct policy instance for one run so later state
+    on a caller-owned policy cannot change committed run provenance or storage
+    routing.
+    """
 
     def __init__(
         self,
@@ -139,25 +145,46 @@ class EvidencePrivacyPolicy:
         *,
         protected_sink: Optional[ProtectedEvidenceSink] = None,
     ) -> None:
-        self.config = config or EvidencePrivacyConfig()
-        self.protected_sink = protected_sink
+        self._config = config or EvidencePrivacyConfig()
+        self._protected_sink = protected_sink
         self._issued_secret_refs: set[str] = set()
         self._issued_protected_refs: set[str] = set()
-        self._prepared_retry_reason: Optional[EvidenceValue] = None
-        self._prepared_retry_reuses = 0
 
     @classmethod
     def standard(cls) -> "EvidencePrivacyPolicy":
         return cls(EvidencePrivacyConfig())
 
     @property
+    def config(self) -> EvidencePrivacyConfig:
+        return self._config
+
+    @property
+    def protected_sink(self) -> Optional[ProtectedEvidenceSink]:
+        return self._protected_sink
+
+    def snapshot(self) -> "EvidencePrivacyPolicy":
+        """Return an isolated policy snapshot suitable for one ATES run."""
+        snap = EvidencePrivacyPolicy(
+            EvidencePrivacyConfig(
+                policy_id=self._config.policy_id,
+                protected_contexts=frozenset(self._config.protected_contexts),
+            ),
+            protected_sink=self._protected_sink,
+        )
+        # Secret aliases may be issued before a run is constructed. Preserve
+        # only that validation provenance; protected references are always
+        # generated afresh inside the run-local snapshot.
+        snap._issued_secret_refs.update(self._issued_secret_refs)
+        return snap
+
+    @property
     def policy_id(self) -> str:
-        contexts = tuple(sorted(context.value for context in self.config.protected_contexts))
+        contexts = tuple(sorted(context.value for context in self._config.protected_contexts))
         if not contexts:
-            return self.config.policy_id
+            return self._config.policy_id
         descriptor = "\x1f".join(contexts).encode("utf-8")
         suffix = hashlib.sha256(descriptor).hexdigest()[:12]
-        return f"{self.config.policy_id}.{suffix}"
+        return f"{self._config.policy_id}.{suffix}"
 
     def issue_secret_ref(self) -> str:
         """Issue a payload-independent opaque alias for external secret storage."""
@@ -166,19 +193,6 @@ class EvidencePrivacyPolicy:
             if ref not in self._issued_secret_refs:
                 self._issued_secret_refs.add(ref)
                 return ref
-
-    def prepare_retry_reason(self, value: object) -> EvidenceValue:
-        """Classify one real retry cause for reuse by both retry lifecycle events."""
-        self._prepared_retry_reason = None
-        self._prepared_retry_reuses = 0
-        evidence = self._capture_classified(
-            value,
-            context=EvidenceContext.RETRY_REASON,
-            field_name="reason",
-            secret_refs=(),
-        )
-        self._prepared_retry_reason = evidence
-        return evidence
 
     def capture(
         self,
@@ -189,24 +203,6 @@ class EvidencePrivacyPolicy:
         secret_refs: Sequence[str] = (),
     ) -> EvidenceValue:
         context = self._context(context)
-
-        # Existing ATES recorder calls use the structural sentinel "retry" in
-        # both STEP_RETRY_SCHEDULED and the next STEP_ATTEMPT_STARTED. When the
-        # runner prepared a real cause, reuse that exact EvidenceValue twice so
-        # protected storage is written only once and both events correlate to
-        # one protected_ref.
-        if (
-            context is EvidenceContext.RETRY_REASON
-            and value == "retry"
-            and self._prepared_retry_reason is not None
-        ):
-            evidence = self._prepared_retry_reason
-            self._prepared_retry_reuses += 1
-            if self._prepared_retry_reuses >= 2:
-                self._prepared_retry_reason = None
-                self._prepared_retry_reuses = 0
-            return evidence
-
         return self._capture_classified(
             value,
             context=context,
@@ -227,7 +223,7 @@ class EvidencePrivacyPolicy:
             return EvidenceValue.safe(None)
         if refs:
             self._freeze_json_snapshot(value)
-        if context in self.config.protected_contexts:
+        if context in self._config.protected_contexts:
             return self._protect(value, context=context, field_name=field_name)
         reason = _REASON_BY_CONTEXT[context]
         if context in _REDACT_BY_DEFAULT:
@@ -243,7 +239,7 @@ class EvidencePrivacyPolicy:
         validated: bool,
         secret_refs: Sequence[str] = (),
     ) -> EvidenceValue:
-        if EvidenceContext.ACTION_PARAMETER in self.config.protected_contexts:
+        if EvidenceContext.ACTION_PARAMETER in self._config.protected_contexts:
             return self.capture(
                 value,
                 context=EvidenceContext.ACTION_PARAMETER,
@@ -307,7 +303,7 @@ class EvidencePrivacyPolicy:
         context: EvidenceContext,
         field_name: Optional[str],
     ) -> EvidenceValue:
-        sink = self.protected_sink
+        sink = self._protected_sink
         if sink is None:
             raise PrivacyPolicyError(
                 f"protected evidence sink is required for {context.value}"
