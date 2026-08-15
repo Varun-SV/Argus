@@ -118,10 +118,6 @@ _REASON_BY_CONTEXT = {
     EvidenceContext.OPERATOR_ANNOTATION: "privacy.operator_annotation",
 }
 
-# Authored/execution inputs are represented as redacted placeholders by default
-# so canonical evidence can retain the fact that a value was present. Values
-# originating from the target/model/log stream are higher risk and are omitted
-# entirely unless a protected sink is explicitly configured.
 _REDACT_BY_DEFAULT = frozenset(
     {
         EvidenceContext.STEP_INSTRUCTION,
@@ -147,21 +143,15 @@ class EvidencePrivacyPolicy:
         self.protected_sink = protected_sink
         self._issued_secret_refs: set[str] = set()
         self._issued_protected_refs: set[str] = set()
+        self._prepared_retry_reason: Optional[EvidenceValue] = None
+        self._prepared_retry_reuses = 0
 
     @classmethod
     def standard(cls) -> "EvidencePrivacyPolicy":
-        """Return the conservative default runtime policy."""
         return cls(EvidencePrivacyConfig())
 
     @property
     def policy_id(self) -> str:
-        """Stable identity of the effective privacy decision configuration.
-
-        The standard policy retains the human-readable version verbatim. Once
-        contexts are routed to protected storage, a deterministic suffix binds
-        that actual context set so two materially different policies cannot
-        silently share run provenance just because a caller reused a base ID.
-        """
         contexts = tuple(sorted(context.value for context in self.config.protected_contexts))
         if not contexts:
             return self.config.policy_id
@@ -170,19 +160,25 @@ class EvidencePrivacyPolicy:
         return f"{self.config.policy_id}.{suffix}"
 
     def issue_secret_ref(self) -> str:
-        """Issue a payload-independent opaque alias for external secret storage.
-
-        Callers that need a ``secret_ref`` must ask the active policy for the
-        alias first and use that alias as the external secret-store key. Raw
-        caller-constructed reference strings are rejected, which removes the
-        impossible task of guessing from syntax whether a short secret was
-        copied into a purportedly opaque identifier.
-        """
+        """Issue a payload-independent opaque alias for external secret storage."""
         while True:
             ref = f"secret://ates/{secrets.token_hex(16)}"
             if ref not in self._issued_secret_refs:
                 self._issued_secret_refs.add(ref)
                 return ref
+
+    def prepare_retry_reason(self, value: object) -> EvidenceValue:
+        """Classify one real retry cause for reuse by both retry lifecycle events."""
+        self._prepared_retry_reason = None
+        self._prepared_retry_reuses = 0
+        evidence = self._capture_classified(
+            value,
+            context=EvidenceContext.RETRY_REASON,
+            field_name="reason",
+            secret_refs=(),
+        )
+        self._prepared_retry_reason = evidence
+        return evidence
 
     def capture(
         self,
@@ -192,28 +188,47 @@ class EvidencePrivacyPolicy:
         field_name: Optional[str] = None,
         secret_refs: Sequence[str] = (),
     ) -> EvidenceValue:
-        """Classify *value* before ordinary ATES persistence.
-
-        This function never includes the raw value in an exception message.
-        ``None`` is safe structural absence. All other values follow the
-        context policy unless the context is explicitly routed to a protected
-        sink.
-        """
         context = self._context(context)
-        refs = self._secret_refs(secret_refs)
 
+        # Existing ATES recorder calls use the structural sentinel "retry" in
+        # both STEP_RETRY_SCHEDULED and the next STEP_ATTEMPT_STARTED. When the
+        # runner prepared a real cause, reuse that exact EvidenceValue twice so
+        # protected storage is written only once and both events correlate to
+        # one protected_ref.
+        if (
+            context is EvidenceContext.RETRY_REASON
+            and value == "retry"
+            and self._prepared_retry_reason is not None
+        ):
+            evidence = self._prepared_retry_reason
+            self._prepared_retry_reuses += 1
+            if self._prepared_retry_reuses >= 2:
+                self._prepared_retry_reason = None
+                self._prepared_retry_reuses = 0
+            return evidence
+
+        return self._capture_classified(
+            value,
+            context=context,
+            field_name=field_name,
+            secret_refs=secret_refs,
+        )
+
+    def _capture_classified(
+        self,
+        value: object,
+        *,
+        context: EvidenceContext,
+        field_name: Optional[str],
+        secret_refs: Sequence[str],
+    ) -> EvidenceValue:
+        refs = self._secret_refs(secret_refs)
         if value is None:
             return EvidenceValue.safe(None)
-
-        # When references accompany a redacted value, validate the whole JSON
-        # surface once. freeze_json handles arbitrary Mapping/Sequence
-        # implementations and yields an immutable detached snapshot.
         if refs:
             self._freeze_json_snapshot(value)
-
         if context in self.config.protected_contexts:
             return self._protect(value, context=context, field_name=field_name)
-
         reason = _REASON_BY_CONTEXT[context]
         if context in _REDACT_BY_DEFAULT:
             return EvidenceValue.redacted(reason, secret_refs=refs)
@@ -228,14 +243,6 @@ class EvidencePrivacyPolicy:
         validated: bool,
         secret_refs: Sequence[str] = (),
     ) -> EvidenceValue:
-        """Project one action value without mutating the executable action.
-
-        Before validation every model-controlled value is treated as sensitive.
-        After validation, only a small structural vocabulary is admitted as
-        ordinary ``safe`` evidence; text/URL/command/menu/report prose remains
-        redacted or protected according to policy. An explicit protected
-        ACTION_PARAMETER context always wins over safe-fact promotion.
-        """
         if EvidenceContext.ACTION_PARAMETER in self.config.protected_contexts:
             return self.capture(
                 value,
@@ -243,7 +250,6 @@ class EvidencePrivacyPolicy:
                 field_name=parameter,
                 secret_refs=secret_refs,
             )
-
         if not validated:
             return self.capture(
                 value,
@@ -251,7 +257,6 @@ class EvidencePrivacyPolicy:
                 field_name=parameter,
                 secret_refs=secret_refs,
             )
-
         kind = str(action_type or "").strip().lower()
         name = str(parameter or "").strip()
         structural = self._safe_action_scalar(kind, name, value)
@@ -291,10 +296,6 @@ class EvidencePrivacyPolicy:
         return self.capture(value, context=EvidenceContext.FINDING_DESCRIPTION)
 
     def error_text(self, value: object) -> EvidenceValue:
-        # Exception instances are runtime objects, not JSON evidence. Project
-        # them to text before the generic capture/protected-sink path so an
-        # ERROR_TEXT-protected deployment receives the actual failure message
-        # without ever placing it in ordinary evidence metadata.
         if isinstance(value, BaseException):
             value = str(value)
         return self.capture(value, context=EvidenceContext.ERROR_TEXT)
@@ -311,10 +312,6 @@ class EvidencePrivacyPolicy:
             raise PrivacyPolicyError(
                 f"protected evidence sink is required for {context.value}"
             )
-
-        # Freeze first so validation is anchored to an immutable pre-sink value.
-        # A detached ordinary JSON copy is then handed to potentially untrusted
-        # sink code. Mutating that copy cannot change what Argus classified.
         frozen_snapshot = self._freeze_json_snapshot(value)
         sink_snapshot = to_json_compatible(frozen_snapshot)
         protected_ref = self._issue_protected_ref()
@@ -329,11 +326,7 @@ class EvidencePrivacyPolicy:
             raise PrivacyPolicyError(
                 f"protected evidence sink failed for {context.value}"
             ) from exc
-
-        return EvidenceValue.protected(
-            protected_ref,
-            _REASON_BY_CONTEXT[context],
-        )
+        return EvidenceValue.protected(protected_ref, _REASON_BY_CONTEXT[context])
 
     def _issue_protected_ref(self) -> str:
         while True:
@@ -391,14 +384,12 @@ class EvidencePrivacyPolicy:
             if isinstance(value, bool) or not isinstance(value, int):
                 return _NOT_STRUCTURAL
             return value
-
         if action_type == "scroll" and parameter == "direction":
             return value if value in {"up", "down"} else _NOT_STRUCTURAL
         if action_type == "scroll" and parameter == "amount":
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
                 return _NOT_STRUCTURAL
             return value
-
         if action_type == "wait" and parameter == "seconds":
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return _NOT_STRUCTURAL
@@ -406,55 +397,36 @@ class EvidencePrivacyPolicy:
             if not math.isfinite(number) or not 0 <= number <= 30:
                 return _NOT_STRUCTURAL
             return value
-
         if action_type == "done" and parameter == "success":
             return value if isinstance(value, bool) else _NOT_STRUCTURAL
-
         if action_type == "key" and parameter == "keys":
             if not isinstance(value, str):
                 return _NOT_STRUCTURAL
             try:
                 from argus.actions import ActionValidationError, canonicalize_key_chord
-
                 canonical = canonicalize_key_chord(value)
             except (ActionValidationError, TypeError, ValueError):
                 return _NOT_STRUCTURAL
             if canonical != value:
                 return _NOT_STRUCTURAL
-
             parts = canonical.split("+")
             modifiers = set(parts[:-1])
             key = parts[-1]
             content_keys = {
-                "space",
-                "minus",
-                "equals",
-                "comma",
-                "period",
-                "slash",
-                "semicolon",
-                "quote",
-                "backquote",
-                "bracketleft",
-                "bracketright",
-                "backslash",
+                "space", "minus", "equals", "comma", "period", "slash",
+                "semicolon", "quote", "backquote", "bracketleft",
+                "bracketright", "backslash",
             }
             is_printable = (
                 len(key) == 1 and key.isascii() and key.isalnum()
             ) or key in content_keys
-            # Bare and shift-only printable keys can enter arbitrary content
-            # into the focused control one character at a time. Keep those
-            # redacted. Ctrl/Alt chords and non-printing/navigation keys are
-            # structural interactions and may be admitted after validation.
             if is_printable and not (modifiers & {"ctrl", "alt"}):
                 return _NOT_STRUCTURAL
             return value
-
         if action_type == "report_bug" and parameter == "severity":
             if value in {"low", "medium", "high", "critical"}:
                 return value
             return _NOT_STRUCTURAL
-
         return _NOT_STRUCTURAL
 
 
