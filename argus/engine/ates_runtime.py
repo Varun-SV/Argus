@@ -949,6 +949,11 @@ class AtesAdapterProxy(Adapter):
             return None
         return self._unresolved_action.operation_id
 
+    @property
+    def target_may_be_running(self) -> bool:
+        """Whether launch succeeded without a confirmed successful close."""
+        return self._launched
+
     def _ensure_no_unresolved_dispatch(self) -> None:
         unresolved = self._unresolved_action
         if unresolved is None:
@@ -970,13 +975,30 @@ class AtesAdapterProxy(Adapter):
         self._launched = True
         try:
             self.recorder.target_launched(target_evidence)
-        except Exception as exc:
-            try:
-                self.inner.close()
-            except Exception:
-                pass
-            self._launched = False
-            raise AdapterError("ATES target launch evidence failed; target was rolled back") from exc
+        except Exception as evidence_exc:
+            cleanup_error: Optional[Exception] = None
+            for attempt in range(2):
+                try:
+                    self.inner.close()
+                except Exception as exc:
+                    cleanup_error = exc
+                    continue
+
+                self._launched = False
+                if attempt == 0:
+                    raise AdapterError(
+                        "ATES target launch evidence failed; target was rolled back"
+                    ) from evidence_exc
+                raise AdapterError(
+                    "ATES target launch evidence failed; initial rollback failed but cleanup retry succeeded"
+                ) from cleanup_error
+
+            # Both cleanup attempts failed.  Preserve launched state so callers
+            # can make a later recovery attempt and never claim rollback success.
+            assert cleanup_error is not None
+            raise AdapterError(
+                "ATES target launch evidence failed; rollback failed after cleanup retry; target may still be running"
+            ) from cleanup_error
 
     def observe(self, include_screenshot: bool = True) -> Observation:
         self._ensure_no_unresolved_dispatch()
@@ -1031,8 +1053,10 @@ class AtesAdapterProxy(Adapter):
 
     def close(self) -> None:
         self.inner.close()
+        was_launched = self._launched
+        self._launched = False
         if (
-            self._launched
+            was_launched
             and not self._closed_event_emitted
             and not self.recorder.failed
         ):
