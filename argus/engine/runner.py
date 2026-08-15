@@ -267,8 +267,6 @@ def run_test(
             adapter,
             privacy_policy=privacy_policy,
         )
-        # RunResult is kept backwards-compatible in this PR; expose the canonical
-        # ID to callers without changing the persisted legacy result schema yet.
         result.ates_run_id = str(ates.run_id)
         adapter = AtesAdapterProxy(adapter, ates)
     except Exception as exc:
@@ -378,12 +376,7 @@ def run_test(
         artifacts_collected = True
         assert transfer_project_dir is not None
         try:
-            _collect_declared_artifacts(
-                spec,
-                adapter,
-                result,
-                transfer_project_dir,
-            )
+            _collect_declared_artifacts(spec, adapter, result, transfer_project_dir)
         except Exception as exc:
             transfer_error = f"{type(exc).__name__}: {exc}"
             _set_transfer_error(result, transfer_error)
@@ -457,8 +450,6 @@ def run_test(
                 ates.complete_current(sr.status)
             elif step.text == "close" and step.kind == "teardown":
                 ates.begin_step(index, 1)
-                # Non-close teardown steps may flush or export files. Collect at
-                # the last safe point: immediately before a declared close.
                 collect_once()
                 try:
                     adapter.close()
@@ -525,10 +516,7 @@ def run_test(
         failed = True
         result.error = f"execution failed: {execution_error}"
     finally:
-        # No declared close reached (or execution raised): collect after any
-        # teardown preparation that did run, but before implicit final cleanup.
         collect_once()
-
         if _retention_failure(adapter) is None:
             try:
                 adapter.close()
@@ -588,6 +576,16 @@ def _attach_screenshot(
         pass
 
 
+def _retry_cause(sr: StepResult) -> str:
+    if sr.note:
+        return str(sr.note)
+    if sr.actual:
+        return str(sr.actual)
+    if sr.actions:
+        return str(sr.actions[-1])
+    return f"{sr.status}: {sr.text}"
+
+
 def _run_nl_step_with_retries(
     step: NLStep,
     index: int,
@@ -639,11 +637,13 @@ def _run_nl_step_with_retries(
     if sr.status == "pass" or retries == 0:
         return sr
 
+    last_failed = sr
     for retry_index in range(retries):
         ordinal = retry_index + 2
         next_attempt_id = None
         if ates is not None:
             assert previous_attempt_id is not None
+            ates.privacy.prepare_retry_reason(_retry_cause(last_failed))
             next_attempt_id = ates.schedule_retry(
                 index,
                 previous_attempt_id,
@@ -657,8 +657,10 @@ def _run_nl_step_with_retries(
         if retry_sr.status == "pass":
             retry_sr.flaky = True
             return retry_sr
-    sr.flaky = True
-    return sr
+        last_failed = retry_sr
+
+    last_failed.flaky = True
+    return last_failed
 
 
 def _run_nl_step(
