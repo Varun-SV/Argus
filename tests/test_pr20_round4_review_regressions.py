@@ -64,7 +64,6 @@ def test_run_snapshots_policy_config_and_sink_before_provenance_commit(tmp_path)
     )
     committed_policy_id = caller_policy.policy_id
 
-    # Public bindings are read-only after construction.
     with pytest.raises(AttributeError):
         caller_policy.config = EvidencePrivacyConfig()  # type: ignore[misc]
     with pytest.raises(AttributeError):
@@ -155,23 +154,22 @@ def test_failed_retry_append_cannot_poison_later_run_using_same_caller_policy(
         FakeAdapter(),
         privacy_policy=shared_policy,
     )
-    try:
-        second_attempt = second.begin_step(0, 1)
-        assert second.complete_current("fail") == second_attempt
-        second.privacy.prepare_retry_reason("run B private retry cause")
-        next_id = second.schedule_retry(0, second_attempt, 2)
-        second.begin_step(0, 2, attempt_id=next_id, retry=True)
-        second.complete_current("pass")
+    second_attempt = second.begin_step(0, 1)
+    assert second.complete_current("fail") == second_attempt
+    second.privacy.prepare_retry_reason("run B private retry cause")
+    next_id = second.schedule_retry(0, second_attempt, 2)
+    second.begin_step(0, 2, attempt_id=next_id, retry=True)
+    second.complete_current("pass")
+    second_run_id = second.run_id
+    second.close()
 
-        assert [call[0] for call in sink.calls] == [
-            "run A private retry cause",
-            "run B private retry cause",
-        ]
-        second_reason = _scheduled_reason(tmp_path, second.run_id)
-        assert second_reason["protected_ref"] == sink.refs[1]
-        assert second_reason["protected_ref"] != sink.refs[0]
-    finally:
-        second.close()
+    assert [call[0] for call in sink.calls] == [
+        "run A private retry cause",
+        "run B private retry cause",
+    ]
+    second_reason = _scheduled_reason(tmp_path, second_run_id)
+    assert second_reason["protected_ref"] == sink.refs[1]
+    assert second_reason["protected_ref"] != sink.refs[0]
 
 
 def test_interleaved_runs_do_not_overwrite_each_others_retry_reason(tmp_path):
@@ -196,33 +194,34 @@ def test_interleaved_runs_do_not_overwrite_each_others_retry_reason(tmp_path):
         FakeAdapter(),
         privacy_policy=shared_policy,
     )
-    try:
-        left_attempt = left.begin_step(0, 1)
-        left.complete_current("fail")
-        right_attempt = right.begin_step(0, 1)
-        right.complete_current("fail")
 
-        # Interleave preparation before either scheduled event is emitted. With
-        # one shared mutable policy, the second call would overwrite the first.
-        left.privacy.prepare_retry_reason("left private retry cause")
-        right.privacy.prepare_retry_reason("right private retry cause")
+    left_attempt = left.begin_step(0, 1)
+    left.complete_current("fail")
+    right_attempt = right.begin_step(0, 1)
+    right.complete_current("fail")
 
-        left_next = left.schedule_retry(0, left_attempt, 2)
-        right_next = right.schedule_retry(0, right_attempt, 2)
-        left.begin_step(0, 2, attempt_id=left_next, retry=True)
-        right.begin_step(0, 2, attempt_id=right_next, retry=True)
-        left.complete_current("pass")
-        right.complete_current("pass")
+    # Interleave preparation before either scheduled event is emitted. With
+    # one shared mutable policy, the second call would overwrite the first.
+    left.privacy.prepare_retry_reason("left private retry cause")
+    right.privacy.prepare_retry_reason("right private retry cause")
 
-        assert [call[0] for call in sink.calls] == [
-            "left private retry cause",
-            "right private retry cause",
-        ]
-        left_reason = _scheduled_reason(tmp_path, left.run_id)
-        right_reason = _scheduled_reason(tmp_path, right.run_id)
-        assert left_reason["protected_ref"] == sink.refs[0]
-        assert right_reason["protected_ref"] == sink.refs[1]
-        assert left_reason["protected_ref"] != right_reason["protected_ref"]
-    finally:
-        left.close()
-        right.close()
+    left_next = left.schedule_retry(0, left_attempt, 2)
+    right_next = right.schedule_retry(0, right_attempt, 2)
+    left.begin_step(0, 2, attempt_id=left_next, retry=True)
+    right.begin_step(0, 2, attempt_id=right_next, retry=True)
+    left.complete_current("pass")
+    right.complete_current("pass")
+    left_run_id = left.run_id
+    right_run_id = right.run_id
+    left.close()
+    right.close()
+
+    assert [call[0] for call in sink.calls] == [
+        "left private retry cause",
+        "right private retry cause",
+    ]
+    left_reason = _scheduled_reason(tmp_path, left_run_id)
+    right_reason = _scheduled_reason(tmp_path, right_run_id)
+    assert left_reason["protected_ref"] == sink.refs[0]
+    assert right_reason["protected_ref"] == sink.refs[1]
+    assert left_reason["protected_ref"] != right_reason["protected_ref"]
