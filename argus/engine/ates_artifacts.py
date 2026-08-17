@@ -25,8 +25,6 @@ from argus.engine.ates_runtime import AtesRuntimeError, AtesRuntimeRecorder
 
 @dataclass(frozen=True)
 class CapturedRuntimeArtifact:
-    """Result returned to legacy runtime code without exposing protected paths."""
-
     artifact_id: str
     retained: bool
     protected: bool
@@ -35,12 +33,10 @@ class CapturedRuntimeArtifact:
 class RuntimeArtifactCapture:
     """Capture binary evidence under the authority of one ATES recorder.
 
-    PR #21 keeps the integrated Runner/Roam path on the fixed
-    ``ates-artifact-v1`` policy. The lower-level repository already supports
-    custom/redacted/suppressed policies, but exposing a different runtime policy
-    before its identity is bound into Run provenance would let capture behavior
-    diverge from the configuration the run claims. PR #22 can lift this gate
-    when finalization/provenance binds the selected artifact profile.
+    PR #21 keeps integrated Runner/Roam capture on the fixed
+    ``ates-artifact-v1`` profile. Lower-level repository policies may classify
+    data differently, but non-standard runtime policy selection remains gated
+    until its identity can be bound into Run provenance during finalization.
     """
 
     def __init__(
@@ -56,10 +52,7 @@ class RuntimeArtifactCapture:
                     "custom runtime artifact policy implementations are not provenance-bound"
                 )
             snapshot = policy.snapshot()
-            if (
-                snapshot.policy_id != ARTIFACT_POLICY_VERSION
-                or snapshot.sanitizer is not None
-            ):
+            if snapshot.policy_id != ARTIFACT_POLICY_VERSION or snapshot.sanitizer is not None:
                 raise AtesRuntimeError(
                     "non-standard runtime artifact policy is not provenance-bound yet"
                 )
@@ -73,33 +66,38 @@ class RuntimeArtifactCapture:
 
     def _relationship(self) -> dict[str, object]:
         attempt_id = self.recorder.current_attempt_id
-        return {
-            "step_attempt_id": str(attempt_id) if attempt_id is not None else None,
-        }
+        return {"step_attempt_id": str(attempt_id) if attempt_id is not None else None}
 
     def _emit_suppression(self, suppression: ArtifactSuppression) -> None:
-        payload = {
-            "artifact_id": str(suppression.artifact_id),
-            "context": suppression.context.value,
-            "kind": suppression.kind,
-            "capture_policy": suppression.capture_policy,
-            "reason": suppression.reason,
-            **self._relationship(),
-        }
-        self.recorder._append(EventType.ARTIFACT_SUPPRESSED, payload)
+        self.recorder._append(
+            EventType.ARTIFACT_SUPPRESSED,
+            {
+                "artifact_id": str(suppression.artifact_id),
+                "context": suppression.context.value,
+                "kind": suppression.kind,
+                "capture_policy": suppression.capture_policy,
+                "reason": suppression.reason,
+                **self._relationship(),
+            },
+        )
 
     def _emit_checkpoint(self, record: ArtifactRecord, context: ArtifactContext) -> None:
-        payload = {
-            "artifact": to_json_compatible(record),
-            "context": context.value,
-            **self._relationship(),
-        }
-        self.recorder._append(EventType.CHECKPOINT_CAPTURED, payload)
+        self.recorder._append(
+            EventType.CHECKPOINT_CAPTURED,
+            {
+                "artifact": to_json_compatible(record),
+                "context": context.value,
+                **self._relationship(),
+            },
+        )
 
-    def _emit_collected(self, record: ArtifactRecord) -> None:
+    def _emit_collected(self, record: ArtifactRecord, ordinal: int) -> None:
         self.recorder._append(
             EventType.ARTIFACT_COLLECTED,
-            {"artifact": to_json_compatible(record)},
+            {
+                "artifact": to_json_compatible(record),
+                "collection_ordinal": int(ordinal),
+            },
         )
 
     def suppress_screenshot(
@@ -123,9 +121,7 @@ class RuntimeArtifactCapture:
         )
         self._emit_suppression(suppression)
         return CapturedRuntimeArtifact(
-            artifact_id=str(suppression.artifact_id),
-            retained=False,
-            protected=False,
+            artifact_id=str(suppression.artifact_id), retained=False, protected=False
         )
 
     def capture_screenshot(
@@ -149,9 +145,7 @@ class RuntimeArtifactCapture:
         if result.suppression is not None:
             self._emit_suppression(result.suppression)
             return CapturedRuntimeArtifact(
-                artifact_id=str(result.suppression.artifact_id),
-                retained=False,
-                protected=False,
+                artifact_id=str(result.suppression.artifact_id), retained=False, protected=False
             )
         assert result.record is not None
         self._emit_checkpoint(result.record, context)
@@ -161,17 +155,12 @@ class RuntimeArtifactCapture:
             protected=result.record.protected_ref is not None,
         )
 
-    def collect_declared(
-        self,
-        adapter,
-        guest_paths: Sequence[str],
-    ) -> list[dict]:
+    def collect_declared(self, adapter, guest_paths: Sequence[str]) -> list[dict]:
         """Collect declared Capsule files to opaque protected ATES destinations.
 
-        Guest transfer *and* final ATES registration validation form one
-        pre-event transaction. Until all files pass size/hash/regular-file
-        validation, no ``ARTIFACT_COLLECTED`` event is emitted. Any payloads
-        committed by that transaction are rolled back on validation failure.
+        Guest transfer and final ATES registration validation form one pre-event
+        transaction. ``collection_ordinal`` preserves source-spec ordering in
+        canonical evidence without persisting the guest filename itself.
         """
         if not guest_paths:
             return []
@@ -180,13 +169,9 @@ class RuntimeArtifactCapture:
             raise AtesRuntimeError(
                 "execution environment does not support protected ATES artifact collection"
             )
-
         reservations = self.repository.reserve_protected_collection(len(guest_paths))
         entries = [
-            {
-                "path": str(guest_path),
-                "destination": reservation.relative_path,
-            }
+            {"path": str(guest_path), "destination": reservation.relative_path}
             for guest_path, reservation in zip(guest_paths, reservations)
         ]
         relatives = [reservation.relative_path for reservation in reservations]
@@ -225,11 +210,10 @@ class RuntimeArtifactCapture:
                     ) from rollback_errors[0]
                 raise exc
 
-        # From this point the files are verified and retained. If an append is
-        # ambiguous we must not delete them: the corresponding event may already
-        # be durable. PR #22 finalization/reconciliation will decide authority.
-        for record in records:
-            self._emit_collected(record)
+        # Verified files are now retained. If an event append is ambiguous, do
+        # not delete them because the event itself may already be durable.
+        for ordinal, record in enumerate(records, 1):
+            self._emit_collected(record, ordinal)
 
         return [
             {
