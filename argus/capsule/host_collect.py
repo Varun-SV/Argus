@@ -12,6 +12,16 @@ from argus.capsule.files import TRANSFER_CHUNK_BYTES, normalize_guest_relative_p
 from argus.capsule.guest import CapsuleGuestError, GuestAgentClient
 
 
+def _write_all(handle, data: bytes) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        written = handle.write(view[offset:])
+        if isinstance(written, bool) or not isinstance(written, int) or written <= 0:
+            raise CapsuleGuestError("host artifact write made no forward progress")
+        offset += written
+
+
 def collect_file_to_pinned_tree(
     client: GuestAgentClient,
     relative: str,
@@ -58,7 +68,7 @@ def collect_file_to_pinned_tree(
                         f"guest artifact chunk length mismatch for {relative}: "
                         f"expected {limit}, got {len(chunk)}"
                     )
-                handle.write(chunk)
+                _write_all(handle, chunk)
                 digest.update(chunk)
                 offset += len(chunk)
             handle.flush()
