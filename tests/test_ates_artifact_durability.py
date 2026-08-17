@@ -57,6 +57,30 @@ def test_directory_durability_failure_rolls_back_published_artifact(tmp_path, mo
         store.close()
 
 
+def test_hmac_key_generation_failure_removes_partial_key_and_unregistered_payload(
+    tmp_path, monkeypatch
+):
+    store = AtesEventStore(tmp_path, RunId.new())
+    repository = AtesArtifactRepository(store)
+
+    def fail_key_generation(_size):
+        raise RuntimeError("simulated key generation failure")
+
+    monkeypatch.setattr(artifacts_module.secrets, "token_bytes", fail_key_generation)
+    try:
+        with pytest.raises(RuntimeError, match="key generation failure"):
+            repository.capture_bytes(
+                b"protected-private-payload",
+                context=ArtifactContext.FAILURE_SCREENSHOT,
+                kind="screenshot",
+                media_type="image/png",
+            )
+        assert not (store.run_dir / ".ates-artifact-hmac-key").exists()
+        assert _payload_files(store) == []
+    finally:
+        store.close()
+
+
 def test_integrated_runtime_rejects_unbound_custom_artifact_policy(tmp_path):
     spec = parse_spec(
         """\
