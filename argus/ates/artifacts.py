@@ -35,7 +35,6 @@ from .core import (
 from .ids import ArtifactId
 from .store import (
     AtesEventStore,
-    AtesStoreError,
     _PinnedDirectory,
     _open_regular_file,
     _validate_regular_file_descriptor,
@@ -192,7 +191,6 @@ class ArtifactCapturePolicy:
     ) -> tuple[EvidenceDisposition, Optional[bytes], str]:
         if not isinstance(data, (bytes, bytearray, memoryview)):
             raise ArtifactCaptureError("artifact payload must be bytes-like")
-        # Snapshot mutable buffers before policy code or persistence sees them.
         snapshot = bytes(data)
         if len(snapshot) > self._config.max_artifact_bytes:
             return EvidenceDisposition.SUPPRESSED, None, "artifact.too_large"
@@ -352,6 +350,8 @@ class _AtesArtifactTree:
             source = parent.path / temp_name
             destination = parent.path / final_name
             try:
+                # Windows os.rename is no-overwrite. A pre-existing destination
+                # therefore fails closed rather than replacing another artifact.
                 os.rename(source, destination)
             except OSError as exc:
                 raise ArtifactCaptureError(
@@ -359,9 +359,10 @@ class _AtesArtifactTree:
                 ) from exc
         else:
             assert parent._fd is not None
+            linked = False
             try:
-                # Link-then-unlink is an atomic no-overwrite publication. The
-                # final name cannot replace an attacker-controlled entry.
+                # link-then-unlink is a no-overwrite publication while all path
+                # mutations stay relative to the pinned parent descriptor.
                 os.link(
                     temp_name,
                     final_name,
@@ -369,8 +370,19 @@ class _AtesArtifactTree:
                     dst_dir_fd=parent._fd,
                     follow_symlinks=False,
                 )
+                linked = True
                 os.unlink(temp_name, dir_fd=parent._fd)
             except OSError as exc:
+                cleanup_error: Optional[OSError] = None
+                if linked:
+                    try:
+                        os.unlink(final_name, dir_fd=parent._fd)
+                    except OSError as cleanup_exc:
+                        cleanup_error = cleanup_exc
+                if cleanup_error is not None:
+                    raise ArtifactCaptureError(
+                        "artifact publication became ambiguous and rollback of the final link failed"
+                    ) from cleanup_error
                 raise ArtifactCaptureError(
                     f"artifact commit failed inside pinned directory: {normalized}: {exc}"
                 ) from exc
@@ -617,6 +629,7 @@ class AtesArtifactRepository:
             disposition=disposition,
         )
         temp_name: Optional[str] = None
+        published = False
         with self.open_tree((relative,)) as tree:
             handle, temp_name, _destination = tree.open_temp_file(relative)
             try:
@@ -625,12 +638,23 @@ class AtesArtifactRepository:
                     handle.flush()
                     os.fsync(handle.fileno())
                 tree.commit_temp(relative, temp_name)
+                published = True
                 temp_name = None
                 size, digest = tree.digest_existing(relative)
-            except BaseException:
+            except BaseException as exc:
+                cleanup_error: Optional[BaseException] = None
                 if temp_name is not None:
                     tree.remove_temp(relative, temp_name)
-                raise
+                if published:
+                    try:
+                        tree.unlink_relative(relative)
+                    except BaseException as rollback_exc:
+                        cleanup_error = rollback_exc
+                if cleanup_error is not None:
+                    raise ArtifactCaptureError(
+                        "unregistered artifact publication failed verification and cleanup"
+                    ) from cleanup_error
+                raise exc
 
         protected_ref = (
             f"protected://ates/{secrets.token_hex(16)}"
