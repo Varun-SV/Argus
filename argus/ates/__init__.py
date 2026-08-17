@@ -15,6 +15,10 @@ from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
     EventId, FinalizationId, FindingId, ObservationId, RunId, StepAttemptId, StepId,
 )
+from .privacy import (
+    PRIVACY_POLICY_VERSION, EvidenceContext, EvidencePrivacyConfig,
+    EvidencePrivacyPolicy, PrivacyPolicyError, ProtectedEvidenceSink,
+)
 from .status import StatusInputs, derive_run_status, effective_outcome
 from .store import (
     AtesAppendError, AtesEventConflict, AtesEventStore, AtesStoreBusy,
@@ -22,18 +26,19 @@ from .store import (
 )
 
 __all__ = [
-    "ATES_VERSION", "RUN_OUTCOME_REFINALIZATION_SCOPE", "STATUS_POLICY_VERSION",
-    "SUPPORTED_STATUS_POLICY_VERSIONS", "ActionId", "ActionOperationId", "ActionRecord",
-    "ArtifactId", "ArtifactRecord", "AssertionId", "AssertionRecord", "AssertionResult",
-    "AtesAppendError", "AtesEventConflict", "AtesEventStore", "AtesId", "AtesStoreBusy",
-    "AtesStoreCorruption", "AtesStoreError", "AuthorizationDecision", "CorrectionId",
-    "EventEnvelope", "EventId", "EventType", "EvidenceDisposition", "EvidenceValue",
-    "ExecutionKind", "FinalizationId", "FindingId", "FindingRecord", "FrozenDict",
-    "LifecycleState", "ObservationId", "ObservationRecord", "RequirementIdentity",
-    "RoamSource", "RunId", "RunOutcomeRevision", "RunRecord", "RunStatus",
-    "ScriptedSource", "SourceCommitment", "StatusInputs", "StepAttemptId",
-    "StepAttemptRecord", "StepAttemptStatus", "StepId", "StepRecord", "StoredEvent",
-    "Verification", "VerificationStatus", "derive_run_status", "effective_outcome",
-    "to_json_compatible", "validate_artifact_path", "validate_step_attempt_history",
-    "validate_step_evidence_relationships",
+    "ATES_VERSION", "PRIVACY_POLICY_VERSION", "RUN_OUTCOME_REFINALIZATION_SCOPE",
+    "STATUS_POLICY_VERSION", "SUPPORTED_STATUS_POLICY_VERSIONS", "ActionId",
+    "ActionOperationId", "ActionRecord", "ArtifactId", "ArtifactRecord", "AssertionId",
+    "AssertionRecord", "AssertionResult", "AtesAppendError", "AtesEventConflict",
+    "AtesEventStore", "AtesId", "AtesStoreBusy", "AtesStoreCorruption", "AtesStoreError",
+    "AuthorizationDecision", "CorrectionId", "EventEnvelope", "EventId", "EventType",
+    "EvidenceContext", "EvidenceDisposition", "EvidencePrivacyConfig", "EvidencePrivacyPolicy",
+    "EvidenceValue", "ExecutionKind", "FinalizationId", "FindingId", "FindingRecord",
+    "FrozenDict", "LifecycleState", "ObservationId", "ObservationRecord", "PrivacyPolicyError",
+    "ProtectedEvidenceSink", "RequirementIdentity", "RoamSource", "RunId",
+    "RunOutcomeRevision", "RunRecord", "RunStatus", "ScriptedSource", "SourceCommitment",
+    "StatusInputs", "StepAttemptId", "StepAttemptRecord", "StepAttemptStatus", "StepId",
+    "StepRecord", "StoredEvent", "Verification", "VerificationStatus", "derive_run_status",
+    "effective_outcome", "to_json_compatible", "validate_artifact_path",
+    "validate_step_attempt_history", "validate_step_evidence_relationships",
 ]

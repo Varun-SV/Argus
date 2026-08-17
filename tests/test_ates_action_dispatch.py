@@ -143,7 +143,7 @@ steps:
         == executed["operation_id"]
     )
     assert committed["action_type"] == "type"
-    assert committed["parameters"]["text"]["disposition"] == "suppressed"
+    assert committed["parameters"]["text"]["disposition"] == "redacted"
 
     canonical = b"".join(event.canonical_line() for event in events)
     assert secret.encode() not in canonical

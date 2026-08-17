@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from argus.adapters.base import Adapter
+from argus.ates import EvidencePrivacyPolicy
 from argus.engine import roam_impl as _impl
 from argus.engine.ates_runtime import (
     AtesAdapterProxy,
@@ -33,13 +34,19 @@ _original_add_finding = _impl._add_finding
 
 
 def _recording_add_finding(session, finding, screenshot_png, shots_dir, emit) -> None:
-    """Preserve legacy finding handling and append its structural ATES record."""
+    """Preserve legacy finding handling and append its privacy-classified ATES record."""
     _original_add_finding(session, finding, screenshot_png, shots_dir, emit)
     recorder = _active_recorder.get()
     if recorder is not None and not recorder.failed:
         recorder.record_finding(
             source=finding.source,
             classification=finding.severity,
+            title=finding.title,
+            description={
+                "expected": finding.expected,
+                "actual": finding.actual,
+                "detail": finding.detail,
+            },
         )
 
 
@@ -115,6 +122,7 @@ def roam(
     memory_dir: Optional[Path] = None,
     knowledge_store=None,
     project_dir: Optional[Path] = None,
+    privacy_policy: Optional[EvidencePrivacyPolicy] = None,
 ) -> RoamSession:
     """Run the existing explorer while recording canonical structural ATES."""
     root = resolve_runtime_project_dir(project_dir, session_dir=session_dir)
@@ -123,6 +131,7 @@ def roam(
         provider,
         adapter,
         target=target,
+        privacy_policy=privacy_policy,
     )
     run_id = str(recorder.run_id)
     wrapped = AtesAdapterProxy(adapter, recorder)

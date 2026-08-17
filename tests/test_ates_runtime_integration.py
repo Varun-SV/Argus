@@ -84,8 +84,8 @@ teardown:
     )
     action = to_json_compatible(proposed.payload)["action"]
     assert action["action_type"] == "type"
-    assert action["parameters"]["text"]["disposition"] == "suppressed"
-    assert action["parameters"]["element_id"]["disposition"] == "suppressed"
+    assert action["parameters"]["text"]["disposition"] == "redacted"
+    assert action["parameters"]["element_id"]["disposition"] == "redacted"
 
     completion = next(
         event for event in reversed(events)
@@ -212,7 +212,7 @@ steps:
     assertion = to_json_compatible(assertion_event.payload)["assertion"]
     assert assertion["kind"] == "text_visible"
     assert assertion["result"] == "failed"
-    assert assertion["expected"]["disposition"] == "suppressed"
+    assert assertion["expected"]["disposition"] == "redacted"
     assert assertion["actual"]["disposition"] == "suppressed"
     assert b"customer-private-token" not in _canonical_bytes(events)
 
