@@ -45,6 +45,8 @@ ARTIFACT_POLICY_VERSION = "ates-artifact-v1"
 ARTIFACT_BYTES_PROFILE = "ates-artifact-final-bytes-v1"
 _DEFAULT_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 _SAFE_POLICY_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+_REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9._-]{0,127}$")
+_PROTECTED_REF_RE = re.compile(r"^protected://ates/[0-9a-f]{32}$")
 
 
 class ArtifactCaptureError(RuntimeError):
@@ -231,6 +233,20 @@ class ArtifactSuppression:
     capture_policy: str
     reason: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.artifact_id, ArtifactId):
+            raise ValueError("artifact suppression requires an ArtifactId")
+        if not isinstance(self.context, ArtifactContext):
+            raise ValueError("artifact suppression requires an ArtifactContext")
+        if self.kind not in {"screenshot", "collected_file"}:
+            raise ValueError("artifact suppression kind is unsupported")
+        if not _SAFE_POLICY_ID_RE.fullmatch(str(self.capture_policy or "")) and not re.fullmatch(
+            r"^[a-z][a-z0-9._-]{0,63}\.[0-9a-f]{12}$", str(self.capture_policy or "")
+        ):
+            raise ValueError("artifact suppression capture_policy is invalid")
+        if not _REASON_CODE_RE.fullmatch(str(self.reason or "")):
+            raise ValueError("artifact suppression reason must be a safe reason code")
+
 
 @dataclass(frozen=True)
 class ArtifactReservation:
@@ -240,6 +256,19 @@ class ArtifactReservation:
     media_type: str
     relative_path: str
     protected_ref: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.artifact_id, ArtifactId):
+            raise ValueError("artifact reservation requires an ArtifactId")
+        if self.context is not ArtifactContext.COLLECTED_FILE:
+            raise ValueError("artifact reservations currently support collected files only")
+        if self.kind != "collected_file" or self.media_type != "application/octet-stream":
+            raise ValueError("artifact reservation kind/media type is invalid")
+        canonical = validate_artifact_path("artifacts/" + str(self.relative_path))
+        if canonical != "artifacts/" + str(self.relative_path):
+            raise ValueError("artifact reservation path must be canonical")
+        if not _PROTECTED_REF_RE.fullmatch(str(self.protected_ref or "")):
+            raise ValueError("artifact reservation protected_ref is invalid")
 
     @property
     def artifact_path(self) -> str:
@@ -350,8 +379,6 @@ class _AtesArtifactTree:
             source = parent.path / temp_name
             destination = parent.path / final_name
             try:
-                # Windows os.rename is no-overwrite. A pre-existing destination
-                # therefore fails closed rather than replacing another artifact.
                 os.rename(source, destination)
             except OSError as exc:
                 raise ArtifactCaptureError(
@@ -361,8 +388,6 @@ class _AtesArtifactTree:
             assert parent._fd is not None
             linked = False
             try:
-                # link-then-unlink is a no-overwrite publication while all path
-                # mutations stay relative to the pinned parent descriptor.
                 os.link(
                     temp_name,
                     final_name,
@@ -505,6 +530,7 @@ class AtesArtifactRepository:
             raise ValueError("artifact repository requires an AtesEventStore")
         self.store = store
         self.policy = (policy or ArtifactCapturePolicy.standard()).snapshot()
+        self._reservations: dict[ArtifactId, ArtifactReservation] = {}
 
     @contextmanager
     def open_tree(self, relatives: Sequence[str]) -> Iterator[_AtesArtifactTree]:
@@ -688,21 +714,23 @@ class AtesArtifactRepository:
         reservations = []
         for _ in range(count):
             artifact_id = ArtifactId.new()
+            if artifact_id in self._reservations:
+                raise ArtifactCaptureError("artifact reservation identity collision")
             relative = self._relative_for(
                 artifact_id,
                 kind="collected_file",
                 disposition=disposition,
             )
-            reservations.append(
-                ArtifactReservation(
-                    artifact_id=artifact_id,
-                    context=ArtifactContext.COLLECTED_FILE,
-                    kind="collected_file",
-                    media_type="application/octet-stream",
-                    relative_path=relative,
-                    protected_ref=f"protected://ates/{secrets.token_hex(16)}",
-                )
+            reservation = ArtifactReservation(
+                artifact_id=artifact_id,
+                context=ArtifactContext.COLLECTED_FILE,
+                kind="collected_file",
+                media_type="application/octet-stream",
+                relative_path=relative,
+                protected_ref=f"protected://ates/{secrets.token_hex(16)}",
             )
+            self._reservations[artifact_id] = reservation
+            reservations.append(reservation)
         return tuple(reservations)
 
     def finalize_reserved(
@@ -715,6 +743,11 @@ class AtesArtifactRepository:
     ) -> ArtifactRecord:
         if not isinstance(reservation, ArtifactReservation):
             raise ValueError("reservation must be an ArtifactReservation")
+        issued = self._reservations.get(reservation.artifact_id)
+        if issued is None or issued != reservation:
+            raise ArtifactCaptureError(
+                "artifact reservation was not issued by this repository or was already finalized"
+            )
         size, digest = tree.digest_existing(reservation.relative_path)
         if expected_size is not None and size != int(expected_size):
             raise ArtifactCaptureError("collected artifact size changed before ATES registration")
@@ -724,7 +757,7 @@ class AtesArtifactRepository:
                 raise ArtifactCaptureError("collected artifact digest changed before ATES registration")
         if size > self.policy.config.max_artifact_bytes:
             raise ArtifactCaptureError("collected artifact exceeds ATES artifact size policy")
-        return self._record(
+        record = self._record(
             artifact_id=reservation.artifact_id,
             context=reservation.context,
             kind=reservation.kind,
@@ -734,6 +767,8 @@ class AtesArtifactRepository:
             digest=digest,
             protected_ref=reservation.protected_ref,
         )
+        del self._reservations[reservation.artifact_id]
+        return record
 
 
 __all__ = [
