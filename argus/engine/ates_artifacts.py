@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
 from argus.ates import (
+    ARTIFACT_POLICY_VERSION,
     ArtifactCapturePolicy,
     ArtifactContext,
     ArtifactId,
@@ -32,7 +33,15 @@ class CapturedRuntimeArtifact:
 
 
 class RuntimeArtifactCapture:
-    """Capture binary evidence under the authority of one ATES recorder."""
+    """Capture binary evidence under the authority of one ATES recorder.
+
+    PR #21 keeps the integrated Runner/Roam path on the fixed
+    ``ates-artifact-v1`` policy. The lower-level repository already supports
+    custom/redacted/suppressed policies, but exposing a different runtime policy
+    before its identity is bound into Run provenance would let capture behavior
+    diverge from the configuration the run claims. PR #22 can lift this gate
+    when finalization/provenance binds the selected artifact profile.
+    """
 
     def __init__(
         self,
@@ -41,6 +50,20 @@ class RuntimeArtifactCapture:
     ) -> None:
         if not isinstance(recorder, AtesRuntimeRecorder):
             raise ValueError("runtime artifact capture requires an AtesRuntimeRecorder")
+        if policy is not None:
+            if type(policy) is not ArtifactCapturePolicy:
+                raise AtesRuntimeError(
+                    "custom runtime artifact policy implementations are not provenance-bound"
+                )
+            snapshot = policy.snapshot()
+            if (
+                snapshot.policy_id != ARTIFACT_POLICY_VERSION
+                or snapshot.sanitizer is not None
+            ):
+                raise AtesRuntimeError(
+                    "non-standard runtime artifact policy is not provenance-bound yet"
+                )
+            policy = snapshot
         self.recorder = recorder
         self.repository = AtesArtifactRepository(recorder._store, policy)
 
