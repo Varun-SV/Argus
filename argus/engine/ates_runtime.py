@@ -48,13 +48,20 @@ from argus.ates import (
     StepRecord,
     to_json_compatible,
 )
-from argus.engine.spec import AssertStep, TestSpec
+from argus.engine.spec import ASSERTION_KINDS, STEP_KINDS, AssertStep, NLStep, TestSpec
 
 _IDENTITY_KEY_FILENAME = ".ates-runtime-identity.key"
 _IDENTITY_KEY_SIZE = 32
 _IDENTITY_VERIFICATION_REF = "protected://ates-runtime-identity-key"
 _SAFE_FINDING_CLASSIFICATIONS = frozenset({"low", "medium", "high", "critical"})
 _SAFE_FINDING_SOURCES = frozenset({"model", "crash", "dialog", "hang", "runtime"})
+_SAFE_PROVIDER_TYPES = frozenset(
+    {"base", "fake", "ollama", "anthropic", "openai", "azure", "gemini", "litellm"}
+)
+_SAFE_ADAPTER_TYPES = frozenset(
+    {"base", "fake", "browser", "cli", "linux-gui", "desktop-gui"}
+)
+_SAFE_ENVIRONMENT_TYPES = frozenset({"base", "direct", "local", "capsule"})
 _ACTION_PARAMETER_KEYS: dict[str, tuple[str, ...]] = {
     "click": ("element_id", "x", "y"),
     "double_click": ("element_id", "x", "y"),
@@ -177,9 +184,18 @@ def _opaque_identity(key: bytes, namespace: str, value: object) -> str:
     return digest[:24]
 
 
+def _safe_structural_id(value: object, allowed: frozenset[str], fallback: str) -> str:
+    """Admit only Argus-owned structural labels into canonical plaintext."""
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in allowed else fallback
+
+
 def _provider_type(provider) -> str:
-    value = getattr(provider, "type_name", None) or type(provider).__name__
-    return str(value).strip() or "unknown-provider"
+    return _safe_structural_id(
+        getattr(provider, "type_name", None),
+        _SAFE_PROVIDER_TYPES,
+        "custom-provider",
+    )
 
 
 def _provider_model(provider) -> str:
@@ -192,8 +208,11 @@ def _model_identity(key: bytes, provider) -> str:
 
 
 def _adapter_type(adapter: Adapter) -> str:
-    value = getattr(adapter, "type_name", None) or type(adapter).__name__
-    return str(value).strip() or "unknown-adapter"
+    return _safe_structural_id(
+        getattr(adapter, "type_name", None),
+        _SAFE_ADAPTER_TYPES,
+        "custom-adapter",
+    )
 
 
 def _environment_shape(adapter: Adapter) -> dict[str, object]:
@@ -205,7 +224,11 @@ def _environment_shape(adapter: Adapter) -> dict[str, object]:
             "isolated": False,
         }
     return {
-        "environment_type": str(getattr(info, "environment_type", "direct")),
+        "environment_type": _safe_structural_id(
+            getattr(info, "environment_type", None),
+            _SAFE_ENVIRONMENT_TYPES,
+            "custom-environment",
+        ),
         "isolated": bool(getattr(info, "isolated", False)),
     }
 
@@ -243,23 +266,39 @@ def resolve_runtime_project_dir(
     return Path.cwd().resolve(strict=True)
 
 
+def _trusted_assertion_kind(step: AssertStep) -> str:
+    if step.kind != "assert" or step.assertion not in ASSERTION_KINDS:
+        raise AtesRuntimeError("scripted assertion metadata is outside the trusted vocabulary")
+    return step.assertion
+
+
+def _trusted_step_kind(step) -> str:
+    if isinstance(step, AssertStep):
+        _trusted_assertion_kind(step)
+        return "assert"
+    if isinstance(step, NLStep) and step.kind in STEP_KINDS:
+        return step.kind
+    raise AtesRuntimeError("scripted step metadata is outside the trusted vocabulary")
+
+
 def _scripted_source_shape(spec: TestSpec) -> dict[str, object]:
     """Canonical in-memory source shape; never persisted in plaintext."""
     steps: list[dict[str, object]] = []
     for step in spec.steps:
+        kind = _trusted_step_kind(step)
         if isinstance(step, AssertStep):
             steps.append(
                 {
-                    "kind": step.kind,
+                    "kind": kind,
                     "type": "assertion",
-                    "assertion": step.assertion,
+                    "assertion": _trusted_assertion_kind(step),
                     "expected": step.expected,
                 }
             )
         else:
             steps.append(
                 {
-                    "kind": step.kind,
+                    "kind": kind,
                     "type": "natural_language",
                     "text": step.text,
                 }
@@ -404,7 +443,7 @@ class AtesRuntimeRecorder:
         self._append(
             EventType.ENVIRONMENT_PREPARED,
             {
-                "environment_type": str(environment.get("environment_type", "direct")),
+                "environment_type": run_record.environment_type,
                 "isolated": bool(environment.get("isolated", False)),
             },
         )
@@ -454,18 +493,20 @@ class AtesRuntimeRecorder:
             ),
             profile="ates-runtime-config-v1",
         )
+        provider_type = _provider_type(provider)
+        adapter_type = _adapter_type(adapter)
         run_record = RunRecord(
             run_id=RunId.new(),
             execution_kind=ExecutionKind.SCRIPTED,
             source=source,
             started_at=_utc_now(),
             argus_version=__version__,
-            adapter_type=_adapter_type(adapter),
+            adapter_type=adapter_type,
             environment_type=str(environment["environment_type"]),
             evidence_profile=privacy.policy_id,
             configuration_commitment=config,
-            provider=_provider_type(provider),
-            model_provider=_provider_type(provider),
+            provider=provider_type,
+            model_provider=provider_type,
             model=model_identity,
         )
         steps = tuple(
@@ -476,7 +517,7 @@ class AtesRuntimeRecorder:
                     context=EvidenceContext.STEP_INSTRUCTION,
                     field_name="instruction",
                 ),
-                kind=str(step.kind),
+                kind=_trusted_step_kind(step),
             )
             for step in spec.steps
         )
@@ -503,15 +544,17 @@ class AtesRuntimeRecorder:
         identity_key = _identity_key(project_dir)
         environment = _environment_shape(adapter)
         model_identity = _model_identity(identity_key, provider)
+        provider_type = _provider_type(provider)
+        adapter_type = _adapter_type(adapter)
         target_identity = "TARGET-" + _opaque_identity(identity_key, "roam-target", target)
         source_config = _protected_commitment(
             identity_key,
             {
                 "kind": "roam_session",
                 "target": target,
-                "provider_type": _provider_type(provider),
+                "provider_type": provider_type,
                 "provider_model": _provider_model(provider),
-                "adapter_type": _adapter_type(adapter),
+                "adapter_type": adapter_type,
                 "privacy_policy": privacy.policy_id,
             },
             profile="ates-runtime-roam-source-v1",
@@ -540,12 +583,12 @@ class AtesRuntimeRecorder:
             source=source,
             started_at=_utc_now(),
             argus_version=__version__,
-            adapter_type=_adapter_type(adapter),
+            adapter_type=adapter_type,
             environment_type=str(environment["environment_type"]),
             evidence_profile=privacy.policy_id,
             configuration_commitment=config,
-            provider=_provider_type(provider),
-            model_provider=_provider_type(provider),
+            provider=provider_type,
+            model_provider=provider_type,
             model=model_identity,
         )
         roam_step = StepRecord(
@@ -755,7 +798,7 @@ class AtesRuntimeRecorder:
         record = ObservationRecord(
             observation_id=ObservationId.new(),
             step_attempt_id=current.attempt_id,
-            source=source,
+            source=self.run_record.adapter_type,
             captured_at=_utc_now(),
             capture_policy=self.privacy.policy_id,
             facts=facts,
@@ -879,7 +922,7 @@ class AtesRuntimeRecorder:
             assertion_id=AssertionId.new(),
             step_id=current.step.step_id,
             step_attempt_id=current.attempt_id,
-            kind=step.assertion,
+            kind=_trusted_assertion_kind(step),
             expected=self.privacy.assertion_expected(step.expected),
             result=_assertion_result(status),
             method="deterministic.adapter_observation",
@@ -931,7 +974,7 @@ class AtesAdapterProxy(Adapter):
     def __init__(self, inner: Adapter, recorder: AtesRuntimeRecorder) -> None:
         self.inner = inner
         self.recorder = recorder
-        self.type_name = getattr(inner, "type_name", "adapter")
+        self.type_name = recorder.run_record.adapter_type
         self._launched = False
         self._closed_event_emitted = False
         self._unresolved_action: Optional[ActionRecord] = None
