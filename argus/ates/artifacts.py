@@ -9,6 +9,7 @@ SUPPRESSED evidence creates no payload file.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -32,6 +33,10 @@ from .store import (
 
 ARTIFACT_POLICY_VERSION = "ates-artifact-v1"
 ARTIFACT_BYTES_PROFILE = "ates-artifact-final-bytes-v1"
+PROTECTED_ARTIFACT_COMMITMENT_PROFILE = "ates-artifact-sha256-hmac-v1"
+PROTECTED_ARTIFACT_VERIFICATION_REF = "secret://ates/run-artifact-hmac-key"
+_ARTIFACT_HMAC_KEY_FILENAME = ".ates-artifact-hmac-key"
+_ARTIFACT_HMAC_KEY_SIZE = 32
 _DEFAULT_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 _SAFE_POLICY_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9._-]{0,127}$")
@@ -39,7 +44,6 @@ _PROTECTED_REF_RE = re.compile(r"^protected://ates/[0-9a-f]{32}$")
 
 
 def _write_all(handle, data: bytes) -> None:
-    """Write all bytes to an unbuffered regular-file handle or fail closed."""
     view = memoryview(data)
     offset = 0
     while offset < len(view):
@@ -320,8 +324,7 @@ class _AtesArtifactTree:
     def _parent(self, relative: str) -> tuple[_PinnedDirectory, str, str]:
         normalized = self._validate_relative(relative)
         parts = normalized.split("/")
-        parent_key = "/".join(parts[:-1])
-        pin = self._parents.get(parent_key)
+        pin = self._parents.get("/".join(parts[:-1]))
         if pin is None:
             raise ArtifactCaptureError(f"artifact parent was not pinned: {normalized}")
         return pin, parts[-1], normalized
@@ -419,7 +422,7 @@ class _AtesArtifactTree:
             else:
                 assert parent._fd is not None
                 os.unlink(temp_name, dir_fd=parent._fd)
-        except (FileNotFoundError, OSError):
+        except OSError:
             pass
 
     def unlink_relative(self, relative: str) -> None:
@@ -500,16 +503,13 @@ class _AtesArtifactTree:
 
 
 class AtesArtifactRepository:
-    def __init__(
-        self,
-        store: AtesEventStore,
-        policy: Optional[ArtifactCapturePolicy] = None,
-    ) -> None:
+    def __init__(self, store: AtesEventStore, policy: Optional[ArtifactCapturePolicy] = None) -> None:
         if not isinstance(store, AtesEventStore):
             raise ValueError("artifact repository requires an AtesEventStore")
         self.store = store
         self.policy = (policy or ArtifactCapturePolicy.standard()).snapshot()
         self._reservations: dict[ArtifactId, ArtifactReservation] = {}
+        self._artifact_hmac_key: Optional[bytes] = None
 
     @contextmanager
     def open_tree(self, relatives: Sequence[str]) -> Iterator[_AtesArtifactTree]:
@@ -526,6 +526,39 @@ class AtesArtifactRepository:
             except BaseException:
                 if body_error is None:
                     raise
+
+    def _protected_commitment_key(self) -> bytes:
+        if self._artifact_hmac_key is not None:
+            return self._artifact_hmac_key
+        self.store._ensure_usable()
+        directories = self.store._directories
+        if directories is None:
+            raise ArtifactCaptureError("ATES run authority is unavailable for artifact commitment key")
+        directories.assert_authoritative()
+        handle, created = _open_regular_file(directories.run, _ARTIFACT_HMAC_KEY_FILENAME)
+        try:
+            with handle:
+                info = os.fstat(handle.fileno())
+                if created or info.st_size == 0:
+                    key = secrets.token_bytes(_ARTIFACT_HMAC_KEY_SIZE)
+                    handle.seek(0)
+                    _write_all(handle, key)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    if created:
+                        directories.run.fsync()
+                else:
+                    if info.st_size != _ARTIFACT_HMAC_KEY_SIZE:
+                        raise ArtifactCaptureError("artifact commitment key has invalid size")
+                    handle.seek(0)
+                    key = handle.read(_ARTIFACT_HMAC_KEY_SIZE)
+                    if len(key) != _ARTIFACT_HMAC_KEY_SIZE:
+                        raise ArtifactCaptureError("artifact commitment key is incomplete")
+        except BaseException:
+            raise
+        directories.assert_authoritative()
+        self._artifact_hmac_key = key
+        return key
 
     @staticmethod
     def _kind(value: str) -> str:
@@ -558,8 +591,21 @@ class AtesArtifactRepository:
         validate_artifact_path("artifacts/" + relative)
         return relative
 
-    @staticmethod
-    def _commitment(digest: str) -> SourceCommitment:
+    def _commitment(self, digest: str, disposition: EvidenceDisposition) -> SourceCommitment:
+        if disposition is EvidenceDisposition.PROTECTED_REF:
+            try:
+                digest_bytes = bytes.fromhex(digest)
+            except ValueError as exc:
+                raise ArtifactCaptureError("protected artifact SHA-256 is invalid") from exc
+            value = hmac.new(
+                self._protected_commitment_key(), digest_bytes, hashlib.sha256
+            ).hexdigest()
+            return SourceCommitment(
+                method="hmac-sha256",
+                value="hmac:" + value,
+                canonicalization_profile=PROTECTED_ARTIFACT_COMMITMENT_PROFILE,
+                verification_ref=PROTECTED_ARTIFACT_VERIFICATION_REF,
+            )
         return SourceCommitment(
             method="sha256",
             value="sha256:" + digest,
@@ -592,7 +638,7 @@ class AtesArtifactRepository:
             path="artifacts/" + relative,
             sensitivity=context.value,
             capture_policy=self.policy.policy_id,
-            content_digest=self._commitment(digest),
+            content_digest=self._commitment(digest, disposition),
             size_bytes=size,
             protection_state=disposition,
             **kwargs,
@@ -653,8 +699,8 @@ class AtesArtifactRepository:
             if disposition is EvidenceDisposition.PROTECTED_REF
             else None
         )
-        return ArtifactCaptureResult(
-            record=self._record(
+        try:
+            record = self._record(
                 artifact_id=artifact_id,
                 context=context,
                 kind=kind,
@@ -664,7 +710,18 @@ class AtesArtifactRepository:
                 digest=digest,
                 protected_ref=protected_ref,
             )
-        )
+        except BaseException as exc:
+            # Commitment-key failure occurs before any canonical artifact event;
+            # remove the still-unregistered payload rather than orphaning it.
+            with self.open_tree((relative,)) as tree:
+                try:
+                    tree.unlink_relative(relative)
+                except BaseException as cleanup_exc:
+                    raise ArtifactCaptureError(
+                        "artifact commitment failed and unregistered payload cleanup failed"
+                    ) from cleanup_exc
+            raise exc
+        return ArtifactCaptureResult(record=record)
 
     def reserve_protected_collection(self, count: int) -> tuple[ArtifactReservation, ...]:
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
@@ -734,6 +791,8 @@ class AtesArtifactRepository:
 __all__ = [
     "ARTIFACT_BYTES_PROFILE",
     "ARTIFACT_POLICY_VERSION",
+    "PROTECTED_ARTIFACT_COMMITMENT_PROFILE",
+    "PROTECTED_ARTIFACT_VERIFICATION_REF",
     "ArtifactCaptureConfig",
     "ArtifactCaptureError",
     "ArtifactCapturePolicy",
