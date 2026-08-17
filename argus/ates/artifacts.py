@@ -77,12 +77,7 @@ class ArtifactSanitizer(Protocol):
 
 @dataclass(frozen=True)
 class ArtifactCaptureConfig:
-    """Immutable policy inputs for one artifact-capture producer.
-
-    Contexts not explicitly listed as SAFE/REDACTED/SUPPRESSED are protected.
-    The default therefore treats every supported binary evidence context as
-    protected rather than ordinary report content.
-    """
+    """Immutable policy inputs for one artifact-capture producer."""
 
     policy_id: str = ARTIFACT_POLICY_VERSION
     safe_contexts: FrozenSet[ArtifactContext] = frozenset()
@@ -372,14 +367,25 @@ class _AtesArtifactTree:
             raise ArtifactCaptureError(f"artifact temporary file already exists: {normalized}")
         return handle, temp_name, self.lexical_path(normalized)
 
+    @staticmethod
+    def _rollback_published(parent: _PinnedDirectory, final_name: str) -> None:
+        if os.name == "nt":
+            (parent.path / final_name).unlink()
+        else:
+            assert parent._fd is not None
+            os.unlink(final_name, dir_fd=parent._fd)
+        parent.fsync()
+
     def commit_temp(self, relative: str, temp_name: str) -> None:
         parent, final_name, normalized = self._parent(relative)
         self.assert_authoritative()
+        final_published = False
         if os.name == "nt":
             source = parent.path / temp_name
             destination = parent.path / final_name
             try:
                 os.rename(source, destination)
+                final_published = True
             except OSError as exc:
                 raise ArtifactCaptureError(
                     f"artifact commit failed inside pinned directory: {normalized}: {exc}"
@@ -397,6 +403,7 @@ class _AtesArtifactTree:
                 )
                 linked = True
                 os.unlink(temp_name, dir_fd=parent._fd)
+                final_published = True
             except OSError as exc:
                 cleanup_error: Optional[OSError] = None
                 if linked:
@@ -411,8 +418,24 @@ class _AtesArtifactTree:
                 raise ArtifactCaptureError(
                     f"artifact commit failed inside pinned directory: {normalized}: {exc}"
                 ) from exc
-        parent.fsync()
-        self.assert_authoritative()
+
+        try:
+            parent.fsync()
+            self.assert_authoritative()
+        except BaseException as exc:
+            cleanup_error: Optional[BaseException] = None
+            if final_published:
+                try:
+                    self._rollback_published(parent, final_name)
+                except BaseException as rollback_exc:
+                    cleanup_error = rollback_exc
+            if cleanup_error is not None:
+                raise ArtifactCaptureError(
+                    "artifact publication durability became ambiguous and rollback failed"
+                ) from cleanup_error
+            raise ArtifactCaptureError(
+                "artifact publication durability/authority barrier failed and was rolled back"
+            ) from exc
 
     def remove_temp(self, relative: str, temp_name: str) -> None:
         try:
@@ -432,12 +455,7 @@ class _AtesArtifactTree:
 
     def unlink_relative(self, relative: str) -> None:
         parent, final_name, _normalized = self._parent(relative)
-        if os.name == "nt":
-            (parent.path / final_name).unlink()
-        else:
-            assert parent._fd is not None
-            os.unlink(final_name, dir_fd=parent._fd)
-        parent.fsync()
+        self._rollback_published(parent, final_name)
 
     def _open_existing(self, relative: str):
         parent, final_name, normalized = self._parent(relative)
