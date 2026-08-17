@@ -293,15 +293,13 @@ class _AtesArtifactTree:
             needed: set[str] = set()
             for raw in relatives:
                 relative = self._validate_relative(raw)
-                parts = relative.split("/")[:-1]
                 prefix: list[str] = []
-                for part in parts:
+                for part in relative.split("/")[:-1]:
                     prefix.append(part)
                     needed.add("/".join(prefix))
             for key in sorted(needed, key=lambda item: (item.count("/"), item)):
                 parts = key.split("/")
-                parent_key = "/".join(parts[:-1])
-                parent = self._parents[parent_key]
+                parent = self._parents["/".join(parts[:-1])]
                 child = parent.ensure_child(parts[-1], "ATES artifact subdirectory")
                 self._pins.append(child)
                 self._parents[key] = child
@@ -536,10 +534,12 @@ class AtesArtifactRepository:
             raise ArtifactCaptureError("ATES run authority is unavailable for artifact commitment key")
         directories.assert_authoritative()
         handle, created = _open_regular_file(directories.run, _ARTIFACT_HMAC_KEY_FILENAME)
+        initializing = bool(created)
         try:
             with handle:
                 info = os.fstat(handle.fileno())
                 if created or info.st_size == 0:
+                    initializing = True
                     key = secrets.token_bytes(_ARTIFACT_HMAC_KEY_SIZE)
                     handle.seek(0)
                     _write_all(handle, key)
@@ -554,8 +554,19 @@ class AtesArtifactRepository:
                     key = handle.read(_ARTIFACT_HMAC_KEY_SIZE)
                     if len(key) != _ARTIFACT_HMAC_KEY_SIZE:
                         raise ArtifactCaptureError("artifact commitment key is incomplete")
-        except BaseException:
-            raise
+        except BaseException as exc:
+            if initializing:
+                try:
+                    _AtesArtifactTree._rollback_published(
+                        directories.run, _ARTIFACT_HMAC_KEY_FILENAME
+                    )
+                except FileNotFoundError:
+                    pass
+                except BaseException as cleanup_exc:
+                    raise ArtifactCaptureError(
+                        "artifact commitment key initialization failed and cleanup was incomplete"
+                    ) from cleanup_exc
+            raise exc
         directories.assert_authoritative()
         self._artifact_hmac_key = key
         return key
@@ -628,9 +639,9 @@ class AtesArtifactRepository:
         if disposition is EvidenceDisposition.PROTECTED_REF:
             kwargs = {
                 "protected_ref": protected_ref or f"protected://ates/{secrets.token_hex(16)}",
-                "access_policy": "ates.local-run-owner-v1",
+                "access_policy": "ates.host-filesystem-protected-v1",
                 "retention_policy": "ates.run-retention-v1",
-                "authorization_ref": "auth://ates/local-run-owner",
+                "authorization_ref": "auth://ates/host-filesystem",
             }
         return ArtifactRecord(
             artifact_id=artifact_id,
@@ -711,8 +722,6 @@ class AtesArtifactRepository:
                 protected_ref=protected_ref,
             )
         except BaseException as exc:
-            # Commitment-key failure occurs before any canonical artifact event;
-            # remove the still-unregistered payload rather than orphaning it.
             with self.open_tree((relative,)) as tree:
                 try:
                     tree.unlink_relative(relative)
