@@ -666,7 +666,9 @@ class AtesArtifactRepository:
         kind = self._kind(kind)
         media_type = self._media_type(media_type, kind)
         artifact_id = ArtifactId.new()
-        disposition, prepared, reason = self.policy.prepare_bytes(data, context=context, media_type=media_type)
+        disposition, prepared, reason = self.policy.prepare_bytes(
+            data, context=context, media_type=media_type
+        )
         if disposition is EvidenceDisposition.SUPPRESSED or prepared is None:
             return ArtifactCaptureResult(
                 suppression=ArtifactSuppression(
@@ -677,6 +679,15 @@ class AtesArtifactRepository:
                     reason=reason,
                 )
             )
+
+        # Opaque protected metadata is issued before opening any payload file.
+        # Failure to obtain randomness therefore cannot orphan an unregistered
+        # artifact after publication.
+        protected_ref = (
+            f"protected://ates/{secrets.token_hex(16)}"
+            if disposition is EvidenceDisposition.PROTECTED_REF
+            else None
+        )
         relative = self._relative_for(artifact_id, kind=kind, disposition=disposition)
         temp_name: Optional[str] = None
         published = False
@@ -705,11 +716,6 @@ class AtesArtifactRepository:
                         "unregistered artifact publication failed verification and cleanup"
                     ) from cleanup_error
                 raise exc
-        protected_ref = (
-            f"protected://ates/{secrets.token_hex(16)}"
-            if disposition is EvidenceDisposition.PROTECTED_REF
-            else None
-        )
         try:
             record = self._record(
                 artifact_id=artifact_id,
