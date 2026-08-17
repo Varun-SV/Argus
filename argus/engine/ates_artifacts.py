@@ -7,12 +7,12 @@ and the existing runtime recorder remains the sole canonical event producer.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from argus.ates import (
     ArtifactCapturePolicy,
-    ArtifactCaptureResult,
     ArtifactContext,
+    ArtifactId,
     ArtifactRecord,
     ArtifactSuppression,
     AtesArtifactRepository,
@@ -77,6 +77,32 @@ class RuntimeArtifactCapture:
         self.recorder._append(
             EventType.ARTIFACT_COLLECTED,
             {"artifact": to_json_compatible(record)},
+        )
+
+    def suppress_screenshot(
+        self,
+        *,
+        context: ArtifactContext,
+        reason: str = "artifact.capture_unavailable",
+    ) -> CapturedRuntimeArtifact:
+        if context not in {
+            ArtifactContext.FAILURE_SCREENSHOT,
+            ArtifactContext.FINDING_SCREENSHOT,
+            ArtifactContext.CHECKPOINT_SCREENSHOT,
+        }:
+            raise ValueError("screenshot suppression requires a screenshot ArtifactContext")
+        suppression = ArtifactSuppression(
+            artifact_id=ArtifactId.new(),
+            context=context,
+            kind="screenshot",
+            capture_policy=self.policy_id,
+            reason=str(reason),
+        )
+        self._emit_suppression(suppression)
+        return CapturedRuntimeArtifact(
+            artifact_id=str(suppression.artifact_id),
+            retained=False,
+            protected=False,
         )
 
     def capture_screenshot(
