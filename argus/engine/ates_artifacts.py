@@ -215,11 +215,13 @@ class RuntimeArtifactCapture:
         for ordinal, record in enumerate(records, 1):
             self._emit_collected(record, ordinal)
 
+        # Legacy output gets the secret-safe canonical commitment, never the
+        # raw SHA-256 used transiently to verify the guest transfer.
         return [
             {
                 "artifact_id": str(record.artifact_id),
                 "size": record.size_bytes,
-                "sha256": record.content_digest.value.removeprefix("sha256:"),
+                "content_commitment": record.content_digest.value,
                 "protected": True,
             }
             for record in records
