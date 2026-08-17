@@ -145,10 +145,10 @@ class RuntimeArtifactCapture:
     ) -> list[dict]:
         """Collect declared Capsule files to opaque protected ATES destinations.
 
-        The execution environment must support ``collect_artifacts_to_tree``.
-        The whole guest transfer completes before any ``ARTIFACT_COLLECTED``
-        event is appended, so a transfer rollback cannot leave canonical events
-        claiming artifacts which the environment subsequently removed.
+        Guest transfer *and* final ATES registration validation form one
+        pre-event transaction. Until all files pass size/hash/regular-file
+        validation, no ``ARTIFACT_COLLECTED`` event is emitted. Any payloads
+        committed by that transaction are rolled back on validation failure.
         """
         if not guest_paths:
             return []
@@ -169,29 +169,45 @@ class RuntimeArtifactCapture:
         relatives = [reservation.relative_path for reservation in reservations]
 
         with self.repository.open_tree(relatives) as tree:
-            transferred = list(collect(entries, tree))
-            if len(transferred) != len(reservations):
-                raise AtesRuntimeError(
-                    "protected artifact collection returned an unexpected artifact count"
-                )
-            records: list[ArtifactRecord] = []
-            for reservation, metadata in zip(reservations, transferred):
-                if not isinstance(metadata, Mapping):
-                    raise AtesRuntimeError("artifact collection metadata must be a mapping")
-                records.append(
-                    self.repository.finalize_reserved(
-                        tree,
-                        reservation,
-                        expected_size=metadata.get("size"),
-                        expected_sha256=metadata.get("sha256"),
+            try:
+                transferred = list(collect(entries, tree))
+                if len(transferred) != len(reservations):
+                    raise AtesRuntimeError(
+                        "protected artifact collection returned an unexpected artifact count"
                     )
-                )
+                records: list[ArtifactRecord] = []
+                for reservation, metadata in zip(reservations, transferred):
+                    if not isinstance(metadata, Mapping):
+                        raise AtesRuntimeError("artifact collection metadata must be a mapping")
+                    records.append(
+                        self.repository.finalize_reserved(
+                            tree,
+                            reservation,
+                            expected_size=metadata.get("size"),
+                            expected_sha256=metadata.get("sha256"),
+                        )
+                    )
+            except BaseException as exc:
+                rollback_errors: list[BaseException] = []
+                for reservation in reversed(reservations):
+                    try:
+                        tree.unlink_relative(reservation.relative_path)
+                    except FileNotFoundError:
+                        pass
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(rollback_exc)
+                if rollback_errors:
+                    raise AtesRuntimeError(
+                        "protected artifact registration failed and rollback was incomplete"
+                    ) from rollback_errors[0]
+                raise exc
 
+        # From this point the files are verified and retained. If an append is
+        # ambiguous we must not delete them: the corresponding event may already
+        # be durable. PR #22 finalization/reconciliation will decide authority.
         for record in records:
             self._emit_collected(record)
 
-        # Legacy result/report data receives only opaque ATES identifiers and
-        # byte commitments, never protected host paths or guest filenames.
         return [
             {
                 "artifact_id": str(record.artifact_id),
