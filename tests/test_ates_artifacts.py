@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+import hmac
 
 import pytest
 
@@ -29,8 +29,15 @@ def _artifact_files(store):
     return sorted(path for path in root.rglob("*") if path.is_file())
 
 
-def test_standard_screenshot_is_protected_and_hashes_final_bytes(tmp_path):
+def _expected_protected_commitment(store, payload):
+    digest = hashlib.sha256(payload).digest()
+    key = (store.run_dir / ".ates-artifact-hmac-key").read_bytes()
+    return "hmac:" + hmac.new(key, digest, hashlib.sha256).hexdigest()
+
+
+def test_standard_screenshot_is_protected_and_uses_secret_safe_commitment(tmp_path):
     raw = b"\x89PNG\r\nprivate-screen-bytes"
+    raw_digest = hashlib.sha256(raw).hexdigest()
     store, repository = _repo(tmp_path)
     try:
         result = repository.capture_bytes(
@@ -47,7 +54,10 @@ def test_standard_screenshot_is_protected_and_hashes_final_bytes(tmp_path):
         assert record.path.startswith("artifacts/protected/screenshot/ART-")
         assert record.path.endswith(".png")
         assert record.size_bytes == len(raw)
-        assert record.content_digest.value == "sha256:" + hashlib.sha256(raw).hexdigest()
+        assert record.content_digest.method == "hmac-sha256"
+        assert record.content_digest.value == _expected_protected_commitment(store, raw)
+        assert raw_digest not in record.content_digest.value
+        assert record.content_digest.verification_ref == "secret://ates/run-artifact-hmac-key"
         retained = store.run_dir / record.path
         assert retained.read_bytes() == raw
         assert retained.stat().st_nlink == 1
@@ -73,6 +83,7 @@ def test_suppressed_artifact_never_creates_a_payload_file(tmp_path):
         assert result.suppression is not None
         assert result.suppression.reason == "artifact.policy_suppressed"
         assert _artifact_files(store) == []
+        assert not (store.run_dir / ".ates-artifact-hmac-key").exists()
     finally:
         store.close()
 
@@ -113,9 +124,9 @@ def test_redaction_happens_in_memory_before_first_payload_write(tmp_path):
         assert raw not in files[0].read_bytes()
         assert record.size_bytes == len(masked)
         assert record.content_digest.value == "sha256:" + hashlib.sha256(masked).hexdigest()
-        assert masker.calls == [
-            (raw, ArtifactContext.FAILURE_SCREENSHOT, "image/png")
-        ]
+        assert record.content_digest.verification_ref is None
+        assert not (store.run_dir / ".ates-artifact-hmac-key").exists()
+        assert masker.calls == [(raw, ArtifactContext.FAILURE_SCREENSHOT, "image/png")]
     finally:
         store.close()
 
@@ -172,9 +183,7 @@ def test_mutable_input_is_snapshotted_before_sanitizer_or_persistence(tmp_path):
 
 
 def test_oversized_artifact_is_suppressed_before_tree_creation(tmp_path):
-    policy = ArtifactCapturePolicy(
-        ArtifactCaptureConfig(max_artifact_bytes=4)
-    )
+    policy = ArtifactCapturePolicy(ArtifactCaptureConfig(max_artifact_bytes=4))
     store, repository = _repo(tmp_path, policy)
     try:
         result = repository.capture_bytes(
@@ -216,8 +225,9 @@ def test_protected_collection_reservations_are_opaque_and_content_independent(tm
         store.close()
 
 
-def test_finalize_reserved_binds_exact_persisted_bytes(tmp_path):
+def test_finalize_reserved_binds_exact_persisted_bytes_without_raw_hash_disclosure(tmp_path):
     payload = b"guest-generated-private-file"
+    raw_digest = hashlib.sha256(payload).hexdigest()
     store, repository = _repo(tmp_path)
     try:
         reservation = repository.reserve_protected_collection(1)[0]
@@ -231,11 +241,13 @@ def test_finalize_reserved_binds_exact_persisted_bytes(tmp_path):
                 tree,
                 reservation,
                 expected_size=len(payload),
-                expected_sha256=hashlib.sha256(payload).hexdigest(),
+                expected_sha256=raw_digest,
             )
         assert record.protection_state is EvidenceDisposition.PROTECTED_REF
         assert record.path == reservation.artifact_path
-        assert record.content_digest.value == "sha256:" + hashlib.sha256(payload).hexdigest()
+        assert record.content_digest.method == "hmac-sha256"
+        assert record.content_digest.value == _expected_protected_commitment(store, payload)
+        assert raw_digest not in record.content_digest.value
         assert (store.run_dir / record.path).read_bytes() == payload
     finally:
         store.close()
