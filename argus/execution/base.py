@@ -132,10 +132,14 @@ class ExecutionEnvironment(Adapter, ABC):
         """Collect declared guest files to caller-selected pinned destinations.
 
         ``entries`` contains mappings with a declared guest ``path`` and an
-        opaque host ``destination`` relative to ``output_tree``. Implementations
-        must roll back all files committed by this call if any later transfer in
-        the same call fails.
+        opaque host ``destination`` relative to ``output_tree``. Capsule
+        implementations reuse the authenticated guest-transfer protocol through
+        the narrow PR #21 bridge; other execution environments fail closed.
         """
+        if self.environment_type == "capsule":
+            from argus.execution.ates_collection import collect_capsule_artifacts_to_tree
+
+            return collect_capsule_artifacts_to_tree(self, entries, output_tree)
         raise ExecutionEnvironmentError(
             "protected mapped artifact collection is not supported by this execution environment"
         )
