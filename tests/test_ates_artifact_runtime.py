@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import urllib.parse
-from pathlib import Path
 
 import pytest
 
@@ -68,6 +67,11 @@ steps:
     assert artifact["protection_state"] == "protected_ref"
     assert artifact["path"].startswith("artifacts/protected/screenshot/ART-")
     assert artifact["protected_ref"].startswith("protected://ates/")
+    assert artifact["content_digest"]["method"] == "hmac-sha256"
+    assert artifact["content_digest"]["value"].startswith("hmac:")
+    raw_sha = hashlib.sha256(b"\x89PNG fake").hexdigest()
+    assert raw_sha not in artifact["content_digest"]["value"]
+    assert raw_sha.encode() not in b"".join(event.canonical_line() for event in events)
     retained = tmp_path / ".argus" / "runs" / result.ates_run_id / artifact["path"]
     assert retained.read_bytes() == b"\x89PNG fake"
 
@@ -164,6 +168,7 @@ def test_roam_finding_screenshot_never_reaches_legacy_shots(tmp_path, monkeypatc
         and to_json_compatible(event.payload)["context"] == "finding_screenshot"
     )
     artifact = finding_checkpoint["artifact"]
+    assert artifact["content_digest"]["method"] == "hmac-sha256"
     retained = tmp_path / ".argus" / "runs" / session.ates_run_id / artifact["path"]
     assert retained.read_bytes() == b"\x89PNG fake"
 
@@ -223,9 +228,10 @@ steps:
     return recorder, RuntimeArtifactCapture(recorder)
 
 
-def test_mapped_collection_hides_guest_filename_from_canonical_evidence(tmp_path):
+def test_mapped_collection_hides_guest_filename_and_raw_hash_from_evidence(tmp_path):
     secret_name = "customer-passwords.txt"
     payload = b"sensitive collected bytes"
+    raw_sha = hashlib.sha256(payload).hexdigest()
     recorder, artifacts = _collection_recorder(tmp_path)
     run_id = str(recorder.run_id)
     try:
@@ -236,6 +242,8 @@ def test_mapped_collection_hides_guest_filename_from_canonical_evidence(tmp_path
         assert len(result) == 1
         assert secret_name not in repr(result)
         assert result[0]["protected"] is True
+        assert result[0]["content_commitment"].startswith("hmac:")
+        assert raw_sha not in repr(result)
     finally:
         recorder.close()
 
@@ -243,13 +251,18 @@ def test_mapped_collection_hides_guest_filename_from_canonical_evidence(tmp_path
     canonical = b"".join(event.canonical_line() for event in events)
     assert secret_name.encode() not in canonical
     assert payload not in canonical
-    collected = next(
-        to_json_compatible(event.payload)["artifact"]
+    assert raw_sha.encode() not in canonical
+    collected_event = next(
+        to_json_compatible(event.payload)
         for event in events
         if event.envelope.event_type is EventType.ARTIFACT_COLLECTED
     )
+    assert collected_event["collection_ordinal"] == 1
+    collected = collected_event["artifact"]
     assert collected["path"].startswith("artifacts/protected/collected_file/ART-")
     assert secret_name not in collected["path"]
+    assert collected["content_digest"]["method"] == "hmac-sha256"
+    assert collected["content_digest"]["value"].startswith("hmac:")
     retained = tmp_path / ".argus" / "runs" / run_id / collected["path"]
     assert retained.read_bytes() == payload
 
