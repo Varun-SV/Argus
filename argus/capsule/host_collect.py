@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import urllib.parse
 from typing import Optional
 
@@ -61,6 +62,7 @@ def collect_file_to_pinned_tree(
                 digest.update(chunk)
                 offset += len(chunk)
             handle.flush()
+            os.fsync(handle.fileno())
 
         actual = digest.hexdigest()
         if actual != expected:
