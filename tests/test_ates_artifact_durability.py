@@ -62,9 +62,15 @@ def test_hmac_key_generation_failure_removes_partial_key_and_unregistered_payloa
 ):
     store = AtesEventStore(tmp_path, RunId.new())
     repository = AtesArtifactRepository(store)
+    real_token_bytes = artifacts_module.secrets.token_bytes
 
-    def fail_key_generation(_size):
-        raise RuntimeError("simulated key generation failure")
+    def fail_key_generation(size):
+        # protected_ref issuance uses token_bytes(16); let that succeed so this
+        # regression fails specifically after payload publication when the
+        # 32-byte run HMAC key is initialized.
+        if size == 32:
+            raise RuntimeError("simulated key generation failure")
+        return real_token_bytes(size)
 
     monkeypatch.setattr(artifacts_module.secrets, "token_bytes", fail_key_generation)
     try:
