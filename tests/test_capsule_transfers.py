@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -107,7 +108,21 @@ class TransferClient:
             "sha256": hashlib.sha256(self.artifact_data).hexdigest(),
         }
 
+    def _request(self, method: str, endpoint: str) -> dict:
+        """Minimal chunk API used by the protected source->destination path."""
+        assert method == "GET"
+        parsed = urllib.parse.urlparse(endpoint)
+        query = urllib.parse.parse_qs(parsed.query)
+        relative = query["path"][0]
+        offset = int(query["offset"][0])
+        limit = int(query["limit"][0])
+        if offset == 0:
+            self.events.append(("collect", relative))
+        chunk = self.artifact_data[offset : offset + limit]
+        return {"data_b64": base64.b64encode(chunk).decode("ascii")}
+
     def collect_file(self, relative: str, output_root: Path, info=None) -> dict:
+        """Legacy direct-environment collection kept for compatibility tests."""
         self.events.append(("collect", relative))
         output = output_root / Path(*relative.split("/"))
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -171,6 +186,14 @@ def _environment(tmp_path: Path, *, retain=False, client=None):
         session_id="transfer123",
     )
     return environment, provider, client
+
+
+def _protected_artifact_file(tmp_path: Path, result):
+    assert result.ates_run_id
+    root = tmp_path / ".argus" / "runs" / result.ates_run_id / "artifacts"
+    files = sorted(path for path in root.rglob("*") if path.is_file())
+    assert len(files) == 1
+    return files[0]
 
 
 def test_transfer_path_policy_rejects_host_or_guest_escape():
@@ -262,9 +285,10 @@ teardown:
 
     assert result.status == "pass"
     assert result.staged_files[0]["source"] == "dist/app.exe"
-    assert result.artifacts[0]["host_path"] == "artifacts/logs/result.txt"
-    artifact = result.run_dir(tmp_path) / "artifacts" / "logs" / "result.txt"
-    assert artifact.read_bytes() == b"artifact-data"
+    assert result.artifacts[0]["protected"] is True
+    assert "host_path" not in result.artifacts[0]
+    assert "logs/result.txt" not in repr(result.artifacts)
+    assert _protected_artifact_file(tmp_path, result).read_bytes() == b"artifact-data"
     collect_index = next(i for i, event in enumerate(client.events) if event[0] == "collect")
     close_index = next(i for i, event in enumerate(client.events) if event[0] == "close")
     assert collect_index < close_index
@@ -309,8 +333,8 @@ teardown:
     )
 
     assert result.status == "pass"
-    artifact = result.run_dir(tmp_path) / "artifacts" / "logs" / "result.txt"
-    assert artifact.read_bytes() == b"flushed-artifact"
+    assert result.artifacts[0]["protected"] is True
+    assert _protected_artifact_file(tmp_path, result).read_bytes() == b"flushed-artifact"
     flush_index = next(
         i for i, event in enumerate(client.events)
         if event == ("step-result", "flush logs")
