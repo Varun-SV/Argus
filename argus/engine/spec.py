@@ -56,6 +56,8 @@ ASSERTION_KINDS = (
     "page_title_contains",
 )
 
+STEP_KINDS = ("step", "setup", "teardown")
+
 
 class SpecError(ValueError):
     """Raised for malformed test files."""
@@ -68,6 +70,13 @@ class NLStep:
     text: str
     kind: str = "step"  # step | setup | teardown
 
+    def __post_init__(self) -> None:
+        if self.kind not in STEP_KINDS:
+            raise SpecError(
+                f"unknown natural-language step kind {self.kind!r} — "
+                f"supported: {', '.join(STEP_KINDS)}"
+            )
+
 
 @dataclass
 class AssertStep:
@@ -76,6 +85,15 @@ class AssertStep:
     assertion: str
     expected: Union[str, bool, dict]
     kind: str = "assert"
+
+    def __post_init__(self) -> None:
+        if self.kind != "assert":
+            raise SpecError("assertion step kind must be 'assert'")
+        if self.assertion not in ASSERTION_KINDS:
+            raise SpecError(
+                f"unknown assertion {self.assertion!r} — supported: "
+                f"{', '.join(ASSERTION_KINDS)}"
+            )
 
     def describe(self) -> str:
         if isinstance(self.expected, dict):
@@ -133,6 +151,21 @@ class TestSpec:
     collect: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        # Programmatic construction is part of the public runtime surface, so
+        # apply the same trusted step/assertion vocabulary as the YAML parser.
+        for index, step in enumerate(self.steps):
+            if not isinstance(step, (NLStep, AssertStep)):
+                raise SpecError(f"steps[{index}] must be an NLStep or AssertStep")
+            if isinstance(step, NLStep) and step.kind not in STEP_KINDS:
+                raise SpecError(
+                    f"steps[{index}] has unsupported kind {step.kind!r}"
+                )
+            if isinstance(step, AssertStep):
+                if step.kind != "assert" or step.assertion not in ASSERTION_KINDS:
+                    raise SpecError(
+                        f"steps[{index}] has unsupported assertion metadata"
+                    )
+
         # Enforce collection policy on programmatically-created specs as well as
         # YAML-loaded specs, so invalid/aliased declarations cannot reach run_test().
         self.collect = _normalize_collect_entries(self.collect)
