@@ -9,8 +9,9 @@ from typing import Callable, Optional
 import uuid as _uuid
 
 from argus.adapters.base import Adapter, AdapterError
-from argus.ates import EvidencePrivacyPolicy
+from argus.ates import ArtifactCapturePolicy, ArtifactContext, EvidencePrivacyPolicy
 from argus.engine.agent import run_turn
+from argus.engine.ates_artifacts import RuntimeArtifactCapture
 from argus.engine.ates_runtime import (
     AtesAdapterProxy,
     AtesRuntimeRecorder,
@@ -35,6 +36,28 @@ Rules:
 - Never invent element ids. Re-read the UI TREE each turn."""
 
 ProgressFn = Callable[[StepResult], None]
+
+
+def _runtime_artifacts(adapter: Adapter) -> Optional[RuntimeArtifactCapture]:
+    recorder = getattr(adapter, "recorder", None)
+    capture = getattr(recorder, "artifact_capture", None)
+    return capture if isinstance(capture, RuntimeArtifactCapture) else None
+
+
+def _capture_failure_bytes(adapter: Adapter, screenshot_png) -> None:
+    capture = _runtime_artifacts(adapter)
+    if capture is None:
+        return
+    if screenshot_png:
+        capture.capture_screenshot(
+            screenshot_png,
+            context=ArtifactContext.FAILURE_SCREENSHOT,
+        )
+    else:
+        capture.suppress_screenshot(
+            context=ArtifactContext.FAILURE_SCREENSHOT,
+            reason="artifact.screenshot_unavailable",
+        )
 
 
 def check_assertion(
@@ -100,6 +123,9 @@ def check_assertion(
 
     result.status = "pass" if ok else "fail"
     result.actual = actual
+
+    if not ok:
+        _capture_failure_bytes(adapter, obs.screenshot_png)
 
     if knowledge_store is not None and not ok and state_id:
         try:
@@ -205,11 +231,11 @@ def _collect_declared_artifacts(
 ) -> None:
     if not spec.collect:
         return
-    collect = getattr(adapter, "collect_artifacts", None)
-    if not callable(collect):
-        raise AdapterError("execution environment does not support artifact collection")
-    output_dir = result.run_dir(project_dir) / "artifacts"
-    result.artifacts = list(collect(spec.collect, output_dir))
+    _ = project_dir  # retained for backwards-compatible helper signature
+    capture = _runtime_artifacts(adapter)
+    if capture is None:
+        raise AdapterError("ATES artifact capture is unavailable")
+    result.artifacts = capture.collect_declared(adapter, spec.collect)
 
 
 def _set_transfer_error(result: RunResult, message: str) -> None:
@@ -240,7 +266,11 @@ def run_test(
     shots_dir: Optional[Path] = None,
     project_dir: Optional[Path] = None,
     privacy_policy: Optional[EvidencePrivacyPolicy] = None,
+    artifact_policy: Optional[ArtifactCapturePolicy] = None,
 ) -> RunResult:
+    # ``shots_dir`` remains in the public API for compatibility, but normal
+    # ATES runtime no longer writes raw screenshots into that legacy directory.
+    _ = shots_dir
     result = RunResult(
         test_name=spec.name,
         test_file=spec.file_name,
@@ -267,9 +297,15 @@ def run_test(
             adapter,
             privacy_policy=privacy_policy,
         )
+        ates.artifact_capture = RuntimeArtifactCapture(ates, artifact_policy)
         result.ates_run_id = str(ates.run_id)
         adapter = AtesAdapterProxy(adapter, ates)
     except Exception as exc:
+        if ates is not None:
+            try:
+                ates.close()
+            except Exception:
+                pass
         result.status = "error"
         result.error = f"ATES initialization failed: {type(exc).__name__}: {exc}"
         result.duration_s = time.monotonic() - started
@@ -446,7 +482,6 @@ def run_test(
                     sr.actual is not None,
                     actual_value=sr.actual,
                 )
-                _attach_screenshot(sr, adapter, index, shots_dir)
                 ates.complete_current(sr.status)
             elif step.text == "close" and step.kind == "teardown":
                 ates.begin_step(index, 1)
@@ -486,7 +521,6 @@ def run_test(
                     knowledge_store=knowledge_store,
                     target=target,
                     session_id=session_id,
-                    shots_dir=shots_dir,
                     ates=ates,
                 )
 
@@ -561,19 +595,22 @@ def _attach_screenshot(
     sr: StepResult,
     adapter: Adapter,
     index: int,
-    shots_dir: Optional[Path],
+    shots_dir: Optional[Path] = None,
 ) -> None:
-    if shots_dir is None:
+    """Capture failure evidence without ever writing the raw PNG to ``shots_dir``."""
+    _ = (sr, index, shots_dir)
+    capture = _runtime_artifacts(adapter)
+    if capture is None:
         return
     try:
         obs = adapter.observe(include_screenshot=True)
-        if obs.screenshot_png:
-            shots_dir.mkdir(parents=True, exist_ok=True)
-            name = f"step-{index + 1:02d}.png"
-            (shots_dir / name).write_bytes(obs.screenshot_png)
-            sr.screenshot_path = f"shots/{name}"
     except Exception:
-        pass
+        capture.suppress_screenshot(
+            context=ArtifactContext.FAILURE_SCREENSHOT,
+            reason="artifact.screenshot_observation_failed",
+        )
+        return
+    _capture_failure_bytes(adapter, obs.screenshot_png)
 
 
 def _retry_cause(sr: StepResult) -> str:
@@ -599,6 +636,8 @@ def _run_nl_step_with_retries(
     shots_dir: Optional[Path] = None,
     ates: Optional[AtesRuntimeRecorder] = None,
 ) -> StepResult:
+    _ = shots_dir
+
     def run_attempt(
         ordinal: int,
         *,
@@ -623,7 +662,6 @@ def _run_nl_step_with_retries(
                 knowledge_store=knowledge_store,
                 target=target,
                 session_id=session_id,
-                shots_dir=shots_dir,
             )
         except Exception:
             if ates is not None and not ates.failed:
@@ -674,6 +712,7 @@ def _run_nl_step(
     session_id: str = "",
     shots_dir: Optional[Path] = None,
 ) -> StepResult:
+    _ = shots_dir
     sr = StepResult(index=index, kind=step.kind, text=step.text)
     history: list = []
     prev_state_id = ""
@@ -710,12 +749,14 @@ def _run_nl_step(
             sr.status = "error"
             sr.note = turn.error
             sr.actions = history
+            _attach_screenshot(sr, adapter, index)
             return sr
         if turn.action.get("action") == "done":
             sr.status = "pass" if turn.action.get("success") else "fail"
             sr.note = str(turn.action.get("note", ""))
             sr.actions = history
-            _attach_screenshot(sr, adapter, index, shots_dir)
+            if sr.status != "pass":
+                _attach_screenshot(sr, adapter, index)
             return sr
         if turn.error:
             history.append(f"{turn.action.get('action')} FAILED: {turn.error}")
@@ -726,5 +767,5 @@ def _run_nl_step(
     sr.status = "fail"
     sr.note = f"step not completed within {_MAX_TURNS_PER_STEP} actions"
     sr.actions = history
-    _attach_screenshot(sr, adapter, index, shots_dir)
+    _attach_screenshot(sr, adapter, index)
     return sr
