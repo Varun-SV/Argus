@@ -35,11 +35,21 @@ ARTIFACT_POLICY_VERSION = "ates-artifact-v1"
 ARTIFACT_BYTES_PROFILE = "ates-artifact-final-bytes-v1"
 PROTECTED_ARTIFACT_COMMITMENT_PROFILE = "ates-artifact-sha256-hmac-v1"
 PROTECTED_ARTIFACT_VERIFICATION_REF = "secret://ates/run-artifact-hmac-key"
+ARTIFACT_SUPPRESSION_REASONS = frozenset(
+    {
+        "artifact.capture_unavailable",
+        "artifact.collection_aborted",
+        "artifact.policy_suppressed",
+        "artifact.sanitized_too_large",
+        "artifact.screenshot_observation_failed",
+        "artifact.screenshot_unavailable",
+        "artifact.too_large",
+    }
+)
 _ARTIFACT_HMAC_KEY_FILENAME = ".ates-artifact-hmac-key"
 _ARTIFACT_HMAC_KEY_SIZE = 32
 _DEFAULT_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 _SAFE_POLICY_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
-_REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9._-]{0,127}$")
 _PROTECTED_REF_RE = re.compile(r"^protected://ates/[0-9a-f]{32}$")
 
 
@@ -221,8 +231,10 @@ class ArtifactSuppression:
             r"^[a-z][a-z0-9._-]{0,63}\.[0-9a-f]{12}$", policy
         ):
             raise ValueError("artifact suppression capture_policy is invalid")
-        if not _REASON_CODE_RE.fullmatch(str(self.reason or "")):
-            raise ValueError("artifact suppression reason must be a safe reason code")
+        reason = str(self.reason or "")
+        if reason not in ARTIFACT_SUPPRESSION_REASONS:
+            raise ValueError("artifact suppression reason must be a supported safe reason code")
+        object.__setattr__(self, "reason", reason)
 
 
 @dataclass(frozen=True)
@@ -378,15 +390,15 @@ class _AtesArtifactTree:
                 os.unlink(temp_name, dir_fd=parent._fd)
                 final_published = True
             except OSError as exc:
-                cleanup_error: Optional[OSError] = None
+                cleanup_error: Optional[BaseException] = None
                 if linked:
                     try:
-                        os.unlink(final_name, dir_fd=parent._fd)
-                    except OSError as cleanup_exc:
+                        self._rollback_published(parent, final_name)
+                    except BaseException as cleanup_exc:
                         cleanup_error = cleanup_exc
                 if cleanup_error is not None:
                     raise ArtifactCaptureError(
-                        "artifact publication became ambiguous and rollback of the final link failed"
+                        "artifact publication became ambiguous and durable rollback of the final link failed"
                     ) from cleanup_error
                 raise ArtifactCaptureError(
                     f"artifact commit failed inside pinned directory: {normalized}: {exc}"
@@ -416,12 +428,20 @@ class _AtesArtifactTree:
             return
         try:
             if os.name == "nt":
-                (parent.path / temp_name).unlink(missing_ok=True)
+                (parent.path / temp_name).unlink()
             else:
                 assert parent._fd is not None
                 os.unlink(temp_name, dir_fd=parent._fd)
+        except FileNotFoundError:
+            return
         except OSError:
-            pass
+            return
+        try:
+            parent.fsync()
+        except BaseException as exc:
+            raise ArtifactCaptureError(
+                "artifact temporary-file cleanup durability barrier failed"
+            ) from exc
 
     def unlink_relative(self, relative: str) -> None:
         parent, final_name, _normalized = self._parent(relative)
@@ -680,6 +700,12 @@ class AtesArtifactRepository:
                 )
             )
 
+        # Bind the publication to the exact representation admitted by policy.
+        # The final pathname is reread after publication and must match both
+        # values before any ArtifactRecord can be constructed.
+        expected_size = len(prepared)
+        expected_digest = hashlib.sha256(prepared).hexdigest()
+
         # Opaque protected metadata is issued before opening any payload file.
         # Failure to obtain randomness therefore cannot orphan an unregistered
         # artifact after publication.
@@ -702,15 +728,23 @@ class AtesArtifactRepository:
                 published = True
                 temp_name = None
                 size, digest = tree.digest_existing(relative)
+                if size != expected_size or digest != expected_digest:
+                    raise ArtifactCaptureError(
+                        "retained artifact bytes differ from the policy-approved snapshot"
+                    )
             except BaseException as exc:
                 cleanup_error: Optional[BaseException] = None
                 if temp_name is not None:
-                    tree.remove_temp(relative, temp_name)
+                    try:
+                        tree.remove_temp(relative, temp_name)
+                    except BaseException as temp_cleanup_exc:
+                        cleanup_error = temp_cleanup_exc
                 if published:
                     try:
                         tree.unlink_relative(relative)
                     except BaseException as rollback_exc:
-                        cleanup_error = rollback_exc
+                        if cleanup_error is None:
+                            cleanup_error = rollback_exc
                 if cleanup_error is not None:
                     raise ArtifactCaptureError(
                         "unregistered artifact publication failed verification and cleanup"
@@ -806,6 +840,7 @@ class AtesArtifactRepository:
 __all__ = [
     "ARTIFACT_BYTES_PROFILE",
     "ARTIFACT_POLICY_VERSION",
+    "ARTIFACT_SUPPRESSION_REASONS",
     "PROTECTED_ARTIFACT_COMMITMENT_PROFILE",
     "PROTECTED_ARTIFACT_VERIFICATION_REF",
     "ArtifactCaptureConfig",
