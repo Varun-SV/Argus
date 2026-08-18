@@ -18,6 +18,7 @@ from argus.ates import (
     ArtifactSuppression,
     AtesArtifactRepository,
     EventType,
+    FindingId,
     to_json_compatible,
 )
 from argus.engine.ates_runtime import AtesRuntimeError, AtesRuntimeRecorder
@@ -64,11 +65,23 @@ class RuntimeArtifactCapture:
     def policy_id(self) -> str:
         return self.repository.policy.policy_id
 
-    def _relationship(self) -> dict[str, object]:
+    def _relationship(self, *, finding_id: Optional[FindingId] = None) -> dict[str, object]:
         attempt_id = self.recorder.current_attempt_id
-        return {"step_attempt_id": str(attempt_id) if attempt_id is not None else None}
+        relationship: dict[str, object] = {
+            "step_attempt_id": str(attempt_id) if attempt_id is not None else None
+        }
+        if finding_id is not None:
+            if not isinstance(finding_id, FindingId):
+                raise ValueError("artifact Finding relationship requires a FindingId")
+            relationship["finding_id"] = str(finding_id)
+        return relationship
 
-    def _emit_suppression(self, suppression: ArtifactSuppression) -> None:
+    def _emit_suppression(
+        self,
+        suppression: ArtifactSuppression,
+        *,
+        finding_id: Optional[FindingId] = None,
+    ) -> None:
         self.recorder._append(
             EventType.ARTIFACT_SUPPRESSED,
             {
@@ -77,17 +90,23 @@ class RuntimeArtifactCapture:
                 "kind": suppression.kind,
                 "capture_policy": suppression.capture_policy,
                 "reason": suppression.reason,
-                **self._relationship(),
+                **self._relationship(finding_id=finding_id),
             },
         )
 
-    def _emit_checkpoint(self, record: ArtifactRecord, context: ArtifactContext) -> None:
+    def _emit_checkpoint(
+        self,
+        record: ArtifactRecord,
+        context: ArtifactContext,
+        *,
+        finding_id: Optional[FindingId] = None,
+    ) -> None:
         self.recorder._append(
             EventType.CHECKPOINT_CAPTURED,
             {
                 "artifact": to_json_compatible(record),
                 "context": context.value,
-                **self._relationship(),
+                **self._relationship(finding_id=finding_id),
             },
         )
 
@@ -105,6 +124,7 @@ class RuntimeArtifactCapture:
         *,
         context: ArtifactContext,
         reason: str = "artifact.capture_unavailable",
+        finding_id: Optional[FindingId] = None,
     ) -> CapturedRuntimeArtifact:
         if context not in {
             ArtifactContext.FAILURE_SCREENSHOT,
@@ -119,7 +139,7 @@ class RuntimeArtifactCapture:
             capture_policy=self.policy_id,
             reason=str(reason),
         )
-        self._emit_suppression(suppression)
+        self._emit_suppression(suppression, finding_id=finding_id)
         return CapturedRuntimeArtifact(
             artifact_id=str(suppression.artifact_id), retained=False, protected=False
         )
@@ -129,6 +149,7 @@ class RuntimeArtifactCapture:
         data: object,
         *,
         context: ArtifactContext,
+        finding_id: Optional[FindingId] = None,
     ) -> CapturedRuntimeArtifact:
         if context not in {
             ArtifactContext.FAILURE_SCREENSHOT,
@@ -143,12 +164,12 @@ class RuntimeArtifactCapture:
             media_type="image/png",
         )
         if result.suppression is not None:
-            self._emit_suppression(result.suppression)
+            self._emit_suppression(result.suppression, finding_id=finding_id)
             return CapturedRuntimeArtifact(
                 artifact_id=str(result.suppression.artifact_id), retained=False, protected=False
             )
         assert result.record is not None
-        self._emit_checkpoint(result.record, context)
+        self._emit_checkpoint(result.record, context, finding_id=finding_id)
         return CapturedRuntimeArtifact(
             artifact_id=str(result.record.artifact_id),
             retained=True,
