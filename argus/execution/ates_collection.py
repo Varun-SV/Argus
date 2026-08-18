@@ -45,6 +45,29 @@ def _destination(value: object) -> str:
     return canonical[len("artifacts/"):]
 
 
+def _collect_info_failure_reason(exc: BaseException) -> str:
+    """Map built-in guest diagnostics to a closed reason without retaining them.
+
+    ``GuestAgentClient.collect_info`` rejects an oversize file before returning
+    its metadata. Its exception contains the guest path, so the bridge must not
+    propagate or store that text. The numeric suffix is inspected transiently
+    only to preserve the oversize classification; every other failure collapses
+    to the generic unavailable code.
+    """
+    text = str(exc)
+    if text.startswith("guest artifact size is invalid for "):
+        _prefix, separator, suffix = text.rpartition(":")
+        if separator:
+            try:
+                size = int(suffix.strip())
+            except ValueError:
+                pass
+            else:
+                if size > TRANSFER_MAX_FILE_BYTES:
+                    return "artifact.too_large"
+    return "artifact.capture_unavailable"
+
+
 def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list[dict]:
     """Collect declared guest sources to opaque caller-selected destinations.
 
@@ -91,7 +114,13 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
             seen_guest.add(guest_key)
             seen_destinations.add(destination_key)
 
-            info = dict(client.collect_info(guest))
+            try:
+                info = dict(client.collect_info(guest))
+            except Exception as exc:
+                raise ArtifactCollectionPreflightError(
+                    suppression_reason=_collect_info_failure_reason(exc),
+                    collection_ordinal=ordinal,
+                ) from exc
             size = int(info["size"])
             if size < 0:
                 raise ValueError("artifact size is invalid")
