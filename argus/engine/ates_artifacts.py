@@ -31,6 +31,24 @@ class CapturedRuntimeArtifact:
     protected: bool
 
 
+def validate_runtime_artifact_policy(
+    policy: Optional[ArtifactCapturePolicy],
+) -> ArtifactCapturePolicy:
+    """Validate and snapshot the fixed PR #21 runtime policy before a run exists."""
+    if policy is None:
+        return ArtifactCapturePolicy.standard()
+    if type(policy) is not ArtifactCapturePolicy:
+        raise AtesRuntimeError(
+            "custom runtime artifact policy implementations are not provenance-bound"
+        )
+    snapshot = policy.snapshot()
+    if snapshot.policy_id != ARTIFACT_POLICY_VERSION or snapshot.sanitizer is not None:
+        raise AtesRuntimeError(
+            "non-standard runtime artifact policy is not provenance-bound yet"
+        )
+    return snapshot
+
+
 class RuntimeArtifactCapture:
     """Capture binary evidence under the authority of one ATES recorder.
 
@@ -47,19 +65,9 @@ class RuntimeArtifactCapture:
     ) -> None:
         if not isinstance(recorder, AtesRuntimeRecorder):
             raise ValueError("runtime artifact capture requires an AtesRuntimeRecorder")
-        if policy is not None:
-            if type(policy) is not ArtifactCapturePolicy:
-                raise AtesRuntimeError(
-                    "custom runtime artifact policy implementations are not provenance-bound"
-                )
-            snapshot = policy.snapshot()
-            if snapshot.policy_id != ARTIFACT_POLICY_VERSION or snapshot.sanitizer is not None:
-                raise AtesRuntimeError(
-                    "non-standard runtime artifact policy is not provenance-bound yet"
-                )
-            policy = snapshot
+        validated = validate_runtime_artifact_policy(policy)
         self.recorder = recorder
-        self.repository = AtesArtifactRepository(recorder._store, policy)
+        self.repository = AtesArtifactRepository(recorder._store, validated)
 
     @property
     def policy_id(self) -> str:
@@ -81,18 +89,25 @@ class RuntimeArtifactCapture:
         suppression: ArtifactSuppression,
         *,
         finding_id: Optional[FindingId] = None,
+        collection_ordinal: Optional[int] = None,
     ) -> None:
-        self.recorder._append(
-            EventType.ARTIFACT_SUPPRESSED,
-            {
-                "artifact_id": str(suppression.artifact_id),
-                "context": suppression.context.value,
-                "kind": suppression.kind,
-                "capture_policy": suppression.capture_policy,
-                "reason": suppression.reason,
-                **self._relationship(finding_id=finding_id),
-            },
-        )
+        payload: dict[str, object] = {
+            "artifact_id": str(suppression.artifact_id),
+            "context": suppression.context.value,
+            "kind": suppression.kind,
+            "capture_policy": suppression.capture_policy,
+            "reason": suppression.reason,
+            **self._relationship(finding_id=finding_id),
+        }
+        if collection_ordinal is not None:
+            if (
+                isinstance(collection_ordinal, bool)
+                or not isinstance(collection_ordinal, int)
+                or collection_ordinal <= 0
+            ):
+                raise ValueError("artifact suppression collection ordinal must be positive")
+            payload["collection_ordinal"] = collection_ordinal
+        self.recorder._append(EventType.ARTIFACT_SUPPRESSED, payload)
 
     def _emit_checkpoint(
         self,
@@ -118,6 +133,24 @@ class RuntimeArtifactCapture:
                 "collection_ordinal": int(ordinal),
             },
         )
+
+    def _emit_collection_preflight_suppressions(
+        self,
+        reservations,
+        *,
+        failure_reason: str,
+        failure_ordinal: int,
+    ) -> None:
+        for ordinal, reservation in enumerate(reservations, 1):
+            reason = failure_reason if ordinal == failure_ordinal else "artifact.collection_aborted"
+            suppression = ArtifactSuppression(
+                artifact_id=reservation.artifact_id,
+                context=ArtifactContext.COLLECTED_FILE,
+                kind="collected_file",
+                capture_policy=self.policy_id,
+                reason=reason,
+            )
+            self._emit_suppression(suppression, collection_ordinal=ordinal)
 
     def suppress_screenshot(
         self,
@@ -229,6 +262,20 @@ class RuntimeArtifactCapture:
                     raise AtesRuntimeError(
                         "protected artifact registration failed and rollback was incomplete"
                     ) from rollback_errors[0]
+
+                failure_reason = getattr(exc, "suppression_reason", None)
+                failure_ordinal = getattr(exc, "collection_ordinal", None)
+                if (
+                    isinstance(failure_reason, str)
+                    and isinstance(failure_ordinal, int)
+                    and not isinstance(failure_ordinal, bool)
+                    and 1 <= failure_ordinal <= len(reservations)
+                ):
+                    self._emit_collection_preflight_suppressions(
+                        reservations,
+                        failure_reason=failure_reason,
+                        failure_ordinal=failure_ordinal,
+                    )
                 raise exc
 
         # Verified files are now retained. If an event append is ambiguous, do
@@ -249,4 +296,8 @@ class RuntimeArtifactCapture:
         ]
 
 
-__all__ = ["CapturedRuntimeArtifact", "RuntimeArtifactCapture"]
+__all__ = [
+    "CapturedRuntimeArtifact",
+    "RuntimeArtifactCapture",
+    "validate_runtime_artifact_policy",
+]
