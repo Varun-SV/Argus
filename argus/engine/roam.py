@@ -42,21 +42,17 @@ def _recording_add_finding(session, finding, screenshot_png, shots_dir, emit) ->
     """Record a Finding without allowing the legacy raw screenshot write.
 
     ``roam_impl`` still owns the legacy Finding/session/report behavior, but it
-    receives ``None`` for screenshot bytes. If bytes are available they cross
-    the ATES binary policy first and are never linked from the ordinary legacy
-    Markdown report when the standard protected policy is active.
+    receives ``None`` for screenshot bytes. The Finding is assigned its durable
+    ATES identity before binary capture so each retained or suppressed screenshot
+    event can name the exact Finding it supports.
     """
     _original_add_finding(session, finding, None, shots_dir, emit)
     recorder = _active_recorder.get()
     artifacts = _active_artifacts.get()
     if recorder is None or recorder.failed:
         return
-    if screenshot_png and artifacts is not None:
-        artifacts.capture_screenshot(
-            screenshot_png,
-            context=ArtifactContext.FINDING_SCREENSHOT,
-        )
-    recorder.record_finding(
+
+    finding_id = recorder.record_finding(
         source=finding.source,
         classification=finding.severity,
         title=finding.title,
@@ -66,6 +62,20 @@ def _recording_add_finding(session, finding, screenshot_png, shots_dir, emit) ->
             "detail": finding.detail,
         },
     )
+    if artifacts is None:
+        return
+    if screenshot_png:
+        artifacts.capture_screenshot(
+            screenshot_png,
+            context=ArtifactContext.FINDING_SCREENSHOT,
+            finding_id=finding_id,
+        )
+    else:
+        artifacts.suppress_screenshot(
+            context=ArtifactContext.FINDING_SCREENSHOT,
+            reason="artifact.screenshot_unavailable",
+            finding_id=finding_id,
+        )
 
 
 # roam_impl is private and invoked only through this public wrapper. ContextVars
@@ -151,12 +161,26 @@ def roam(
         target=target,
         privacy_policy=privacy_policy,
     )
-    artifact_capture = RuntimeArtifactCapture(recorder, artifact_policy)
-    run_id = str(recorder.run_id)
-    wrapped = AtesAdapterProxy(adapter, recorder)
-    recorder_token = _active_recorder.set(recorder)
-    artifact_token = _active_artifacts.set(artifact_capture)
-    recorder.begin_roam()
+
+    recorder_token = None
+    artifact_token = None
+    try:
+        artifact_capture = RuntimeArtifactCapture(recorder, artifact_policy)
+        run_id = str(recorder.run_id)
+        wrapped = AtesAdapterProxy(adapter, recorder)
+        recorder_token = _active_recorder.set(recorder)
+        artifact_token = _active_artifacts.set(artifact_capture)
+        recorder.begin_roam()
+    except BaseException:
+        if artifact_token is not None:
+            _active_artifacts.reset(artifact_token)
+        if recorder_token is not None:
+            _active_recorder.reset(recorder_token)
+        try:
+            recorder.close()
+        except Exception:
+            pass
+        raise
 
     try:
         session = _impl.roam(
@@ -188,6 +212,8 @@ def roam(
         session.execution_status = status
         return session
     finally:
+        assert artifact_token is not None
+        assert recorder_token is not None
         _active_artifacts.reset(artifact_token)
         _active_recorder.reset(recorder_token)
 
