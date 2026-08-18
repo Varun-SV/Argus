@@ -6,12 +6,37 @@ from collections.abc import Mapping
 
 from argus.ates import validate_artifact_path
 from argus.capsule.files import (
+    TRANSFER_MAX_FILE_BYTES,
+    TRANSFER_MAX_TOTAL_BYTES,
     enforce_total_bytes,
     guest_path_key,
     normalize_guest_relative_path,
 )
 from argus.capsule.host_collect import collect_file_to_pinned_tree
 from argus.execution.base import ExecutionEnvironmentError
+
+
+class ArtifactCollectionPreflightError(ExecutionEnvironmentError):
+    """Secret-safe structured failure for one declared collection ordinal."""
+
+    _REASONS = frozenset({"artifact.capture_unavailable", "artifact.too_large"})
+
+    def __init__(self, *, suppression_reason: str, collection_ordinal: int) -> None:
+        reason = str(suppression_reason or "")
+        if reason not in self._REASONS:
+            raise ValueError("unsupported collection preflight suppression reason")
+        if (
+            isinstance(collection_ordinal, bool)
+            or not isinstance(collection_ordinal, int)
+            or collection_ordinal <= 0
+        ):
+            raise ValueError("collection preflight ordinal must be a positive integer")
+        self.suppression_reason = reason
+        self.collection_ordinal = collection_ordinal
+        super().__init__(
+            "protected Capsule artifact collection preflight failed; "
+            "declared artifact is missing, invalid, or unavailable"
+        )
 
 
 def _destination(value: object) -> str:
@@ -40,39 +65,56 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
             "Capsule guest client does not support protected streamed artifact collection"
         )
 
-    # Guest paths are secret-capable metadata. Keep the entire declaration and
-    # collect-info preflight behind one coarse exception boundary so a guest
-    # client/normalizer cannot copy a declared filename into legacy result text.
     try:
         snapshot = tuple(entries)
-        prepared: list[tuple[str, str, dict]] = []
-        seen_guest: set[str] = set()
-        seen_destinations: set[str] = set()
-        sizes: list[int] = []
-        for item in snapshot:
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ExecutionEnvironmentError(
+            "artifact collection entries could not be snapshotted"
+        ) from exc
+
+    prepared: list[tuple[str, str, dict]] = []
+    seen_guest: set[str] = set()
+    seen_destinations: set[str] = set()
+    sizes: list[int] = []
+    for ordinal, item in enumerate(snapshot, 1):
+        try:
             if not isinstance(item, Mapping):
-                raise ExecutionEnvironmentError("artifact collection entry is invalid")
+                raise ValueError("artifact collection entry is invalid")
             guest = normalize_guest_relative_path(str(item.get("path") or ""))
             destination = _destination(item.get("destination"))
             guest_key = guest_path_key(guest)
             destination_key = destination.casefold()
             if guest_key in seen_guest:
-                raise ExecutionEnvironmentError("duplicate declared Capsule artifact source")
+                raise ValueError("duplicate declared Capsule artifact source")
             if destination_key in seen_destinations:
-                raise ExecutionEnvironmentError("duplicate ATES artifact destination")
+                raise ValueError("duplicate ATES artifact destination")
             seen_guest.add(guest_key)
             seen_destinations.add(destination_key)
 
             info = dict(client.collect_info(guest))
             size = int(info["size"])
+            if size < 0:
+                raise ValueError("artifact size is invalid")
+            if size > TRANSFER_MAX_FILE_BYTES:
+                raise ArtifactCollectionPreflightError(
+                    suppression_reason="artifact.too_large",
+                    collection_ordinal=ordinal,
+                )
             sizes.append(size)
+            if sum(sizes) > TRANSFER_MAX_TOTAL_BYTES:
+                raise ArtifactCollectionPreflightError(
+                    suppression_reason="artifact.too_large",
+                    collection_ordinal=ordinal,
+                )
             enforce_total_bytes(sizes)
             prepared.append((guest, destination, info))
-    except Exception as exc:
-        raise ExecutionEnvironmentError(
-            "protected Capsule artifact collection preflight failed; "
-            "declared artifact is missing, invalid, or unavailable"
-        ) from exc
+        except ArtifactCollectionPreflightError:
+            raise
+        except Exception as exc:
+            raise ArtifactCollectionPreflightError(
+                suppression_reason="artifact.capture_unavailable",
+                collection_ordinal=ordinal,
+            ) from exc
 
     collected: list[dict] = []
     committed_destinations: list[str] = []
@@ -110,4 +152,4 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
     return collected
 
 
-__all__ = ["collect_capsule_artifacts_to_tree"]
+__all__ = ["ArtifactCollectionPreflightError", "collect_capsule_artifacts_to_tree"]
