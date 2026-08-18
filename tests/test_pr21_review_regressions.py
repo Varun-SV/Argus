@@ -13,7 +13,7 @@ from argus.ates import (
     RunId,
     to_json_compatible,
 )
-from argus.engine.ates_runtime import AtesRuntimeError, AtesRuntimeRecorder
+from argus.engine.ates_runtime import AtesRuntimeError
 from argus.engine.roam import roam
 from argus.engine.runner import run_test
 from argus.engine.spec import parse_spec
@@ -185,10 +185,12 @@ def test_two_roam_findings_each_have_their_own_screenshot_relationship(tmp_path,
         target="fake.exe",
         provider=provider,
         adapter=FakeAdapter(),
-        budget=Budget(max_tokens=1000, tracker=provider.tracker),
+        # One model call costs 120 fake tokens. 121 lets the entire first batch
+        # execute, then the next loop exhausts the budget without a stop_flag
+        # firing inside the batch itself.
+        budget=Budget(max_tokens=121, tracker=provider.tracker),
         session_dir=tmp_path / ".argus" / "roam" / "two-findings",
         project_dir=tmp_path,
-        stop_flag=lambda: len(provider.calls) >= 1,
         generate_regressions=False,
     )
     assert len(session.findings) == 2
