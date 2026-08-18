@@ -11,7 +11,10 @@ import uuid as _uuid
 from argus.adapters.base import Adapter, AdapterError
 from argus.ates import ArtifactCapturePolicy, ArtifactContext, EvidencePrivacyPolicy
 from argus.engine.agent import run_turn
-from argus.engine.ates_artifacts import RuntimeArtifactCapture
+from argus.engine.ates_artifacts import (
+    RuntimeArtifactCapture,
+    validate_runtime_artifact_policy,
+)
 from argus.engine.ates_runtime import (
     AtesAdapterProxy,
     AtesRuntimeRecorder,
@@ -286,6 +289,7 @@ def run_test(
     ates: Optional[AtesRuntimeRecorder] = None
     ates_closed = False
     try:
+        validated_artifact_policy = validate_runtime_artifact_policy(artifact_policy)
         ates_project_dir = resolve_runtime_project_dir(
             project_dir,
             spec_path=spec.path,
@@ -297,7 +301,7 @@ def run_test(
             adapter,
             privacy_policy=privacy_policy,
         )
-        ates.artifact_capture = RuntimeArtifactCapture(ates, artifact_policy)
+        ates.artifact_capture = RuntimeArtifactCapture(ates, validated_artifact_policy)
         result.ates_run_id = str(ates.run_id)
         adapter = AtesAdapterProxy(adapter, ates)
     except Exception as exc:
