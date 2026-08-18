@@ -118,17 +118,7 @@ def test_public_roam_missing_finding_screenshot_emits_linked_suppression(tmp_pat
     assert suppression["artifact_id"].startswith("ART-")
 
 
-def test_rejected_roam_artifact_policy_closes_new_recorder(tmp_path, monkeypatch):
-    import argus.engine.ates_runtime as ates_runtime
-
-    closed_run_ids = []
-    original_close = ates_runtime.AtesRuntimeRecorder.close
-
-    def tracking_close(self):
-        closed_run_ids.append(str(self.run_id))
-        return original_close(self)
-
-    monkeypatch.setattr(ates_runtime.AtesRuntimeRecorder, "close", tracking_close)
+def test_rejected_roam_artifact_policy_creates_no_run(tmp_path):
     nonstandard = ArtifactCapturePolicy(
         ArtifactCaptureConfig(
             safe_contexts=frozenset({ArtifactContext.FINDING_SCREENSHOT})
@@ -148,9 +138,8 @@ def test_rejected_roam_artifact_policy_closes_new_recorder(tmp_path, monkeypatch
             generate_regressions=False,
         )
 
-    assert len(closed_run_ids) == 1
-    # Reopening the same run namespace proves the writer lock/handle was released.
-    _events(tmp_path, closed_run_ids[0])
+    runs_root = tmp_path / ".argus" / "runs"
+    assert not runs_root.exists() or not list(runs_root.glob("RUN-*"))
 
 
 def test_two_roam_findings_each_have_their_own_screenshot_relationship(tmp_path, monkeypatch):
