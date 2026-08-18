@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 
@@ -20,6 +19,7 @@ from argus.ates import (
     RunId,
     to_json_compatible,
 )
+from argus.capsule.files import TRANSFER_MAX_FILE_BYTES
 from argus.engine.ates_runtime import AtesRuntimeError
 from argus.engine.roam import roam
 from argus.engine.runner import run_test
@@ -124,7 +124,7 @@ steps:
 
     assert result.status == "error"
     assert "non-standard runtime artifact policy" in (result.error or "")
-    assert not result.ates_run_id
+    assert not getattr(result, "ates_run_id", None)
     assert _runs(tmp_path) == before
 
 
@@ -218,10 +218,9 @@ class _MissingInfoClient:
 
 class _OversizeInfoClient:
     def collect_info(self, path):
-        return {
-            "size": artifacts_module._DEFAULT_MAX_ARTIFACT_BYTES + 1,
-            "sha256": hashlib.sha256(b"not-transferred").hexdigest(),
-        }
+        raise ValueError(
+            f"guest artifact size is invalid for {path}: {TRANSFER_MAX_FILE_BYTES + 1}"
+        )
 
     def _request(self, method, endpoint):  # pragma: no cover
         raise AssertionError("no stream request expected")
