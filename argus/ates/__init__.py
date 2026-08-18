@@ -1,10 +1,11 @@
 """Argus Test Evidence Specification (ATES) core schema and event storage."""
 
 from .artifacts import (
-    ARTIFACT_BYTES_PROFILE, ARTIFACT_POLICY_VERSION, PROTECTED_ARTIFACT_COMMITMENT_PROFILE,
-    PROTECTED_ARTIFACT_VERIFICATION_REF, ArtifactCaptureConfig, ArtifactCaptureError,
-    ArtifactCapturePolicy, ArtifactCaptureResult, ArtifactContext, ArtifactReservation,
-    ArtifactSanitizer, ArtifactSuppression, AtesArtifactRepository,
+    ARTIFACT_BYTES_PROFILE, ARTIFACT_POLICY_VERSION, ARTIFACT_SUPPRESSION_REASONS,
+    PROTECTED_ARTIFACT_COMMITMENT_PROFILE, PROTECTED_ARTIFACT_VERIFICATION_REF,
+    ArtifactCaptureConfig, ArtifactCaptureError, ArtifactCapturePolicy,
+    ArtifactCaptureResult, ArtifactContext, ArtifactReservation, ArtifactSanitizer,
+    ArtifactSuppression, AtesArtifactRepository,
 )
 from .core import (
     ATES_VERSION, RUN_OUTCOME_REFINALIZATION_SCOPE, STATUS_POLICY_VERSION,
@@ -32,8 +33,8 @@ from .store import (
 )
 
 __all__ = [
-    "ARTIFACT_BYTES_PROFILE", "ARTIFACT_POLICY_VERSION", "ATES_VERSION",
-    "PRIVACY_POLICY_VERSION", "PROTECTED_ARTIFACT_COMMITMENT_PROFILE",
+    "ARTIFACT_BYTES_PROFILE", "ARTIFACT_POLICY_VERSION", "ARTIFACT_SUPPRESSION_REASONS",
+    "ATES_VERSION", "PRIVACY_POLICY_VERSION", "PROTECTED_ARTIFACT_COMMITMENT_PROFILE",
     "PROTECTED_ARTIFACT_VERIFICATION_REF", "RUN_OUTCOME_REFINALIZATION_SCOPE",
     "STATUS_POLICY_VERSION", "SUPPORTED_STATUS_POLICY_VERSIONS", "ActionId",
     "ActionOperationId", "ActionRecord", "ArtifactCaptureConfig", "ArtifactCaptureError",
