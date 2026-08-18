@@ -14,7 +14,10 @@ from typing import Callable, Optional
 from argus.adapters.base import Adapter
 from argus.ates import ArtifactCapturePolicy, ArtifactContext, EvidencePrivacyPolicy
 from argus.engine import roam_impl as _impl
-from argus.engine.ates_artifacts import RuntimeArtifactCapture
+from argus.engine.ates_artifacts import (
+    RuntimeArtifactCapture,
+    validate_runtime_artifact_policy,
+)
 from argus.engine.ates_runtime import (
     AtesAdapterProxy,
     AtesRuntimeRecorder,
@@ -35,6 +38,10 @@ _active_artifacts: ContextVar[Optional[RuntimeArtifactCapture]] = ContextVar(
     "argus_roam_ates_artifacts",
     default=None,
 )
+_active_evidence_adapter: ContextVar[Optional[Adapter]] = ContextVar(
+    "argus_roam_evidence_adapter",
+    default=None,
+)
 _original_add_finding = _impl._add_finding
 
 
@@ -44,7 +51,8 @@ def _recording_add_finding(session, finding, screenshot_png, shots_dir, emit) ->
     ``roam_impl`` still owns the legacy Finding/session/report behavior, but it
     receives ``None`` for screenshot bytes. The Finding is assigned its durable
     ATES identity before binary capture so each retained or suppressed screenshot
-    event can name the exact Finding it supports.
+    event can name the exact Finding it supports. Evidence capture is independent
+    of whether the LLM provider requested pixels for its observation.
     """
     _original_add_finding(session, finding, None, shots_dir, emit)
     recorder = _active_recorder.get()
@@ -64,9 +72,20 @@ def _recording_add_finding(session, finding, screenshot_png, shots_dir, emit) ->
     )
     if artifacts is None:
         return
-    if screenshot_png:
+
+    evidence_png = screenshot_png
+    if not evidence_png:
+        evidence_adapter = _active_evidence_adapter.get()
+        if evidence_adapter is not None:
+            try:
+                evidence_obs = evidence_adapter.observe(include_screenshot=True)
+                evidence_png = evidence_obs.screenshot_png
+            except Exception:
+                evidence_png = None
+
+    if evidence_png:
         artifacts.capture_screenshot(
-            screenshot_png,
+            evidence_png,
             context=ArtifactContext.FINDING_SCREENSHOT,
             finding_id=finding_id,
         )
@@ -153,6 +172,7 @@ def roam(
     artifact_policy: Optional[ArtifactCapturePolicy] = None,
 ) -> RoamSession:
     """Run the existing explorer while recording canonical ATES evidence."""
+    validated_artifact_policy = validate_runtime_artifact_policy(artifact_policy)
     root = resolve_runtime_project_dir(project_dir, session_dir=session_dir)
     recorder = AtesRuntimeRecorder.for_roam(
         root,
@@ -164,14 +184,18 @@ def roam(
 
     recorder_token = None
     artifact_token = None
+    evidence_adapter_token = None
     try:
-        artifact_capture = RuntimeArtifactCapture(recorder, artifact_policy)
+        artifact_capture = RuntimeArtifactCapture(recorder, validated_artifact_policy)
         run_id = str(recorder.run_id)
         wrapped = AtesAdapterProxy(adapter, recorder)
         recorder_token = _active_recorder.set(recorder)
         artifact_token = _active_artifacts.set(artifact_capture)
+        evidence_adapter_token = _active_evidence_adapter.set(adapter)
         recorder.begin_roam()
     except BaseException:
+        if evidence_adapter_token is not None:
+            _active_evidence_adapter.reset(evidence_adapter_token)
         if artifact_token is not None:
             _active_artifacts.reset(artifact_token)
         if recorder_token is not None:
@@ -212,8 +236,10 @@ def roam(
         session.execution_status = status
         return session
     finally:
+        assert evidence_adapter_token is not None
         assert artifact_token is not None
         assert recorder_token is not None
+        _active_evidence_adapter.reset(evidence_adapter_token)
         _active_artifacts.reset(artifact_token)
         _active_recorder.reset(recorder_token)
 
