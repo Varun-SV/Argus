@@ -41,7 +41,7 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
         )
 
     # Guest paths are secret-capable metadata. Keep the entire declaration and
-    # collect-info preflight behind one generic exception boundary so a guest
+    # collect-info preflight behind one coarse exception boundary so a guest
     # client/normalizer cannot copy a declared filename into legacy result text.
     try:
         snapshot = tuple(entries)
@@ -70,7 +70,8 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
             prepared.append((guest, destination, info))
     except Exception as exc:
         raise ExecutionEnvironmentError(
-            "protected Capsule artifact collection preflight failed"
+            "protected Capsule artifact collection preflight failed; "
+            "declared artifact is missing, invalid, or unavailable"
         ) from exc
 
     collected: list[dict] = []
