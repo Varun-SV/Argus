@@ -40,34 +40,38 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
             "Capsule guest client does not support protected streamed artifact collection"
         )
 
+    # Guest paths are secret-capable metadata. Keep the entire declaration and
+    # collect-info preflight behind one generic exception boundary so a guest
+    # client/normalizer cannot copy a declared filename into legacy result text.
     try:
         snapshot = tuple(entries)
-    except (RuntimeError, TypeError, ValueError) as exc:
-        raise ExecutionEnvironmentError("artifact collection entries could not be snapshotted") from exc
+        prepared: list[tuple[str, str, dict]] = []
+        seen_guest: set[str] = set()
+        seen_destinations: set[str] = set()
+        sizes: list[int] = []
+        for item in snapshot:
+            if not isinstance(item, Mapping):
+                raise ExecutionEnvironmentError("artifact collection entry is invalid")
+            guest = normalize_guest_relative_path(str(item.get("path") or ""))
+            destination = _destination(item.get("destination"))
+            guest_key = guest_path_key(guest)
+            destination_key = destination.casefold()
+            if guest_key in seen_guest:
+                raise ExecutionEnvironmentError("duplicate declared Capsule artifact source")
+            if destination_key in seen_destinations:
+                raise ExecutionEnvironmentError("duplicate ATES artifact destination")
+            seen_guest.add(guest_key)
+            seen_destinations.add(destination_key)
 
-    prepared: list[tuple[str, str, dict]] = []
-    seen_guest: set[str] = set()
-    seen_destinations: set[str] = set()
-    sizes: list[int] = []
-    for item in snapshot:
-        if not isinstance(item, Mapping):
-            raise ExecutionEnvironmentError("artifact collection entries must be mappings")
-        guest = normalize_guest_relative_path(str(item.get("path") or ""))
-        destination = _destination(item.get("destination"))
-        guest_key = guest_path_key(guest)
-        destination_key = destination.casefold()
-        if guest_key in seen_guest:
-            raise ExecutionEnvironmentError("duplicate declared Capsule artifact source")
-        if destination_key in seen_destinations:
-            raise ExecutionEnvironmentError("duplicate ATES artifact destination")
-        seen_guest.add(guest_key)
-        seen_destinations.add(destination_key)
-
-        info = dict(client.collect_info(guest))
-        size = int(info["size"])
-        sizes.append(size)
-        enforce_total_bytes(sizes)
-        prepared.append((guest, destination, info))
+            info = dict(client.collect_info(guest))
+            size = int(info["size"])
+            sizes.append(size)
+            enforce_total_bytes(sizes)
+            prepared.append((guest, destination, info))
+    except Exception as exc:
+        raise ExecutionEnvironmentError(
+            "protected Capsule artifact collection preflight failed"
+        ) from exc
 
     collected: list[dict] = []
     committed_destinations: list[str] = []
