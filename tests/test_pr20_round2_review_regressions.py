@@ -85,7 +85,9 @@ def test_policy_issued_references_avoid_short_value_false_positives_and_copying(
     assert projected.disposition is EvidenceDisposition.PROTECTED_REF
     assert projected.protected_ref == sink.refs[0]
     assert projected.protected_ref.startswith("protected://ates/")
-    assert "abc" not in projected.protected_ref
+    opaque_id = projected.protected_ref.removeprefix("protected://ates/")
+    assert len(opaque_id) == 32
+    assert all(char in "0123456789abcdef" for char in opaque_id)
 
 
 class _FailingTargetSink:
