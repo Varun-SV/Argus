@@ -67,6 +67,21 @@ class ArtifactCaptureError(RuntimeError):
     """Artifact bytes could not be classified or committed safely."""
 
 
+class ArtifactPublicationError(ArtifactCaptureError):
+    """Artifact publication failed with explicit final-name ownership state.
+
+    ``final_may_exist`` is true only when this transaction created the final
+    name and could not prove a durable rollback. Callers may retry deletion only
+    in that state; false means the final name was never created by this
+    transaction (or its rollback was proven), so a pre-existing no-overwrite
+    target must be preserved.
+    """
+
+    def __init__(self, message: str, *, final_may_exist: bool) -> None:
+        self.final_may_exist = bool(final_may_exist)
+        super().__init__(message)
+
+
 class ArtifactContext(str, Enum):
     FAILURE_SCREENSHOT = "failure_screenshot"
     FINDING_SCREENSHOT = "finding_screenshot"
@@ -282,6 +297,7 @@ class _AtesArtifactTree:
         self._parents: dict[str, _PinnedDirectory] = {}
         self._edges: list[tuple[_PinnedDirectory, str, _PinnedDirectory, str]] = []
         self._closed = False
+        self._close_rollback_relatives: tuple[str, ...] = ()
         self._open(tuple(relatives))
 
     @staticmethod
@@ -363,6 +379,19 @@ class _AtesArtifactTree:
             os.unlink(final_name, dir_fd=parent._fd)
         parent.fsync()
 
+    def ensure_relative_absent(self, relative: str) -> None:
+        """Prove a candidate final name absent and durably persist that absence."""
+        parent, final_name, _normalized = self._parent(relative)
+        try:
+            if os.name == "nt":
+                (parent.path / final_name).unlink()
+            else:
+                assert parent._fd is not None
+                os.unlink(final_name, dir_fd=parent._fd)
+        except FileNotFoundError:
+            pass
+        parent.fsync()
+
     def commit_temp(self, relative: str, temp_name: str) -> None:
         parent, final_name, normalized = self._parent(relative)
         self.assert_authoritative()
@@ -372,8 +401,9 @@ class _AtesArtifactTree:
                 os.rename(parent.path / temp_name, parent.path / final_name)
                 final_published = True
             except OSError as exc:
-                raise ArtifactCaptureError(
-                    f"artifact commit failed inside pinned directory: {normalized}: {exc}"
+                raise ArtifactPublicationError(
+                    f"artifact commit failed inside pinned directory: {normalized}: {exc}",
+                    final_may_exist=False,
                 ) from exc
         else:
             assert parent._fd is not None
@@ -397,11 +427,13 @@ class _AtesArtifactTree:
                     except BaseException as cleanup_exc:
                         cleanup_error = cleanup_exc
                 if cleanup_error is not None:
-                    raise ArtifactCaptureError(
-                        "artifact publication became ambiguous and durable rollback of the final link failed"
+                    raise ArtifactPublicationError(
+                        "artifact publication became ambiguous and durable rollback of the final link failed",
+                        final_may_exist=True,
                     ) from cleanup_error
-                raise ArtifactCaptureError(
-                    f"artifact commit failed inside pinned directory: {normalized}: {exc}"
+                raise ArtifactPublicationError(
+                    f"artifact commit failed inside pinned directory: {normalized}: {exc}",
+                    final_may_exist=False,
                 ) from exc
         try:
             parent.fsync()
@@ -414,11 +446,13 @@ class _AtesArtifactTree:
                 except BaseException as rollback_exc:
                     cleanup_error = rollback_exc
             if cleanup_error is not None:
-                raise ArtifactCaptureError(
-                    "artifact publication durability became ambiguous and rollback failed"
+                raise ArtifactPublicationError(
+                    "artifact publication durability became ambiguous and rollback failed",
+                    final_may_exist=True,
                 ) from cleanup_error
-            raise ArtifactCaptureError(
-                "artifact publication durability/authority barrier failed and was rolled back"
+            raise ArtifactPublicationError(
+                "artifact publication durability/authority barrier failed and was rolled back",
+                final_may_exist=False,
             ) from exc
 
     def remove_temp(self, relative: str, temp_name: str) -> None:
@@ -498,6 +532,11 @@ class _AtesArtifactTree:
         self.assert_authoritative()
         return size, digest.hexdigest()
 
+    def arm_close_rollback(self, relatives: Sequence[str]) -> None:
+        if self._closed:
+            raise ArtifactCaptureError("artifact tree is closed")
+        self._close_rollback_relatives = tuple(self._validate_relative(item) for item in relatives)
+
     def close(self, *, suppress_errors: bool = False) -> None:
         if self._closed:
             return
@@ -507,6 +546,20 @@ class _AtesArtifactTree:
             self.assert_authoritative()
         except BaseException as exc:
             first_error = exc
+            if self._close_rollback_relatives and not suppress_errors:
+                cleanup_error: Optional[BaseException] = None
+                for relative in reversed(self._close_rollback_relatives):
+                    try:
+                        self.ensure_relative_absent(relative)
+                    except BaseException as rollback_exc:
+                        if cleanup_error is None:
+                            cleanup_error = rollback_exc
+                if cleanup_error is not None:
+                    ambiguous = ArtifactCaptureError(
+                        "artifact tree authority was lost and pinned pre-event payload cleanup could not be proven"
+                    )
+                    ambiguous.__cause__ = cleanup_error
+                    first_error = ambiguous
         for pin in reversed(self._pins):
             try:
                 pin.close()
@@ -516,6 +569,7 @@ class _AtesArtifactTree:
         self._pins.clear()
         self._parents.clear()
         self._edges.clear()
+        self._close_rollback_relatives = ()
         if first_error is not None and not suppress_errors:
             raise first_error
 
@@ -528,31 +582,6 @@ class AtesArtifactRepository:
         self.policy = (policy or ArtifactCapturePolicy.standard()).snapshot()
         self._reservations: dict[ArtifactId, ArtifactReservation] = {}
         self._artifact_hmac_key: Optional[bytes] = None
-
-    def _rollback_unregistered_relatives(self, relatives: Sequence[str]) -> None:
-        """Durably remove pre-event payloads after a clean-body tree-close failure."""
-        snapshot = tuple(relatives)
-        cleanup_tree: Optional[_AtesArtifactTree] = None
-        cleanup_error: Optional[BaseException] = None
-        try:
-            cleanup_tree = _AtesArtifactTree(self.store, snapshot)
-            for relative in reversed(snapshot):
-                try:
-                    cleanup_tree.unlink_relative(relative)
-                except FileNotFoundError:
-                    pass
-                except BaseException as exc:
-                    if cleanup_error is None:
-                        cleanup_error = exc
-        except BaseException as exc:
-            cleanup_error = exc
-        finally:
-            if cleanup_tree is not None:
-                cleanup_tree.close(suppress_errors=True)
-        if cleanup_error is not None:
-            raise ArtifactCaptureError(
-                "artifact tree close failed and pre-event payload cleanup could not be proven"
-            ) from cleanup_error
 
     @contextmanager
     def open_tree(
@@ -570,13 +599,9 @@ class AtesArtifactRepository:
             body_error = exc
             raise
         finally:
-            try:
-                tree.close(suppress_errors=body_error is not None)
-            except BaseException:
-                if body_error is None:
-                    if rollback_on_close_failure:
-                        self._rollback_unregistered_relatives(snapshot)
-                    raise
+            if body_error is None and rollback_on_close_failure:
+                tree.arm_close_rollback(snapshot)
+            tree.close(suppress_errors=body_error is not None)
 
     def _protected_commitment_key(self) -> bytes:
         if self._artifact_hmac_key is not None:
@@ -772,9 +797,12 @@ class AtesArtifactRepository:
                         tree.remove_temp(relative, temp_name)
                     except BaseException as temp_cleanup_exc:
                         cleanup_error = temp_cleanup_exc
-                if published:
+                final_may_exist = published or (
+                    isinstance(exc, ArtifactPublicationError) and exc.final_may_exist
+                )
+                if final_may_exist:
                     try:
-                        tree.unlink_relative(relative)
+                        tree.ensure_relative_absent(relative)
                     except BaseException as rollback_exc:
                         if cleanup_error is None:
                             cleanup_error = rollback_exc
@@ -797,7 +825,7 @@ class AtesArtifactRepository:
         except BaseException as exc:
             with self.open_tree((relative,)) as tree:
                 try:
-                    tree.unlink_relative(relative)
+                    tree.ensure_relative_absent(relative)
                 except BaseException as cleanup_exc:
                     raise ArtifactCaptureError(
                         "artifact commitment failed and unregistered payload cleanup failed"
@@ -881,6 +909,7 @@ __all__ = [
     "ArtifactCapturePolicy",
     "ArtifactCaptureResult",
     "ArtifactContext",
+    "ArtifactPublicationError",
     "ArtifactReservation",
     "ArtifactSanitizer",
     "ArtifactSuppression",
