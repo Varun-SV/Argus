@@ -234,8 +234,29 @@ class RuntimeArtifactCapture:
             relatives,
             rollback_on_close_failure=True,
         ) as tree:
+            # The collection bridge owns transfer/publication rollback. If it
+            # raises, do not blindly delete every reservation here: one of those
+            # paths may be a pre-existing no-overwrite target that this
+            # transaction never created.
             try:
                 transferred = list(collect(entries, tree))
+            except BaseException as exc:
+                failure_reason = getattr(exc, "suppression_reason", None)
+                failure_ordinal = getattr(exc, "collection_ordinal", None)
+                if (
+                    isinstance(failure_reason, str)
+                    and isinstance(failure_ordinal, int)
+                    and not isinstance(failure_ordinal, bool)
+                    and 1 <= failure_ordinal <= len(reservations)
+                ):
+                    self._emit_collection_preflight_suppressions(
+                        reservations,
+                        failure_reason=failure_reason,
+                        failure_ordinal=failure_ordinal,
+                    )
+                raise
+
+            try:
                 if len(transferred) != len(reservations):
                     raise AtesRuntimeError(
                         "protected artifact collection returned an unexpected artifact count"
@@ -253,32 +274,20 @@ class RuntimeArtifactCapture:
                         )
                     )
             except BaseException as exc:
+                # Once collect() has returned successfully, the collection
+                # contract says every destination belongs to this transaction.
+                # Registration failures therefore roll back exactly those
+                # transaction-owned finals, with an absence+fsync proof.
                 rollback_errors: list[BaseException] = []
                 for reservation in reversed(reservations):
                     try:
-                        tree.unlink_relative(reservation.relative_path)
-                    except FileNotFoundError:
-                        pass
+                        tree.ensure_relative_absent(reservation.relative_path)
                     except BaseException as rollback_exc:
                         rollback_errors.append(rollback_exc)
                 if rollback_errors:
                     raise AtesRuntimeError(
                         "protected artifact registration failed and rollback was incomplete"
                     ) from rollback_errors[0]
-
-                failure_reason = getattr(exc, "suppression_reason", None)
-                failure_ordinal = getattr(exc, "collection_ordinal", None)
-                if (
-                    isinstance(failure_reason, str)
-                    and isinstance(failure_ordinal, int)
-                    and not isinstance(failure_ordinal, bool)
-                    and 1 <= failure_ordinal <= len(reservations)
-                ):
-                    self._emit_collection_preflight_suppressions(
-                        reservations,
-                        failure_reason=failure_reason,
-                        failure_ordinal=failure_ordinal,
-                    )
                 raise exc
 
         # Verified files are now retained. If an event append is ambiguous, do
