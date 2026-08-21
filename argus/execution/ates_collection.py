@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from argus.ates import validate_artifact_path
+from argus.ates.artifacts import ArtifactPublicationError
 from argus.capsule.files import (
     TRANSFER_MAX_FILE_BYTES,
     TRANSFER_MAX_TOTAL_BYTES,
@@ -146,12 +147,11 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
             ) from exc
 
     collected: list[dict] = []
-    attempted_destinations: list[str] = []
+    committed_destinations: list[str] = []
+    active_destination: str | None = None
     try:
         for guest, destination, info in prepared:
-            # A final name can become visible before the helper returns, so the
-            # current destination must already belong to the outer rollback set.
-            attempted_destinations.append(destination)
+            active_destination = destination
             data = collect_file_to_pinned_tree(
                 client,
                 guest,
@@ -159,6 +159,8 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
                 info=info,
                 destination_relative=destination,
             )
+            committed_destinations.append(destination)
+            active_destination = None
             collected.append(
                 {
                     "size": int(data["size"]),
@@ -169,12 +171,18 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
                 }
             )
     except Exception as exc:
+        rollback_targets = list(committed_destinations)
+        if (
+            active_destination is not None
+            and isinstance(exc, ArtifactPublicationError)
+            and exc.final_may_exist
+        ):
+            rollback_targets.append(active_destination)
+
         rollback_errors: list[BaseException] = []
-        for destination in reversed(attempted_destinations):
+        for destination in reversed(rollback_targets):
             try:
-                output_tree.unlink_relative(destination)
-            except FileNotFoundError:
-                pass
+                output_tree.ensure_relative_absent(destination)
             except BaseException as rollback_exc:
                 rollback_errors.append(rollback_exc)
         if rollback_errors:
