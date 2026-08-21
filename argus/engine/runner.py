@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import uuid as _uuid
 
@@ -227,18 +228,18 @@ def _prepare_declared_transfers(
 
 
 def _collect_declared_artifacts(
-    spec: TestSpec,
+    guest_paths: Sequence[str],
     adapter: Adapter,
     result: RunResult,
     project_dir: Path,
 ) -> None:
-    if not spec.collect:
+    if not guest_paths:
         return
     _ = project_dir  # retained for backwards-compatible helper signature
     capture = _runtime_artifacts(adapter)
     if capture is None:
         raise AdapterError("ATES artifact capture is unavailable")
-    result.artifacts = capture.collect_declared(adapter, spec.collect)
+    result.artifacts = capture.collect_declared(adapter, guest_paths)
 
 
 def _set_transfer_error(result: RunResult, message: str) -> None:
@@ -286,6 +287,13 @@ def run_test(
     target = spec.launch or spec.name
     transfer_project_dir: Optional[Path] = None
 
+    # TestSpec normalizes collection declarations at construction time. Freeze
+    # that ordered declaration once and bind the same values into both ATES
+    # source/config provenance and the later collection operation.
+    collection_paths = tuple(spec.collect)
+    committed_spec = copy.copy(spec)
+    committed_spec.collect = list(collection_paths)
+
     ates: Optional[AtesRuntimeRecorder] = None
     ates_closed = False
     try:
@@ -296,7 +304,7 @@ def run_test(
         )
         ates = AtesRuntimeRecorder.for_scripted(
             ates_project_dir,
-            spec,
+            committed_spec,
             provider,
             adapter,
             privacy_policy=privacy_policy,
@@ -370,7 +378,7 @@ def run_test(
             "disabled; Argus will rely on the accessibility tree only."
         )
 
-    if spec.staging or spec.collect:
+    if spec.staging or collection_paths:
         try:
             transfer_project_dir = _resolve_project_dir(spec, project_dir)
             _prepare_declared_transfers(spec, adapter, result, transfer_project_dir)
@@ -407,7 +415,7 @@ def run_test(
     execution_error: Optional[str] = None
     cleanup_error: Optional[str] = None
     transfer_error: Optional[str] = None
-    artifacts_collected = not bool(spec.collect)
+    artifacts_collected = not bool(collection_paths)
 
     def collect_once() -> None:
         nonlocal artifacts_collected, failed, transfer_error
@@ -416,7 +424,12 @@ def run_test(
         artifacts_collected = True
         assert transfer_project_dir is not None
         try:
-            _collect_declared_artifacts(spec, adapter, result, transfer_project_dir)
+            _collect_declared_artifacts(
+                collection_paths,
+                adapter,
+                result,
+                transfer_project_dir,
+            )
         except Exception as exc:
             transfer_error = f"{type(exc).__name__}: {exc}"
             _set_transfer_error(result, transfer_error)
