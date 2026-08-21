@@ -17,6 +17,7 @@ from argus.ates import (
     EventType,
     RunId,
 )
+from argus.ates.artifacts import ArtifactPublicationError
 from argus.engine.ates_artifacts import RuntimeArtifactCapture
 from argus.engine.ates_runtime import AtesRuntimeRecorder
 from argus.engine.runner import run_test
@@ -36,19 +37,20 @@ def _artifact_payloads(project_dir):
 
 
 def _fail_first_clean_tree_close(monkeypatch):
-    real_close = artifacts_module._AtesArtifactTree.close
+    real_assert = artifacts_module._AtesArtifactTree.assert_authoritative
     state = {"failed": False}
 
-    def fail_first(self, *, suppress_errors=False):
-        if not suppress_errors and not state["failed"]:
+    def fail_when_close_rollback_is_armed(self):
+        if self._close_rollback_relatives and not state["failed"]:
             state["failed"] = True
-            # Release the original tree's handles first, then model the final
-            # authority/close failure that happens after a successful body.
-            real_close(self, suppress_errors=True)
             raise ArtifactCaptureError("forced final artifact-tree close failure")
-        return real_close(self, suppress_errors=suppress_errors)
+        return real_assert(self)
 
-    monkeypatch.setattr(artifacts_module._AtesArtifactTree, "close", fail_first)
+    monkeypatch.setattr(
+        artifacts_module._AtesArtifactTree,
+        "assert_authoritative",
+        fail_when_close_rollback_is_armed,
+    )
     return state
 
 
@@ -141,13 +143,14 @@ class _RollbackTree:
         self.unlinked = []
         self.fail_rollback = fail_rollback
 
-    def unlink_relative(self, relative):
+    def ensure_relative_absent(self, relative):
         self.unlinked.append(relative)
         if self.fail_rollback:
             raise OSError("forced durable rollback failure")
-        if relative not in self.published:
-            raise FileNotFoundError(relative)
-        self.published.remove(relative)
+        self.published.discard(relative)
+
+    def unlink_relative(self, relative):
+        self.ensure_relative_absent(relative)
 
 
 def test_collection_retries_rollback_for_current_ambiguous_destination(monkeypatch):
@@ -158,7 +161,10 @@ def test_collection_retries_rollback_for_current_ambiguous_destination(monkeypat
     def publish_then_fail(_client, _guest, output_tree, *, info, destination_relative):
         _ = info
         output_tree.published.add(destination_relative)
-        raise ArtifactCaptureError("forced ambiguous publication")
+        raise ArtifactPublicationError(
+            "forced ambiguous publication",
+            final_may_exist=True,
+        )
 
     monkeypatch.setattr(
         collection_module,
@@ -185,7 +191,10 @@ def test_collection_escalates_when_current_destination_rollback_is_ambiguous(mon
     def publish_then_fail(_client, _guest, output_tree, *, info, destination_relative):
         _ = info
         output_tree.published.add(destination_relative)
-        raise ArtifactCaptureError("forced ambiguous publication")
+        raise ArtifactPublicationError(
+            "forced ambiguous publication",
+            final_may_exist=True,
+        )
 
     monkeypatch.setattr(
         collection_module,
