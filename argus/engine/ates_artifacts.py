@@ -230,7 +230,10 @@ class RuntimeArtifactCapture:
         ]
         relatives = [reservation.relative_path for reservation in reservations]
 
-        with self.repository.open_tree(relatives) as tree:
+        with self.repository.open_tree(
+            relatives,
+            rollback_on_close_failure=True,
+        ) as tree:
             try:
                 transferred = list(collect(entries, tree))
                 if len(transferred) != len(reservations):
