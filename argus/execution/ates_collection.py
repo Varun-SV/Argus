@@ -146,9 +146,12 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
             ) from exc
 
     collected: list[dict] = []
-    committed_destinations: list[str] = []
+    attempted_destinations: list[str] = []
     try:
         for guest, destination, info in prepared:
+            # A final name can become visible before the helper returns, so the
+            # current destination must already belong to the outer rollback set.
+            attempted_destinations.append(destination)
             data = collect_file_to_pinned_tree(
                 client,
                 guest,
@@ -156,7 +159,6 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
                 info=info,
                 destination_relative=destination,
             )
-            committed_destinations.append(destination)
             collected.append(
                 {
                     "size": int(data["size"]),
@@ -167,16 +169,20 @@ def collect_capsule_artifacts_to_tree(environment, entries, output_tree) -> list
                 }
             )
     except Exception as exc:
-        rollback_errors: list[str] = []
-        for destination in reversed(committed_destinations):
+        rollback_errors: list[BaseException] = []
+        for destination in reversed(attempted_destinations):
             try:
                 output_tree.unlink_relative(destination)
-            except Exception as rollback_exc:
-                rollback_errors.append(type(rollback_exc).__name__)
-        detail = "protected Capsule artifact collection failed"
+            except FileNotFoundError:
+                pass
+            except BaseException as rollback_exc:
+                rollback_errors.append(rollback_exc)
         if rollback_errors:
-            detail += "; protected artifact rollback also failed"
-        raise ExecutionEnvironmentError(detail) from exc
+            raise ExecutionEnvironmentError(
+                "protected Capsule artifact collection failed; "
+                "protected artifact rollback was incomplete or ambiguous"
+            ) from rollback_errors[0]
+        raise ExecutionEnvironmentError("protected Capsule artifact collection failed") from exc
 
     return collected
 
