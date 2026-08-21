@@ -529,9 +529,40 @@ class AtesArtifactRepository:
         self._reservations: dict[ArtifactId, ArtifactReservation] = {}
         self._artifact_hmac_key: Optional[bytes] = None
 
+    def _rollback_unregistered_relatives(self, relatives: Sequence[str]) -> None:
+        """Durably remove pre-event payloads after a clean-body tree-close failure."""
+        snapshot = tuple(relatives)
+        cleanup_tree: Optional[_AtesArtifactTree] = None
+        cleanup_error: Optional[BaseException] = None
+        try:
+            cleanup_tree = _AtesArtifactTree(self.store, snapshot)
+            for relative in reversed(snapshot):
+                try:
+                    cleanup_tree.unlink_relative(relative)
+                except FileNotFoundError:
+                    pass
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+        except BaseException as exc:
+            cleanup_error = exc
+        finally:
+            if cleanup_tree is not None:
+                cleanup_tree.close(suppress_errors=True)
+        if cleanup_error is not None:
+            raise ArtifactCaptureError(
+                "artifact tree close failed and pre-event payload cleanup could not be proven"
+            ) from cleanup_error
+
     @contextmanager
-    def open_tree(self, relatives: Sequence[str]) -> Iterator[_AtesArtifactTree]:
-        tree = _AtesArtifactTree(self.store, relatives)
+    def open_tree(
+        self,
+        relatives: Sequence[str],
+        *,
+        rollback_on_close_failure: bool = False,
+    ) -> Iterator[_AtesArtifactTree]:
+        snapshot = tuple(relatives)
+        tree = _AtesArtifactTree(self.store, snapshot)
         body_error: Optional[BaseException] = None
         try:
             yield tree
@@ -543,6 +574,8 @@ class AtesArtifactRepository:
                 tree.close(suppress_errors=body_error is not None)
             except BaseException:
                 if body_error is None:
+                    if rollback_on_close_failure:
+                        self._rollback_unregistered_relatives(snapshot)
                     raise
 
     def _protected_commitment_key(self) -> bytes:
@@ -717,7 +750,7 @@ class AtesArtifactRepository:
         relative = self._relative_for(artifact_id, kind=kind, disposition=disposition)
         temp_name: Optional[str] = None
         published = False
-        with self.open_tree((relative,)) as tree:
+        with self.open_tree((relative,), rollback_on_close_failure=True) as tree:
             handle, temp_name, _destination = tree.open_temp_file(relative)
             try:
                 with handle:
