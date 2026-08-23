@@ -118,6 +118,14 @@ _finalization_impl._derive = _derive_preserving_known_failure
 from .finalization_round3 import install as _install_finalization_round3
 
 _install_finalization_round3(_finalization_impl)
+
+# Keep recovery preflight aligned with the event store's canonical RunId
+# namespace encoding and its narrowly scoped trailing-partial repair contract.
+# The round-3 recovery wrapper resolves this helper dynamically, so replacing
+# only that helper keeps all other hardening behavior on one path.
+from .finalization_round4 import install as _install_finalization_round4
+
+_install_finalization_round4()
 recover_revision_one = _finalization_impl.recover_revision_one
 
 from .ids import (
