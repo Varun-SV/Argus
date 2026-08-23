@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 
 import pytest
 
@@ -35,6 +36,10 @@ from tests.test_ates_finalization import _open_run
 
 _STARTED = "2026-08-23T10:00:00+00:00"
 _ENDED = "2026-08-23T10:00:01+00:00"
+
+
+def _instruction():
+    return to_json_compatible(EvidenceValue.redacted("privacy.authored_text"))
 
 
 def _target():
@@ -106,9 +111,10 @@ def _complete(store, step_id, attempt_id, *, status="passed", close=True):
 
 def test_wrong_assertion_step_id_cannot_manufacture_pass(tmp_path):
     store, step_id, attempt_id = _new_store(tmp_path, kind="assert")
+    wrong_step = StepId.new()
     assertion = AssertionRecord(
         assertion_id=AssertionId.new(),
-        step_id=StepId.new(),
+        step_id=wrong_step,
         step_attempt_id=attempt_id,
         kind="text_visible",
         expected=EvidenceValue.redacted("privacy.assertion_value"),
@@ -160,10 +166,28 @@ def test_incomplete_target_lifecycle_cannot_pass(tmp_path):
         store.close()
 
 
-def test_target_close_cannot_occur_during_active_attempt(tmp_path):
-    store, _step_id, _attempt_id = _new_store(tmp_path)
+def test_misordered_target_close_is_rejected(tmp_path):
+    run_id = RunId.new()
+    step_id = StepId.new()
+    store = AtesEventStore(tmp_path, run_id)
+    step = StepRecord(
+        step_id=step_id,
+        instruction=EvidenceValue.redacted("privacy.authored_text"),
+        kind="act",
+    )
+    store.append(
+        EventType.RUN_STARTED,
+        {
+            "run": {"run_id": str(run_id)},
+            "steps": [to_json_compatible(step)],
+        },
+    )
+    store.append(
+        EventType.ENVIRONMENT_PREPARED,
+        {"environment_type": "direct", "isolated": False},
+    )
+    store.append(EventType.TARGET_CLOSED, {})
     try:
-        store.append(EventType.TARGET_CLOSED, {})
         with pytest.raises(FinalizationError, match="target close lifecycle"):
             finalize_revision_one(store)
     finally:
