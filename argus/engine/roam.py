@@ -19,6 +19,8 @@ def _finalizing_roam(*args, **kwargs):
     run_id = getattr(session, "ates_run_id", None)
     if not run_id:
         return session
+    original_status = str(getattr(session, "execution_status", "") or "")
+    original_reason = str(getattr(session, "stopped_reason", "") or "")
     session_dir = kwargs.get("session_dir")
     if session_dir is None and len(args) >= 5:
         session_dir = args[4]
@@ -27,11 +29,21 @@ def _finalizing_roam(*args, **kwargs):
         finalized = recover_revision_one(root, run_id)
     except Exception as exc:
         session.execution_status = "error"
-        session.stopped_reason = f"ATES finalization failed: {type(exc).__name__}: {exc}"
+        finalization_reason = f"ATES finalization failed: {type(exc).__name__}: {exc}"
+        if original_reason:
+            session.stopped_reason = f"{original_reason}; {finalization_reason}"
+        else:
+            session.stopped_reason = finalization_reason
         return session
     session.ates_effective_status = finalized.outcome.effective_status.value
     session.ates_finalization_id = str(finalized.outcome.finalization_id)
     session.execution_status = _public_status(finalized.outcome.effective_status)
+    # Preserve a more specific pre-finalization evidence failure diagnostic even
+    # if a future status mapper changes. Successful finalization remains the
+    # authority for the public status itself.
+    if original_status == "error" and "ATES evidence failure" in original_reason:
+        session.execution_status = "error"
+        session.stopped_reason = original_reason
     return session
 
 
