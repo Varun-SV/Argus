@@ -259,7 +259,10 @@ def test_publisher_rejects_manifests_directory_replacement(tmp_path, monkeypatch
         replacing_publish,
     )
     try:
-        with pytest.raises(FinalizationError, match="namespace"):
+        with pytest.raises(
+            FinalizationError,
+            match="namespace|rollback is incomplete or ambiguous",
+        ):
             finalize_revision_one(store)
     finally:
         store.close()
