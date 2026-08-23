@@ -1,810 +1,401 @@
-"""Transactional ATES run finalization and manifest verification.
-
-The event stream remains the canonical fact log. A visible ``RUN_COMPLETED``
-event alone is deliberately *not* the authority that a run finalized: the
-final ``run.json`` binding is published last and acts as the commit marker for
-one finalization revision.
-
-Revision 1 uses this order:
-
-1. validate the pre-finalization canonical event history;
-2. derive status from evidence, never from a legacy producer status;
-3. construct the exact candidate RUN_COMPLETED bytes;
-4. build/publish manifests over the exact final evidence candidate;
-5. append that exact RUN_COMPLETED event durably;
-6. verify persisted evidence bytes match the manifest candidate;
-7. publish run.json last as the durable finalization binding.
-
-A crash before step 7 leaves an incomplete/recoverable run. Consumers must not
-interpret an unbound RUN_COMPLETED as an authoritative pass.
-"""
-
+"""Hardened ATES revision-1 finalization, verification, and recovery."""
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
-import os
-import re
-import stat
-import uuid
-from dataclasses import dataclass
+import hashlib, hmac, os
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
+from . import finalization_legacy as _old
+from .artifacts import (
+    ARTIFACT_BYTES_PROFILE, PROTECTED_ARTIFACT_COMMITMENT_PROFILE,
+    PROTECTED_ARTIFACT_VERIFICATION_REF, _AtesArtifactTree,
+)
 from .core import (
-    ATES_VERSION,
-    STATUS_POLICY_VERSION,
-    AssertionResult,
-    EventEnvelope,
-    EventType,
-    FinalizationId,
-    RunId,
-    RunOutcomeRevision,
-    RunStatus,
-    StepAttemptStatus,
-    to_json_compatible,
-    validate_artifact_path,
+    ATES_VERSION, STATUS_POLICY_VERSION, EventEnvelope, EventType, EvidenceValue,
+    FinalizationId, RunId, RunOutcomeRevision, RunStatus, StepAttemptRecord,
+    StepAttemptStatus, to_json_compatible, validate_artifact_path,
+    validate_step_attempt_history,
 )
 from .ids import EventId
-from .status import StatusInputs, derive_run_status
-from .store import AtesEventStore, AtesStoreError, StoredEvent, _PinnedDirectory, _open_regular_file
+from .status import derive_run_status
+from .store import (
+    AtesAppendError, AtesEventStore, AtesStoreError, StoredEvent,
+    _PinnedDirectory, _validate_regular_file_descriptor, _windows_handle_info,
+)
 
-MANIFEST_VERSION = "ates-manifest-v1"
-PACKAGE_MANIFEST_VERSION = "ates-package-manifest-v1"
-FINALIZATION_BINDING_VERSION = "ates-finalization-binding-v1"
-EVIDENCE_DIGEST_PROFILE = "ates-canonical-evidence-jsonl-v1"
-PROTECTED_ARTIFACT_COMMITMENT_PROFILE = "ates-artifact-sha256-hmac-v1"
-_ARTIFACT_HMAC_KEY_FILENAME = ".ates-artifact-hmac-key"
-_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
-
-
-class FinalizationError(RuntimeError):
-    """Canonical evidence cannot be finalized safely."""
-
-
-class FinalizationTrustState(str, Enum):
-    REGENERATED_VERIFIED = "regenerated_verified"
-    BOUND_VERIFIED = "bound_verified"
-    UNVERIFIED_DERIVED = "unverified_derived"
-    INVALID = "invalid"
+MANIFEST_VERSION = _old.MANIFEST_VERSION
+PACKAGE_MANIFEST_VERSION = _old.PACKAGE_MANIFEST_VERSION
+FINALIZATION_BINDING_VERSION = _old.FINALIZATION_BINDING_VERSION
+EVIDENCE_DIGEST_PROFILE = _old.EVIDENCE_DIGEST_PROFILE
+FinalizationError = _old.FinalizationError
+FinalizationTrustState = _old.FinalizationTrustState
+FinalizationResult = _old.FinalizationResult
+_HMAC_KEY = ".ates-artifact-hmac-key"
 
 
-@dataclass(frozen=True)
-class FinalizationResult:
-    outcome: RunOutcomeRevision
-    run_dir: Path
-    evidence_manifest_path: Path
-    package_manifest_path: Path
-    binding_path: Path
-    trust_state: FinalizationTrustState
+def _json(value): return _old._canonical_json_bytes(value)
+def _read(path): return _old._read_strict_json(path)
+def _publish(directory, name, data): return _old._publish_no_overwrite(directory, name, data)
 
 
-@dataclass(frozen=True)
-class _EvidenceState:
-    run_id: RunId
-    steps: tuple[Mapping[str, object], ...]
-    final_attempt_by_step: Mapping[str, Mapping[str, object]]
-    final_attempt_id_by_step: Mapping[str, str]
-    assertions: tuple[Mapping[str, object], ...]
-    artifacts: tuple[Mapping[str, object], ...]
-    status_inputs: StatusInputs
+def _time(value, label):
+    if not isinstance(value, str): raise FinalizationError(f"{label} must be an ISO-8601 string")
+    try: return datetime.fromisoformat(value)
+    except ValueError as exc: raise FinalizationError(f"{label} is not a valid ISO-8601 timestamp") from exc
 
 
-def _canonical_json_bytes(value: object) -> bytes:
+def _evidence(value):
+    if value is None: return None
+    if not isinstance(value, Mapping): raise FinalizationError("step attempt retry_reason is malformed")
+    refs = value.get("secret_refs", ())
+    if isinstance(refs, (str, bytes, bytearray, Mapping)): raise FinalizationError("retry_reason secret_refs are malformed")
     try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8") + b"\n"
-    except (TypeError, ValueError, RecursionError) as exc:
-        raise FinalizationError(f"cannot serialize canonical finalization JSON: {exc}") from exc
+        return EvidenceValue(
+            disposition=value.get("disposition"), value=value.get("value"),
+            reason=value.get("reason"), secret_refs=tuple(refs),
+            protected_ref=value.get("protected_ref"),
+        )
+    except (TypeError, ValueError) as exc: raise FinalizationError("step attempt retry_reason is invalid") from exc
 
 
-def _write_all(handle, data: bytes) -> None:
-    view = memoryview(data)
-    offset = 0
-    while offset < len(view):
-        written = handle.write(view[offset:])
-        if isinstance(written, bool) or not isinstance(written, int) or written <= 0:
-            raise FinalizationError("finalization write made no forward progress")
-        offset += written
-
-
-def _publish_no_overwrite(directory: _PinnedDirectory, name: str, data: bytes) -> Path:
-    if not _SAFE_NAME_RE.fullmatch(name) or name in {".", ".."}:
-        raise FinalizationError("invalid finalization filename")
-    temp_name = f".{name}.argus-{uuid.uuid4().hex}.part"
-    handle = None
-    final_created = False
+def _attempt(value, *, running):
+    if not isinstance(value, Mapping): raise FinalizationError("step-attempt payload is malformed")
     try:
-        handle, created = _open_regular_file(directory, temp_name)
-        if not created:
-            raise FinalizationError("finalization temporary filename already exists")
-        with handle:
-            _write_all(handle, data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        handle = None
+        rec = StepAttemptRecord(
+            step_attempt_id=value["step_attempt_id"], step_id=value["step_id"],
+            attempt=value["attempt"], status=value["status"],
+            started_at=_time(value["started_at"], "step attempt started_at"),
+            ended_at=None if value.get("ended_at") is None else _time(value.get("ended_at"), "step attempt ended_at"),
+            retry_reason=_evidence(value.get("retry_reason")),
+        )
+    except (KeyError, TypeError, ValueError) as exc: raise FinalizationError("step-attempt evidence is invalid") from exc
+    if running != (rec.status is StepAttemptStatus.RUNNING):
+        raise FinalizationError("step-attempt event type/status disagree")
+    return rec
 
-        if os.name == "nt":
-            try:
-                os.rename(directory.path / temp_name, directory.path / name)
-            except FileExistsError as exc:
-                raise FinalizationError(f"finalization file already exists: {name}") from exc
-            final_created = True
-        else:
-            if directory._fd is None:  # pragma: no cover - defensive
-                raise FinalizationError("pinned finalization directory has no descriptor")
-            try:
-                os.link(
-                    temp_name,
-                    name,
-                    src_dir_fd=directory._fd,
-                    dst_dir_fd=directory._fd,
-                    follow_symlinks=False,
-                )
-                final_created = True
-                os.unlink(temp_name, dir_fd=directory._fd)
-            except FileExistsError as exc:
-                raise FinalizationError(f"finalization file already exists: {name}") from exc
-        directory.fsync()
-        return directory.path / name
-    except BaseException as exc:
-        cleanup_error: Optional[BaseException] = None
+
+def _validate_attempts(events, run_id):
+    starts = [e for e in events if e.envelope.event_type is EventType.RUN_STARTED]
+    if len(starts) != 1: return
+    raw_steps = starts[0].payload.get("steps")
+    if isinstance(raw_steps, (str, bytes, bytearray, Mapping)) or not isinstance(raw_steps, Sequence): return
+    step_ids = {x.get("step_id") for x in raw_steps if isinstance(x, Mapping) and isinstance(x.get("step_id"), str)}
+    opened, closed, schedules, active = {}, {}, {}, None
+    for event in events:
+        if event.run_id != run_id: raise FinalizationError("finalization event history mixes run IDs")
+        t = event.envelope.event_type
+        if t is EventType.STEP_RETRY_SCHEDULED:
+            sid, prev, nxt, ordinal = (event.payload.get(k) for k in ("step_id", "previous_step_attempt_id", "next_step_attempt_id", "next_attempt"))
+            prior = closed.get(prev) if isinstance(prev, str) else None
+            if (active is not None or not isinstance(sid, str) or sid not in step_ids or not isinstance(nxt, str)
+                or not nxt or isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 2
+                or nxt in schedules or nxt in opened or prior is None):
+                raise FinalizationError("STEP_RETRY_SCHEDULED payload/causality is invalid")
+            prior_rec, prior_seq = prior
+            if str(prior_rec.step_id) != sid or ordinal != prior_rec.attempt + 1 or prior_seq >= event.sequence:
+                raise FinalizationError("retry scheduling causality is invalid")
+            schedules[nxt] = (sid, ordinal, event.sequence)
+        elif t is EventType.STEP_ATTEMPT_STARTED:
+            rec = _attempt(event.payload.get("attempt"), running=True)
+            aid, sid = str(rec.step_attempt_id), str(rec.step_id)
+            if sid not in step_ids or aid in opened or aid in closed or active is not None:
+                raise FinalizationError("started step-attempt identity/lifecycle is invalid")
+            if rec.attempt > 1:
+                scheduled = schedules.get(aid)
+                if scheduled is None or scheduled[0] != sid or scheduled[1] != rec.attempt or scheduled[2] >= event.sequence:
+                    raise FinalizationError("retry start does not match STEP_RETRY_SCHEDULED")
+            elif aid in schedules: raise FinalizationError("first attempt cannot be retry-scheduled")
+            opened[aid] = (rec, event.sequence); active = aid
+        elif t is EventType.STEP_ATTEMPT_COMPLETED:
+            rec = _attempt(event.payload.get("attempt"), running=False)
+            aid = str(rec.step_attempt_id); start = opened.get(aid)
+            if start is None: raise FinalizationError("step attempt completed without a matching start")
+            if aid in closed or active != aid: raise FinalizationError("step attempt completion lifecycle is invalid")
+            srec, sseq = start
+            if (rec.step_id != srec.step_id or rec.attempt != srec.attempt or rec.started_at != srec.started_at
+                or rec.retry_reason != srec.retry_reason or sseq >= event.sequence):
+                raise FinalizationError("step attempt completion does not match its start")
+            closed[aid] = (rec, event.sequence); active = None
+    if active is not None or set(opened) != set(closed): raise FinalizationError("canonical history contains an unfinished step attempt")
+    retry_ids = {aid for aid, (rec, _) in opened.items() if rec.attempt > 1}
+    if set(schedules) != retry_ids: raise FinalizationError("canonical history contains an orphan/missing retry schedule")
+    records = tuple(rec for rec, _ in sorted(closed.values(), key=lambda x: x[1]))
+    try: validate_step_attempt_history(records)
+    except ValueError as exc: raise FinalizationError(f"step attempt history is invalid: {exc}") from exc
+
+
+def _derive(events, run_id):
+    _validate_attempts(events, run_id)
+    return _old._derive_evidence_state(events, run_id)
+
+
+def _pinned_bytes(directory, name, label):
+    path = directory.path / name
+    if os.name == "nt":
+        try: kernel32, raw, _ = _windows_handle_info(path, directory=False, create=False)
+        except (OSError, AtesStoreError) as exc: raise FinalizationError(f"{label} is unavailable") from exc
+        keep = raw
         try:
-            if os.name == "nt":
-                (directory.path / temp_name).unlink(missing_ok=True)
-            elif directory._fd is not None:
-                try:
-                    os.unlink(temp_name, dir_fd=directory._fd)
-                except FileNotFoundError:
-                    pass
-        except BaseException as item:
-            cleanup_error = item
-        if final_created:
+            import msvcrt
+            fd = msvcrt.open_osfhandle(raw, os.O_RDONLY | getattr(os, "O_BINARY", 0)); keep = None
             try:
-                if os.name == "nt":
-                    (directory.path / name).unlink(missing_ok=True)
-                elif directory._fd is not None:
-                    try:
-                        os.unlink(name, dir_fd=directory._fd)
-                    except FileNotFoundError:
-                        pass
-                directory.fsync()
-            except BaseException as item:
-                cleanup_error = cleanup_error or item
-        if cleanup_error is not None:
-            raise FinalizationError(
-                "finalization publication failed and cleanup became ambiguous"
-            ) from cleanup_error
-        raise exc
-
-
-def _read_strict_json(path: Path) -> Mapping[str, object]:
+                _validate_regular_file_descriptor(fd, path)
+                with os.fdopen(fd, "rb", buffering=0) as handle: return handle.read()
+            except BaseException:
+                try: os.close(fd)
+                except OSError: pass
+                raise
+        finally:
+            if keep is not None: kernel32.CloseHandle(keep)
+    if directory._fd is None: raise FinalizationError(f"pinned authority unavailable for {label}")
+    try: fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0), dir_fd=directory._fd)
+    except OSError as exc: raise FinalizationError(f"{label} is unavailable") from exc
     try:
-        raw = path.read_bytes()
-        value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise FinalizationError(f"invalid finalization JSON file {path.name}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise FinalizationError(f"finalization JSON file {path.name} must contain an object")
+        _validate_regular_file_descriptor(fd, path)
+        with os.fdopen(fd, "rb", buffering=0, closefd=False) as handle: data = handle.read()
+        directory.assert_file_identity(name, fd, label); return data
+    except (OSError, AtesStoreError) as exc: raise FinalizationError(f"{label} cannot be verified safely") from exc
+    finally: os.close(fd)
+
+
+def _verify_commitment(store, artifact, digest):
+    c = artifact.get("content_digest")
+    if not isinstance(c, Mapping) or not isinstance(c.get("value"), str): raise FinalizationError("artifact content commitment is invalid")
+    if c.get("method") == "sha256":
+        if c.get("canonicalization_profile") != ARTIFACT_BYTES_PROFILE or not hmac.compare_digest(c["value"], "sha256:" + digest):
+            raise FinalizationError("retained artifact SHA-256 does not match canonical evidence")
+        return
+    if c.get("method") == "hmac-sha256":
+        if c.get("canonicalization_profile") != PROTECTED_ARTIFACT_COMMITMENT_PROFILE or c.get("verification_ref") != PROTECTED_ARTIFACT_VERIFICATION_REF:
+            raise FinalizationError("protected artifact commitment profile is unsupported")
+        dirs = store._directories
+        if dirs is None: raise FinalizationError("run authority unavailable for artifact verification")
+        key = _pinned_bytes(dirs.run, _HMAC_KEY, "protected artifact commitment key")
+        if len(key) != 32: raise FinalizationError("protected artifact commitment key has invalid size")
+        expected = "hmac:" + hmac.new(key, bytes.fromhex(digest), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(c["value"], expected): raise FinalizationError("protected artifact HMAC does not match retained bytes")
+        return
+    raise FinalizationError("unsupported artifact commitment method")
+
+
+def _artifacts(store, records):
+    if not records: return []
+    rels = []
+    for a in records:
+        try: path = validate_artifact_path(a.get("path"))
+        except (TypeError, ValueError) as exc: raise FinalizationError("artifact path is invalid") from exc
+        rels.append(path[len("artifacts/"):])
+    tree = _AtesArtifactTree(store, tuple(rels)); error = None
+    try:
+        out = []
+        for a, rel in zip(records, rels):
+            try: size, digest = tree.digest_existing(rel)
+            except (OSError, AtesStoreError, ValueError) as exc: raise FinalizationError("retained artifact cannot be verified safely") from exc
+            if isinstance(a.get("size_bytes"), bool) or not isinstance(a.get("size_bytes"), int) or size != a.get("size_bytes"):
+                raise FinalizationError("retained artifact size does not match canonical evidence")
+            _verify_commitment(store, a, digest)
+            out.append({k: a.get(k) for k in ("artifact_id", "kind", "path", "size_bytes", "protection_state", "content_digest")})
+        return out
+    except BaseException as exc: error = exc; raise
+    finally:
+        try: tree.close(suppress_errors=error is not None)
+        except (OSError, AtesStoreError) as exc: raise FinalizationError("artifact namespace authority changed during verification") from exc
+
+
+def _outdoc(outcome):
+    value = to_json_compatible(outcome)
+    if not isinstance(value, dict): raise FinalizationError("finalization outcome serialization failed")
     return value
 
 
-def _event_payload_object(event: StoredEvent, key: str) -> Optional[Mapping[str, object]]:
-    value = event.payload.get(key)
-    return value if isinstance(value, Mapping) else None
-
-
-def _normalize_attempt_status(value: object) -> Optional[StepAttemptStatus]:
+def _outcome(value):
+    if not isinstance(value, Mapping): raise FinalizationError("finalization record is missing/malformed")
     try:
-        return StepAttemptStatus(value)
-    except (TypeError, ValueError):
-        return None
+        corr = value.get("correction_ids", ())
+        if isinstance(corr, (str, bytes, bytearray, Mapping)): raise ValueError
+        return RunOutcomeRevision(
+            finalization_id=FinalizationId(value["finalization_id"]), run_id=RunId(value["run_id"]),
+            revision=int(value["revision"]), effective_status=RunStatus(value["effective_status"]),
+            evidence_revision=int(value["evidence_revision"]), finalized_at=_time(value["finalized_at"], "finalized_at"),
+            status_policy_version=str(value["status_policy_version"]),
+            supersedes_finalization_id=None if value.get("supersedes_finalization_id") is None else FinalizationId(value.get("supersedes_finalization_id")),
+            correction_ids=tuple(corr),
+        )
+    except (KeyError, TypeError, ValueError) as exc: raise FinalizationError("finalization record is invalid") from exc
 
 
-def _normalize_assertion_result(value: object) -> AssertionResult:
+def _roots(o):
+    return {"run_id": str(o.run_id), "finalization_id": str(o.finalization_id), "revision": o.revision,
+            "evidence_revision": o.evidence_revision, "effective_status": o.effective_status.value,
+            "status_policy_version": o.status_policy_version, "finalized_at": o.finalized_at.isoformat()}
+
+
+def _assert_out(document, outcome, label):
+    if _outdoc(_outcome(document.get("finalization"))) != _outdoc(outcome): raise FinalizationError(f"{label} finalization does not match bound outcome")
+    for k, v in _roots(outcome).items():
+        if document.get(k) != v: raise FinalizationError(f"{label} root {k} does not match bound outcome")
+
+
+def _payload(o): return {"finalization": _outdoc(o), **_roots(o)}
+def _completion(rid, seq, o, eid=None): return StoredEvent(EventEnvelope(ATES_VERSION, rid, eid or EventId.new(), seq, EventType.RUN_COMPLETED, o.finalized_at), _payload(o))
+
+
+def _documents(events, completion, outcome, artifacts):
+    final = tuple(events) + (completion,); evidence = b"".join(e.canonical_line() for e in final); digest = hashlib.sha256(evidence).hexdigest()
+    manifest = {"manifest_version": MANIFEST_VERSION, "ates_version": ATES_VERSION, "finalization": _outdoc(outcome), **_roots(outcome),
+                "evidence": {"path": "evidence.jsonl", "size_bytes": len(evidence), "sha256": "sha256:" + digest,
+                             "event_count": len(final), "final_sequence": completion.sequence, "final_event_id": str(completion.event_id), "final_event_type": EventType.RUN_COMPLETED.value},
+                "artifacts": list(artifacts)}
+    mb = _json(manifest)
+    package = {"package_manifest_version": PACKAGE_MANIFEST_VERSION, "ates_version": ATES_VERSION, "finalization": _outdoc(outcome), **_roots(outcome),
+               "members": [{"path": "evidence.jsonl", "size_bytes": len(evidence), "sha256": "sha256:" + digest},
+                           {"path": "manifests/manifest-0001.json", "size_bytes": len(mb), "sha256": "sha256:" + hashlib.sha256(mb).hexdigest()}],
+               "artifact_members": list(artifacts)}
+    return manifest, package, evidence
+
+
+def _binding(outcome, completion, mb, pb):
+    return {"binding_version": FINALIZATION_BINDING_VERSION, "ates_version": ATES_VERSION, "finalization": _outdoc(outcome), **_roots(outcome),
+            "completion_event": {"event_id": str(completion.event_id), "sequence": completion.sequence},
+            "manifests": {"evidence": {"path": "manifests/manifest-0001.json", "sha256": "sha256:" + hashlib.sha256(mb).hexdigest()},
+                          "package": {"path": "manifests/package-manifest-0001.json", "sha256": "sha256:" + hashlib.sha256(pb).hexdigest()}},
+            "trust_state": FinalizationTrustState.BOUND_VERIFIED.value}
+
+
+def _same(actual, expected, label):
+    if _json(actual) != _json(expected): raise FinalizationError(f"{label} does not match canonical finalization candidate")
+
+
+def finalize_revision_one(store):
+    if not isinstance(store, AtesEventStore): raise ValueError("finalization requires an AtesEventStore")
+    events = store.events; state = _derive(events, store.run_id)
+    o = RunOutcomeRevision(FinalizationId.new(), store.run_id, 1, derive_run_status(state.status_inputs), 1, datetime.now(timezone.utc), STATUS_POLICY_VERSION)
+    arts = _artifacts(store, state.artifacts); completion = _completion(store.run_id, store.next_sequence, o)
+    manifest, package, expected = _documents(events, completion, o, arts); mb, pb = _json(manifest), _json(package)
+    dirs = store._directories
+    if dirs is None: raise FinalizationError("ATES run-directory authority is unavailable")
+    dirs.assert_authoritative(); manifests = dirs.run.ensure_child("manifests", "ATES manifests directory")
     try:
-        return AssertionResult(value)
-    except (TypeError, ValueError):
-        return AssertionResult.UNEVALUATED
+        mp = _publish(manifests, "manifest-0001.json", mb)
+        pp = _publish(manifests, "package-manifest-0001.json", pb)
+        committed = store.append_event(completion)
+        if committed.canonical_line() != completion.canonical_line(): raise FinalizationError("event store committed a different completion")
+        if store._read_all() != expected: raise FinalizationError("persisted evidence differs from manifest-bound candidate")
+        bp = _publish(dirs.run, "run.json", _json(_binding(o, completion, mb, pb))); dirs.assert_authoritative()
+        return FinalizationResult(o, store.run_dir, mp, pp, bp, FinalizationTrustState.BOUND_VERIFIED)
+    finally: manifests.close()
 
 
-def _derive_evidence_state(events: Sequence[StoredEvent], run_id: RunId) -> _EvidenceState:
-    snapshot = tuple(events)
-    if not snapshot:
-        raise FinalizationError("cannot finalize an empty ATES event stream")
-    if any(event.run_id != run_id for event in snapshot):
-        raise FinalizationError("finalization event history mixes run IDs")
-    if tuple(event.sequence for event in snapshot) != tuple(range(1, len(snapshot) + 1)):
-        raise FinalizationError("finalization requires gap-free canonical event sequence")
-
-    run_started = [event for event in snapshot if event.envelope.event_type is EventType.RUN_STARTED]
-    if len(run_started) != 1:
-        raise FinalizationError("finalization requires exactly one RUN_STARTED event")
-    if any(event.envelope.event_type is EventType.RUN_COMPLETED for event in snapshot):
-        raise FinalizationError("run already contains RUN_COMPLETED; use recovery/verification")
-
-    started_steps = run_started[0].payload.get("steps")
-    if isinstance(started_steps, (str, bytes, bytearray, Mapping)) or not isinstance(started_steps, Sequence):
-        raise FinalizationError("RUN_STARTED steps are malformed")
-    steps: list[Mapping[str, object]] = []
-    step_ids: set[str] = set()
-    for item in tuple(started_steps):
-        if not isinstance(item, Mapping):
-            raise FinalizationError("RUN_STARTED steps must contain objects")
-        step_id = item.get("step_id")
-        if not isinstance(step_id, str) or not step_id or step_id in step_ids:
-            raise FinalizationError("RUN_STARTED step identity is invalid or duplicated")
-        step_ids.add(step_id)
-        steps.append(dict(item))
-
-    attempts_by_step: dict[str, list[Mapping[str, object]]] = {step_id: [] for step_id in step_ids}
-    for event in snapshot:
-        if event.envelope.event_type is not EventType.STEP_ATTEMPT_COMPLETED:
-            continue
-        attempt = _event_payload_object(event, "attempt")
-        if attempt is None:
-            raise FinalizationError("STEP_ATTEMPT_COMPLETED payload is malformed")
-        step_id = attempt.get("step_id")
-        attempt_id = attempt.get("step_attempt_id")
-        ordinal = attempt.get("attempt")
-        status = _normalize_attempt_status(attempt.get("status"))
-        if (
-            not isinstance(step_id, str)
-            or step_id not in attempts_by_step
-            or not isinstance(attempt_id, str)
-            or not attempt_id
-            or isinstance(ordinal, bool)
-            or not isinstance(ordinal, int)
-            or ordinal < 1
-            or status is None
-            or status is StepAttemptStatus.RUNNING
-        ):
-            raise FinalizationError("completed step-attempt evidence is invalid")
-        attempts_by_step[step_id].append(dict(attempt))
-
-    final_attempt_by_step: dict[str, Mapping[str, object]] = {}
-    final_attempt_id_by_step: dict[str, str] = {}
-    required_steps_satisfied = True
-    deterministic_failure = False
-    execution_error = False
-    cancelled = False
-    for step_id, attempts in attempts_by_step.items():
-        if not attempts:
-            required_steps_satisfied = False
-            continue
-        ordered = sorted(attempts, key=lambda item: int(item["attempt"]))
-        ordinals = [int(item["attempt"]) for item in ordered]
-        if ordinals != list(range(1, len(ordinals) + 1)):
-            raise FinalizationError("step attempt ordinals are not contiguous")
-        final_attempt = ordered[-1]
-        final_attempt_by_step[step_id] = final_attempt
-        final_attempt_id_by_step[step_id] = str(final_attempt["step_attempt_id"])
-        status = StepAttemptStatus(final_attempt["status"])
-        if status is StepAttemptStatus.FAILED:
-            deterministic_failure = True
-        elif status in (StepAttemptStatus.ERROR, StepAttemptStatus.OUTCOME_UNKNOWN):
-            execution_error = True
-        elif status is StepAttemptStatus.CANCELLED:
-            cancelled = True
-        elif status is not StepAttemptStatus.PASSED:
-            required_steps_satisfied = False
-
-    assertions: list[Mapping[str, object]] = []
-    required_assertion_results: list[AssertionResult] = []
-    assertions_by_attempt: dict[str, int] = {}
-    for event in snapshot:
-        if event.envelope.event_type is not EventType.ASSERTION_EVALUATED:
-            continue
-        assertion = _event_payload_object(event, "assertion")
-        if assertion is None:
-            raise FinalizationError("ASSERTION_EVALUATED payload is malformed")
-        assertions.append(dict(assertion))
-        attempt_id = assertion.get("step_attempt_id")
-        if not isinstance(attempt_id, str):
-            raise FinalizationError("assertion step_attempt_id is invalid")
-        if bool(assertion.get("required", False)):
-            assertions_by_attempt[attempt_id] = assertions_by_attempt.get(attempt_id, 0) + 1
-            # Only assertions attached to the effective/final attempt of their
-            # logical step influence final status. Historical retry failures stay
-            # immutable evidence but do not override a later successful attempt.
-            step_id = assertion.get("step_id")
-            if isinstance(step_id, str) and final_attempt_id_by_step.get(step_id) == attempt_id:
-                required_assertion_results.append(
-                    _normalize_assertion_result(assertion.get("result"))
-                )
-
-    required_assertions_satisfied = True
-    for step in steps:
-        if step.get("kind") != "assert":
-            continue
-        step_id = str(step["step_id"])
-        attempt_id = final_attempt_id_by_step.get(step_id)
-        if attempt_id is None or assertions_by_attempt.get(attempt_id, 0) < 1:
-            required_assertions_satisfied = False
-
-    unresolved_action = any(
-        event.envelope.event_type is EventType.ACTION_OUTCOME_UNKNOWN for event in snapshot
-    )
-
-    incomplete_events = [
-        event for event in snapshot
-        if event.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE
-    ]
-    nonprovisional_incomplete = False
-    for event in incomplete_events:
-        reason = event.payload.get("reason")
-        if reason != "runtime.finalization_pending":
-            nonprovisional_incomplete = True
-            break
-
-    target_launched = any(
-        event.envelope.event_type is EventType.TARGET_LAUNCHED for event in snapshot
-    )
-    environment_released = any(
-        event.envelope.event_type is EventType.ENVIRONMENT_RELEASED for event in snapshot
-    )
-    if target_launched and not environment_released:
-        execution_error = True
-    if nonprovisional_incomplete:
-        execution_error = True
-
-    artifacts: list[Mapping[str, object]] = []
-    artifact_ids: set[str] = set()
-    artifact_paths: set[str] = set()
-    for event in snapshot:
-        if event.envelope.event_type not in {
-            EventType.CHECKPOINT_CAPTURED,
-            EventType.ARTIFACT_COLLECTED,
-        }:
-            continue
-        artifact = _event_payload_object(event, "artifact")
-        if artifact is None:
-            raise FinalizationError("artifact event payload is malformed")
-        artifact_id = artifact.get("artifact_id")
-        path = artifact.get("path")
-        if not isinstance(artifact_id, str) or not artifact_id:
-            raise FinalizationError("artifact identity is invalid")
-        if not isinstance(path, str):
-            raise FinalizationError("artifact path is invalid")
-        validate_artifact_path(path)
-        if artifact_id in artifact_ids or path in artifact_paths:
-            raise FinalizationError("artifact identity/path is duplicated")
-        artifact_ids.add(artifact_id)
-        artifact_paths.add(path)
-        artifacts.append(dict(artifact))
-
-    status_inputs = StatusInputs(
-        required_assertion_results=tuple(required_assertion_results),
-        required_steps_satisfied=required_steps_satisfied,
-        required_assertions_satisfied=required_assertions_satisfied,
-        unresolved_action_outcome=unresolved_action,
-        evidence_integrity_error=False,
-        execution_error=execution_error,
-        deterministic_failure=deterministic_failure,
-        cancelled=cancelled,
-    )
-    return _EvidenceState(
-        run_id=run_id,
-        steps=tuple(steps),
-        final_attempt_by_step=final_attempt_by_step,
-        final_attempt_id_by_step=final_attempt_id_by_step,
-        assertions=tuple(assertions),
-        artifacts=tuple(artifacts),
-        status_inputs=status_inputs,
-    )
+def _project(root):
+    if root.parent.name != "runs" or root.parent.parent.name != ".argus": raise FinalizationError("run directory is not beneath .argus/runs")
+    return root.parent.parent.parent
 
 
-def _artifact_file_digest(path: Path) -> tuple[int, str]:
+def _verify_store(store, root):
+    bp, mp, pp = root / "run.json", root / "manifests/manifest-0001.json", root / "manifests/package-manifest-0001.json"
+    binding, manifest, package = _read(bp), _read(mp), _read(pp)
+    if binding.get("binding_version") != FINALIZATION_BINDING_VERSION or manifest.get("manifest_version") != MANIFEST_VERSION or package.get("package_manifest_version") != PACKAGE_MANIFEST_VERSION:
+        raise FinalizationError("unsupported finalization/manifest version")
+    events = store.events
+    if not events or events[-1].envelope.event_type is not EventType.RUN_COMPLETED: raise FinalizationError("final canonical event is not RUN_COMPLETED")
+    final = events[-1]; o = _outcome(final.payload.get("finalization"))
+    if final.envelope.occurred_at != o.finalized_at or to_json_compatible(final.payload) != _payload(o): raise FinalizationError("RUN_COMPLETED does not match normalized outcome")
+    if o.run_id != store.run_id or o.revision != 1 or o.evidence_revision != 1 or o.status_policy_version != STATUS_POLICY_VERSION: raise FinalizationError("RUN_COMPLETED is not supported revision 1")
+    _assert_out(binding, o, "run binding"); _assert_out(manifest, o, "evidence manifest"); _assert_out(package, o, "package manifest")
+    cref, emeta = binding.get("completion_event"), manifest.get("evidence")
+    if not isinstance(cref, Mapping) or not isinstance(emeta, Mapping) or cref.get("event_id") != str(final.event_id) or cref.get("sequence") != final.sequence or emeta.get("final_event_id") != str(final.event_id) or emeta.get("final_sequence") != final.sequence or emeta.get("event_count") != len(events):
+        raise FinalizationError("binding/manifest completion identity is inconsistent")
+    state = _derive(events[:-1], store.run_id)
+    if derive_run_status(state.status_inputs) is not o.effective_status: raise FinalizationError("bound status does not match canonical derivation")
+    arts = _artifacts(store, state.artifacts); xm, xp, xe = _documents(events[:-1], final, o, arts)
+    actual = store._read_all()
+    if actual != xe: raise FinalizationError("canonical evidence differs from regenerated finalization")
+    _same(manifest, xm, "evidence manifest"); _same(package, xp, "package manifest")
+    mb, pb = _json(xm), _json(xp); _same(binding, _binding(o, final, mb, pb), "run binding")
+    return FinalizationResult(o, root, mp, pp, bp, FinalizationTrustState.BOUND_VERIFIED)
+
+
+def verify_finalized_run(run_dir):
+    try: root = Path(run_dir).resolve(strict=True)
+    except OSError as exc: raise FinalizationError(f"cannot resolve finalized run directory: {exc}") from exc
+    binding = _read(root / "run.json"); rid = binding.get("run_id")
+    if not isinstance(rid, str) and isinstance(binding.get("finalization"), Mapping): rid = binding["finalization"].get("run_id")
+    try: run_id = RunId(rid)
+    except (TypeError, ValueError) as exc: raise FinalizationError("run binding has no valid run_id") from exc
+    try: store = AtesEventStore(_project(root), run_id)
+    except (OSError, AtesStoreError, ValueError) as exc: raise FinalizationError("cannot acquire authoritative run state for verification") from exc
     try:
-        info = path.lstat()
-    except OSError as exc:
-        raise FinalizationError(f"cannot inspect retained artifact {path.name}: {exc}") from exc
-    if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        raise FinalizationError("retained artifact must be a singly-linked regular file")
-    digest = hashlib.sha256()
+        if store.run_dir.resolve(strict=True) != root: raise FinalizationError("run binding resolves to another run directory")
+        return _verify_store(store, root)
+    finally: store.close()
+
+
+def _candidate_from_manifest(manifest, rid):
+    if manifest.get("manifest_version") != MANIFEST_VERSION: raise FinalizationError("unsupported evidence manifest version")
+    o = _outcome(manifest.get("finalization")); _assert_out(manifest, o, "evidence manifest")
+    if o.run_id != rid or o.revision != 1 or o.evidence_revision != 1: raise FinalizationError("recovery manifest is not revision 1 for this run")
+    meta = manifest.get("evidence")
+    if not isinstance(meta, Mapping) or meta.get("final_event_type") != EventType.RUN_COMPLETED.value or not isinstance(meta.get("final_event_id"), str) or isinstance(meta.get("final_sequence"), bool) or not isinstance(meta.get("final_sequence"), int):
+        raise FinalizationError("recovery manifest completion identity is invalid")
+    try: eid = EventId(meta["final_event_id"])
+    except ValueError as exc: raise FinalizationError("recovery completion event_id is invalid") from exc
+    return o, _completion(rid, meta["final_sequence"], o, eid)
+
+
+def _reopen(project, rid, completion):
+    store = AtesEventStore(project, rid, repair_trailing_partial=True)
+    finals = [e for e in store.events if e.envelope.event_type is EventType.RUN_COMPLETED]
+    if finals:
+        if len(finals) != 1 or store.events[-1].canonical_line() != completion.canonical_line(): store.close(); raise FinalizationError("ambiguous completion reconciled differently")
+        return store
+    try: store.append_event(completion)
+    except BaseException: store.close(); raise
+    return store
+
+
+def recover_revision_one(project_dir, run_id):
+    try: rid = run_id if isinstance(run_id, RunId) else RunId(run_id)
+    except (TypeError, ValueError) as exc: raise ValueError("run_id must be a valid RunId") from exc
+    project = Path(project_dir).resolve(strict=True); store = AtesEventStore(project, rid, repair_trailing_partial=True); root = store.run_dir
     try:
-        with path.open("rb") as handle:
-            while True:
-                chunk = handle.read(1024 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
-    except OSError as exc:
-        raise FinalizationError(f"cannot hash retained artifact {path.name}: {exc}") from exc
-    return int(info.st_size), digest.hexdigest()
-
-
-def _verify_commitment(run_dir: Path, artifact: Mapping[str, object], digest: str) -> None:
-    commitment = artifact.get("content_digest")
-    if not isinstance(commitment, Mapping):
-        raise FinalizationError("artifact content commitment is missing")
-    method = commitment.get("method")
-    value = commitment.get("value")
-    if not isinstance(value, str):
-        raise FinalizationError("artifact content commitment value is invalid")
-    if method == "sha256":
-        if not hmac.compare_digest(value, "sha256:" + digest):
-            raise FinalizationError("retained artifact SHA-256 does not match canonical evidence")
-        return
-    if method == "hmac-sha256":
-        if commitment.get("canonicalization_profile") != PROTECTED_ARTIFACT_COMMITMENT_PROFILE:
-            raise FinalizationError("protected artifact commitment profile is unsupported")
-        key_path = run_dir / _ARTIFACT_HMAC_KEY_FILENAME
+        bp, mp, pp = root / "run.json", root / "manifests/manifest-0001.json", root / "manifests/package-manifest-0001.json"
+        if bp.exists(): store.close(); return verify_finalized_run(root)
+        if not mp.exists():
+            if pp.exists() or any(e.envelope.event_type is EventType.RUN_COMPLETED for e in store.events): raise FinalizationError("recovery state is missing evidence manifest")
+            result = finalize_revision_one(store); store.close(); return verify_finalized_run(result.run_dir)
+        manifest = _read(mp); o, completion = _candidate_from_manifest(manifest, rid)
+        finals = [e for e in store.events if e.envelope.event_type is EventType.RUN_COMPLETED]
+        if finals:
+            if len(finals) != 1 or store.events[-1].canonical_line() != completion.canonical_line(): raise FinalizationError("existing completion differs from recovery candidate")
+            pre = store.events[:-1]
+        else: pre = store.events
+        if completion.sequence != len(pre) + 1: raise FinalizationError("recovery completion sequence is inconsistent")
+        state = _derive(pre, rid)
+        if o.status_policy_version != STATUS_POLICY_VERSION or derive_run_status(state.status_inputs) is not o.effective_status: raise FinalizationError("recovery outcome differs from canonical derivation")
+        arts = _artifacts(store, state.artifacts); xm, xp, xe = _documents(pre, completion, o, arts); _same(manifest, xm, "recovery evidence manifest")
+        mb, pb = _json(xm), _json(xp); dirs = store._directories
+        if dirs is None: raise FinalizationError("run authority unavailable during recovery")
+        manifests = dirs.run.ensure_child("manifests", "ATES manifests directory")
         try:
-            key = key_path.read_bytes()
-        except OSError as exc:
-            raise FinalizationError("protected artifact commitment key is unavailable") from exc
-        if len(key) != 32:
-            raise FinalizationError("protected artifact commitment key has invalid size")
-        expected = "hmac:" + hmac.new(
-            key, bytes.fromhex(digest), hashlib.sha256
-        ).hexdigest()
-        if not hmac.compare_digest(value, expected):
-            raise FinalizationError("protected artifact HMAC does not match retained bytes")
-        return
-    raise FinalizationError(f"unsupported artifact commitment method: {method!r}")
-
-
-def _verified_artifact_entries(run_dir: Path, artifacts: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
-    entries: list[dict[str, object]] = []
-    for artifact in artifacts:
-        relative = str(artifact["path"])
-        path = run_dir.joinpath(*relative.split("/"))
-        try:
-            resolved_parent = path.parent.resolve(strict=True)
-            artifact_root = (run_dir / "artifacts").resolve(strict=True)
-        except OSError as exc:
-            raise FinalizationError("artifact namespace cannot be resolved safely") from exc
-        if resolved_parent != artifact_root and artifact_root not in resolved_parent.parents:
-            raise FinalizationError("artifact path escapes the run artifact namespace")
-        size, digest = _artifact_file_digest(path)
-        if size != artifact.get("size_bytes"):
-            raise FinalizationError("retained artifact size does not match canonical evidence")
-        _verify_commitment(run_dir, artifact, digest)
-        entries.append(
-            {
-                "artifact_id": artifact.get("artifact_id"),
-                "kind": artifact.get("kind"),
-                "path": relative,
-                "size_bytes": size,
-                "protection_state": artifact.get("protection_state"),
-                "content_digest": artifact.get("content_digest"),
-            }
-        )
-    return entries
-
-
-def _candidate_completion(
-    store: AtesEventStore,
-    outcome: RunOutcomeRevision,
-    finalized_at: datetime,
-) -> StoredEvent:
-    envelope = EventEnvelope(
-        ates_version=ATES_VERSION,
-        run_id=store.run_id,
-        event_id=EventId.new(),
-        sequence=store.next_sequence,
-        event_type=EventType.RUN_COMPLETED,
-        occurred_at=finalized_at,
-    )
-    return StoredEvent(
-        envelope=envelope,
-        payload={
-            "finalization": to_json_compatible(outcome),
-            "effective_status": outcome.effective_status.value,
-            "status_policy_version": outcome.status_policy_version,
-            "evidence_revision": outcome.evidence_revision,
-        },
-    )
-
-
-def _evidence_bytes(events: Sequence[StoredEvent]) -> bytes:
-    return b"".join(event.canonical_line() for event in events)
-
-
-def _manifest_documents(
-    *,
-    store: AtesEventStore,
-    existing_events: Sequence[StoredEvent],
-    completion: StoredEvent,
-    outcome: RunOutcomeRevision,
-    artifact_entries: Sequence[Mapping[str, object]],
-) -> tuple[dict[str, object], dict[str, object], bytes]:
-    final_events = tuple(existing_events) + (completion,)
-    evidence = _evidence_bytes(final_events)
-    evidence_sha = hashlib.sha256(evidence).hexdigest()
-    evidence_manifest = {
-        "manifest_version": MANIFEST_VERSION,
-        "ates_version": ATES_VERSION,
-        "run_id": str(store.run_id),
-        "finalization_id": str(outcome.finalization_id),
-        "evidence_revision": outcome.evidence_revision,
-        "status_policy_version": outcome.status_policy_version,
-        "effective_status": outcome.effective_status.value,
-        "evidence": {
-            "path": "evidence.jsonl",
-            "size_bytes": len(evidence),
-            "sha256": "sha256:" + evidence_sha,
-            "event_count": len(final_events),
-            "final_sequence": completion.sequence,
-            "final_event_id": str(completion.event_id),
-            "final_event_type": EventType.RUN_COMPLETED.value,
-        },
-        "artifacts": list(artifact_entries),
-    }
-    manifest_bytes = _canonical_json_bytes(evidence_manifest)
-    package_manifest = {
-        "package_manifest_version": PACKAGE_MANIFEST_VERSION,
-        "ates_version": ATES_VERSION,
-        "run_id": str(store.run_id),
-        "finalization_id": str(outcome.finalization_id),
-        "evidence_revision": outcome.evidence_revision,
-        "members": [
-            {
-                "path": "evidence.jsonl",
-                "size_bytes": len(evidence),
-                "sha256": "sha256:" + evidence_sha,
-            },
-            {
-                "path": "manifests/manifest-0001.json",
-                "size_bytes": len(manifest_bytes),
-                "sha256": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest(),
-            },
-        ],
-        # Artifact commitments are already secret-safe ATES commitments. Do not
-        # replace protected HMAC commitments with raw package SHA-256 values.
-        "artifact_members": list(artifact_entries),
-    }
-    return evidence_manifest, package_manifest, evidence
-
-
-def _binding_document(
-    *,
-    outcome: RunOutcomeRevision,
-    completion: StoredEvent,
-    evidence_manifest_bytes: bytes,
-    package_manifest_bytes: bytes,
-) -> dict[str, object]:
-    return {
-        "binding_version": FINALIZATION_BINDING_VERSION,
-        "ates_version": ATES_VERSION,
-        "run_id": str(outcome.run_id),
-        "finalization": to_json_compatible(outcome),
-        "completion_event": {
-            "event_id": str(completion.event_id),
-            "sequence": completion.sequence,
-        },
-        "manifests": {
-            "evidence": {
-                "path": "manifests/manifest-0001.json",
-                "sha256": "sha256:" + hashlib.sha256(evidence_manifest_bytes).hexdigest(),
-            },
-            "package": {
-                "path": "manifests/package-manifest-0001.json",
-                "sha256": "sha256:" + hashlib.sha256(package_manifest_bytes).hexdigest(),
-            },
-        },
-        "trust_state": FinalizationTrustState.BOUND_VERIFIED.value,
-    }
-
-
-def finalize_revision_one(store: AtesEventStore) -> FinalizationResult:
-    """Finalize one open run as evidence revision/finalization revision 1.
-
-    The caller must still own the live :class:`AtesEventStore`. This function is
-    idempotent only through explicit verification/recovery APIs; it intentionally
-    refuses to create a second revision-1 completion in a live stream.
-    """
-    if not isinstance(store, AtesEventStore):
-        raise ValueError("finalization requires an AtesEventStore")
-    existing_events = store.events
-    state = _derive_evidence_state(existing_events, store.run_id)
-    status = derive_run_status(state.status_inputs)
-    finalized_at = datetime.now(timezone.utc)
-    outcome = RunOutcomeRevision(
-        finalization_id=FinalizationId.new(),
-        run_id=store.run_id,
-        revision=1,
-        effective_status=status,
-        evidence_revision=1,
-        finalized_at=finalized_at,
-        status_policy_version=STATUS_POLICY_VERSION,
-    )
-    artifacts = _verified_artifact_entries(store.run_dir, state.artifacts)
-    completion = _candidate_completion(store, outcome, finalized_at)
-    evidence_manifest, package_manifest, expected_evidence = _manifest_documents(
-        store=store,
-        existing_events=existing_events,
-        completion=completion,
-        outcome=outcome,
-        artifact_entries=artifacts,
-    )
-    evidence_manifest_bytes = _canonical_json_bytes(evidence_manifest)
-    package_manifest_bytes = _canonical_json_bytes(package_manifest)
-
-    directories = store._directories
-    if directories is None:
-        raise FinalizationError("ATES run-directory authority is unavailable")
-    directories.assert_authoritative()
-    manifests = directories.run.ensure_child("manifests", "ATES manifests directory")
-    try:
-        manifest_path = _publish_no_overwrite(
-            manifests, "manifest-0001.json", evidence_manifest_bytes
-        )
-        try:
-            package_path = _publish_no_overwrite(
-                manifests, "package-manifest-0001.json", package_manifest_bytes
-            )
-        except BaseException:
-            try:
-                manifest_path.unlink()
-                manifests.fsync()
-            except OSError:
-                pass
-            raise
-
-        try:
-            committed = store.append_event(completion)
-        except BaseException:
-            # Append durability can be ambiguous. Never delete manifests here:
-            # the exact RUN_COMPLETED may already be durable and the run is now
-            # recoverable by binding verification rather than by fabrication.
-            raise
-        if committed.canonical_line() != completion.canonical_line():
-            raise FinalizationError("event store did not commit the exact completion candidate")
-
-        try:
-            persisted_evidence = store.path.read_bytes()
-        except OSError as exc:
-            raise FinalizationError("cannot verify final canonical evidence bytes") from exc
-        if persisted_evidence != expected_evidence:
-            raise FinalizationError(
-                "persisted evidence does not match the manifest-bound completion candidate"
-            )
-
-        binding = _binding_document(
-            outcome=outcome,
-            completion=completion,
-            evidence_manifest_bytes=evidence_manifest_bytes,
-            package_manifest_bytes=package_manifest_bytes,
-        )
-        binding_bytes = _canonical_json_bytes(binding)
-        binding_path = _publish_no_overwrite(
-            directories.run, "run.json", binding_bytes
-        )
-        directories.assert_authoritative()
-        return FinalizationResult(
-            outcome=outcome,
-            run_dir=store.run_dir,
-            evidence_manifest_path=manifest_path,
-            package_manifest_path=package_path,
-            binding_path=binding_path,
-            trust_state=FinalizationTrustState.BOUND_VERIFIED,
-        )
+            if pp.exists(): _same(_read(pp), xp, "recovery package manifest")
+            else: _publish(manifests, "package-manifest-0001.json", pb)
+        finally: manifests.close()
+        if not finals:
+            try: store.append_event(completion)
+            except AtesAppendError: store.close(); store = _reopen(project, rid, completion); root = store.run_dir
+        if store._read_all() != xe: raise FinalizationError("recovered evidence differs from manifest-bound candidate")
+        dirs = store._directories
+        if dirs is None: raise FinalizationError("run authority unavailable for recovered binding")
+        _publish(dirs.run, "run.json", _json(_binding(o, completion, mb, pb)))
     finally:
-        manifests.close()
+        try: store.close()
+        except Exception: pass
+    return verify_finalized_run(root)
 
 
-def verify_finalized_run(run_dir: Path) -> FinalizationResult:
-    """Verify a revision-1 locally bound ATES package without mutating it."""
-    root = Path(run_dir).resolve(strict=True)
-    binding_path = root / "run.json"
-    manifest_path = root / "manifests" / "manifest-0001.json"
-    package_path = root / "manifests" / "package-manifest-0001.json"
-    binding = _read_strict_json(binding_path)
-    manifest = _read_strict_json(manifest_path)
-    package = _read_strict_json(package_path)
+def __getattr__(name):
+    if name.startswith("_") and hasattr(_old, name): return getattr(_old, name)
+    raise AttributeError(name)
 
-    if binding.get("binding_version") != FINALIZATION_BINDING_VERSION:
-        raise FinalizationError("unsupported run finalization binding version")
-    finalization = binding.get("finalization")
-    if not isinstance(finalization, Mapping):
-        raise FinalizationError("run binding has no finalization object")
-    try:
-        run_id = RunId(finalization["run_id"])
-        outcome = RunOutcomeRevision(
-            finalization_id=FinalizationId(finalization["finalization_id"]),
-            run_id=run_id,
-            revision=int(finalization["revision"]),
-            effective_status=RunStatus(finalization["effective_status"]),
-            evidence_revision=int(finalization["evidence_revision"]),
-            finalized_at=datetime.fromisoformat(str(finalization["finalized_at"])),
-            status_policy_version=str(finalization["status_policy_version"]),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise FinalizationError("run binding finalization record is invalid") from exc
-    if outcome.revision != 1 or outcome.evidence_revision != 1:
-        raise FinalizationError("revision-1 verifier received a later finalization")
-
-    expected_run_dir_name = str(run_id)
-    if root.name != expected_run_dir_name:
-        # Case-preserving encoded directory keys are possible in ATES storage;
-        # do not infer identity from the lexical directory name. The manifest and
-        # evidence run IDs are authoritative instead.
-        pass
-
-    binding_manifests = binding.get("manifests")
-    if not isinstance(binding_manifests, Mapping):
-        raise FinalizationError("run binding manifest references are missing")
-    evidence_ref = binding_manifests.get("evidence")
-    package_ref = binding_manifests.get("package")
-    if not isinstance(evidence_ref, Mapping) or not isinstance(package_ref, Mapping):
-        raise FinalizationError("run binding manifest references are malformed")
-    manifest_bytes = manifest_path.read_bytes()
-    package_bytes = package_path.read_bytes()
-    if evidence_ref.get("sha256") != "sha256:" + hashlib.sha256(manifest_bytes).hexdigest():
-        raise FinalizationError("evidence manifest does not match run binding")
-    if package_ref.get("sha256") != "sha256:" + hashlib.sha256(package_bytes).hexdigest():
-        raise FinalizationError("package manifest does not match run binding")
-
-    if manifest.get("run_id") != str(run_id) or package.get("run_id") != str(run_id):
-        raise FinalizationError("manifest run_id does not match run binding")
-    if manifest.get("finalization_id") != str(outcome.finalization_id):
-        raise FinalizationError("manifest finalization_id does not match run binding")
-    evidence_meta = manifest.get("evidence")
-    if not isinstance(evidence_meta, Mapping):
-        raise FinalizationError("evidence manifest evidence entry is malformed")
-    evidence_path = root / "evidence.jsonl"
-    evidence_bytes = evidence_path.read_bytes()
-    if evidence_meta.get("size_bytes") != len(evidence_bytes):
-        raise FinalizationError("evidence size does not match manifest")
-    if evidence_meta.get("sha256") != "sha256:" + hashlib.sha256(evidence_bytes).hexdigest():
-        raise FinalizationError("evidence digest does not match manifest")
-
-    lines = evidence_bytes.splitlines(keepends=True)
-    if not lines or not lines[-1].endswith(b"\n"):
-        raise FinalizationError("final canonical evidence is not newline terminated")
-    try:
-        documents = [json.loads(line.decode("utf-8")) for line in lines]
-        events = tuple(StoredEvent.from_document(item) for item in documents)
-    except (UnicodeDecodeError, json.JSONDecodeError, AtesStoreError, ValueError) as exc:
-        raise FinalizationError("final canonical evidence cannot be parsed safely") from exc
-    if any(event.run_id != run_id for event in events):
-        raise FinalizationError("final evidence mixes run IDs")
-    if tuple(event.sequence for event in events) != tuple(range(1, len(events) + 1)):
-        raise FinalizationError("final evidence sequence is not gap-free")
-    final_event = events[-1]
-    completion_ref = binding.get("completion_event")
-    if not isinstance(completion_ref, Mapping):
-        raise FinalizationError("run binding completion event reference is malformed")
-    if (
-        final_event.envelope.event_type is not EventType.RUN_COMPLETED
-        or str(final_event.event_id) != completion_ref.get("event_id")
-        or final_event.sequence != completion_ref.get("sequence")
-    ):
-        raise FinalizationError("run binding does not identify the final RUN_COMPLETED event")
-    payload_finalization = final_event.payload.get("finalization")
-    if not isinstance(payload_finalization, Mapping):
-        raise FinalizationError("RUN_COMPLETED finalization payload is malformed")
-    if payload_finalization.get("finalization_id") != str(outcome.finalization_id):
-        raise FinalizationError("RUN_COMPLETED finalization does not match run binding")
-
-    return FinalizationResult(
-        outcome=outcome,
-        run_dir=root,
-        evidence_manifest_path=manifest_path,
-        package_manifest_path=package_path,
-        binding_path=binding_path,
-        trust_state=FinalizationTrustState.BOUND_VERIFIED,
-    )
-
-
-__all__ = [
-    "EVIDENCE_DIGEST_PROFILE",
-    "FINALIZATION_BINDING_VERSION",
-    "MANIFEST_VERSION",
-    "PACKAGE_MANIFEST_VERSION",
-    "FinalizationError",
-    "FinalizationResult",
-    "FinalizationTrustState",
-    "finalize_revision_one",
-    "verify_finalized_run",
-]
+__all__ = ["EVIDENCE_DIGEST_PROFILE", "FINALIZATION_BINDING_VERSION", "MANIFEST_VERSION", "PACKAGE_MANIFEST_VERSION", "FinalizationError", "FinalizationResult", "FinalizationTrustState", "finalize_revision_one", "recover_revision_one", "verify_finalized_run"]

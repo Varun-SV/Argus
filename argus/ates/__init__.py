@@ -21,7 +21,8 @@ from .core import (
 from .finalization import (
     EVIDENCE_DIGEST_PROFILE, FINALIZATION_BINDING_VERSION, MANIFEST_VERSION,
     PACKAGE_MANIFEST_VERSION, FinalizationError, FinalizationResult,
-    FinalizationTrustState, finalize_revision_one, verify_finalized_run,
+    FinalizationTrustState, finalize_revision_one, recover_revision_one,
+    verify_finalized_run,
 )
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
@@ -59,7 +60,7 @@ __all__ = [
     "RunStatus", "ScriptedSource", "SourceCommitment", "StatusInputs", "StepAttemptId",
     "StepAttemptRecord", "StepAttemptStatus", "StepId", "StepRecord", "StoredEvent",
     "Verification", "VerificationStatus", "derive_run_status", "effective_outcome",
-    "finalize_revision_one", "to_json_compatible", "validate_artifact_path",
-    "validate_step_attempt_history", "validate_step_evidence_relationships",
-    "verify_finalized_run",
+    "finalize_revision_one", "recover_revision_one", "to_json_compatible",
+    "validate_artifact_path", "validate_step_attempt_history",
+    "validate_step_evidence_relationships", "verify_finalized_run",
 ]
