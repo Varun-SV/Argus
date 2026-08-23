@@ -9,14 +9,15 @@ from .ids import RunId
 from .store import _run_directory_key
 
 
-def _preflight_recovery_members(project_dir, run_id, impl) -> None:
-    """Verify crash-state members before recovery publishes new state.
+class _BoundRunDetected(RuntimeError):
+    """Internal control flow: a final binding exists and must be verified strictly."""
 
-    AtesEventStore owns both the canonical RunId→directory encoding and the
-    narrow repair contract for an unterminated trailing JSONL record. Reuse
-    those authorities instead of reconstructing the run pathname or opening
-    evidence with stricter semantics than the recovery path itself.
-    """
+    def __init__(self, run_dir: Path) -> None:
+        super().__init__(f"finalized run binding already exists: {run_dir}")
+        self.run_dir = run_dir
+
+
+def _normalize_project_and_run_id(project_dir, run_id, impl) -> tuple[Path, RunId]:
     try:
         rid = run_id if isinstance(run_id, RunId) else RunId(run_id)
     except (TypeError, ValueError) as exc:
@@ -27,6 +28,59 @@ def _preflight_recovery_members(project_dir, run_id, impl) -> None:
         _round3._finalization_error(
             impl, "recovery project directory is unavailable", exc
         )
+    return project, rid
+
+
+def _bound_run_root(project_dir, run_id, impl) -> Path | None:
+    """Detect a final binding without opening or repairing canonical evidence.
+
+    Recovery's trailing-partial repair is valid only before ``run.json`` exists.
+    Probe that marker through a pinned/no-follow run directory first so a bound
+    package is always routed to strict verification with its evidence untouched.
+    Any filesystem object at the binding name counts as bound here; malformed,
+    linked, or otherwise unsafe bindings are for the strict verifier to reject.
+    """
+    project, rid = _normalize_project_and_run_id(project_dir, run_id, impl)
+    root = project / ".argus" / "runs" / _run_directory_key(rid)
+    if not root.exists():
+        return None
+
+    run_pin = None
+    try:
+        run_pin = impl._PinnedDirectory(root)
+        _round3._assert_directory_identity(run_pin, "ATES run directory", impl)
+        if not _round3._entry_exists(run_pin, "run.json", impl):
+            return None
+        _round3._assert_directory_identity(run_pin, "ATES run directory", impl)
+        return root
+    except impl.FinalizationError:
+        raise
+    except (OSError, impl.AtesStoreError, ValueError) as exc:
+        _round3._finalization_error(
+            impl, "bound recovery state cannot be inspected safely", exc
+        )
+    finally:
+        if run_pin is not None:
+            try:
+                run_pin.close()
+            except BaseException:
+                pass
+
+
+def _preflight_recovery_members(project_dir, run_id, impl) -> None:
+    """Verify crash-state members before recovery publishes new state.
+
+    AtesEventStore owns both the canonical RunId→directory encoding and the
+    narrow repair contract for an unterminated trailing JSONL record. Reuse
+    those authorities instead of reconstructing the run pathname or opening
+    evidence with stricter semantics than the recovery path itself.
+
+    Crucially, the final binding is detected *before* opening the store with
+    repair semantics. Once ``run.json`` exists, recovery must be read/verify
+    only: post-finalization corruption is never healed by the incomplete-run
+    tail-repair contract.
+    """
+    project, rid = _normalize_project_and_run_id(project_dir, run_id, impl)
 
     # Do not create a new run merely to preflight recovery. The existence probe
     # must use the same encoding as _RunDirectoryChain so supported uppercase
@@ -35,12 +89,21 @@ def _preflight_recovery_members(project_dir, run_id, impl) -> None:
     if not root.exists():
         return
 
+    # Re-check immediately before the repair-capable store open. The public
+    # recovery wrapper performs the same check on entry; this second pinned
+    # check closes the sibling path where a binding appears between wrapper
+    # dispatch and crash-state preflight.
+    bound_root = _bound_run_root(project, rid, impl)
+    if bound_root is not None:
+        raise _BoundRunDetected(bound_root)
+
     store = None
     manifests = None
     try:
-        # This may trim only an unterminated trailing record. That tail is not a
-        # canonical event; no new manifest, completion, or binding is published
-        # until the persisted candidate below has been proven byte-for-byte.
+        # This may trim only an unterminated trailing record for an *unbound*
+        # run. That tail is not a canonical event; no new manifest, completion,
+        # or binding is published until the persisted candidate below has been
+        # proven byte-for-byte.
         store = impl.AtesEventStore(
             project,
             rid,
@@ -55,8 +118,14 @@ def _preflight_recovery_members(project_dir, run_id, impl) -> None:
         run_pin = directories.run
         root = store.run_dir
 
+        # A cooperating Argus writer cannot publish this binding while the
+        # store authority above is held. If a binding nevertheless appears,
+        # fail closed instead of continuing an incomplete-run recovery path.
         if _round3._entry_exists(run_pin, "run.json", impl):
-            return
+            _round3._finalization_error(
+                impl,
+                "run became bound while incomplete-run recovery authority was held",
+            )
         if not _round3._entry_exists(run_pin, "manifests", impl):
             return
 
@@ -189,5 +258,22 @@ def _preflight_recovery_members(project_dir, run_id, impl) -> None:
 
 
 def install() -> None:
-    """Replace round-3's preflight while preserving its recovery wrapper."""
+    """Install bound-state routing plus the hardened crash-state preflight."""
+    from . import finalization_impl as impl
+
+    previous_recover = impl.recover_revision_one
     _round3._preflight_recovery_members = _preflight_recovery_members
+
+    def recover(project_dir, run_id):
+        bound_root = _bound_run_root(project_dir, run_id, impl)
+        if bound_root is not None:
+            # Strict verification opens evidence without repair semantics. A
+            # partial/tampered tail therefore fails and remains byte-for-byte
+            # untouched instead of being healed by recovery.
+            return impl.verify_finalized_run(bound_root)
+        try:
+            return previous_recover(project_dir, run_id)
+        except _BoundRunDetected as detected:
+            return impl.verify_finalized_run(detected.run_dir)
+
+    impl.recover_revision_one = recover
