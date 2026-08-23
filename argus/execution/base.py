@@ -66,6 +66,11 @@ class ExecutionEnvironment(Adapter, ABC):
     Transfer preparation/staging occurs before target launch, while collection
     must finish before the environment is closed, retained, or destroyed.
 
+    Privacy-aware ATES collection maps each already-declared guest source to an
+    Argus-generated opaque destination inside a caller-owned pinned artifact
+    tree. The execution environment may stream bytes into those destinations,
+    but it does not choose canonical artifact identities or disclosure policy.
+
     Isolation contract
     ------------------
     Production Capsule creation routes through the PR6 secure environment. The
@@ -118,9 +123,25 @@ class ExecutionEnvironment(Adapter, ABC):
         )
 
     def collect_artifacts(self, paths, output_dir: Path) -> list[dict]:
-        """Collect explicit workspace files into ``output_dir``."""
+        """Collect explicit workspace files into ``output_dir`` (legacy API)."""
         raise ExecutionEnvironmentError(
             "artifact collection is not supported by this execution environment"
+        )
+
+    def collect_artifacts_to_tree(self, entries, output_tree) -> list[dict]:
+        """Collect declared guest files to caller-selected pinned destinations.
+
+        ``entries`` contains mappings with a declared guest ``path`` and an
+        opaque host ``destination`` relative to ``output_tree``. Capsule
+        implementations reuse the authenticated guest-transfer protocol through
+        the narrow PR #21 bridge; other execution environments fail closed.
+        """
+        if self.environment_type == "capsule":
+            from argus.execution.ates_collection import collect_capsule_artifacts_to_tree
+
+            return collect_capsule_artifacts_to_tree(self, entries, output_tree)
+        raise ExecutionEnvironmentError(
+            "protected mapped artifact collection is not supported by this execution environment"
         )
 
 
