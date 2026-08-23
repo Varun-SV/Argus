@@ -31,7 +31,7 @@ from argus.engine.runner import run_test
 from argus.engine.spec import parse_spec
 from argus.tokens import Budget
 from tests.conftest import FakeAdapter, FakeProvider
-from tests.test_ates_finalization import _open_run
+from tests.test_ates_finalization import _open_run, _run_record_json
 
 
 _STARTED = "2026-08-23T10:00:00+00:00"
@@ -59,7 +59,7 @@ def _new_store(tmp_path, *, kind="act"):
     store.append(
         EventType.RUN_STARTED,
         {
-            "run": {"run_id": str(run_id)},
+            "run": _run_record_json(run_id),
             "steps": [to_json_compatible(step)],
         },
     )
@@ -178,7 +178,7 @@ def test_misordered_target_close_is_rejected(tmp_path):
     store.append(
         EventType.RUN_STARTED,
         {
-            "run": {"run_id": str(run_id)},
+            "run": _run_record_json(run_id),
             "steps": [to_json_compatible(step)],
         },
     )
