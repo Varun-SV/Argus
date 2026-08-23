@@ -24,6 +24,28 @@ from .finalization import (
     FinalizationTrustState, finalize_revision_one, recover_revision_one,
     verify_finalized_run,
 )
+
+# The hardened finalization layer validates the same immutable attempt stream as
+# the implementation helper, but older call sites pass only the event snapshot.
+# Keep one strict implementation and infer the already-bound RunId only for that
+# compatibility form. This adapter can be removed when the hardening layer is
+# folded back into finalization_impl.py.
+from . import finalization_impl as _finalization_impl
+
+_strict_validate_attempts = _finalization_impl._validate_attempts
+
+
+def _validate_attempts_compat(events, run_id=None):
+    snapshot = tuple(events)
+    if run_id is None:
+        if not snapshot:
+            raise FinalizationError("cannot validate an empty ATES attempt stream")
+        run_id = snapshot[0].run_id
+    return _strict_validate_attempts(snapshot, run_id)
+
+
+_finalization_impl._validate_attempts = _validate_attempts_compat
+
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
     EventId, FinalizationId, FindingId, ObservationId, RunId, StepAttemptId, StepId,
