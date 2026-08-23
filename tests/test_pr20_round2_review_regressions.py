@@ -140,7 +140,8 @@ steps:
     types = [event.envelope.event_type for event in events]
     assert EventType.TARGET_LAUNCHED not in types
     assert EventType.ENVIRONMENT_RELEASED in types
-    assert types[-1] is EventType.RUN_MARKED_INCOMPLETE
+    assert EventType.RUN_MARKED_INCOMPLETE in types
+    assert types[-1] is EventType.RUN_COMPLETED
 
 
 class _RollbackRetryAdapter(FakeAdapter):
