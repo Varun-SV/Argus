@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 from argus.ates import (
     AtesEventStore,
     EventType,
+    ExecutionKind,
     RunId,
+    RunRecord,
     RunStatus,
+    ScriptedSource,
+    SourceCommitment,
     StepAttemptId,
     StepId,
+    to_json_compatible,
 )
 from argus.ates.finalization import (
     FinalizationError,
@@ -18,6 +24,33 @@ from argus.ates.finalization import (
     finalize_revision_one,
     verify_finalized_run,
 )
+
+
+def _run_record_json(run_id):
+    commitment = SourceCommitment(
+        method="sha256",
+        value="sha256:test-finalization",
+        canonicalization_profile="test-finalization-v1",
+    )
+    return to_json_compatible(
+        RunRecord(
+            run_id=run_id,
+            execution_kind=ExecutionKind.SCRIPTED,
+            source=ScriptedSource(
+                test_case_id="TEST-finalization",
+                commitment=commitment,
+            ),
+            started_at=datetime(2026, 8, 23, 10, 0, tzinfo=timezone.utc),
+            argus_version="test",
+            adapter_type="fake",
+            environment_type="direct",
+            evidence_profile="test-evidence-v1",
+            configuration_commitment=commitment,
+            provider="fake",
+            model_provider="fake",
+            model="MODEL-test",
+        )
+    )
 
 
 def _open_run(tmp_path, *, step_status="passed", provisional=True):
@@ -28,7 +61,7 @@ def _open_run(tmp_path, *, step_status="passed", provisional=True):
     store.append(
         EventType.RUN_STARTED,
         {
-            "run": {"run_id": str(run_id)},
+            "run": _run_record_json(run_id),
             "steps": [
                 {
                     "step_id": str(step_id),
@@ -120,18 +153,15 @@ def test_failed_effective_step_derives_failed_even_if_provisional_legacy_says_pa
         store.close()
 
 
-def test_action_outcome_unknown_forces_error(tmp_path):
+def test_action_outcome_unknown_after_target_close_is_rejected(tmp_path):
     store = _open_run(tmp_path)
     try:
-        # Remove the provisional marker from authority by starting a fresh run
-        # shape where ACTION_OUTCOME_UNKNOWN occurs before release/finalization.
-        # The marker itself is intentionally only a provisional lifecycle fact.
         store.append(
             EventType.ACTION_OUTCOME_UNKNOWN,
             {"action_id": "ACT-unknown", "operation_id": "OP-unknown", "error": None},
         )
-        result = finalize_revision_one(store)
-        assert result.outcome.effective_status is RunStatus.ERROR
+        with pytest.raises(FinalizationError, match="active target lifecycle"):
+            finalize_revision_one(store)
     finally:
         store.close()
 
@@ -156,7 +186,7 @@ def test_missing_required_step_attempt_cannot_pass(tmp_path):
     try:
         store.append(
             EventType.RUN_STARTED,
-            {"run": {"run_id": str(run_id)}, "steps": [{"step_id": str(step_id), "kind": "act"}]},
+            {"run": _run_record_json(run_id), "steps": [{"step_id": str(step_id), "kind": "act"}]},
         )
         store.append(EventType.ENVIRONMENT_PREPARED, {"environment_type": "direct", "isolated": False})
         store.append(EventType.ENVIRONMENT_RELEASED, {})
