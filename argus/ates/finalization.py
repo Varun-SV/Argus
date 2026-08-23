@@ -86,15 +86,22 @@ def _requirement(value: object):
         raise _impl.FinalizationError("assertion requirement is invalid") from exc
 
 
-def _step_record(value: object) -> StepRecord:
+def _step_record(value: object):
     if not isinstance(value, Mapping):
         raise _impl.FinalizationError("RUN_STARTED step is malformed")
+    missing_instruction = "instruction" not in value
     try:
-        return StepRecord(
+        instruction = (
+            EvidenceValue.suppressed("evidence.missing_step_instruction")
+            if missing_instruction
+            else _evidence_value(value["instruction"], "step instruction")
+        )
+        record = StepRecord(
             step_id=value["step_id"],
-            instruction=_evidence_value(value["instruction"], "step instruction"),
+            instruction=instruction,
             kind=value["kind"],
         )
+        return record, missing_instruction
     except (KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, _impl.FinalizationError):
             raise
@@ -207,7 +214,14 @@ def _validate_relationships(events, run_id):
         or not isinstance(raw_steps, Sequence)
     ):
         raise _impl.FinalizationError("RUN_STARTED steps are malformed")
-    steps = tuple(_step_record(item) for item in tuple(raw_steps))
+    parsed_steps = tuple(_step_record(item) for item in tuple(raw_steps))
+    steps = tuple(item[0] for item in parsed_steps)
+    step_kind_by_id = {str(step.step_id): step.kind for step in steps}
+    structural_integrity_error = any(item[1] for item in parsed_steps)
+
+    # Preserve the more precise attempt-lifecycle diagnostics before applying
+    # the broader target/action/relationship state machines.
+    _impl._validate_attempts(snapshot)
 
     active_attempt = None
     terminal_attempts = []
@@ -252,7 +266,6 @@ def _validate_relationships(events, run_id):
                 or target_launched is not None
                 or target_closed is not None
                 or environment_released is not None
-                or active_attempt is not None
             ):
                 raise _impl.FinalizationError("target launch lifecycle is invalid")
             target_launched = event.sequence
@@ -260,9 +273,13 @@ def _validate_relationships(events, run_id):
 
         if kind is EventType.STEP_ATTEMPT_STARTED:
             record = _impl._attempt(event.payload.get("attempt"), running=True)
+            starts_before_launch = (
+                target_launched is None
+                and step_kind_by_id.get(str(record.step_id)) != "roam"
+            )
             if (
                 environment_prepared is None
-                or target_launched is None
+                or starts_before_launch
                 or target_closed is not None
                 or environment_released is not None
                 or active_attempt is not None
@@ -285,6 +302,10 @@ def _validate_relationships(events, run_id):
 
         if kind is EventType.OBSERVATION_CAPTURED:
             record = _observation_record(event.payload.get("observation"))
+            if target_launched is None or target_closed is not None:
+                raise _impl.FinalizationError(
+                    "observation occurred outside an active target lifecycle"
+                )
             if active_attempt != str(record.step_attempt_id):
                 raise _impl.FinalizationError(
                     "observation occurred outside its active step attempt"
@@ -304,6 +325,10 @@ def _validate_relationships(events, run_id):
             }[kind]
             record = _action_record(event.payload.get("action"), label)
             action_id = str(record.action_id)
+            if target_launched is None or target_closed is not None:
+                raise _impl.FinalizationError(
+                    f"{label} action occurred outside an active target lifecycle"
+                )
             if active_attempt != str(record.step_attempt_id):
                 raise _impl.FinalizationError(
                     f"{label} action occurred outside its active step attempt"
@@ -356,9 +381,9 @@ def _validate_relationships(events, run_id):
                 raise _impl.FinalizationError("action terminal identity is invalid")
             prior = action_states.get(action_id)
             if prior is None or prior[0] != "committed":
-                raise _impl.FinalizationError(
-                    "action terminal event has no matching dispatch commit"
-                )
+                structural_integrity_error = True
+                unresolved_dispatch = True
+                continue
             record = prior[1]
             expected_operation = (
                 str(record.operation_id) if record.operation_id is not None else None
@@ -388,6 +413,10 @@ def _validate_relationships(events, run_id):
 
         if kind is EventType.ASSERTION_EVALUATED:
             record = _assertion_record(event.payload.get("assertion"))
+            if target_launched is None or target_closed is not None:
+                raise _impl.FinalizationError(
+                    "assertion occurred outside an active target lifecycle"
+                )
             if active_attempt != str(record.step_attempt_id):
                 raise _impl.FinalizationError(
                     "assertion occurred outside its active step attempt"
@@ -400,7 +429,6 @@ def _validate_relationships(events, run_id):
                 target_launched is None
                 or target_closed is not None
                 or environment_released is not None
-                or active_attempt is not None
             ):
                 raise _impl.FinalizationError("target close lifecycle is invalid")
             target_closed = event.sequence
@@ -460,17 +488,23 @@ def _validate_relationships(events, run_id):
             f"canonical step evidence relationships are invalid: {exc}"
         ) from exc
 
-    return unresolved_dispatch, lifecycle_error
+    return unresolved_dispatch, lifecycle_error, structural_integrity_error
 
 
 def _derive(events, run_id):
-    unresolved_dispatch, lifecycle_error = _validate_relationships(events, run_id)
+    (
+        unresolved_dispatch,
+        lifecycle_error,
+        structural_integrity_error,
+    ) = _validate_relationships(events, run_id)
     state = _raw_derive(events, run_id)
     inputs = state.status_inputs
     if unresolved_dispatch:
         inputs = replace(inputs, unresolved_action_outcome=True)
     if lifecycle_error:
         inputs = replace(inputs, execution_error=True)
+    if structural_integrity_error:
+        inputs = replace(inputs, evidence_integrity_error=True)
 
     for event in events:
         if event.envelope.event_type is not EventType.RUN_MARKED_INCOMPLETE:
