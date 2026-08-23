@@ -110,6 +110,16 @@ def _derive_preserving_known_failure(events, run_id):
 
 _finalization_impl._derive = _derive_preserving_known_failure
 
+# Install the next hardening layer only after the compatibility hooks above are
+# in place. It validates canonical RunRecord provenance, prevents action
+# terminals after target close, preflights crash-recovery bytes before mutation,
+# and restores genuine execution errors that the preserved-target exception must
+# never erase.
+from .finalization_round3 import install as _install_finalization_round3
+
+_install_finalization_round3(_finalization_impl)
+recover_revision_one = _finalization_impl.recover_revision_one
+
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
     EventId, FinalizationId, FindingId, ObservationId, RunId, StepAttemptId, StepId,
