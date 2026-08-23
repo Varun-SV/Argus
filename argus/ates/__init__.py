@@ -1,5 +1,7 @@
 """Argus Test Evidence Specification (ATES) core schema and event storage."""
 
+from dataclasses import replace as _dc_replace
+
 from .artifacts import (
     ARTIFACT_BYTES_PROFILE, ARTIFACT_POLICY_VERSION, ARTIFACT_SUPPRESSION_REASONS,
     PROTECTED_ARTIFACT_COMMITMENT_PROFILE, PROTECTED_ARTIFACT_VERIFICATION_REF,
@@ -28,7 +30,7 @@ from .finalization import (
 # The hardened finalization layer validates the same immutable attempt stream as
 # the implementation helper, but older call sites pass only the event snapshot.
 # Keep one strict implementation and infer the already-bound RunId only for that
-# compatibility form. This adapter can be removed when the hardening layer is
+# compatibility form. These adapters can be removed when the hardening layer is
 # folded back into finalization_impl.py.
 from . import finalization_impl as _finalization_impl
 
@@ -45,6 +47,68 @@ def _validate_attempts_compat(events, run_id=None):
 
 
 _finalization_impl._validate_attempts = _validate_attempts_compat
+
+# A failed run may deliberately preserve the target after a Failure Capsule
+# retention failure. In that shape the immutable evidence already contains a
+# deterministic failure plus the provisional execution_result="fail" handoff,
+# but there is intentionally no TARGET_CLOSED. Missing close must still prevent
+# a successful outcome, while it must not upgrade that already-known failure to
+# an execution error and erase the caller-visible test result.
+_hardened_derive = _finalization_impl._derive
+
+
+def _derive_preserving_known_failure(events, run_id):
+    snapshot = tuple(events)
+    state = _hardened_derive(snapshot, run_id)
+    inputs = state.status_inputs
+    if not (inputs.execution_error and inputs.deterministic_failure):
+        return state
+
+    has_launch = any(
+        event.envelope.event_type is EventType.TARGET_LAUNCHED
+        for event in snapshot
+    )
+    has_close = any(
+        event.envelope.event_type is EventType.TARGET_CLOSED
+        for event in snapshot
+    )
+    has_release = any(
+        event.envelope.event_type is EventType.ENVIRONMENT_RELEASED
+        for event in snapshot
+    )
+    provisional_fail = any(
+        event.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE
+        and event.payload.get("reason") == "runtime.finalization_pending"
+        and str(event.payload.get("execution_result") or "").strip().lower()
+        in {"fail", "failed"}
+        for event in snapshot
+    )
+    nonprovisional_incomplete = any(
+        event.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE
+        and event.payload.get("reason") != "runtime.finalization_pending"
+        for event in snapshot
+    )
+    unresolved_action = any(
+        event.envelope.event_type is EventType.ACTION_OUTCOME_UNKNOWN
+        for event in snapshot
+    )
+
+    if (
+        has_launch
+        and not has_close
+        and has_release
+        and provisional_fail
+        and not nonprovisional_incomplete
+        and not unresolved_action
+    ):
+        return _dc_replace(
+            state,
+            status_inputs=_dc_replace(inputs, execution_error=False),
+        )
+    return state
+
+
+_finalization_impl._derive = _derive_preserving_known_failure
 
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,
