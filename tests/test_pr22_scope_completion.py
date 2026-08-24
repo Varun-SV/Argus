@@ -124,7 +124,8 @@ def test_closed_run_recovery_materializes_complete_pr22_package(tmp_path):
 
     report = json.loads((root / "reports" / "report.json").read_text("utf-8"))
     assert report["evidence_trust_state"] == "bound_verified"
-    assert report["report_trust_state"] == "regenerated_verified"
+    assert report["report_trust_state"] == "unverified_derived"
+    assert verify_report_bundle(root).trust_state is FinalizationTrustState.REGENERATED_VERIFIED
     assert report["outcome"]["effective_status"] == "passed"
     assert report["renderer"]["active_artifact_links"] is False
 
