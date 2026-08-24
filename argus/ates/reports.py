@@ -10,6 +10,12 @@ from .audit_round2 import install as _install_audit_round2
 # rules as the public approval API.
 _install_audit_round2()
 
+from .audit_round3 import install as _install_audit_round3
+
+# Round 3 strengthens dedupe semantics and approval retry identity while
+# preserving the round-2 transaction/consumer-visibility protocol.
+_install_audit_round3()
+
 from .reports_round2 import install as _install_reports_round2
 
 _install_reports_round2()
