@@ -22,6 +22,13 @@ from .audit_round4 import install as _install_audit_round4
 # contract; ordinary/read-only detached-ledger validation remains strict.
 _install_audit_round4()
 
+from .audit_round5 import install as _install_audit_round5
+
+# Round 5 separates crash-retry identity from approval lifecycle generation so
+# approve -> revoke -> approve again creates a new effective operation while
+# retries within either generation still converge to the original durable row.
+_install_audit_round5()
+
 from .reports_round2 import install as _install_reports_round2
 
 _install_reports_round2()
