@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .audit_lock import install as _install_audit_lock
+
+# Detached approval/audit writes share the same run-scoped cross-process writer
+# authority as canonical ATES writes. Install before exposing package helpers.
+_install_audit_lock()
+
 from .audit import (
     ApprovalError,
     KeyResolver,
@@ -36,7 +42,7 @@ def complete_run_package(
 ) -> CompletedRunPackage:
     """Materialize detached ledgers and reproducible reports for a closed run.
 
-    This function deliberately runs *after* canonical finalization.  The
+    This function deliberately runs *after* canonical finalization. The
     approvals/audit ledgers and reports never mutate evidence.jsonl, run.json,
     or the immutable evidence/package manifest revision they discuss.
     """
