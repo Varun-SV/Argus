@@ -8,6 +8,7 @@ REGENERATED_VERIFIED only after comparing those bytes with a fresh regeneration.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Mapping
 
@@ -19,9 +20,22 @@ _base_manifest = _runtime._manifest
 
 
 def _member_snapshot(root: Path, name: str) -> dict[str, object]:
+    path = root / name
+    # Missing detached ledgers are a valid read-only state immediately after
+    # canonical finalization.  Distinguish true absence from an unsafe existing
+    # filesystem object (including dangling symlinks) without creating anything.
+    if not os.path.lexists(path):
+        return {
+            "path": name,
+            "state": "absent",
+            "size_bytes": 0,
+            "sha256": None,
+        }
+
     raw = _runtime._pinned_bytes(root, name, f"detached ledger snapshot {name}")
     return {
         "path": name,
+        "state": "present",
         "size_bytes": len(raw),
         "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
     }
@@ -35,8 +49,9 @@ def _detached_snapshot(root: Path) -> dict[str, object]:
             _member_snapshot(root, "audit.jsonl"),
         ],
         "freshness_note": (
-            "These digests identify the detached-ledger bytes used to render this report. "
-            "They do not prove the files are still current; call verify_report_bundle()."
+            "These entries identify the detached-ledger state used to render this report. "
+            "A member may be explicitly absent; present-member digests do not prove the files "
+            "are still current. Call verify_report_bundle()."
         ),
     }
 
