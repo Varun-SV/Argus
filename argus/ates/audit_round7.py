@@ -51,6 +51,57 @@ def _timestamp_error(record: Mapping[str, object]) -> Optional[str]:
     return None
 
 
+def _approval_structural_error(
+    record: Mapping[str, object],
+    *,
+    result,
+    manifest_digest: str,
+    seen: dict[str, Mapping[str, object]],
+) -> Optional[str]:
+    """Validate one approval against the current immutable package.
+
+    This is intentionally shared with approval-generation recovery.  A later
+    signed/audited row must not terminate a live request generation unless the
+    normal read-side validator would also accept its structure and package
+    binding.
+    """
+    approval_id = record.get("approval_id")
+    structural_error: Optional[str] = None
+    if record.get("ledger_version") != _impl.APPROVAL_LEDGER_VERSION:
+        structural_error = "unsupported approval ledger version"
+    elif not isinstance(approval_id, str) or not _impl._APPROVAL_ID_RE.fullmatch(approval_id):
+        structural_error = "approval_id is invalid"
+    elif approval_id in seen:
+        structural_error = "approval_id is duplicated"
+    elif record.get("run_id") != str(result.outcome.run_id):
+        structural_error = "approval is bound to another run"
+    elif record.get("finalization_id") != str(result.outcome.finalization_id):
+        structural_error = "approval is bound to another finalization"
+    elif record.get("evidence_revision") != result.outcome.evidence_revision:
+        structural_error = "approval evidence revision is stale"
+    elif record.get("manifest_revision") != 1 or record.get("manifest_digest") != manifest_digest:
+        structural_error = "approval manifest binding is stale or invalid"
+    elif record.get("action") not in {item.value for item in _impl.ApprovalAction}:
+        structural_error = "approval action is invalid"
+    elif not isinstance(record.get("actor"), str) or not str(record.get("actor")).strip():
+        structural_error = "approval actor is invalid"
+    elif not isinstance(record.get("role"), str) or not str(record.get("role")).strip():
+        structural_error = "approval role is invalid"
+    else:
+        structural_error = _timestamp_error(record)
+
+    if structural_error is None and isinstance(approval_id, str):
+        seen[approval_id] = record
+        supersedes = record.get("supersedes_approval_id")
+        if supersedes is not None and (
+            not isinstance(supersedes, str)
+            or supersedes not in seen
+            or supersedes == approval_id
+        ):
+            structural_error = "approval supersession target is invalid or not historical"
+    return structural_error
+
+
 def validate_audit_chain(run_dir):
     records = tuple(_previous_validate_audit_chain(run_dir))
     seen_dedupe: set[str] = set()
@@ -84,39 +135,12 @@ def validate_approvals(run_dir: Path | str, *, key_resolver=None):
 
     for record in raw_records:
         approval_id = record.get("approval_id")
-        structural_error: Optional[str] = None
-        if record.get("ledger_version") != _impl.APPROVAL_LEDGER_VERSION:
-            structural_error = "unsupported approval ledger version"
-        elif not isinstance(approval_id, str) or not _impl._APPROVAL_ID_RE.fullmatch(approval_id):
-            structural_error = "approval_id is invalid"
-        elif approval_id in seen:
-            structural_error = "approval_id is duplicated"
-        elif record.get("run_id") != str(result.outcome.run_id):
-            structural_error = "approval is bound to another run"
-        elif record.get("finalization_id") != str(result.outcome.finalization_id):
-            structural_error = "approval is bound to another finalization"
-        elif record.get("evidence_revision") != result.outcome.evidence_revision:
-            structural_error = "approval evidence revision is stale"
-        elif record.get("manifest_revision") != 1 or record.get("manifest_digest") != manifest_digest:
-            structural_error = "approval manifest binding is stale or invalid"
-        elif record.get("action") not in {item.value for item in _impl.ApprovalAction}:
-            structural_error = "approval action is invalid"
-        elif not isinstance(record.get("actor"), str) or not str(record.get("actor")).strip():
-            structural_error = "approval actor is invalid"
-        elif not isinstance(record.get("role"), str) or not str(record.get("role")).strip():
-            structural_error = "approval role is invalid"
-        else:
-            structural_error = _timestamp_error(record)
-
-        if structural_error is None and isinstance(approval_id, str):
-            seen[approval_id] = record
-            supersedes = record.get("supersedes_approval_id")
-            if supersedes is not None and (
-                not isinstance(supersedes, str)
-                or supersedes not in seen
-                or supersedes == approval_id
-            ):
-                structural_error = "approval supersession target is invalid or not historical"
+        structural_error = _approval_structural_error(
+            record,
+            result=result,
+            manifest_digest=manifest_digest,
+            seen=seen,
+        )
 
         status, reason_text = (
             (VerificationStatus.INVALID, structural_error)
@@ -180,4 +204,9 @@ def install() -> None:
         reports_runtime.validate_approvals = validate_approvals
 
 
-__all__ = ["install", "validate_audit_chain", "validate_approvals"]
+__all__ = [
+    "_approval_structural_error",
+    "install",
+    "validate_audit_chain",
+    "validate_approvals",
+]

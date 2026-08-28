@@ -85,8 +85,22 @@ def _is_committed_verified_superseder(
     target_approval_id: str,
     audits_by_approval: Mapping[str, list[Mapping[str, object]]],
     key_resolver,
+    result,
+    manifest_digest: str,
+    seen: dict[str, Mapping[str, object]],
 ) -> bool:
     """Return true only for an authenticated, authorized, audited superseder."""
+    # Import lazily: round 7 is installed after this module, but all public
+    # approval writes occur after package initialization has completed.
+    from . import audit_round7 as _round7
+
+    if _round7._approval_structural_error(
+        record,
+        result=result,
+        manifest_digest=manifest_digest,
+        seen=seen,
+    ) is not None:
+        return False
     if record.get("supersedes_approval_id") != target_approval_id:
         return False
     status, _reason = _api._authentication_status(record, key_resolver)
@@ -107,17 +121,35 @@ def _later_generation_terminator(
     audits_by_approval: Mapping[str, list[Mapping[str, object]]],
     *,
     key_resolver,
+    result,
+    manifest_digest: str,
 ) -> Optional[Mapping[str, object]]:
     approval_id = candidate.get("approval_id")
     if not isinstance(approval_id, str):
         return None
     latest: Optional[Mapping[str, object]] = None
+    # Reconstruct the same historical structural view used by
+    # validate_approvals(). Invalid rows never gain authority merely because
+    # their authentication and audit digest happen to be valid.
+    from . import audit_round7 as _round7
+
+    seen: dict[str, Mapping[str, object]] = {}
+    for record in approvals[: candidate_index + 1]:
+        _round7._approval_structural_error(
+            record,
+            result=result,
+            manifest_digest=manifest_digest,
+            seen=seen,
+        )
     for record in approvals[candidate_index + 1 :]:
         if _is_committed_verified_superseder(
             record,
             target_approval_id=approval_id,
             audits_by_approval=audits_by_approval,
             key_resolver=key_resolver,
+            result=result,
+            manifest_digest=manifest_digest,
+            seen=seen,
         ):
             latest = record
     return latest
@@ -176,7 +208,7 @@ def append_approval(
     """
     if action is None:
         action = _impl.ApprovalAction.APPROVE
-    root, _result, _manifest_digest = _impl._manifest_identity(run_dir)
+    root, result, manifest_digest = _impl._manifest_identity(run_dir)
     _impl.ensure_detached_ledgers(root)
     template = _impl._new_approval_record(
         root,
@@ -228,6 +260,8 @@ def append_approval(
                 candidate,
                 audits_by_approval,
                 key_resolver=generation_resolver,
+                result=result,
+                manifest_digest=manifest_digest,
             )
             if terminator is None:
                 if state == "pending":

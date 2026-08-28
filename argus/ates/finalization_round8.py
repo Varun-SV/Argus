@@ -13,11 +13,13 @@ opaque data during finalization:
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import replace
 
+from . import finalization_round3 as _round3
 from .artifacts import ArtifactContext, ArtifactSuppression
-from .core import EventType
+from .core import EventType, EvidenceValue
 from .ids import ArtifactId, FindingId, StepAttemptId
 
 _SUPPORTED_EXECUTION_RESULTS = frozenset(
@@ -29,9 +31,15 @@ _SUPPRESSION_REQUIRED = frozenset(
 _SUPPRESSION_ALLOWED = _SUPPRESSION_REQUIRED | frozenset(
     {"finding_id", "collection_ordinal"}
 )
+_TARGET_ALLOWED = frozenset({"target"})
+_ENVIRONMENT_REQUIRED = frozenset({"environment_type", "isolated"})
+_INCOMPLETE_ALLOWED = frozenset({"reason", "execution_result"})
+_SAFE_INCOMPLETE_REASON = re.compile(
+    r"^[a-z][a-z0-9_]{0,31}(?:\.[a-z][a-z0-9_]{0,31}){1,7}$"
+)
 
 
-def _validate_suppression(payload: object, impl) -> None:
+def _validate_suppression(payload: object, impl):
     if not isinstance(payload, Mapping):
         raise impl.FinalizationError("ARTIFACT_SUPPRESSED payload is malformed")
 
@@ -103,22 +111,147 @@ def _validate_suppression(payload: object, impl) -> None:
             raise impl.FinalizationError(
                 "screenshot suppression cannot carry collection metadata"
             )
+    return suppression, attempt_id, finding_id
+
+
+def _validate_lifecycle_payloads(events, run_id, impl) -> None:
+    starts = [
+        event
+        for event in events
+        if event.envelope.event_type is EventType.RUN_STARTED
+    ]
+    if len(starts) != 1:
+        raise impl.FinalizationError(
+            "finalization requires exactly one RUN_STARTED event"
+        )
+    run = _round3._run_record(starts[0].payload.get("run"), run_id, impl)
+
+    for event in events:
+        kind = event.envelope.event_type
+        if kind is EventType.ENVIRONMENT_PREPARED:
+            payload = event.payload
+            if set(payload) != _ENVIRONMENT_REQUIRED:
+                raise impl.FinalizationError(
+                    "ENVIRONMENT_PREPARED payload shape is invalid"
+                )
+            if payload.get("environment_type") != run.environment_type:
+                raise impl.FinalizationError(
+                    "ENVIRONMENT_PREPARED environment_type contradicts RUN_STARTED"
+                )
+            if not isinstance(payload.get("isolated"), bool):
+                raise impl.FinalizationError(
+                    "ENVIRONMENT_PREPARED isolated must be a boolean"
+                )
+        elif kind is EventType.TARGET_LAUNCHED:
+            payload = event.payload
+            if set(payload) != _TARGET_ALLOWED:
+                raise impl.FinalizationError("TARGET_LAUNCHED payload shape is invalid")
+            target = payload.get("target")
+            if not isinstance(target, Mapping):
+                raise impl.FinalizationError(
+                    "TARGET_LAUNCHED target must be privacy-classified evidence"
+                )
+            allowed = {
+                "disposition",
+                "value",
+                "reason",
+                "secret_refs",
+                "protected_ref",
+            }
+            if set(target) - allowed:
+                raise impl.FinalizationError(
+                    "TARGET_LAUNCHED target contains unexpected plaintext fields"
+                )
+            refs = target.get("secret_refs", ())
+            if isinstance(refs, (str, bytes, bytearray, Mapping)):
+                raise impl.FinalizationError(
+                    "TARGET_LAUNCHED target secret_refs are malformed"
+                )
+            try:
+                EvidenceValue(
+                    disposition=target.get("disposition"),
+                    value=target.get("value"),
+                    reason=target.get("reason"),
+                    secret_refs=tuple(refs),
+                    protected_ref=target.get("protected_ref"),
+                )
+            except (TypeError, ValueError) as exc:
+                raise impl.FinalizationError(
+                    "TARGET_LAUNCHED target is invalid privacy-classified evidence"
+                ) from exc
+
+
+def _validate_suppression_relationships(events, impl) -> None:
+    attempt_ids: set[str] = set()
+    finding_ids: set[str] = set()
+    retained_artifact_ids: set[str] = set()
+    suppressions = []
+
+    for event in events:
+        kind = event.envelope.event_type
+        if kind in {EventType.STEP_ATTEMPT_STARTED, EventType.STEP_ATTEMPT_COMPLETED}:
+            attempt = event.payload.get("attempt")
+            if isinstance(attempt, Mapping):
+                attempt_id = attempt.get("step_attempt_id")
+                if isinstance(attempt_id, str):
+                    attempt_ids.add(attempt_id)
+        elif kind is EventType.FINDING_RECORDED:
+            finding = event.payload.get("finding")
+            if isinstance(finding, Mapping):
+                finding_id = finding.get("finding_id")
+                if isinstance(finding_id, str):
+                    finding_ids.add(finding_id)
+        elif kind in {EventType.CHECKPOINT_CAPTURED, EventType.ARTIFACT_COLLECTED}:
+            artifact = event.payload.get("artifact")
+            if isinstance(artifact, Mapping):
+                artifact_id = artifact.get("artifact_id")
+                if isinstance(artifact_id, str):
+                    retained_artifact_ids.add(artifact_id)
+        elif kind is EventType.ARTIFACT_SUPPRESSED:
+            suppressions.append(_validate_suppression(event.payload, impl))
+
+    seen_artifact_ids = set(retained_artifact_ids)
+    for suppression, attempt_id, finding_id in suppressions:
+        artifact_id = str(suppression.artifact_id)
+        if artifact_id in seen_artifact_ids:
+            raise impl.FinalizationError(
+                "artifact_id is duplicated across retained and suppressed outcomes"
+            )
+        seen_artifact_ids.add(artifact_id)
+        if attempt_id is not None and str(attempt_id) not in attempt_ids:
+            raise impl.FinalizationError(
+                "ARTIFACT_SUPPRESSED references an unknown step_attempt_id"
+            )
+        if finding_id is not None and str(finding_id) not in finding_ids:
+            raise impl.FinalizationError(
+                "ARTIFACT_SUPPRESSED references an unknown finding_id"
+            )
 
 
 def _validate_terminal_marker(payload: object, impl) -> None:
     if not isinstance(payload, Mapping):
         raise impl.FinalizationError("RUN_MARKED_INCOMPLETE payload is malformed")
-    if payload.get("reason") != "runtime.finalization_pending":
-        return
+    unexpected = set(payload) - _INCOMPLETE_ALLOWED
+    if unexpected:
+        raise impl.FinalizationError(
+            "RUN_MARKED_INCOMPLETE payload contains unexpected fields"
+        )
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not _SAFE_INCOMPLETE_REASON.fullmatch(reason):
+        raise impl.FinalizationError(
+            "RUN_MARKED_INCOMPLETE reason must be a machine-safe reason code"
+        )
     value = payload.get("execution_result")
+    if reason != "runtime.finalization_pending" and value is None:
+        return
     if not isinstance(value, str):
         raise impl.FinalizationError(
-            "runtime.finalization_pending requires a string execution_result"
+            "RUN_MARKED_INCOMPLETE requires a string execution_result"
         )
     normalized = value.strip().lower()
     if normalized not in _SUPPORTED_EXECUTION_RESULTS or value != normalized:
         raise impl.FinalizationError(
-            "runtime.finalization_pending execution_result is unsupported"
+            "RUN_MARKED_INCOMPLETE execution_result is unsupported"
         )
 
 
@@ -155,10 +288,10 @@ def install(impl) -> None:
 
     def derive(events, run_id):
         snapshot = tuple(events)
+        _validate_lifecycle_payloads(snapshot, run_id, impl)
+        _validate_suppression_relationships(snapshot, impl)
         for event in snapshot:
-            if event.envelope.event_type is EventType.ARTIFACT_SUPPRESSED:
-                _validate_suppression(event.payload, impl)
-            elif event.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE:
+            if event.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE:
                 _validate_terminal_marker(event.payload, impl)
 
         dangling_proposal = _has_dangling_proposal(snapshot)

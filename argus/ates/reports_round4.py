@@ -8,12 +8,17 @@ fails, the old named members are restored before the error is returned.
 from __future__ import annotations
 
 import os
+import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import reports_runtime as _runtime
 from .finalization import FinalizationTrustState
-from .store import AtesStoreError, _PinnedDirectory
+from .store import AtesStoreBusy, AtesStoreError, _PinnedDirectory, _WriterLock
+
+_LOCK_WAIT_SECONDS = 5.0
+_LOCK_RETRY_SECONDS = 0.01
 
 
 def _exists(directory: _PinnedDirectory, name: str) -> bool:
@@ -124,12 +129,68 @@ def _rollback(
         ) from exc
 
 
-def render_reports(
-    run_dir: Path | str,
+@contextmanager
+def _report_transaction(root: Path):
+    """Hold a report-directory-scoped writer lock for one whole generation."""
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    run_pin = reports = lock = None
+    while True:
+        run_pin = _PinnedDirectory(root)
+        try:
+            reports = run_pin.ensure_child("reports", "ATES reports directory")
+            run_pin.assert_child_identity("reports", reports, "ATES reports directory")
+            lock = _WriterLock(reports)
+            lock.assert_authoritative()
+            break
+        except AtesStoreBusy as exc:
+            if reports is not None:
+                reports.close()
+            run_pin.close()
+            reports = run_pin = None
+            if time.monotonic() >= deadline:
+                raise _runtime.ReportError(
+                    "timed out waiting for report writer authority"
+                ) from exc
+            time.sleep(_LOCK_RETRY_SECONDS)
+        except BaseException:
+            if reports is not None:
+                reports.close()
+            if run_pin is not None:
+                run_pin.close()
+            raise
+    try:
+        yield run_pin, reports, lock
+    finally:
+        if lock is not None:
+            try:
+                lock.close()
+            except BaseException:
+                pass
+        if reports is not None:
+            try:
+                reports.close()
+            except BaseException:
+                pass
+        if run_pin is not None:
+            try:
+                run_pin.close()
+            except BaseException:
+                pass
+
+
+def _render_reports_locked(
+    root: Path,
+    run_pin: _PinnedDirectory,
+    reports: _PinnedDirectory,
+    lock: _WriterLock,
     *,
     approval_key_resolver=None,
 ):
-    root = _runtime._root(run_dir)
+    """Render while the caller owns the report-scoped writer authority."""
+    # Build the model only after acquiring authority. Detached-ledger changes
+    # remain detectable by the post-publication verifier, while other report
+    # writers cannot interfere with this transaction's names or backups.
+    lock.assert_authoritative()
     model = _runtime._model(root, approval_key_resolver)
     members = _runtime._rendered(model)
     manifest_bytes = _runtime._json(_runtime._manifest(root, members))
@@ -140,13 +201,11 @@ def render_reports(
     staged: dict[str, str] = {}
     backups: dict[str, str] = {}
     published: list[str] = []
-    run_pin = reports = None
     paths: dict[str, Path] = {}
 
     try:
-        run_pin = _PinnedDirectory(root)
-        reports = run_pin.ensure_child("reports", "ATES reports directory")
         run_pin.assert_child_identity("reports", reports, "ATES reports directory")
+        lock.assert_authoritative()
 
         # Stage *all* bytes under private names first. A late renderer/write
         # failure cannot touch the previously published bundle.
@@ -186,6 +245,7 @@ def render_reports(
             paths[name] = reports.path / name
         reports.fsync()
         run_pin.assert_child_identity("reports", reports, "ATES reports directory")
+        lock.assert_authoritative()
 
         checked = _runtime.verify_report_bundle(
             root,
@@ -195,6 +255,7 @@ def render_reports(
             raise _runtime.ReportError(
                 checked.error or "regenerated report verification failed"
             )
+        lock.assert_authoritative()
 
         # Verification succeeded against the current canonical + detached state;
         # the old generation is no longer needed.
@@ -230,17 +291,27 @@ def render_reports(
         if isinstance(exc, (OSError, AtesStoreError)):
             raise _runtime.ReportError("cannot publish report bundle safely") from exc
         raise
-    finally:
-        if reports is not None:
-            try:
-                reports.close()
-            except BaseException:
-                pass
-        if run_pin is not None:
-            try:
-                run_pin.close()
-            except BaseException:
-                pass
+
+
+def render_reports(
+    run_dir: Path | str,
+    *,
+    approval_key_resolver=None,
+):
+    root = _runtime._root(run_dir)
+    # Report publication has its own cross-process writer authority. Detached
+    # ledgers retain their independent append lock; the post-publication
+    # verifier detects any ledger change and triggers rollback while no second
+    # renderer can touch this generation's names/backups.
+    with _report_transaction(root) as (run_pin, reports, lock):
+        lock.assert_authoritative()
+        return _render_reports_locked(
+            root,
+            run_pin,
+            reports,
+            lock,
+            approval_key_resolver=approval_key_resolver,
+        )
 
 
 def install() -> None:
