@@ -35,6 +35,12 @@ from .audit_round6 import install as _install_audit_round6
 # representing a detached ledger as locally chain verified.
 _install_audit_round6()
 
+from .audit_round7 import install as _install_audit_round7
+
+# Round 7 distinguishes unsafe ledger entries from true absence, validates
+# approval chronology, and rejects ambiguous duplicate audit dedupe keys.
+_install_audit_round7()
+
 from .reports_round2 import install as _install_reports_round2
 
 _install_reports_round2()
