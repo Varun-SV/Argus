@@ -130,7 +130,7 @@ def test_explicit_approval_timestamps_are_distinct_request_identity(tmp_path):
     ]
 
 
-def _finalize_failed_missing_close(tmp_path, *, retained: bool):
+def _finalize_failed_missing_close(tmp_path, *, retained: bool, capsule: bool = False):
     run_id = RunId.new()
     step_id = StepId.new()
     attempt_id = StepAttemptId.new()
@@ -139,17 +139,23 @@ def _finalize_failed_missing_close(tmp_path, *, retained: bool):
         instruction=EvidenceValue.redacted("privacy.authored_text"),
         kind="act",
     )
+    run_record = _run_record_json(run_id)
+    if capsule:
+        run_record["environment_type"] = "capsule"
     store = AtesEventStore(tmp_path, run_id)
     store.append(
         EventType.RUN_STARTED,
         {
-            "run": _run_record_json(run_id),
+            "run": run_record,
             "steps": [to_json_compatible(step)],
         },
     )
     store.append(
         EventType.ENVIRONMENT_PREPARED,
-        {"environment_type": "direct", "isolated": False},
+        {
+            "environment_type": "capsule" if capsule else "direct",
+            "isolated": capsule,
+        },
     )
     store.append(
         EventType.TARGET_LAUNCHED,
@@ -182,7 +188,9 @@ def test_missing_target_close_is_error_without_retention_evidence(tmp_path):
 
 
 def test_failure_capsule_retention_evidence_preserves_deterministic_failure(tmp_path):
-    result = _finalize_failed_missing_close(tmp_path, retained=True)
+    # A retained target is a legitimate substitute for TARGET_CLOSED only when
+    # canonical provenance proves an isolated Capsule can actually preserve it.
+    result = _finalize_failed_missing_close(tmp_path, retained=True, capsule=True)
     assert result.outcome.effective_status is RunStatus.FAILED
 
 
