@@ -50,5 +50,12 @@ def install() -> None:
 
     _install_round8(impl)
 
+    # Round 9 validates every report-bound producer record for extension/privacy
+    # safety, retained checkpoint/Finding relationships, capsule semantics, and
+    # normalized AssertionRecord defaults.
+    from .finalization_round9 import install as _install_round9
+
+    _install_round9(impl)
+
 
 __all__ = ["install"]
