@@ -57,9 +57,46 @@ def _derive_preserving_known_failure(events, run_id):
     inputs = state.status_inputs
     if not (inputs.execution_error and inputs.deterministic_failure):
         return state
-    has_launch = any(e.envelope.event_type is EventType.TARGET_LAUNCHED for e in snapshot)
-    has_close = any(e.envelope.event_type is EventType.TARGET_CLOSED for e in snapshot)
-    has_release = any(e.envelope.event_type is EventType.ENVIRONMENT_RELEASED for e in snapshot)
+
+    launch_index = next(
+        (
+            index
+            for index, event in enumerate(snapshot)
+            if event.envelope.event_type is EventType.TARGET_LAUNCHED
+        ),
+        None,
+    )
+    close_index = next(
+        (
+            index
+            for index, event in enumerate(snapshot)
+            if event.envelope.event_type is EventType.TARGET_CLOSED
+        ),
+        None,
+    )
+    release_index = next(
+        (
+            index
+            for index, event in enumerate(snapshot)
+            if event.envelope.event_type is EventType.ENVIRONMENT_RELEASED
+        ),
+        None,
+    )
+    retained_index = next(
+        (
+            index
+            for index, event in enumerate(snapshot)
+            if event.envelope.event_type is EventType.FAILURE_CAPSULE_RETAINED
+            and event.payload.get("retained") is True
+        ),
+        None,
+    )
+    retention_evidence = (
+        launch_index is not None
+        and retained_index is not None
+        and release_index is not None
+        and launch_index < retained_index < release_index
+    )
     provisional_fail = any(
         e.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE
         and e.payload.get("reason") == "runtime.finalization_pending"
@@ -73,8 +110,13 @@ def _derive_preserving_known_failure(events, run_id):
     )
     unresolved_action = any(e.envelope.event_type is EventType.ACTION_OUTCOME_UNKNOWN for e in snapshot)
     if (
-        has_launch and not has_close and has_release and provisional_fail
-        and not nonprovisional_incomplete and not unresolved_action
+        launch_index is not None
+        and close_index is None
+        and release_index is not None
+        and retention_evidence
+        and provisional_fail
+        and not nonprovisional_incomplete
+        and not unresolved_action
     ):
         return _dc_replace(state, status_inputs=_dc_replace(inputs, execution_error=False))
     return state
