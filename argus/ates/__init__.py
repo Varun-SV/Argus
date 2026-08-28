@@ -130,6 +130,9 @@ _install_finalization_round3(_finalization_impl)
 from .finalization_round4 import install as _install_finalization_round4
 _install_finalization_round4()
 
+from .finalization_round5 import install as _install_finalization_round5
+_install_finalization_round5()
+
 # Detached audit/report APIs are installed only after the canonical finalization
 # compatibility layers are complete.  Recovery runs after runtime recorders are
 # closed, so it is the safe boundary for report regeneration/re-verification.
