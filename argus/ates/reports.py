@@ -29,6 +29,12 @@ from .audit_round5 import install as _install_audit_round5
 # retries within either generation still converge to the original durable row.
 _install_audit_round5()
 
+from .audit_round6 import install as _install_audit_round6
+
+# Chain verification validates the complete canonical audit-row shape before
+# representing a detached ledger as locally chain verified.
+_install_audit_round6()
+
 from .reports_round2 import install as _install_reports_round2
 
 _install_reports_round2()
@@ -44,6 +50,12 @@ from .reports_round4 import install as _install_reports_round4
 # A report generation is one trust unit: all members are staged first and an
 # existing verified generation is restored if commit or regeneration fails.
 _install_reports_round4()
+
+from .reports_round5 import install as _install_reports_round5
+
+# An externally trusted report-manifest digest authenticates a point-in-time
+# derived bundle independently of later detached-ledger freshness.
+_install_reports_round5()
 
 from .reports_runtime import *  # noqa: F401,F403,E402
 from .reports_runtime import __all__  # noqa: E402
