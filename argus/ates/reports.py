@@ -41,6 +41,13 @@ from .audit_round7 import install as _install_audit_round7
 # approval chronology, and rejects ambiguous duplicate audit dedupe keys.
 _install_audit_round7()
 
+from .audit_round8 import install as _install_audit_round8
+
+# Round 8 validates the complete approval record envelope, including privacy-
+# classified reason data, authentication/request-generation containers, and
+# rejects unclassified extension fields before authentication grants authority.
+_install_audit_round8()
+
 from .reports_round2 import install as _install_reports_round2
 
 _install_reports_round2()
@@ -62,6 +69,12 @@ from .reports_round5 import install as _install_reports_round5
 # An externally trusted report-manifest digest authenticates a point-in-time
 # derived bundle independently of later detached-ledger freshness.
 _install_reports_round5()
+
+from .reports_round6 import install as _install_reports_round6
+
+# Retained checkpoint projections preserve the validated capture context and
+# explicit Finding relationship instead of dropping canonical provenance.
+_install_reports_round6()
 
 from .reports_runtime import *  # noqa: F401,F403,E402
 from .reports_runtime import __all__  # noqa: E402
