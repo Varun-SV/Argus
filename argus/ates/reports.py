@@ -39,5 +39,11 @@ from .reports_round3 import install as _install_reports_round3
 # self-certify regenerated_verified; that state belongs to the active verifier.
 _install_reports_round3()
 
+from .reports_round4 import install as _install_reports_round4
+
+# A report generation is one trust unit: all members are staged first and an
+# existing verified generation is restored if commit or regeneration fails.
+_install_reports_round4()
+
 from .reports_runtime import *  # noqa: F401,F403,E402
 from .reports_runtime import __all__  # noqa: E402
