@@ -235,10 +235,19 @@ def test_audit_chain_rejects_malformed_required_record_fields(tmp_path, mutation
     else:
         record[mutation] = ["not", "an", "object"]
 
-    path.write_text(
-        json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        + "\n",
-        encoding="utf-8",
+    # Write exact canonical JSONL bytes. Path.write_text translates newlines on
+    # Windows, which would correctly trip the representation check before this
+    # test reaches the schema-field validator it is intended to exercise.
+    path.write_bytes(
+        (
+            json.dumps(
+                record,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
     )
 
     with pytest.raises(ApprovalError, match=f"audit record 1.*{mutation}"):
