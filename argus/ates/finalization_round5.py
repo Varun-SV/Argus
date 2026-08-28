@@ -38,5 +38,11 @@ def install() -> None:
 
     _install_round6(impl)
 
+    # Round 7 closes sibling lifecycle/artifact trust gaps after the tombstone
+    # and Finding shape checks are installed.
+    from .finalization_round7 import install as _install_round7
+
+    _install_round7(impl)
+
 
 __all__ = ["install"]
