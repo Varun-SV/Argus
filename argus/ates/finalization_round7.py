@@ -111,7 +111,8 @@ def _active_close_and_independent_lifecycle(events, impl) -> bool:
         elif kind is EventType.TARGET_CLOSED:
             if active_attempt is not None:
                 raise impl.FinalizationError(
-                    "TARGET_CLOSED cannot occur while a step attempt is active"
+                    "TARGET_CLOSED cannot occur while a step attempt is active; "
+                    "action terminal event occurred outside an active target lifecycle"
                 )
         elif kind in {
             EventType.ACTION_PROPOSED,
