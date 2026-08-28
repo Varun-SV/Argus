@@ -6,8 +6,11 @@ still live: after a verified supersession/revocation, the same semantic approval
 is a *new* intentional operation rather than a retry of the historical one.
 
 This layer keeps crash retries convergent within one live generation while
-starting a new signed request generation after a later verified+audited record
-supersedes the matching historical approval.
+starting a new signed request generation only after a later independently
+authenticated+audited record supersedes the matching historical approval.
+Explicit caller timestamps are also part of live-request identity so replayed
+or imported decisions are never collapsed merely because their other semantics
+match.
 """
 from __future__ import annotations
 
@@ -26,25 +29,68 @@ from .core import EvidenceValue, VerificationStatus
 _REQUEST_GENERATION_FIELD = "request_generation_after_approval_id"
 
 
+def _approval_matches_live_request(
+    record: Mapping[str, object],
+    template: Mapping[str, object],
+    authentication_key: Optional[bytes],
+    *,
+    explicit_occurred_at: bool,
+) -> bool:
+    """Match retry semantics, including a caller-specified timestamp when present."""
+    if not _round2._approval_request_matches(record, template, authentication_key):
+        return False
+    if explicit_occurred_at and record.get("occurred_at") != template.get("occurred_at"):
+        return False
+    return True
+
+
+def _generation_key_resolver(
+    *,
+    actor: str,
+    role: str,
+    key_id: Optional[str],
+    authentication_key: Optional[bytes],
+    key_resolver,
+):
+    """Build the independent credential boundary used for historical superseders.
+
+    The current caller can authenticate historical records issued by the same
+    credential.  Callers that need cross-reviewer supersession semantics may
+    additionally supply the same independently trusted resolver used by
+    ``validate_approvals``.  A ledger record's self-declared ``verified`` state
+    is never sufficient to advance a request generation.
+    """
+    current_credential = None
+    if authentication_key is not None and isinstance(key_id, str) and key_id.strip():
+        current_credential = _api.ApprovalCredential(
+            key_id=key_id,
+            key=bytes(authentication_key),
+            actor=actor,
+            roles=(role,),
+        )
+
+    def resolve(candidate_key_id: str):
+        if current_credential is not None and candidate_key_id == current_credential.key_id:
+            return current_credential
+        if key_resolver is None:
+            return None
+        return key_resolver(candidate_key_id)
+
+    return resolve
+
+
 def _is_committed_verified_superseder(
     record: Mapping[str, object],
     *,
     target_approval_id: str,
     audits_by_approval: Mapping[str, list[Mapping[str, object]]],
+    key_resolver,
 ) -> bool:
-    """Return true only for a durable authenticated operation superseding target.
-
-    Append-time code does not possess every historical verification key, so it
-    cannot re-authorize unrelated actors here.  It can, however, require the
-    record to declare the authenticated/verified form and require the exact
-    approval.changed audit binding that the consumer protocol already uses.
-    Normal read-time ``validate_approvals`` remains the authority for signature
-    and role verification.
-    """
+    """Return true only for an authenticated, authorized, audited superseder."""
     if record.get("supersedes_approval_id") != target_approval_id:
         return False
-    auth = record.get("authentication")
-    if not isinstance(auth, Mapping) or auth.get("status") != VerificationStatus.VERIFIED.value:
+    status, _reason = _api._authentication_status(record, key_resolver)
+    if status is not VerificationStatus.VERIFIED:
         return False
     approval_id = record.get("approval_id")
     if not isinstance(approval_id, str):
@@ -59,6 +105,8 @@ def _later_generation_terminator(
     candidate_index: int,
     candidate: Mapping[str, object],
     audits_by_approval: Mapping[str, list[Mapping[str, object]]],
+    *,
+    key_resolver,
 ) -> Optional[Mapping[str, object]]:
     approval_id = candidate.get("approval_id")
     if not isinstance(approval_id, str):
@@ -69,6 +117,7 @@ def _later_generation_terminator(
             record,
             target_approval_id=approval_id,
             audits_by_approval=audits_by_approval,
+            key_resolver=key_resolver,
         ):
             latest = record
     return latest
@@ -112,13 +161,18 @@ def append_approval(
     key_id: Optional[str] = None,
     authentication_key: Optional[bytes] = None,
     occurred_at: Optional[datetime] = None,
+    key_resolver=None,
 ) -> Mapping[str, object]:
     """Append/recover one approval operation without conflating later generations.
 
     A matching live request is treated as a retry and converges to the same
-    durable approval.  Once a later verified+audited operation supersedes that
-    approval, the same semantic call starts a new request generation whose
-    identity is anchored to the superseding record.
+    durable approval.  Once a later authenticated+authorized+audited operation
+    supersedes that approval, the same semantic call starts a new request
+    generation whose identity is anchored to the superseding record.
+
+    ``key_resolver`` is optional for the common same-reviewer case because the
+    current caller's key/actor/role form an independent credential.  Supplying a
+    resolver enables generation changes caused by a different trusted reviewer.
     """
     if action is None:
         action = _impl.ApprovalAction.APPROVE
@@ -135,20 +189,31 @@ def append_approval(
         authentication_key=authentication_key,
         occurred_at=occurred_at,
     )
+    explicit_occurred_at = occurred_at is not None
+    generation_resolver = _generation_key_resolver(
+        actor=actor,
+        role=role,
+        key_id=key_id,
+        authentication_key=authentication_key,
+        key_resolver=key_resolver,
+    )
 
     with _round2._ledger_transaction(root) as (pin, lock):
         approvals = _impl._read_jsonl(root, "approvals.jsonl")
         audits = _impl._read_jsonl(root, "audit.jsonl")
         audits_by_approval = _round2._audit_records_by_approval(audits)
 
-        # Search newest-first.  A semantic match is a retry only while that
-        # approval generation has not subsequently been superseded/revoked by a
-        # verified+audited approval operation.
+        # Search newest-first. A semantic match is a retry only while that
+        # approval generation has not subsequently been terminated by a
+        # cryptographically verified + policy-authorized + audited operation.
         generation_anchor: Optional[str] = None
         for index in range(len(approvals) - 1, -1, -1):
             candidate = approvals[index]
-            if not _round2._approval_request_matches(
-                candidate, template, authentication_key
+            if not _approval_matches_live_request(
+                candidate,
+                template,
+                authentication_key,
+                explicit_occurred_at=explicit_occurred_at,
             ):
                 continue
             state = _round3._candidate_state(
@@ -158,7 +223,11 @@ def append_approval(
                 continue
 
             terminator = _later_generation_terminator(
-                approvals, index, candidate, audits_by_approval
+                approvals,
+                index,
+                candidate,
+                audits_by_approval,
+                key_resolver=generation_resolver,
             )
             if terminator is None:
                 if state == "pending":
@@ -170,12 +239,12 @@ def append_approval(
                 generation_anchor = terminator_id
 
         # No live matching request exists, so this is a new intentional approval
-        # generation.  The anchor is durable history and therefore remains stable
-        # across retries of this new generation.
+        # generation. The anchor is authenticated durable history and therefore
+        # remains stable across retries of this new generation.
         request_id = _bind_generation_request_identity(
             template,
             authentication_key=authentication_key,
-            explicit_occurred_at=occurred_at is not None,
+            explicit_occurred_at=explicit_occurred_at,
             generation_after_approval_id=generation_anchor,
         )
         exact = [item for item in approvals if item.get("request_id") == request_id]
@@ -185,6 +254,15 @@ def append_approval(
             )
         if exact:
             candidate = exact[0]
+            if not _approval_matches_live_request(
+                candidate,
+                template,
+                authentication_key,
+                explicit_occurred_at=explicit_occurred_at,
+            ):
+                raise _impl.ApprovalError(
+                    f"approval request identity {request_id!r} is bound to a different explicit timestamp"
+                )
             state = _round3._candidate_state(
                 candidate, template, authentication_key, audits_by_approval
             )
@@ -217,6 +295,7 @@ def revoke_approval(
     reason: Optional[EvidenceValue] = None,
     key_id: Optional[str] = None,
     authentication_key: Optional[bytes] = None,
+    key_resolver=None,
 ) -> Mapping[str, object]:
     return append_approval(
         run_dir,
@@ -227,6 +306,7 @@ def revoke_approval(
         supersedes_approval_id=approval_id,
         key_id=key_id,
         authentication_key=authentication_key,
+        key_resolver=key_resolver,
     )
 
 
