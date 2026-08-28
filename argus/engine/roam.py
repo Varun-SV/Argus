@@ -7,6 +7,9 @@ import sys
 from argus.ates import RunStatus, recover_revision_one
 from argus.engine import roam_ates_impl as _impl
 from argus.engine.ates_runtime import resolve_runtime_project_dir
+from argus.engine.ates_runtime_round2 import install as _install_ates_runtime_round2
+
+_install_ates_runtime_round2()
 
 _original_roam = _impl.roam
 _original_exit_code = _impl.roam_exit_code
