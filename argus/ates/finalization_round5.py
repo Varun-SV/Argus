@@ -31,5 +31,12 @@ def install() -> None:
 
     impl.recover_revision_one = recover
 
+    # Install the next canonical-validation layer after every prior derive shim
+    # is in place so tombstones/findings are checked on all finalize/recovery
+    # derivations without bypassing the existing lifecycle hardening.
+    from .finalization_round6 import install as _install_round6
+
+    _install_round6(impl)
+
 
 __all__ = ["install"]
