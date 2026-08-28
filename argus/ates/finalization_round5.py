@@ -44,5 +44,11 @@ def install() -> None:
 
     _install_round7(impl)
 
+    # Round 8 validates suppressed-artifact payloads, producer terminal markers,
+    # and the remaining proposal-only action lifecycle before status is trusted.
+    from .finalization_round8 import install as _install_round8
+
+    _install_round8(impl)
+
 
 __all__ = ["install"]
