@@ -257,23 +257,6 @@ def _render_reports_locked(
             )
         lock.assert_authoritative()
 
-        # Verification succeeded against the current canonical + detached state;
-        # the old generation is no longer needed.
-        for backup_name in backups.values():
-            if _exists(reports, backup_name):
-                _unlink(reports, backup_name)
-        reports.fsync()
-
-        return _runtime.ReportBundle(
-            root,
-            root / "reports",
-            paths["report.json"],
-            paths["report.md"],
-            paths["report.html"],
-            paths["junit.xml"],
-            paths["report-manifest-0001.json"],
-            checked.trust_state,
-        )
     except BaseException as exc:
         if reports is not None:
             try:
@@ -291,6 +274,31 @@ def _render_reports_locked(
         if isinstance(exc, (OSError, AtesStoreError)):
             raise _runtime.ReportError("cannot publish report bundle safely") from exc
         raise
+
+    # The new generation is now durable and verified. Cleanup is outside the
+    # rollback boundary: once any restoration backup is removed, rolling back
+    # could destroy the only complete bundle. Surface cleanup errors while
+    # leaving the committed public members and any remaining backups intact.
+    try:
+        for backup_name in backups.values():
+            if _exists(reports, backup_name):
+                _unlink(reports, backup_name)
+        reports.fsync()
+    except (OSError, AtesStoreError, _runtime.ReportError) as exc:
+        raise _runtime.ReportError(
+            "report bundle committed, but backup cleanup failed"
+        ) from exc
+
+    return _runtime.ReportBundle(
+        root,
+        root / "reports",
+        paths["report.json"],
+        paths["report.md"],
+        paths["report.html"],
+        paths["junit.xml"],
+        paths["report-manifest-0001.json"],
+        checked.trust_state,
+    )
 
 
 def render_reports(

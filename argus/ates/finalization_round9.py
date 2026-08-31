@@ -203,6 +203,7 @@ def _canonical_relationship_sets(events, impl):
 
 
 def _validate_retained_relationships(events, attempts: set[str], findings: set[str], impl) -> None:
+    collection_ordinals: set[int] = set()
     for event in events:
         kind = event.envelope.event_type
         if kind is EventType.CHECKPOINT_CAPTURED:
@@ -244,9 +245,23 @@ def _validate_retained_relationships(events, attempts: set[str], findings: set[s
             )
             if set(payload) != _COLLECTED_FIELDS:
                 raise impl.FinalizationError("ARTIFACT_COLLECTED payload shape is invalid")
-            ordinal = payload.get("collection_ordinal")
+
+        # One Test Spec collection entry has exactly one retained or suppressed
+        # outcome. Both event kinds must claim ordinals from the same namespace.
+        if kind is EventType.ARTIFACT_COLLECTED or (
+            kind is EventType.ARTIFACT_SUPPRESSED
+            and event.payload.get("context") == ArtifactContext.COLLECTED_FILE.value
+        ):
+            ordinal = event.payload.get("collection_ordinal")
             if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal <= 0:
-                raise impl.FinalizationError("ARTIFACT_COLLECTED collection_ordinal must be positive")
+                raise impl.FinalizationError(
+                    f"{kind.name} collection_ordinal must be positive"
+                )
+            if ordinal in collection_ordinals:
+                raise impl.FinalizationError(
+                    "collection_ordinal is duplicated across retained and suppressed outcomes"
+                )
+            collection_ordinals.add(ordinal)
 
 
 def _normalized_assertion_inputs(events, prior_inputs, impl):

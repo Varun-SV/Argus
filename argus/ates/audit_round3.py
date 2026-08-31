@@ -37,7 +37,13 @@ def _audit_semantics_match(
     if record.get("event_type") != event_type or record.get("actor") != actor:
         return False
     stored_details = record.get("details")
-    if not isinstance(stored_details, Mapping) or dict(stored_details) != dict(details):
+    if not isinstance(stored_details, Mapping):
+        return False
+    # Python equality conflates JSON booleans and numbers, even inside nested
+    # containers. Compare the same canonical representation used by the ledger.
+    if _impl._canonical(dict(stored_details), newline=False) != _impl._canonical(
+        dict(details), newline=False
+    ):
         return False
     # A caller-supplied timestamp is part of the requested operation.  When the
     # timestamp was omitted, occurred_at is generated metadata and therefore is

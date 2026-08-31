@@ -91,7 +91,6 @@ def _approval_structural_error(
         structural_error = _timestamp_error(record)
 
     if structural_error is None and isinstance(approval_id, str):
-        seen[approval_id] = record
         supersedes = record.get("supersedes_approval_id")
         if supersedes is not None and (
             not isinstance(supersedes, str)
@@ -99,6 +98,10 @@ def _approval_structural_error(
             or supersedes == approval_id
         ):
             structural_error = "approval supersession target is invalid or not historical"
+        else:
+            # Only fully valid structure can become historical evidence for a
+            # later supersession or request-generation anchor.
+            seen[approval_id] = record
     return structural_error
 
 
