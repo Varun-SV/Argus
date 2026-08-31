@@ -5,12 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .audit_lock import install as _install_audit_lock
-
-# Detached approval/audit writes share the same run-scoped cross-process writer
-# authority as canonical ATES writes. Install before exposing package helpers.
-_install_audit_lock()
-
 from .audit import (
     ApprovalError,
     KeyResolver,
@@ -62,25 +56,9 @@ def complete_run_package(
     return CompletedRunPackage(finalization, approvals, audit, reports)
 
 
-def install_recovery_completion(impl) -> None:
-    """Wrap closed-run recovery once so Runner/Roam always produce the package."""
-    if getattr(impl.recover_revision_one, "_ates_package_completion", False):
-        return
-    base_recover = impl.recover_revision_one
-
-    def recover(project_dir, run_id):
-        result = base_recover(project_dir, run_id)
-        complete_run_package(result)
-        return result
-
-    recover._ates_package_completion = True
-    impl.recover_revision_one = recover
-
-
 __all__ = [
     "PACKAGE_COMPLETION_VERSION",
     "CompletedRunPackage",
     "PackageCompletionError",
     "complete_run_package",
-    "install_recovery_completion",
 ]

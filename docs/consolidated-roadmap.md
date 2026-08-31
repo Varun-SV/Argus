@@ -6,6 +6,31 @@ The earlier roadmap split the remaining ATES and Fleet work across PRs #22–#34
 
 From this point, the remaining work is intentionally consolidated into three integration PRs. Each PR is larger, but is divided into ordered commit groups with explicit internal contracts and end-to-end acceptance tests. The goal is to reduce branch/rebase/review-round overhead without collapsing unrelated trust boundaries into one unreviewable change.
 
+## Implementation and review conventions
+
+Review rounds belong in Git history and PR discussions, not in source or test
+filenames. Apply fixes to the module that owns the behavior. Add a module only
+for a lasting, cohesive responsibility—not another layer that replaces functions
+from an earlier review at import time.
+
+ATES implementation ownership:
+
+| Module | Responsibility |
+|---|---|
+| `argus/ates/audit.py` | Detached ledger transactions, approval lifecycle, authentication, and validation |
+| `argus/ates/evidence_validation.py` | Canonical record shapes, provenance, relationships, and status inputs |
+| `argus/ates/finalization.py` | Finalization transactions, verification, and crash recovery |
+| `argus/ates/finalization_io.py` | Pinned file access, exact-byte bindings, and durable publication |
+| `argus/ates/finalization_types.py` | Shared result types, trust states, and format identifiers |
+| `argus/ates/reports.py` | Safe rendering, report publication, and freshness/external-binding verification |
+| `argus/engine/ates_runtime.py` | Runtime evidence recording and event ordering |
+
+Keep regression cases in responsibility-named `test_ates_*` suites and reuse
+shared builders from `tests/ates_test_support.py`. Consolidation must preserve
+test cases and failure-injection coverage; deleting a historical review file
+must not delete the behavior it protects. If a finding requires a product-policy
+decision, clarify that decision before changing the contract.
+
 ## PR #22 — Complete ATES v0.1
 
 Working title: `feat: complete ATES v0.1 finalization, reports, and audit`

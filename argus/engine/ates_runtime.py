@@ -429,6 +429,7 @@ class AtesRuntimeRecorder:
         self.steps = tuple(steps)
         self._roam_step = roam_step
         self._current: Optional[_AttemptContext] = None
+        self._target_close_evidence_pending = False
         self._latest_observation_id: Optional[ObservationId] = None
         self._failed = False
         self._failure: Optional[BaseException] = None
@@ -653,7 +654,13 @@ class AtesRuntimeRecorder:
         )
 
     def target_closed(self) -> None:
+        if self.current_attempt_id is not None:
+            # The adapter has already closed the physical target. Defer only
+            # its evidence event until the owning attempt is durably terminal.
+            self._target_close_evidence_pending = True
+            return
         self._append(EventType.TARGET_CLOSED, {})
+        self._target_close_evidence_pending = False
 
     def environment_released(self) -> None:
         self._append(EventType.ENVIRONMENT_RELEASED, {})
@@ -756,6 +763,8 @@ class AtesRuntimeRecorder:
     def complete_current(self, status: str) -> Optional[StepAttemptId]:
         current = self._current
         if current is None:
+            if self._target_close_evidence_pending:
+                self.target_closed()
             return None
         record = StepAttemptRecord(
             step_attempt_id=current.attempt_id,
@@ -772,6 +781,8 @@ class AtesRuntimeRecorder:
         )
         self._current = None
         self._latest_observation_id = None
+        if self._target_close_evidence_pending:
+            self.target_closed()
         return current.attempt_id
 
     def record_observation(self, obs: Observation, source: str) -> ObservationId:

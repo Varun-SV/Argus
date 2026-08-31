@@ -1,7 +1,5 @@
 """Argus Test Evidence Specification (ATES) core schema and event storage."""
 
-from dataclasses import replace as _dc_replace
-
 from .artifacts import (
     ARTIFACT_BYTES_PROFILE, ARTIFACT_POLICY_VERSION, ARTIFACT_SUPPRESSION_REASONS,
     PROTECTED_ARTIFACT_COMMITMENT_PROFILE, PROTECTED_ARTIFACT_VERIFICATION_REF,
@@ -27,115 +25,6 @@ from .finalization import (
     verify_finalized_run,
 )
 
-# The hardened finalization layer validates the same immutable attempt stream as
-# the implementation helper, but older call sites pass only the event snapshot.
-from . import finalization_impl as _finalization_impl
-
-_strict_validate_attempts = _finalization_impl._validate_attempts
-
-
-def _validate_attempts_compat(events, run_id=None):
-    snapshot = tuple(events)
-    if run_id is None:
-        if not snapshot:
-            raise FinalizationError("cannot validate an empty ATES attempt stream")
-        run_id = snapshot[0].run_id
-    return _strict_validate_attempts(snapshot, run_id)
-
-
-_finalization_impl._validate_attempts = _validate_attempts_compat
-
-# Preserve the known deterministic Failure Capsule result only for the one
-# intentionally missing TARGET_CLOSED contribution.  Round 3 restores any
-# independent canonical execution error before status is exposed.
-_hardened_derive = _finalization_impl._derive
-
-
-def _derive_preserving_known_failure(events, run_id):
-    snapshot = tuple(events)
-    state = _hardened_derive(snapshot, run_id)
-    inputs = state.status_inputs
-    if not (inputs.execution_error and inputs.deterministic_failure):
-        return state
-
-    launch_index = next(
-        (
-            index
-            for index, event in enumerate(snapshot)
-            if event.envelope.event_type is EventType.TARGET_LAUNCHED
-        ),
-        None,
-    )
-    close_index = next(
-        (
-            index
-            for index, event in enumerate(snapshot)
-            if event.envelope.event_type is EventType.TARGET_CLOSED
-        ),
-        None,
-    )
-    release_index = next(
-        (
-            index
-            for index, event in enumerate(snapshot)
-            if event.envelope.event_type is EventType.ENVIRONMENT_RELEASED
-        ),
-        None,
-    )
-    retained_index = next(
-        (
-            index
-            for index, event in enumerate(snapshot)
-            if event.envelope.event_type is EventType.FAILURE_CAPSULE_RETAINED
-            and event.payload.get("retained") is True
-        ),
-        None,
-    )
-    retention_evidence = (
-        launch_index is not None
-        and retained_index is not None
-        and release_index is not None
-        and launch_index < retained_index < release_index
-    )
-    provisional_fail = any(
-        e.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE
-        and e.payload.get("reason") == "runtime.finalization_pending"
-        and str(e.payload.get("execution_result") or "").strip().lower() in {"fail", "failed"}
-        for e in snapshot
-    )
-    nonprovisional_incomplete = any(
-        e.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE
-        and e.payload.get("reason") != "runtime.finalization_pending"
-        for e in snapshot
-    )
-    unresolved_action = any(e.envelope.event_type is EventType.ACTION_OUTCOME_UNKNOWN for e in snapshot)
-    if (
-        launch_index is not None
-        and close_index is None
-        and release_index is not None
-        and retention_evidence
-        and provisional_fail
-        and not nonprovisional_incomplete
-        and not unresolved_action
-    ):
-        return _dc_replace(state, status_inputs=_dc_replace(inputs, execution_error=False))
-    return state
-
-
-_finalization_impl._derive = _derive_preserving_known_failure
-
-from .finalization_round3 import install as _install_finalization_round3
-_install_finalization_round3(_finalization_impl)
-
-from .finalization_round4 import install as _install_finalization_round4
-_install_finalization_round4()
-
-from .finalization_round5 import install as _install_finalization_round5
-_install_finalization_round5()
-
-# Detached audit/report APIs are installed only after the canonical finalization
-# compatibility layers are complete.  Recovery runs after runtime recorders are
-# closed, so it is the safe boundary for report regeneration/re-verification.
 from .audit import (
     APPROVAL_AUTH_METHOD, APPROVAL_LEDGER_VERSION, AUDIT_LEDGER_VERSION,
     ApprovalAction, ApprovalCredential, ApprovalError, ApprovalLedgerResult,
@@ -151,12 +40,8 @@ from .reports import (
 )
 from .package import (
     PACKAGE_COMPLETION_VERSION, CompletedRunPackage, PackageCompletionError,
-    complete_run_package, install_recovery_completion as _install_recovery_completion,
+    complete_run_package,
 )
-
-_install_recovery_completion(_finalization_impl)
-finalize_revision_one = _finalization_impl.finalize_revision_one
-recover_revision_one = _finalization_impl.recover_revision_one
 
 from .ids import (
     ActionId, ActionOperationId, ArtifactId, AssertionId, AtesId, CorrectionId,

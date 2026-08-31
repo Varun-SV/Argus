@@ -7,10 +7,6 @@ import sys
 from argus.ates import RunStatus, recover_revision_one
 from argus.engine import runner_impl as _impl
 from argus.engine.ates_runtime import resolve_runtime_project_dir
-from argus.engine.ates_runtime_round2 import install as _install_ates_runtime_round2
-
-_install_ates_runtime_round2()
-
 _original_run_test = _impl.run_test
 _RUN_TEST_SIGNATURE = inspect.signature(_original_run_test)
 
