@@ -6,6 +6,7 @@ remain separate checks without import-time replacement of earlier validators.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -156,6 +157,26 @@ class _EvidenceState:
     status_inputs: StatusInputs
 
 
+def _canonical_json_equal(left: object, right: object) -> bool:
+    """Compare JSON values without Python's boolean/number equality coercion."""
+    try:
+        return json.dumps(
+            to_json_compatible(left),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ) == json.dumps(
+            to_json_compatible(right),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise FinalizationError("evidence value is not canonical JSON") from exc
+
+
 def _time(value, label):
     if not isinstance(value, str): raise FinalizationError(f"{label} must be an ISO-8601 string")
     try: return datetime.fromisoformat(value)
@@ -235,8 +256,13 @@ def _validate_attempts(events, run_id=None):
             if start is None: raise FinalizationError("step attempt completed without a matching start")
             if aid in closed or active != aid: raise FinalizationError("step attempt completion lifecycle is invalid")
             srec, sseq = start
-            if (rec.step_id != srec.step_id or rec.attempt != srec.attempt or rec.started_at != srec.started_at
-                or rec.retry_reason != srec.retry_reason or sseq >= event.sequence):
+            if (
+                rec.step_id != srec.step_id
+                or rec.attempt != srec.attempt
+                or rec.started_at != srec.started_at
+                or not _canonical_json_equal(rec.retry_reason, srec.retry_reason)
+                or sseq >= event.sequence
+            ):
                 raise FinalizationError("step attempt completion does not match its start")
             closed[aid] = (rec, event.sequence); active = None
     if active is not None or set(opened) != set(closed): raise FinalizationError("canonical history contains an unfinished step attempt")
@@ -577,7 +603,7 @@ def _validate_relationships(events, run_id):
                     raise FinalizationError(
                         "action dispatch commit lifecycle is invalid"
                     )
-                if to_json_compatible(prior[1]) != to_json_compatible(record):
+                if not _canonical_json_equal(prior[1], record):
                     raise FinalizationError(
                         "action dispatch commit differs from policy-validated action"
                     )

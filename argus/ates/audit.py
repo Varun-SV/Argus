@@ -33,6 +33,7 @@ from .store import (
     AtesStoreBusy,
     AtesStoreError,
     _PinnedDirectory,
+    _RunDirectoryChain,
     _WriterLock,
     _open_regular_file,
 )
@@ -46,7 +47,9 @@ _APPROVAL_REQUEST_PREFIX = "APRREQ-"
 _REQUEST_GENERATION_FIELD = "request_generation_after_approval_id"
 _LOCK_WAIT_SECONDS = 5.0
 _LOCK_RETRY_SECONDS = 0.01
-_ACTIVE_AUTHORITY: ContextVar[Optional[Tuple[Path, _PinnedDirectory, _WriterLock]]] = ContextVar(
+_ACTIVE_AUTHORITY: ContextVar[
+    Optional[Tuple[Path, _RunDirectoryChain, _PinnedDirectory, _WriterLock]]
+] = ContextVar(
     "ates_detached_ledger_authority", default=None
 )
 
@@ -245,13 +248,6 @@ def ensure_detached_ledgers(run_dir: Path | str) -> tuple[Path, Path]:
     return root / "approvals.jsonl", root / "audit.jsonl"
 
 
-def _same_root(left: Path, right: Path) -> bool:
-    try:
-        return left.resolve(strict=True) == right.resolve(strict=True)
-    except OSError:
-        return False
-
-
 def _repair_trailing_partial_held(
     pin: _PinnedDirectory,
     lock: _WriterLock,
@@ -310,60 +306,137 @@ def _repair_trailing_partial_held(
                 pass
 
 
+def _directory_identity(path: Path) -> tuple[int, int]:
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise ApprovalError("cannot establish detached-ledger directory identity") from exc
+    return info.st_dev, info.st_ino
+
+
 @contextmanager
-def _ledger_transaction(root: Path):
-    """Hold the canonical run-scoped writer authority for a full ledger transaction."""
+def _ledger_transaction(
+    root: Path,
+    *,
+    run_id: RunId,
+    expected_identity: tuple[int, int],
+):
+    """Hold canonical run-namespace authority for a complete ledger transaction."""
     deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    chain = None
     pin = None
     lock = None
     while True:
-        pin = _PinnedDirectory(root)
         try:
+            chain = _RunDirectoryChain(root.parent.parent.parent, run_id)
+            pin = chain.run
+            if pin.path != root:
+                raise ApprovalError(
+                    "detached-ledger authority resolved to another run directory"
+                )
+            if os.name == "nt":
+                pinned_identity = _directory_identity(pin.path)
+            else:
+                assert pin._fd is not None
+                pinned = os.fstat(pin._fd)
+                pinned_identity = (pinned.st_dev, pinned.st_ino)
+            if pinned_identity != expected_identity:
+                raise ApprovalError(
+                    "detached-ledger run directory changed before authority was acquired"
+                )
             lock = _WriterLock(pin)
+            chain.assert_authoritative()
             lock.assert_authoritative()
             break
         except AtesStoreBusy as exc:
-            try:
-                pin.close()
-            except BaseException:
-                pass
+            if chain is not None:
+                try:
+                    chain.close()
+                except BaseException:
+                    pass
+            chain = None
             pin = None
+            lock = None
             if time.monotonic() >= deadline:
                 raise ApprovalError(
                     "timed out waiting for detached-ledger writer authority"
                 ) from exc
             time.sleep(_LOCK_RETRY_SECONDS)
         except BaseException:
-            try:
-                pin.close()
-            except BaseException:
-                pass
+            if lock is not None:
+                try:
+                    lock.close()
+                except BaseException:
+                    pass
+            if chain is not None:
+                try:
+                    chain.close()
+                except BaseException:
+                    pass
             raise
-    token = _ACTIVE_AUTHORITY.set((root, pin, lock))
+    assert chain is not None and pin is not None and lock is not None
+    token = _ACTIVE_AUTHORITY.set((root, chain, pin, lock))
     try:
         yield pin, lock
+        chain.assert_authoritative()
+        lock.assert_authoritative()
+    except (OSError, AtesStoreError) as exc:
+        raise ApprovalError(
+            "detached-ledger run namespace changed during the transaction"
+        ) from exc
     finally:
         _ACTIVE_AUTHORITY.reset(token)
-        if lock is not None:
-            try:
-                lock.close()
-            except BaseException:
-                pass
-        if pin is not None:
-            try:
-                pin.close()
-            except BaseException:
-                pass
+        try:
+            lock.close()
+        finally:
+            chain.close()
+
+
+def _assert_active_authority(
+    chain: _RunDirectoryChain,
+    pin: _PinnedDirectory,
+    lock: _WriterLock,
+) -> None:
+    try:
+        chain.assert_authoritative()
+        lock.assert_authoritative()
+        if chain.run is not pin:
+            raise ApprovalError("detached-ledger pin is not the canonical run authority")
+    except (OSError, AtesStoreError) as exc:
+        raise ApprovalError(
+            "detached-ledger run namespace is no longer authoritative"
+        ) from exc
+
+
+def _read_jsonl_held(
+    chain: _RunDirectoryChain,
+    pin: _PinnedDirectory,
+    lock: _WriterLock,
+    name: str,
+) -> bytes:
+    from . import finalization
+
+    _assert_active_authority(chain, pin, lock)
+    _repair_trailing_partial_held(pin, lock, name)
+    try:
+        raw = finalization._pinned_bytes(pin, name, f"detached ledger {name}")
+    except finalization.FinalizationError as exc:
+        raise ApprovalError(f"cannot read detached ledger {name} safely") from exc
+    _assert_active_authority(chain, pin, lock)
+    return raw
 
 
 def _read_jsonl(root: Path, name: str) -> tuple[dict[str, object], ...]:
     authority = _ACTIVE_AUTHORITY.get()
     if authority is not None and name in {"approvals.jsonl", "audit.jsonl"}:
-        authority_root, pin, lock = authority
-        requested_root = Path(root)
-        if _same_root(authority_root, requested_root):
-            _repair_trailing_partial_held(pin, lock, name)
-    raw = _pinned_bytes(root, name, missing_ok=True)
+        authority_root, chain, pin, lock = authority
+        if Path(root) != authority_root:
+            raise ApprovalError(
+                "detached-ledger transaction cannot read from another run directory"
+            )
+        raw = _read_jsonl_held(chain, pin, lock, name)
+    else:
+        raw = _pinned_bytes(root, name, missing_ok=True)
     if not raw:
         return ()
     if not raw.endswith(b"\n"):
@@ -385,7 +458,13 @@ def _append_line_held(
     """Append while the caller retains run-scoped authority across the transaction."""
     handle = None
     try:
-        lock.assert_authoritative()
+        authority = _ACTIVE_AUTHORITY.get()
+        if authority is None:
+            raise ApprovalError("detached-ledger append lacks transaction authority")
+        _root, chain, active_pin, active_lock = authority
+        if active_pin is not pin or active_lock is not lock:
+            raise ApprovalError("detached-ledger append uses mismatched authority")
+        _assert_active_authority(chain, pin, lock)
         handle, created = _open_regular_file(pin, name)
         handle.seek(0, os.SEEK_END)
         before = handle.tell()
@@ -399,13 +478,13 @@ def _append_line_held(
             raise ApprovalError(f"short append to detached ledger {name}")
         handle.flush()
         os.fsync(handle.fileno())
-        lock.assert_authoritative()
+        _assert_active_authority(chain, pin, lock)
         pin.assert_file_identity(name, handle.fileno(), f"detached ledger {name}")
         if os.fstat(handle.fileno()).st_size != before + len(line):
             raise ApprovalError(f"detached ledger {name} changed during append")
         if created:
             pin.fsync()
-        lock.assert_authoritative()
+        _assert_active_authority(chain, pin, lock)
     except ApprovalError:
         raise
     except (OSError, AtesStoreError) as exc:
@@ -419,12 +498,29 @@ def _append_line_held(
 
 
 def _manifest_identity(run_dir: Path | str):
-    from .finalization import verify_finalized_run
+    from .finalization import FinalizationError, verify_finalized_run
+
     root = _run_root(run_dir)
-    result = verify_finalized_run(root)
-    raw = _pinned_bytes(root / "manifests", "manifest-0001.json")
-    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
-    return root, result, digest
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    while True:
+        identity = _directory_identity(root)
+        try:
+            result = verify_finalized_run(root)
+        except FinalizationError as exc:
+            if (
+                str(exc) != "cannot acquire authoritative run state for verification"
+                or time.monotonic() >= deadline
+            ):
+                raise
+            time.sleep(_LOCK_RETRY_SECONDS)
+            continue
+        raw = _pinned_bytes(root / "manifests", "manifest-0001.json")
+        if _directory_identity(root) != identity:
+            raise ApprovalError(
+                "ATES run directory changed while its finalization was verified"
+            )
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        return root, result, digest, identity
 
 
 def _approval_unsigned(record: Mapping[str, object]) -> dict[str, object]:
@@ -456,7 +552,7 @@ def _new_approval_record(
     authentication_key: Optional[bytes] = None,
     occurred_at: Optional[datetime] = None,
 ) -> dict[str, object]:
-    root, result, manifest_digest = _manifest_identity(run_dir)
+    root, result, manifest_digest, _identity = _manifest_identity(run_dir)
     del root
     try:
         normalized_action = action if isinstance(action, ApprovalAction) else ApprovalAction(action)
@@ -672,7 +768,7 @@ def _approval_request_matches(
     authentication_key: Optional[bytes],
 ) -> bool:
     """Recognize the durable approval half of a previously interrupted request."""
-    for key in (
+    immutable_fields = (
         "ledger_version",
         "run_id",
         "finalization_id",
@@ -684,9 +780,18 @@ def _approval_request_matches(
         "action",
         "reason",
         "supersedes_approval_id",
+    )
+    try:
+        persisted = {key: record[key] for key in immutable_fields}
+        requested = {key: template[key] for key in immutable_fields}
+    except KeyError:
+        return False
+    # Python container equality conflates JSON booleans and numbers. Retry
+    # identity is instead defined by the canonical immutable request bytes.
+    if _canonical(persisted, newline=False) != _canonical(
+        requested, newline=False
     ):
-        if record.get(key) != template.get(key):
-            return False
+        return False
     auth = record.get("authentication")
     template_auth = template.get("authentication")
     if not isinstance(auth, Mapping) or not isinstance(template_auth, Mapping):
@@ -785,12 +890,16 @@ def append_audit_event(
     dedupe_key: Optional[str] = None,
 ) -> Mapping[str, object]:
     """Append an audit event with semantic, fail-closed dedupe idempotency."""
-    root = _run_root(run_dir)
+    root, result, _manifest_digest, run_identity = _manifest_identity(run_dir)
     ensure_detached_ledgers(root)
     when, normalized_details = _normalize_audit_inputs(
         event_type, actor, details, occurred_at, dedupe_key
     )
-    with _ledger_transaction(root) as (pin, lock):
+    with _ledger_transaction(
+        root,
+        run_id=result.outcome.run_id,
+        expected_identity=run_identity,
+    ) as (pin, lock):
         records = _read_jsonl(root, "audit.jsonl")
         if dedupe_key is not None:
             matches = [record for record in records if record.get("dedupe_key") == dedupe_key]
@@ -982,9 +1091,18 @@ def _approval_structural_error(
         structural_error = "approval is bound to another run"
     elif record.get("finalization_id") != str(result.outcome.finalization_id):
         structural_error = "approval is bound to another finalization"
-    elif record.get("evidence_revision") != result.outcome.evidence_revision:
+    elif (
+        isinstance(record.get("evidence_revision"), bool)
+        or not isinstance(record.get("evidence_revision"), int)
+        or record.get("evidence_revision") != result.outcome.evidence_revision
+    ):
         structural_error = "approval evidence revision is stale"
-    elif record.get("manifest_revision") != 1 or record.get("manifest_digest") != manifest_digest:
+    elif (
+        isinstance(record.get("manifest_revision"), bool)
+        or not isinstance(record.get("manifest_revision"), int)
+        or record.get("manifest_revision") != 1
+        or record.get("manifest_digest") != manifest_digest
+    ):
         structural_error = "approval manifest binding is stale or invalid"
     elif record.get("action") not in {item.value for item in ApprovalAction}:
         structural_error = "approval action is invalid"
@@ -1101,7 +1219,7 @@ def validate_audit_chain(run_dir):
 
 def validate_approvals(run_dir: Path | str, *, key_resolver=None):
     """Validate approval structure, timestamp, authentication, and audit bind."""
-    root, result, manifest_digest = _manifest_identity(run_dir)
+    root, result, manifest_digest, _identity = _manifest_identity(run_dir)
     raw_records = _read_jsonl(root, "approvals.jsonl")
     audit_records = tuple(validate_audit_chain(root))
     audit_by_approval = _audit_records_by_approval(audit_records)
@@ -1334,7 +1452,7 @@ def append_approval(
     """
     if action is None:
         action = ApprovalAction.APPROVE
-    root, result, manifest_digest = _manifest_identity(run_dir)
+    root, result, manifest_digest, run_identity = _manifest_identity(run_dir)
     ensure_detached_ledgers(root)
     template = _new_approval_record(
         root,
@@ -1347,6 +1465,19 @@ def append_approval(
         authentication_key=authentication_key,
         occurred_at=occurred_at,
     )
+    expected_binding = {
+        "run_id": str(result.outcome.run_id),
+        "finalization_id": str(result.outcome.finalization_id),
+        "evidence_revision": result.outcome.evidence_revision,
+        "manifest_revision": 1,
+        "manifest_digest": manifest_digest,
+    }
+    if _canonical(
+        {key: template.get(key) for key in expected_binding}, newline=False
+    ) != _canonical(expected_binding, newline=False):
+        raise ApprovalError(
+            "ATES finalization changed while the approval request was prepared"
+        )
     explicit_occurred_at = occurred_at is not None
     generation_resolver = _generation_key_resolver(
         actor=actor,
@@ -1356,7 +1487,11 @@ def append_approval(
         key_resolver=key_resolver,
     )
 
-    with _ledger_transaction(root) as (pin, lock):
+    with _ledger_transaction(
+        root,
+        run_id=result.outcome.run_id,
+        expected_identity=run_identity,
+    ) as (pin, lock):
         approvals = _read_jsonl(root, "approvals.jsonl")
         audits = _read_jsonl(root, "audit.jsonl")
         audits_by_approval = _audit_records_by_approval(audits)
@@ -1471,7 +1606,7 @@ def revoke_approval(
 
 
 def record_finalization_audit(run_dir: Path | str) -> Mapping[str, object]:
-    root, result, manifest_digest = _manifest_identity(run_dir)
+    root, result, manifest_digest, _identity = _manifest_identity(run_dir)
     return append_audit_event(
         root,
         "finalization.bound",

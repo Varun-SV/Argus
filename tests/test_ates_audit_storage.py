@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import shutil
 from copy import deepcopy
 
 import pytest
@@ -148,6 +149,41 @@ def test_audit_dedupe_accepts_equivalent_reordered_json_objects(tmp_path):
     )
     assert retried == original
     assert (root / "audit.jsonl").read_bytes() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="open directory handles prevent replacement")
+def test_audit_transaction_rejects_run_directory_replacement(tmp_path, monkeypatch):
+    root = _finalized_package(tmp_path).run_dir
+    before = (root / "audit.jsonl").read_bytes()
+    displaced = root.with_name(root.name + ".displaced")
+    original_read = audit_module._read_jsonl
+    replaced = False
+
+    def replace_before_read(root_arg, name):
+        nonlocal replaced
+        if not replaced and name == "audit.jsonl":
+            replaced = True
+            root.rename(displaced)
+            shutil.copytree(displaced, root)
+        return original_read(root_arg, name)
+
+    monkeypatch.setattr(audit_module, "_read_jsonl", replace_before_read)
+
+    with pytest.raises(ApprovalError, match="namespace|authoritative"):
+        append_audit_event(
+            root,
+            "restore.completed",
+            actor="reviewer",
+            details={"restored": True},
+            dedupe_key="restore-completed",
+        )
+
+    assert replaced is True
+    assert (root / "audit.jsonl").read_bytes() == before
+    assert all(
+        record.get("event_type") != "restore.completed"
+        for record in validate_audit_chain(root)
+    )
 
 
 def test_concurrent_audit_transactions_keep_one_valid_hash_chain(tmp_path):

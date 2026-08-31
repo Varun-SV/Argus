@@ -4,9 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import xml.etree.ElementTree as ET
+from copy import deepcopy
 
 import pytest
 
+import argus.ates.audit as audit_module
 import argus.ates.reports as report_module
 from argus.ates import (
     FinalizationTrustState,
@@ -17,11 +19,13 @@ from argus.ates import (
     inspect_report_bundle,
     render_reports,
     revoke_approval,
+    validate_approvals,
     verify_report_bundle,
 )
 from tests.ates_test_support import (
     _approval_credential,
     _assert_report_is_self_described_as_derived,
+    _canonical_lines,
     _custom_run,
     _finalize_and_complete,
     _finalize_and_recover,
@@ -63,6 +67,68 @@ def test_reports_render_read_only_when_detached_ledgers_are_absent(tmp_path):
     # Rendering a verified run must not initialize detached mutable ledgers.
     assert not (root / "approvals.jsonl").exists()
     assert not (root / "audit.jsonl").exists()
+
+
+def test_reports_omit_structurally_invalid_approval_payloads(tmp_path):
+    root = _finalized_package(tmp_path).run_dir
+    key, credential, resolver = _approval_credential()
+    approval = append_approval(
+        root,
+        actor=credential.actor,
+        role="test_reviewer",
+        key_id=credential.key_id,
+        authentication_key=key,
+    )
+    approvals_path = root / "approvals.jsonl"
+    approvals = [
+        json.loads(line) for line in approvals_path.read_text("utf-8").splitlines()
+    ]
+    malformed = deepcopy(approvals[-1])
+    malformed["reason"] = "review-secret-plaintext"
+    malformed["debug_note"] = "review-private-extension"
+    malformed["authentication"]["signature"] = audit_module._sign_record(
+        malformed, key
+    )
+    approvals[-1] = malformed
+    approvals_path.write_bytes(_canonical_lines(approvals))
+
+    audit_path = root / "audit.jsonl"
+    audits = [json.loads(line) for line in audit_path.read_text("utf-8").splitlines()]
+    matching = [
+        row
+        for row in audits
+        if isinstance(row.get("details"), dict)
+        and row["details"].get("approval_id") == approval["approval_id"]
+    ]
+    assert len(matching) == 1
+    matching[0]["details"]["approval_record_digest"] = audit_module._approval_digest(
+        malformed
+    )
+    audit_path.write_bytes(_canonical_lines(audits))
+    assert validate_approvals(root, key_resolver=resolver).records[-1].effective is False
+
+    bundle = render_reports(root, approval_key_resolver=resolver)
+    model = json.loads(bundle.json_path.read_text("utf-8"))
+    reported = model["approvals"]["records"][-1]
+
+    assert reported["verification_status"] == "invalid"
+    assert reported["effective"] is False
+    assert reported["record_state"] == "omitted_invalid"
+    assert reported["record_digest"].startswith("sha256:")
+    assert "record" not in reported
+    for path in (
+        bundle.json_path,
+        bundle.markdown_path,
+        bundle.html_path,
+        bundle.junit_path,
+    ):
+        rendered = path.read_text("utf-8")
+        assert "review-secret-plaintext" not in rendered
+        assert "review-private-extension" not in rendered
+    assert (
+        verify_report_bundle(root, approval_key_resolver=resolver).trust_state
+        is FinalizationTrustState.REGENERATED_VERIFIED
+    )
 
 
 def test_externally_bound_report_remains_valid_after_detached_audit_update(tmp_path):

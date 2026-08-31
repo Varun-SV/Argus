@@ -120,6 +120,65 @@ def test_explicit_approval_timestamps_are_distinct_request_identity(tmp_path):
     ]
 
 
+@pytest.mark.parametrize(
+    "stored,retried",
+    [
+        ({"enabled": True}, {"enabled": 1}),
+        ({"enabled": 1}, {"enabled": True}),
+        ({"enabled": False}, {"enabled": 0}),
+        ({"nested": [{"enabled": True}]}, {"nested": [{"enabled": 1}]}),
+    ],
+)
+def test_approval_retries_preserve_json_boolean_and_number_types(
+    tmp_path,
+    stored,
+    retried,
+):
+    root = _finalized_package(tmp_path).run_dir
+    key, credential, resolver = _approval_credential()
+    kwargs = {
+        "actor": credential.actor,
+        "role": "test_reviewer",
+        "key_id": credential.key_id,
+        "authentication_key": key,
+    }
+
+    first = append_approval(root, reason=EvidenceValue.safe(stored), **kwargs)
+    second = append_approval(root, reason=EvidenceValue.safe(retried), **kwargs)
+
+    assert second["approval_id"] != first["approval_id"]
+    assert second["request_id"] != first["request_id"]
+    assert len((root / "approvals.jsonl").read_text("utf-8").splitlines()) == 2
+    assert len(validate_approvals(root, key_resolver=resolver).verified_approvals) == 2
+
+
+@pytest.mark.parametrize("field", ["evidence_revision", "manifest_revision"])
+def test_approval_revision_fields_reject_json_booleans(tmp_path, field):
+    root = _finalized_package(tmp_path).run_dir
+    key, credential, _resolver = _approval_credential()
+    approval = append_approval(
+        root,
+        actor=credential.actor,
+        role="test_reviewer",
+        key_id=credential.key_id,
+        authentication_key=key,
+    )
+    malformed = deepcopy(approval)
+    malformed[field] = True
+    _root, result, manifest_digest, _identity = audit_module._manifest_identity(root)
+
+    error = audit_module._approval_structural_error(
+        malformed,
+        result=result,
+        manifest_digest=manifest_digest,
+        seen={},
+    )
+
+    assert error is not None
+    expected = "evidence revision" if field == "evidence_revision" else "manifest binding"
+    assert expected in error
+
+
 def test_signed_audit_bound_approval_without_timestamp_is_not_effective(tmp_path):
     finalization = _finalized_package(tmp_path)
     root = finalization.run_dir

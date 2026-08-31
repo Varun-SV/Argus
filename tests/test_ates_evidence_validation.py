@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import argus.ates.evidence_validation as evidence_validation_module
 import argus.ates.finalization as finalization_module
 from argus.ates import (
     ActionId,
@@ -227,6 +228,64 @@ def test_dispatch_commit_without_terminal_forces_error(tmp_path):
         assert result.outcome.effective_status is RunStatus.ERROR
     finally:
         store.close()
+
+
+def test_dispatch_commit_requires_exact_policy_validated_json_types(tmp_path):
+    store, step_id, attempt_id = _open_action_store(tmp_path)
+    action_id = ActionId.new()
+    operation_id = ActionOperationId.new()
+    validated = ActionRecord(
+        action_id=action_id,
+        step_id=step_id,
+        step_attempt_id=attempt_id,
+        action_type="toggle",
+        parameters={"enabled": EvidenceValue.safe(True)},
+        operation_id=operation_id,
+    )
+    dispatched = ActionRecord(
+        action_id=action_id,
+        step_id=step_id,
+        step_attempt_id=attempt_id,
+        action_type="toggle",
+        parameters={"enabled": EvidenceValue.safe(1)},
+        operation_id=operation_id,
+    )
+    store.append(
+        EventType.ACTION_PROPOSED,
+        {"action": to_json_compatible(validated)},
+    )
+    store.append(
+        EventType.ACTION_POLICY_VALIDATED,
+        {"action": to_json_compatible(validated)},
+    )
+    store.append(
+        EventType.ACTION_DISPATCH_COMMITTED,
+        {"action": to_json_compatible(dispatched)},
+    )
+    store.append(
+        EventType.ACTION_EXECUTED,
+        {
+            "action_id": str(action_id),
+            "operation_id": str(operation_id),
+            "result": "executed",
+        },
+    )
+    _complete_action_store(store, step_id, attempt_id)
+    try:
+        with pytest.raises(
+            FinalizationError,
+            match="dispatch commit differs from policy-validated action",
+        ):
+            finalize_revision_one(store)
+    finally:
+        store.close()
+
+
+def test_retry_reason_equality_preserves_canonical_json_types():
+    assert not evidence_validation_module._canonical_json_equal(
+        EvidenceValue.safe({"retry": True}),
+        EvidenceValue.safe({"retry": 1}),
+    )
 
 
 def test_scripted_run_cannot_spoof_roam_prelaunch_attempt(tmp_path):

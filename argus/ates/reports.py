@@ -166,6 +166,33 @@ def _requirement_digest(value: Mapping[str, object]) -> str:
     return "sha256:" + hashlib.sha256(_json(to_json_compatible(value)).rstrip(b"\n")).hexdigest()
 
 
+def _approval_report_entry(item, ledger_index: int) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "ledger_index": ledger_index,
+        "verification_status": item.verification_status.value,
+        "effective": item.effective,
+        "verification_reason": item.reason,
+    }
+    if item.verification_status is VerificationStatus.INVALID:
+        # Invalid rows failed the approval schema/privacy boundary. Retain a
+        # stable diagnostic reference without redistributing the rejected data.
+        entry.update(
+            {
+                "record_state": "omitted_invalid",
+                "record_digest": "sha256:"
+                + hashlib.sha256(_json(to_json_compatible(item.record))).hexdigest(),
+            }
+        )
+    else:
+        entry.update(
+            {
+                "record_state": "included",
+                "record": to_json_compatible(item.record),
+            }
+        )
+    return entry
+
+
 def _member_snapshot(root: Path, name: str) -> dict[str, object]:
     path = root / name
     # Missing detached ledgers are a valid read-only state immediately after
@@ -276,8 +303,10 @@ def _model(root: Path, approval_key_resolver: Optional[KeyResolver]) -> dict[str
 
     try:
         approval_state = validate_approvals(root, key_resolver=approval_key_resolver)
-        approval_records = [{"record": to_json_compatible(item.record), "verification_status": item.verification_status.value,
-                             "effective": item.effective, "verification_reason": item.reason} for item in approval_state.records]
+        approval_records = [
+            _approval_report_entry(item, index)
+            for index, item in enumerate(approval_state.records, 1)
+        ]
         verified_count = len(approval_state.verified_approvals)
     except ApprovalError as exc:
         approval_records = [{"verification_status": VerificationStatus.INVALID.value, "effective": False, "verification_reason": str(exc)}]
