@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+from functools import wraps
 
 from argus.ates import RunStatus, recover_revision_one
 from argus.engine import roam_ates_impl as _impl
@@ -28,6 +29,7 @@ def _bound_arguments(args, kwargs):
         return {}
 
 
+@wraps(_original_roam)
 def _finalizing_roam(*args, **kwargs):
     session = _original_roam(*args, **kwargs)
     run_id = getattr(session, "ates_run_id", None)
@@ -70,6 +72,7 @@ def _finalizing_roam(*args, **kwargs):
     return session
 
 
+@wraps(_original_exit_code)
 def _finalizing_exit_code(session):
     status = str(getattr(session, "execution_status", "") or "")
     if status in {"fail", "error", "outcome_unknown", "cancelled"}:
@@ -77,6 +80,7 @@ def _finalizing_exit_code(session):
     return _original_exit_code(session)
 
 
+_finalizing_roam.__signature__ = _ROAM_SIGNATURE
 _impl.roam = _finalizing_roam
 _impl.roam_exit_code = _finalizing_exit_code
 sys.modules[__name__] = _impl

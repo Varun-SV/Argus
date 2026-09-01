@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+from functools import wraps
 
 from argus.ates import RunStatus, recover_revision_one
 from argus.engine import runner_impl as _impl
@@ -28,6 +29,7 @@ def _bound_arguments(args, kwargs):
         return {}
 
 
+@wraps(_original_run_test)
 def _finalizing_run_test(*args, **kwargs):
     result = _original_run_test(*args, **kwargs)
     run_id = getattr(result, "ates_run_id", None)
@@ -59,5 +61,6 @@ def _finalizing_run_test(*args, **kwargs):
     return result
 
 
+_finalizing_run_test.__signature__ = _RUN_TEST_SIGNATURE
 _impl.run_test = _finalizing_run_test
 sys.modules[__name__] = _impl

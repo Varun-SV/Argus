@@ -279,8 +279,21 @@ def _model(root: Path, approval_key_resolver: Optional[KeyResolver]) -> dict[str
             artifacts.append({"suppressed": to_json_compatible(event.payload), "sequence": event.sequence})
         elif kind is EventType.ACTION_OUTCOME_UNKNOWN:
             failures.append({"type": "action_outcome_unknown", "sequence": event.sequence, "action_id": event.payload.get("action_id")})
-        elif kind is EventType.RUN_MARKED_INCOMPLETE and event.payload.get("reason") != "runtime.finalization_pending":
-            failures.append({"type": "run_incomplete", "sequence": event.sequence, "reason": event.payload.get("reason")})
+        elif kind is EventType.RUN_MARKED_INCOMPLETE:
+            reason = event.payload.get("reason")
+            execution_result = event.payload.get("execution_result")
+            if (
+                reason != "runtime.finalization_pending"
+                or execution_result != "pass"
+            ):
+                failure = {
+                    "type": "run_incomplete",
+                    "sequence": event.sequence,
+                    "reason": reason,
+                }
+                if execution_result is not None:
+                    failure["execution_result"] = execution_result
+                failures.append(failure)
 
     traceability: list[dict[str, object]] = []
     for assertion in assertions:
@@ -873,8 +886,17 @@ def verify_report_bundle(run_dir: Path | str, *, trusted_report_manifest_digest:
         if isinstance(listed, (str, bytes, bytearray, Mapping)) or not isinstance(listed, Sequence): raise ReportError("report manifest members are malformed")
         by_path: dict[str, Mapping[str, object]] = {}
         for item in tuple(listed):
-            if not isinstance(item, Mapping) or not isinstance(item.get("path"), str) or item["path"] in by_path: raise ReportError("report manifest contains malformed/duplicate member")
+            if (
+                not isinstance(item, Mapping)
+                or set(item) != {"path", "size_bytes", "sha256"}
+                or not isinstance(item.get("path"), str)
+                or item["path"] in by_path
+            ):
+                raise ReportError("report manifest contains malformed/duplicate member")
             by_path[item["path"]] = item
+        expected_paths = {"reports/" + name for name in _REPORT_NAMES}
+        if set(by_path) != expected_paths:
+            raise ReportError("report manifest member set is not canonical")
         actual: dict[str, bytes] = {}
         for name in _REPORT_NAMES:
             meta = by_path.get("reports/" + name)

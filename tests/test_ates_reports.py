@@ -11,6 +11,7 @@ import pytest
 import argus.ates.audit as audit_module
 import argus.ates.reports as report_module
 from argus.ates import (
+    EventType,
     FinalizationTrustState,
     append_approval,
     append_audit_event,
@@ -153,6 +154,65 @@ def test_externally_bound_report_remains_valid_after_detached_audit_update(tmp_p
         trusted_report_manifest_digest=trusted_digest,
     )
     assert historical.trust_state is FinalizationTrustState.BOUND_VERIFIED
+
+
+def test_externally_bound_report_rejects_extra_manifest_members(tmp_path):
+    root = _finalized_package(tmp_path).run_dir
+    bundle = render_reports(root)
+    manifest = json.loads(bundle.manifest_path.read_text("utf-8"))
+    manifest["members"].append(
+        {
+            "path": "../unverified-private.txt",
+            "size_bytes": 0,
+            "sha256": "sha256:" + hashlib.sha256(b"").hexdigest(),
+        }
+    )
+    manifest_raw = report_module._json(manifest)
+    bundle.manifest_path.write_bytes(manifest_raw)
+    trusted_digest = "sha256:" + hashlib.sha256(manifest_raw).hexdigest()
+
+    verified = verify_report_bundle(
+        root,
+        trusted_report_manifest_digest=trusted_digest,
+    )
+
+    assert verified.trust_state is FinalizationTrustState.INVALID
+    assert verified.error is not None
+    assert "member set is not canonical" in verified.error
+
+
+@pytest.mark.parametrize(
+    ("execution_result", "expected_status"),
+    [
+        ("fail", "failed"),
+        ("error", "error"),
+        ("cancelled", "cancelled"),
+        ("outcome_unknown", "error"),
+    ],
+)
+def test_reports_include_status_driving_provisional_markers(
+    tmp_path,
+    execution_result,
+    expected_status,
+):
+    store = _open_run(tmp_path, provisional=False)
+    store.append(
+        EventType.RUN_MARKED_INCOMPLETE,
+        {
+            "reason": "runtime.finalization_pending",
+            "execution_result": execution_result,
+        },
+    )
+    result = _finalize_and_recover(store, tmp_path)
+    model = json.loads((result.run_dir / "reports" / "report.json").read_text("utf-8"))
+
+    assert model["outcome"]["effective_status"] == expected_status
+    failures = model["failures_and_ambiguities"]
+    assert len(failures) == 1
+    assert failures[0]["type"] == "run_incomplete"
+    assert failures[0]["reason"] == "runtime.finalization_pending"
+    assert failures[0]["execution_result"] == execution_result
+    assert isinstance(failures[0]["sequence"], int)
 
 
 def test_traceability_does_not_fabricate_attempt_level_artifact_links(tmp_path):

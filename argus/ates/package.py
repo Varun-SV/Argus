@@ -11,7 +11,7 @@ from .audit import (
     ensure_detached_ledgers,
     record_finalization_audit,
 )
-from .finalization import FinalizationError, FinalizationResult
+from .finalization import FinalizationError, FinalizationResult, verify_finalized_run
 from .reports import ReportBundle, ReportError, render_reports
 
 PACKAGE_COMPLETION_VERSION = "ates-package-completion-v1"
@@ -43,17 +43,18 @@ def complete_run_package(
     if not isinstance(finalization, FinalizationResult):
         raise ValueError("package completion requires a FinalizationResult")
     try:
-        approvals, audit = ensure_detached_ledgers(finalization.run_dir)
-        record_finalization_audit(finalization.run_dir)
+        authoritative = verify_finalized_run(finalization.run_dir)
+        approvals, audit = ensure_detached_ledgers(authoritative.run_dir)
+        record_finalization_audit(authoritative.run_dir)
         reports = render_reports(
-            finalization.run_dir,
+            authoritative.run_dir,
             approval_key_resolver=approval_key_resolver,
         )
     except (ApprovalError, ReportError, FinalizationError, OSError, ValueError) as exc:
         raise PackageCompletionError(
             f"required ATES v0.1 package completion failed: {exc}"
         ) from exc
-    return CompletedRunPackage(finalization, approvals, audit, reports)
+    return CompletedRunPackage(authoritative, approvals, audit, reports)
 
 
 __all__ = [

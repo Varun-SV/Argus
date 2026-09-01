@@ -303,7 +303,13 @@ def _payload_validation_store(tmp_path, *, environment, target):
     return store
 
 
-def _open_validation_store(tmp_path, *, step_kind="act", step_extra=None):
+def _open_validation_store(
+    tmp_path,
+    *,
+    step_kind="act",
+    step_extra=None,
+    run_payload_extra=None,
+):
     run_id = RunId.new()
     step_id = StepId.new()
     attempt_id = StepAttemptId.new()
@@ -317,10 +323,10 @@ def _open_validation_store(tmp_path, *, step_kind="act", step_extra=None):
     if step_extra:
         step.update(step_extra)
     store = AtesEventStore(tmp_path, run_id)
-    store.append(
-        EventType.RUN_STARTED,
-        {"run": _run_record_json(run_id), "steps": [step]},
-    )
+    run_payload = {"run": _run_record_json(run_id), "steps": [step]}
+    if run_payload_extra:
+        run_payload.update(run_payload_extra)
+    store.append(EventType.RUN_STARTED, run_payload)
     store.append(
         EventType.ENVIRONMENT_PREPARED,
         {"environment_type": "direct", "isolated": False},

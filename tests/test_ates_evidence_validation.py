@@ -160,6 +160,22 @@ def test_step_extension_cannot_be_certified_or_republished(tmp_path):
         store.close()
 
 
+def test_run_started_payload_extension_cannot_be_certified(tmp_path):
+    store, step_id, attempt_id = _open_validation_store(
+        tmp_path,
+        run_payload_extra={"debug_note": "API_TOKEN=plaintext-secret"},
+    )
+    _finish_validation_store(store, step_id, attempt_id)
+    try:
+        with pytest.raises(
+            FinalizationError,
+            match="RUN_STARTED payload contains unexpected fields",
+        ):
+            finalize_revision_one(store)
+    finally:
+        store.close()
+
+
 def test_omitted_required_defaults_true_and_failed_assertion_fails_run(tmp_path):
     store, step_id, attempt_id = _open_validation_store(tmp_path)
     assertion = {
@@ -276,6 +292,55 @@ def test_dispatch_commit_requires_exact_policy_validated_json_types(tmp_path):
             FinalizationError,
             match="dispatch commit differs from policy-validated action",
         ):
+            finalize_revision_one(store)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["executed_payload", "unknown_payload", "unknown_error"],
+)
+def test_terminal_action_payloads_reject_plaintext_extensions(tmp_path, mutation):
+    store, step_id, attempt_id = _open_action_store(tmp_path)
+    action = ActionRecord(
+        action_id=ActionId.new(),
+        step_id=step_id,
+        step_attempt_id=attempt_id,
+        action_type="click",
+        parameters={},
+        operation_id=ActionOperationId.new(),
+    )
+    action_payload = {"action": to_json_compatible(action)}
+    store.append(EventType.ACTION_PROPOSED, action_payload)
+    store.append(EventType.ACTION_POLICY_VALIDATED, action_payload)
+    store.append(EventType.ACTION_DISPATCH_COMMITTED, action_payload)
+
+    if mutation == "executed_payload":
+        kind = EventType.ACTION_EXECUTED
+        terminal_payload = {
+            "action_id": str(action.action_id),
+            "operation_id": str(action.operation_id),
+            "result": "executed",
+            "debug_note": "API_TOKEN=plaintext-secret",
+        }
+    else:
+        kind = EventType.ACTION_OUTCOME_UNKNOWN
+        error = to_json_compatible(EvidenceValue.redacted("privacy.error_text"))
+        if mutation == "unknown_error":
+            error["debug_note"] = "API_TOKEN=plaintext-secret"
+        terminal_payload = {
+            "action_id": str(action.action_id),
+            "operation_id": str(action.operation_id),
+            "error": error,
+        }
+        if mutation == "unknown_payload":
+            terminal_payload["debug_note"] = "API_TOKEN=plaintext-secret"
+
+    store.append(kind, terminal_payload)
+    _complete_action_store(store, step_id, attempt_id)
+    try:
+        with pytest.raises(FinalizationError, match="unexpected fields"):
             finalize_revision_one(store)
     finally:
         store.close()

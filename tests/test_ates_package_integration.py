@@ -1,13 +1,16 @@
 """ATES package integration regression coverage."""
 from __future__ import annotations
 
+import inspect
 import json
+from dataclasses import replace
 
 import pytest
 
 from argus.ates import (
     FinalizationTrustState,
     PackageCompletionError,
+    RunStatus,
     append_audit_event,
     complete_run_package,
     ensure_detached_ledgers,
@@ -26,6 +29,15 @@ from tests.ates_test_support import (
 )
 from tests.conftest import FakeAdapter, FakeProvider
 from tests.test_ates_finalization import _open_run
+
+
+def test_finalizing_shims_preserve_public_callable_signatures():
+    for public_callable in (run_test, roam):
+        original = getattr(public_callable, "__wrapped__", None)
+        assert original is not None
+        assert inspect.signature(public_callable) == inspect.signature(original)
+        assert tuple(inspect.signature(public_callable).parameters) != ("args", "kwargs")
+
 
 def test_run_test_publishes_bound_revision_one_and_authoritative_status(tmp_path):
     spec = parse_spec(
@@ -142,6 +154,23 @@ def test_finalization_audit_dedupe_collision_fails_package_completion(tmp_path):
         for record in records
     )
     assert not (root / "reports" / "report.json").exists()
+
+
+def test_package_completion_returns_authoritative_verified_finalization(tmp_path):
+    finalization = _finalize_without_package(_open_run(tmp_path))
+    forged = replace(
+        finalization,
+        outcome=replace(
+            finalization.outcome,
+            effective_status=RunStatus.ERROR,
+        ),
+    )
+
+    completed = complete_run_package(forged)
+    authoritative = verify_finalized_run(finalization.run_dir)
+
+    assert completed.finalization == authoritative
+    assert completed.finalization.outcome.effective_status is RunStatus.PASSED
 
 
 def test_closed_run_recovery_materializes_complete_pr22_package(tmp_path):

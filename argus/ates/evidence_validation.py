@@ -146,6 +146,54 @@ _COLLECTED_FIELDS = frozenset({"artifact", "collection_ordinal"})
 _CAPSULE_FIELDS = frozenset({"retained"})
 
 
+_EVENT_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
+    EventType.RUN_STARTED: frozenset({"run", "steps"}),
+    EventType.ENVIRONMENT_PREPARED: _ENVIRONMENT_REQUIRED,
+    EventType.CAPSULE_CREATED: frozenset(),
+    EventType.TARGET_LAUNCHED: _TARGET_ALLOWED,
+    EventType.STEP_ATTEMPT_STARTED: frozenset({"attempt"}),
+    EventType.OBSERVATION_CAPTURED: frozenset({"observation"}),
+    EventType.ACTION_PROPOSED: frozenset({"action"}),
+    EventType.ACTION_POLICY_VALIDATED: frozenset({"action"}),
+    EventType.ACTION_DISPATCH_COMMITTED: frozenset({"action"}),
+    EventType.ACTION_EXECUTED: frozenset(
+        {"action_id", "operation_id", "result"}
+    ),
+    EventType.ACTION_OUTCOME_UNKNOWN: frozenset(
+        {"action_id", "operation_id", "error"}
+    ),
+    EventType.ASSERTION_EVALUATED: frozenset({"assertion"}),
+    EventType.STEP_ATTEMPT_COMPLETED: frozenset({"attempt"}),
+    EventType.STEP_RETRY_SCHEDULED: frozenset(
+        {
+            "step_id",
+            "previous_step_attempt_id",
+            "next_step_attempt_id",
+            "next_attempt",
+            "reason",
+        }
+    ),
+    EventType.CHECKPOINT_CAPTURED: _CHECKPOINT_ALLOWED,
+    EventType.ARTIFACT_SUPPRESSED: _SUPPRESSION_ALLOWED,
+    EventType.FINDING_RECORDED: frozenset({"finding"}),
+    EventType.ARTIFACT_COLLECTED: _COLLECTED_FIELDS,
+    EventType.TARGET_CLOSED: frozenset(),
+    EventType.FAILURE_CAPSULE_RETAINED: _CAPSULE_FIELDS,
+    EventType.ENVIRONMENT_RELEASED: frozenset(),
+    EventType.RUN_MARKED_INCOMPLETE: _INCOMPLETE_ALLOWED,
+    EventType.SEQUENCE_TOMBSTONE: frozenset({"reason"}),
+}
+
+
+_EXACT_EVENT_PAYLOADS = frozenset(
+    {
+        EventType.RUN_STARTED,
+        EventType.ACTION_EXECUTED,
+        EventType.ACTION_OUTCOME_UNKNOWN,
+    }
+)
+
+
 @dataclass(frozen=True)
 class _EvidenceState:
     run_id: RunId
@@ -1326,6 +1374,31 @@ def _no_extensions(value: object, allowed: frozenset[str], label: str):
     return record
 
 
+def _validate_event_payload_shape(event: StoredEvent) -> None:
+    kind = event.envelope.event_type
+    allowed = _EVENT_PAYLOAD_FIELDS.get(kind)
+    if allowed is None:
+        # RUN_COMPLETED is validated separately as the final commit record and
+        # is never part of the pre-completion snapshot handled here.
+        if kind is EventType.RUN_COMPLETED:
+            return
+        raise FinalizationError(f"{kind.value} has no supported payload schema")
+    payload = _mapping(event.payload, f"{kind.value} payload")
+    fields = set(payload)
+    unexpected = fields - allowed
+    if unexpected:
+        raise FinalizationError(
+            f"{kind.value} payload contains unexpected fields: "
+            + ", ".join(sorted(str(item) for item in unexpected))
+        )
+    missing = allowed - fields
+    if kind in _EXACT_EVENT_PAYLOADS and missing:
+        raise FinalizationError(
+            f"{kind.value} payload is missing required fields: "
+            + ", ".join(sorted(missing))
+        )
+
+
 def _schema_evidence(value: object, label: str) -> EvidenceValue:
     raw = _no_extensions(value, _EVIDENCE_FIELDS, label)
     refs = raw.get("secret_refs", ())
@@ -1352,6 +1425,7 @@ def _validate_commitment_fields(value: object, label: str) -> None:
 def _validate_record_extensions(events) -> None:
     for event in events:
         kind = event.envelope.event_type
+        _validate_event_payload_shape(event)
         if kind is EventType.RUN_STARTED:
             steps = event.payload.get("steps")
             if isinstance(steps, (str, bytes, bytearray, Mapping)) or not isinstance(steps, Sequence):
@@ -1373,6 +1447,15 @@ def _validate_record_extensions(events) -> None:
             parameters = _mapping(action.get("parameters"), "action parameters")
             for name, item in parameters.items():
                 _schema_evidence(item, f"action parameter {name}")
+        elif kind is EventType.ACTION_OUTCOME_UNKNOWN:
+            error = event.payload.get("error")
+            if error is not None:
+                _schema_evidence(error, "action outcome error")
+        elif kind is EventType.STEP_RETRY_SCHEDULED:
+            _schema_evidence(
+                event.payload.get("reason"),
+                "STEP_RETRY_SCHEDULED reason",
+            )
         elif kind is EventType.OBSERVATION_CAPTURED:
             observation = _no_extensions(
                 event.payload.get("observation"), _OBSERVATION_FIELDS, "observation record"

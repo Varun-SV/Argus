@@ -14,6 +14,7 @@ from argus.ates import (
     ApprovalError,
     append_audit_event,
     finalize_revision_one,
+    render_reports,
     validate_approvals,
     validate_audit_chain,
 )
@@ -67,6 +68,27 @@ def test_audit_chain_rejects_malformed_required_record_fields(tmp_path, mutation
 
     with pytest.raises(ApprovalError, match=f"audit record 1.*{mutation}"):
         validate_audit_chain(root)
+
+
+def test_audit_chain_rejects_and_reports_omit_unexpected_fields(tmp_path):
+    root = _finalized_package(tmp_path).run_dir
+    path = root / "audit.jsonl"
+    records = [json.loads(line) for line in path.read_text("utf-8").splitlines()]
+    assert len(records) == 1
+    records[0]["debug_note"] = "API_TOKEN=plaintext-secret"
+    path.write_bytes(_canonical_lines(records))
+
+    with pytest.raises(ApprovalError, match="unexpected=debug_note"):
+        validate_audit_chain(root)
+
+    bundle = render_reports(root)
+    for report_path in (
+        bundle.json_path,
+        bundle.markdown_path,
+        bundle.html_path,
+        bundle.junit_path,
+    ):
+        assert "API_TOKEN=plaintext-secret" not in report_path.read_text("utf-8")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation is privilege-dependent on Windows CI")

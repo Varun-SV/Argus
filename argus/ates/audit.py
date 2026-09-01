@@ -43,6 +43,18 @@ AUDIT_LEDGER_VERSION = "ates-audit-ledger-v1"
 APPROVAL_AUTH_METHOD = "hmac-sha256"
 _APPROVAL_ID_RE = re.compile(r"^APPROVAL-[0-9a-f]{32}$")
 _AUDIT_ID_RE = re.compile(r"^AUDIT-[0-9a-f]{32}$")
+_AUDIT_FIELDS = frozenset(
+    {
+        "ledger_version",
+        "audit_id",
+        "event_type",
+        "actor",
+        "occurred_at",
+        "previous_record_digest",
+        "dedupe_key",
+        "details",
+    }
+)
 _APPROVAL_REQUEST_PREFIX = "APRREQ-"
 _REQUEST_GENERATION_FIELD = "request_generation_after_approval_id"
 _LOCK_WAIT_SECONDS = 5.0
@@ -1157,6 +1169,19 @@ def validate_audit_chain(run_dir):
     for index, record in enumerate(records, 1):
         if not isinstance(record, Mapping):
             raise ApprovalError(f"audit record {index} is malformed")
+        fields = set(record)
+        if fields != _AUDIT_FIELDS:
+            missing = sorted(_AUDIT_FIELDS - fields)
+            unexpected = sorted(str(item) for item in fields - _AUDIT_FIELDS)
+            details = []
+            if missing:
+                details.append("missing=" + ",".join(missing))
+            if unexpected:
+                details.append("unexpected=" + ",".join(unexpected))
+            raise ApprovalError(
+                f"audit record {index} does not match the canonical field set"
+                + (f" ({'; '.join(details)})" if details else "")
+            )
         if record.get("ledger_version") != AUDIT_LEDGER_VERSION:
             raise ApprovalError(
                 f"audit record {index} has unsupported ledger version"
