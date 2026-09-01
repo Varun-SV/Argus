@@ -264,10 +264,13 @@ def verify_finalized_run(run_dir):
     if not isinstance(rid, str) and isinstance(binding.get("finalization"), Mapping): rid = binding["finalization"].get("run_id")
     try: run_id = RunId(rid)
     except (TypeError, ValueError) as exc: raise FinalizationError("run binding has no valid run_id") from exc
-    try: store = AtesEventStore(_project(root), run_id)
+    project = _project(root)
+    expected_root = project / ".argus" / "runs" / _run_directory_key(run_id)
+    if root != expected_root:
+        raise FinalizationError("run binding resolves to another run directory")
+    try: store = AtesEventStore(project, run_id)
     except (OSError, AtesStoreError, ValueError) as exc: raise FinalizationError("cannot acquire authoritative run state for verification") from exc
     try:
-        if store.run_dir.resolve(strict=True) != root: raise FinalizationError("run binding resolves to another run directory")
         result = _verify_store(store, root)
     finally: store.close()
     _preflight_bound_members(root)

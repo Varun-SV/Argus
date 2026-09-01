@@ -912,7 +912,7 @@ def append_audit_event(
         run_id=result.outcome.run_id,
         expected_identity=run_identity,
     ) as (pin, lock):
-        records = _read_jsonl(root, "audit.jsonl")
+        records = _validate_audit_records(_read_jsonl(root, "audit.jsonl"))
         if dedupe_key is not None:
             matches = [record for record in records if record.get("dedupe_key") == dedupe_key]
             if len(matches) > 1:
@@ -1158,10 +1158,10 @@ def _aware_timestamp(value: object, index: int) -> None:
         )
 
 
-def validate_audit_chain(run_dir):
-    """Validate both the hash chain and the complete canonical audit-row shape."""
-    root = _run_root(run_dir)
-    records = _read_jsonl(root, "audit.jsonl")
+def _validate_audit_records(
+    records: tuple[dict[str, object], ...],
+) -> tuple[dict[str, object], ...]:
+    """Validate already-read audit rows while preserving transaction authority."""
     previous = None
     seen: set[str] = set()
     seen_dedupe: set[str] = set()
@@ -1240,6 +1240,12 @@ def validate_audit_chain(run_dir):
         previous = _audit_digest(record)
 
     return records
+
+
+def validate_audit_chain(run_dir):
+    """Validate both the hash chain and the complete canonical audit-row shape."""
+    root = _run_root(run_dir)
+    return _validate_audit_records(_read_jsonl(root, "audit.jsonl"))
 
 
 def validate_approvals(run_dir: Path | str, *, key_resolver=None):
@@ -1518,7 +1524,7 @@ def append_approval(
         expected_identity=run_identity,
     ) as (pin, lock):
         approvals = _read_jsonl(root, "approvals.jsonl")
-        audits = _read_jsonl(root, "audit.jsonl")
+        audits = _validate_audit_records(_read_jsonl(root, "audit.jsonl"))
         audits_by_approval = _audit_records_by_approval(audits)
 
         # Search newest-first. A semantic match is a retry only while that

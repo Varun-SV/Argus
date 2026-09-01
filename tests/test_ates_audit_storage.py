@@ -12,6 +12,7 @@ import pytest
 import argus.ates.audit as audit_module
 from argus.ates import (
     ApprovalError,
+    append_approval,
     append_audit_event,
     finalize_revision_one,
     render_reports,
@@ -19,6 +20,7 @@ from argus.ates import (
     validate_audit_chain,
 )
 from tests.ates_test_support import (
+    _approval_credential,
     _audit_worker,
     _canonical_lines,
     _finalize_and_recover,
@@ -171,6 +173,61 @@ def test_audit_dedupe_accepts_equivalent_reordered_json_objects(tmp_path):
     )
     assert retried == original
     assert (root / "audit.jsonl").read_bytes() == before
+
+
+def test_audit_dedupe_and_append_reject_corrupt_existing_hash_chain(tmp_path):
+    root = _finalized_package(tmp_path).run_dir
+    path = root / "audit.jsonl"
+    records = [json.loads(line) for line in path.read_text("utf-8").splitlines()]
+    existing = records[0]
+    records[0]["previous_record_digest"] = "sha256:" + "0" * 64
+    path.write_bytes(_canonical_lines(records))
+    before = path.read_bytes()
+
+    with pytest.raises(ApprovalError, match="breaks the append hash chain"):
+        append_audit_event(
+            root,
+            existing["event_type"],
+            actor=existing["actor"],
+            details=existing["details"],
+            dedupe_key=existing["dedupe_key"],
+        )
+    assert path.read_bytes() == before
+
+    with pytest.raises(ApprovalError, match="breaks the append hash chain"):
+        append_audit_event(
+            root,
+            "restore.completed",
+            actor="reviewer",
+            details={"restored": True},
+            dedupe_key="restore-completed",
+        )
+
+    assert path.read_bytes() == before
+
+
+def test_approval_append_rejects_corrupt_existing_audit_chain_without_mutation(tmp_path):
+    root = _finalized_package(tmp_path).run_dir
+    audit_path = root / "audit.jsonl"
+    approval_path = root / "approvals.jsonl"
+    records = [json.loads(line) for line in audit_path.read_text("utf-8").splitlines()]
+    records[0]["previous_record_digest"] = "sha256:" + "0" * 64
+    audit_path.write_bytes(_canonical_lines(records))
+    audit_before = audit_path.read_bytes()
+    approvals_before = approval_path.read_bytes()
+    key, credential, _resolver = _approval_credential()
+
+    with pytest.raises(ApprovalError, match="breaks the append hash chain"):
+        append_approval(
+            root,
+            actor=credential.actor,
+            role="test_reviewer",
+            key_id=credential.key_id,
+            authentication_key=key,
+        )
+
+    assert audit_path.read_bytes() == audit_before
+    assert approval_path.read_bytes() == approvals_before
 
 
 @pytest.mark.skipif(os.name == "nt", reason="open directory handles prevent replacement")

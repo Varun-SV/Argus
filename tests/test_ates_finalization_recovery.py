@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 
 import pytest
 
@@ -153,6 +154,35 @@ def test_pretty_printed_manifest_is_not_bound_verified(tmp_path):
     )
     with pytest.raises(FinalizationError, match="canonical persisted representation|digest"):
         verify_finalized_run(result.run_dir)
+
+
+def test_verification_rejects_misnamed_run_bundle_without_creating_bound_run(tmp_path):
+    source_project = tmp_path / "source"
+    source_project.mkdir()
+    store = _open_run(source_project)
+    try:
+        result = finalize_revision_one(store)
+    finally:
+        store.close()
+
+    target_project = tmp_path / "target"
+    runs_dir = target_project / ".argus" / "runs"
+    runs_dir.mkdir(parents=True)
+    wrong_run_id = RunId.new()
+    copied_root = runs_dir / _run_directory_key(wrong_run_id)
+    shutil.copytree(result.run_dir, copied_root)
+    expected_root = runs_dir / _run_directory_key(result.outcome.run_id)
+    before = sorted(
+        str(path.relative_to(target_project)) for path in target_project.rglob("*")
+    )
+
+    with pytest.raises(FinalizationError, match="another run directory"):
+        verify_finalized_run(copied_root)
+
+    assert not expected_root.exists()
+    assert sorted(
+        str(path.relative_to(target_project)) for path in target_project.rglob("*")
+    ) == before
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX hard-link substitution regression")
