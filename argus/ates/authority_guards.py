@@ -29,23 +29,38 @@ def _validate_machine_identifier(value: object, label: str) -> None:
 
 def _validate_retry_predecessors(events, ev) -> None:
     """Allow retries only after terminal states Argus actually treats as retryable."""
+    snapshot = tuple(events)
     completed: dict[str, object] = {}
-    for event in tuple(events):
+    started_ids: set[str] = set()
+    for event in snapshot:
         kind = event.envelope.event_type
-        if kind is EventType.STEP_ATTEMPT_COMPLETED:
+        if kind is EventType.STEP_ATTEMPT_STARTED:
+            rec = ev._attempt(event.payload.get("attempt"), running=True)
+            started_ids.add(str(rec.step_attempt_id))
+        elif kind is EventType.STEP_ATTEMPT_COMPLETED:
             rec = ev._attempt(event.payload.get("attempt"), running=False)
             completed[str(rec.step_attempt_id)] = rec
-            continue
-        if kind is not EventType.STEP_RETRY_SCHEDULED:
+
+    for event in snapshot:
+        if event.envelope.event_type is not EventType.STEP_RETRY_SCHEDULED:
             continue
         previous = event.payload.get("previous_step_attempt_id")
         prior = completed.get(previous) if isinstance(previous, str) else None
-        if prior is None:
+        if prior is None or prior.status in _RETRYABLE_PREDECESSORS:
             continue
-        if prior.status not in _RETRYABLE_PREDECESSORS:
+        next_id = event.payload.get("next_step_attempt_id")
+        if (
+            isinstance(next_id, str)
+            and next_id in started_ids
+            and next_id not in completed
+        ):
             raise FinalizationError(
-                f"step attempt status {prior.status.value} is not retryable by an ordinary retry"
+                "unfinished retry follows non-retryable terminal step attempt "
+                f"status {prior.status.value}"
             )
+        raise FinalizationError(
+            f"step attempt status {prior.status.value} is not retryable by an ordinary retry"
+        )
 
 
 def _candidate_current_package_error(candidate, template, audit):
@@ -61,7 +76,7 @@ def _candidate_current_package_error(candidate, template, audit):
     if not isinstance(manifest_digest, str):
         return "approval candidate manifest binding is invalid"
 
-    # Candidate-state matching does not receive the historical ledger view.  Seed
+    # Candidate-state matching does not receive the historical ledger view. Seed
     # only the candidate's explicit relationship anchors so the shared validator
     # can check their shape while the surrounding append protocol remains
     # responsible for proving which generation is actually historical.
