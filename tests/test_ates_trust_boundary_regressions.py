@@ -343,3 +343,245 @@ def test_capsule_retention_must_postdate_settled_failure(tmp_path):
         store.close()
 
     assert result.outcome.effective_status is RunStatus.ERROR
+
+
+def _retry_attempt_payload(
+    step_id,
+    attempt_id,
+    status,
+    *,
+    ordinal,
+    started_at,
+    ended_at,
+    retry_reason=None,
+):
+    return {
+        "attempt": {
+            "step_attempt_id": str(attempt_id),
+            "step_id": str(step_id),
+            "attempt": ordinal,
+            "status": status,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "retry_reason": (
+                None if retry_reason is None else to_json_compatible(retry_reason)
+            ),
+        }
+    }
+
+
+def _open_retry_store(tmp_path):
+    run_id = RunId.new()
+    step_id = StepId.new()
+    first_attempt_id = StepAttemptId.new()
+    second_attempt_id = StepAttemptId.new()
+    step = StepRecord(
+        step_id=step_id,
+        instruction=EvidenceValue.redacted("privacy.authored_text"),
+        kind="act",
+    )
+    store = AtesEventStore(tmp_path, run_id)
+    store.append(
+        EventType.RUN_STARTED,
+        {"run": _run_record_json(run_id), "steps": [to_json_compatible(step)]},
+    )
+    store.append(
+        EventType.ENVIRONMENT_PREPARED,
+        {"environment_type": "direct", "isolated": False},
+    )
+    store.append(EventType.TARGET_LAUNCHED, {"target": _target()})
+    return store, step_id, first_attempt_id, second_attempt_id
+
+
+def _finish_retry_store(store, execution_result="pass"):
+    store.append(EventType.TARGET_CLOSED, {})
+    store.append(EventType.ENVIRONMENT_RELEASED, {})
+    store.append(
+        EventType.RUN_MARKED_INCOMPLETE,
+        {
+            "reason": "runtime.finalization_pending",
+            "execution_result": execution_result,
+        },
+    )
+
+
+def test_outcome_unknown_attempt_cannot_be_erased_by_passing_retry(tmp_path):
+    store, step_id, first_id, second_id = _open_retry_store(tmp_path)
+    first_started = "2026-09-02T05:00:00+00:00"
+    first_ended = "2026-09-02T05:00:01+00:00"
+    second_started = "2026-09-02T05:00:02+00:00"
+    second_ended = "2026-09-02T05:00:03+00:00"
+    retry_reason = EvidenceValue.safe("retry-after-unknown")
+    store.append(
+        EventType.STEP_ATTEMPT_STARTED,
+        _retry_attempt_payload(
+            step_id,
+            first_id,
+            "running",
+            ordinal=1,
+            started_at=first_started,
+            ended_at=None,
+        ),
+    )
+    store.append(
+        EventType.STEP_ATTEMPT_COMPLETED,
+        _retry_attempt_payload(
+            step_id,
+            first_id,
+            "outcome_unknown",
+            ordinal=1,
+            started_at=first_started,
+            ended_at=first_ended,
+        ),
+    )
+    store.append(
+        EventType.STEP_RETRY_SCHEDULED,
+        {
+            "step_id": str(step_id),
+            "previous_step_attempt_id": str(first_id),
+            "next_step_attempt_id": str(second_id),
+            "next_attempt": 2,
+            "reason": to_json_compatible(retry_reason),
+        },
+    )
+    store.append(
+        EventType.STEP_ATTEMPT_STARTED,
+        _retry_attempt_payload(
+            step_id,
+            second_id,
+            "running",
+            ordinal=2,
+            started_at=second_started,
+            ended_at=None,
+            retry_reason=retry_reason,
+        ),
+    )
+    store.append(
+        EventType.STEP_ATTEMPT_COMPLETED,
+        _retry_attempt_payload(
+            step_id,
+            second_id,
+            "passed",
+            ordinal=2,
+            started_at=second_started,
+            ended_at=second_ended,
+            retry_reason=retry_reason,
+        ),
+    )
+    _finish_retry_store(store)
+    try:
+        with pytest.raises(FinalizationError, match="OUTCOME_UNKNOWN.*ordinary retry"):
+            finalize_revision_one(store)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "scheduled_reason,started_reason",
+    [
+        (
+            EvidenceValue.safe("scheduled-retry-cause"),
+            EvidenceValue.safe("different-retry-cause"),
+        ),
+        (
+            EvidenceValue.protected(
+                "protected://retry/scheduled", "privacy.retry_reason"
+            ),
+            EvidenceValue.protected(
+                "protected://retry/started", "privacy.retry_reason"
+            ),
+        ),
+    ],
+)
+def test_retry_start_reason_must_match_scheduled_reason(
+    tmp_path, scheduled_reason, started_reason
+):
+    store, step_id, first_id, second_id = _open_retry_store(tmp_path)
+    first_started = "2026-09-02T05:10:00+00:00"
+    first_ended = "2026-09-02T05:10:01+00:00"
+    second_started = "2026-09-02T05:10:02+00:00"
+    second_ended = "2026-09-02T05:10:03+00:00"
+    store.append(
+        EventType.STEP_ATTEMPT_STARTED,
+        _retry_attempt_payload(
+            step_id,
+            first_id,
+            "running",
+            ordinal=1,
+            started_at=first_started,
+            ended_at=None,
+        ),
+    )
+    store.append(
+        EventType.STEP_ATTEMPT_COMPLETED,
+        _retry_attempt_payload(
+            step_id,
+            first_id,
+            "failed",
+            ordinal=1,
+            started_at=first_started,
+            ended_at=first_ended,
+        ),
+    )
+    store.append(
+        EventType.STEP_RETRY_SCHEDULED,
+        {
+            "step_id": str(step_id),
+            "previous_step_attempt_id": str(first_id),
+            "next_step_attempt_id": str(second_id),
+            "next_attempt": 2,
+            "reason": to_json_compatible(scheduled_reason),
+        },
+    )
+    store.append(
+        EventType.STEP_ATTEMPT_STARTED,
+        _retry_attempt_payload(
+            step_id,
+            second_id,
+            "running",
+            ordinal=2,
+            started_at=second_started,
+            ended_at=None,
+            retry_reason=started_reason,
+        ),
+    )
+    store.append(
+        EventType.STEP_ATTEMPT_COMPLETED,
+        _retry_attempt_payload(
+            step_id,
+            second_id,
+            "passed",
+            ordinal=2,
+            started_at=second_started,
+            ended_at=second_ended,
+            retry_reason=started_reason,
+        ),
+    )
+    _finish_retry_store(store)
+    try:
+        with pytest.raises(FinalizationError, match="retry_reason does not match"):
+            finalize_revision_one(store)
+    finally:
+        store.close()
+
+
+def test_approval_actor_must_match_audit_principal_contract_before_append(tmp_path):
+    root = _finalized_package(tmp_path).run_dir
+    approvals_path = root / "approvals.jsonl"
+    audit_path = root / "audit.jsonl"
+    approvals_before = approvals_path.read_bytes()
+    audit_before = audit_path.read_bytes()
+    key, credential, _resolver = _approval_credential()
+
+    with pytest.raises(ApprovalError, match="machine-safe principal"):
+        append_approval(
+            root,
+            actor="Jane Doe",
+            role="test_reviewer",
+            key_id=credential.key_id,
+            authentication_key=key,
+        )
+
+    assert approvals_path.read_bytes() == approvals_before
+    assert audit_path.read_bytes() == audit_before
+    validate_audit_chain(root)
