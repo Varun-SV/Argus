@@ -70,7 +70,11 @@ _EVIDENCE_FIELDS = frozenset(
 _SAFE_DETAIL_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SAFE_ACTION_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
-_APPROVAL_ID = re.compile(r"^APPROVAL-[0-9a-f]{32}$")
+# Approval semantics validate the canonical APPROVAL-* namespace separately.
+# The audit layer needs only a bounded structural identifier here so malformed
+# relationship targets remain safe to render while the approval validator can
+# classify them as invalid rather than turning them into audit-chain corruption.
+_APPROVAL_ID = re.compile(r"^(?:APPROVAL|APR)-[0-9a-f]{32}$")
 
 _APPROVAL_AUDIT_KEYS = frozenset(
     {
