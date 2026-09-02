@@ -136,6 +136,33 @@ def test_incomplete_report_rejects_completion_without_matching_start(tmp_path):
         render_reports(root)
 
 
+@pytest.mark.parametrize("action_state", ["proposed", "validated"])
+def test_incomplete_report_rejects_completed_attempt_with_unfinished_action(
+    tmp_path, action_state
+):
+    store, step_id, attempt_id = _open_action_store(tmp_path)
+    action = ActionRecord(
+        action_id=ActionId.new(),
+        step_id=step_id,
+        step_attempt_id=attempt_id,
+        action_type="click",
+        parameters={},
+        operation_id=ActionOperationId.new(),
+    )
+    payload = {"action": to_json_compatible(action)}
+    store.append(EventType.ACTION_PROPOSED, payload)
+    if action_state == "validated":
+        store.append(EventType.ACTION_POLICY_VALIDATED, payload)
+    _complete_action_store(store, step_id, attempt_id)
+    root = store.run_dir
+    store.close()
+
+    inspected = inspect_finalization_trust(root)
+    assert inspected.trust_state is FinalizationTrustState.INVALID
+    with pytest.raises(report_module.ReportError, match="record/relationship invariants"):
+        render_reports(root)
+
+
 def test_credential_resolver_process_cancellation_propagates(tmp_path):
     root = _finalized_package(tmp_path).run_dir
     key, credential, _resolver = _approval_credential()
@@ -204,7 +231,21 @@ def test_audit_outer_identifiers_reject_free_form_text_on_write(
     assert (root / "audit.jsonl").read_bytes() == before
 
 
-@pytest.mark.parametrize("field", ["event_type", "dedupe_key"])
+def test_audit_actor_rejects_free_form_text_on_write(tmp_path):
+    root = _finalized_package(tmp_path).run_dir
+    before = (root / "audit.jsonl").read_bytes()
+    with pytest.raises(ApprovalError, match="machine-safe principal"):
+        append_audit_event(
+            root,
+            "operator.note",
+            actor="Bearer TOP-SECRET-123",
+            details={},
+            dedupe_key="operator-note",
+        )
+    assert (root / "audit.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("field", ["event_type", "dedupe_key", "actor"])
 def test_imported_audit_outer_identifiers_cannot_bypass_report_privacy(tmp_path, field):
     root = _finalized_package(tmp_path).run_dir
     audit_path = root / "audit.jsonl"
