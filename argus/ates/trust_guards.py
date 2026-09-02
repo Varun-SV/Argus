@@ -16,6 +16,7 @@ from .core import (
     EventType,
     EvidenceValue,
     ExecutionKind,
+    StepAttemptStatus,
     VerificationStatus,
     to_json_compatible,
     validate_step_attempt_history,
@@ -117,6 +118,12 @@ _FINALIZATION_AUDIT_KEYS = frozenset(
 )
 
 
+def _validate_audit_actor(actor: object) -> None:
+    """Require one machine-safe principal identifier across approvals and audit."""
+    if not isinstance(actor, str) or not _AUDIT_ACTOR.fullmatch(actor):
+        raise ValueError("actor must be a bounded machine-safe principal identifier")
+
+
 def _validate_audit_identifiers(
     event_type: object,
     actor: object,
@@ -125,8 +132,10 @@ def _validate_audit_identifiers(
     """Require persisted audit routing/principal/idempotency strings to be structural."""
     if not isinstance(event_type, str) or not _AUDIT_EVENT_TYPE.fullmatch(event_type):
         raise ValueError("audit event_type must be a bounded machine-safe identifier")
-    if not isinstance(actor, str) or not _AUDIT_ACTOR.fullmatch(actor):
-        raise ValueError("audit actor must be a bounded machine-safe principal identifier")
+    try:
+        _validate_audit_actor(actor)
+    except ValueError as exc:
+        raise ValueError(f"audit {exc}") from exc
     if dedupe_key is None:
         return
     if not isinstance(dedupe_key, str):
@@ -317,6 +326,45 @@ def _validate_evidence_map_keys(events, ev) -> None:
                 )
 
 
+def _validate_retry_semantics(events, ev) -> None:
+    """Cross-bind retry causality and keep unresolved attempts unresolved."""
+    completed: dict[str, object] = {}
+    schedules: dict[str, object] = {}
+    for event in tuple(events):
+        kind = event.envelope.event_type
+        if kind is EventType.STEP_ATTEMPT_COMPLETED:
+            rec = ev._attempt(event.payload.get("attempt"), running=False)
+            completed[str(rec.step_attempt_id)] = rec
+            continue
+        if kind is EventType.STEP_RETRY_SCHEDULED:
+            previous = event.payload.get("previous_step_attempt_id")
+            prior = completed.get(previous) if isinstance(previous, str) else None
+            if prior is not None and prior.status is StepAttemptStatus.OUTCOME_UNKNOWN:
+                raise FinalizationError(
+                    "OUTCOME_UNKNOWN step attempts cannot be superseded by an ordinary retry"
+                )
+            next_id = event.payload.get("next_step_attempt_id")
+            if isinstance(next_id, str):
+                schedules[next_id] = ev._schema_evidence(
+                    event.payload.get("reason"),
+                    "STEP_RETRY_SCHEDULED reason",
+                )
+            continue
+        if kind is EventType.STEP_ATTEMPT_STARTED:
+            rec = ev._attempt(event.payload.get("attempt"), running=True)
+            if rec.attempt <= 1:
+                continue
+            scheduled_reason = schedules.get(str(rec.step_attempt_id))
+            if scheduled_reason is None:
+                continue
+            if rec.retry_reason is None or not ev._canonical_json_equal(
+                scheduled_reason, rec.retry_reason
+            ):
+                raise FinalizationError(
+                    "retry start retry_reason does not match STEP_RETRY_SCHEDULED reason"
+                )
+
+
 def _validate_incomplete_prefix(events, run_id, ev) -> None:
     """Validate every emitted record while allowing only future termination gaps."""
     snapshot = tuple(events)
@@ -345,7 +393,7 @@ def _validate_incomplete_prefix(events, run_id, ev) -> None:
     active_attempt: str | None = None
     opened: dict[str, tuple[object, int]] = {}
     closed: dict[str, tuple[object, int]] = {}
-    schedules: dict[str, tuple[str, int, int]] = {}
+    schedules: dict[str, tuple[str, int, int, object]] = {}
     observations: dict[str, object] = {}
     assertions: set[str] = set()
     actions: dict[str, tuple[str, object, int]] = {}
@@ -392,7 +440,15 @@ def _validate_incomplete_prefix(events, run_id, ev) -> None:
             prior_rec, prior_seq = prior
             if str(prior_rec.step_id) != sid or ordinal != prior_rec.attempt + 1 or prior_seq >= event.sequence:
                 raise FinalizationError("retry scheduling causality is invalid")
-            schedules[next_id] = (sid, ordinal, event.sequence)
+            if prior_rec.status is StepAttemptStatus.OUTCOME_UNKNOWN:
+                raise FinalizationError(
+                    "OUTCOME_UNKNOWN step attempts cannot be superseded by an ordinary retry"
+                )
+            reason = ev._schema_evidence(
+                event.payload.get("reason"),
+                "STEP_RETRY_SCHEDULED reason",
+            )
+            schedules[next_id] = (sid, ordinal, event.sequence, reason)
             continue
         if kind is EventType.STEP_ATTEMPT_STARTED:
             rec = ev._attempt(event.payload.get("attempt"), running=True)
@@ -405,7 +461,13 @@ def _validate_incomplete_prefix(events, run_id, ev) -> None:
                 raise FinalizationError("scripted step attempt started before target launch")
             if rec.attempt > 1:
                 scheduled = schedules.get(aid)
-                if scheduled is None or scheduled[:2] != (sid, rec.attempt) or scheduled[2] >= event.sequence:
+                if (
+                    scheduled is None
+                    or scheduled[:2] != (sid, rec.attempt)
+                    or scheduled[2] >= event.sequence
+                    or rec.retry_reason is None
+                    or not ev._canonical_json_equal(scheduled[3], rec.retry_reason)
+                ):
                     raise FinalizationError("retry start does not match STEP_RETRY_SCHEDULED")
             elif aid in schedules:
                 raise FinalizationError("first attempt cannot be retry-scheduled")
@@ -565,6 +627,8 @@ def install() -> None:
     base_incomplete_events = reports._incomplete_events
     base_normalize_audit_inputs = audit._normalize_audit_inputs
     base_validate_audit_records = audit._validate_audit_records
+    base_new_approval_record = audit._new_approval_record
+    base_approval_structural_error = audit._approval_structural_error
 
     def guarded_recover(project_dir, run_id):
         rid = run_id if isinstance(run_id, RunId) else RunId(run_id)
@@ -594,6 +658,7 @@ def install() -> None:
     def guarded_record_extensions(events):
         base_record_extensions(events)
         _validate_evidence_map_keys(events, ev)
+        _validate_retry_semantics(events, ev)
 
     def guarded_retained_failure(events, state):
         result = base_retained_failure(events, state)
@@ -725,6 +790,23 @@ def install() -> None:
                 )
         return validated
 
+    def guarded_new_approval_record(*args, **kwargs):
+        try:
+            _validate_audit_actor(kwargs.get("actor"))
+        except (TypeError, ValueError) as exc:
+            raise audit.ApprovalError(
+                "approval actor must be a bounded machine-safe principal identifier"
+            ) from exc
+        return base_new_approval_record(*args, **kwargs)
+
+    def guarded_approval_structural_error(record, *args, **kwargs):
+        if isinstance(record, Mapping):
+            try:
+                _validate_audit_actor(record.get("actor"))
+            except (TypeError, ValueError):
+                return "approval actor must be a bounded machine-safe principal identifier"
+        return base_approval_structural_error(record, *args, **kwargs)
+
     finalization._recover_unbound_revision = guarded_recover
     ev._validate_record_extensions = guarded_record_extensions
     ev._preserve_retained_failure = guarded_retained_failure
@@ -732,6 +814,8 @@ def install() -> None:
     audit._authentication_status = guarded_authentication_status
     audit._normalize_audit_inputs = guarded_normalize_audit_inputs
     audit._validate_audit_records = guarded_validate_audit_records
+    audit._new_approval_record = guarded_new_approval_record
+    audit._approval_structural_error = guarded_approval_structural_error
     finalization._ates_trust_guards_installed = True
 
 
