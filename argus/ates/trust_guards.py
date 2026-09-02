@@ -16,7 +16,6 @@ from .core import (
     EventType,
     EvidenceValue,
     ExecutionKind,
-    StepAttemptStatus,
     VerificationStatus,
     to_json_compatible,
     validate_step_attempt_history,
@@ -26,9 +25,9 @@ from .ids import RunId
 from .store import AtesEventStore
 
 
-# These are the structural names emitted by the current Argus ATES producer.
-# Values remain privacy-classified EvidenceValue objects; keys are metadata too,
-# and therefore must not become an unclassified plaintext side channel.
+# Structural names emitted by Argus's built-in actions. Unknown/custom action
+# types remain supported, but their parameter names must still be bounded,
+# machine-safe identifiers rather than a free-form plaintext side channel.
 ACTION_PARAMETER_KEYS: dict[str, frozenset[str]] = {
     "click": frozenset({"element_id", "x", "y"}),
     "double_click": frozenset({"element_id", "x", "y"}),
@@ -69,6 +68,7 @@ _EVIDENCE_FIELDS = frozenset(
     {"disposition", "value", "reason", "secret_refs", "protected_ref"}
 )
 _SAFE_DETAIL_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_SAFE_ACTION_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _APPROVAL_ID = re.compile(r"^APPROVAL-[0-9a-f]{32}$")
 
@@ -123,7 +123,19 @@ def _evidence_json(value: object, label: str) -> dict[str, object] | None:
     return converted
 
 
+def _redacted_audit_text() -> dict[str, object]:
+    value = to_json_compatible(EvidenceValue.redacted("privacy.audit_detail"))
+    if not isinstance(value, dict):
+        raise ValueError("audit redaction did not normalize to an evidence object")
+    return value
+
+
 def _safe_custom_audit_value(value: object, label: str) -> object:
+    """Normalize custom audit data without persisting unclassified text.
+
+    Callers that want text preserved must explicitly supply EvidenceValue. Raw
+    strings stay API-compatible but are redacted before they ever reach disk.
+    """
     evidence = _evidence_json(value, label)
     if evidence is not None:
         return evidence
@@ -148,9 +160,7 @@ def _safe_custom_audit_value(value: object, label: str) -> object:
             for index, child in enumerate(value)
         ]
     if isinstance(value, str):
-        raise ValueError(
-            f"{label} is free-form text and must be privacy-classified EvidenceValue"
-        )
+        return _redacted_audit_text()
     raise ValueError(f"{label} contains an unsupported audit value")
 
 
@@ -169,7 +179,7 @@ def _validate_known_audit_details(event_type: str, details: Mapping[str, object]
             not isinstance(supersedes, str) or not _APPROVAL_ID.fullmatch(supersedes)
         ):
             raise ValueError("approval.changed supersedes_approval_id is invalid")
-        if details.get("action") not in {"approve", "revoke"}:
+        if details.get("action") not in {"approved", "rejected", "revoked"}:
             raise ValueError("approval.changed action is invalid")
         if details.get("verification_status") not in {"verified", "unverified", "invalid"}:
             raise ValueError("approval.changed verification_status is invalid")
@@ -222,13 +232,23 @@ def _validate_evidence_map_keys(events, ev) -> None:
                 continue
             if action_type == "invalid":
                 if parameters:
-                    raise FinalizationError(
-                        "invalid action type cannot carry parameter names"
-                    )
+                    raise FinalizationError("invalid action type cannot carry parameter names")
                 continue
+            if not _SAFE_ACTION_TYPE.fullmatch(action_type):
+                raise FinalizationError("action_type is not a machine-safe structural identifier")
             allowed = ACTION_PARAMETER_KEYS.get(action_type)
             if allowed is None:
-                raise FinalizationError("action_type has no supported parameter-key policy")
+                unsafe = [
+                    key
+                    for key in parameters
+                    if not isinstance(key, str) or not _SAFE_DETAIL_KEY.fullmatch(key)
+                ]
+                if unsafe:
+                    raise FinalizationError(
+                        "action parameters contain unsupported or unsafe structural keys: "
+                        + ", ".join(sorted(str(item) for item in unsafe))
+                    )
+                continue
             unexpected = set(parameters) - allowed
             if unexpected:
                 raise FinalizationError(
@@ -251,13 +271,7 @@ def _validate_evidence_map_keys(events, ev) -> None:
 
 
 def _validate_incomplete_prefix(events, run_id, ev) -> None:
-    """Validate all evidence already present while allowing future termination.
-
-    The only relaxation from ordinary finalization is that a currently active
-    attempt/action, a scheduled retry, or an unclosed target/environment may be
-    unfinished at end-of-prefix. Every record and relationship that *has* been
-    emitted must already be canonical and causally valid.
-    """
+    """Validate every emitted record while allowing only future termination gaps."""
     snapshot = tuple(events)
     if not snapshot or snapshot[0].envelope.event_type is not EventType.RUN_STARTED:
         raise FinalizationError("RUN_STARTED must be the first incomplete event")
@@ -470,15 +484,10 @@ def _validate_incomplete_prefix(events, run_id, ev) -> None:
             validate_step_attempt_history(completed_records)
         except ValueError as exc:
             raise FinalizationError(f"completed attempt prefix is invalid: {exc}") from exc
-    # Every opened attempt except the one still active must already be closed.
     unclosed = set(opened) - set(closed)
     if unclosed != ({active_attempt} if active_attempt is not None else set()):
         raise FinalizationError("incomplete evidence contains orphan step attempts")
-    # A retry schedule may legitimately be the final durable event before crash;
-    # schedules consumed by a start must otherwise match one-to-one.
-    started_retry_ids = {
-        aid for aid, (rec, _seq) in opened.items() if rec.attempt > 1
-    }
+    started_retry_ids = {aid for aid, (rec, _seq) in opened.items() if rec.attempt > 1}
     if not started_retry_ids.issubset(set(schedules)):
         raise FinalizationError("retry attempt lacks its durable schedule")
 
@@ -497,7 +506,6 @@ def install() -> None:
     base_record_extensions = ev._validate_record_extensions
     base_retained_failure = ev._preserve_retained_failure
     base_incomplete_events = reports._incomplete_events
-    base_authentication_status = audit._authentication_status
     base_normalize_audit_inputs = audit._normalize_audit_inputs
     base_validate_audit_records = audit._validate_audit_records
 
@@ -525,10 +533,7 @@ def install() -> None:
 
     def guarded_retained_failure(events, state):
         result = base_retained_failure(events, state)
-        if (
-            state.status_inputs.execution_error
-            and not result.status_inputs.execution_error
-        ):
+        if state.status_inputs.execution_error and not result.status_inputs.execution_error:
             snapshot = tuple(events)
             retained = [
                 index
@@ -541,24 +546,26 @@ def install() -> None:
                 for index, event in enumerate(snapshot)
                 if event.envelope.event_type is EventType.STEP_ATTEMPT_COMPLETED
             ]
-            # Retention can excuse only cleanup uncertainty that arose *after*
-            # execution settled. A predeclared retention token has no causality.
+            # Retention may excuse only cleanup uncertainty that follows settled
+            # execution. A predeclared retention event cannot erase a later error.
             if not retained or not completed or retained[0] <= max(completed):
                 return state
         return result
 
     def guarded_incomplete_events(root):
         events, run_id, raw = base_incomplete_events(root)
-        _validate_incomplete_prefix(events, run_id, ev)
-        # Re-run relationship/provenance validators that are safe on prefixes.
-        attempts, findings = ev._canonical_relationship_sets(events)
-        ev._validate_retained_relationships(events, attempts, findings)
-        ev._validate_suppression_relationships(events)
+        try:
+            _validate_incomplete_prefix(events, run_id, ev)
+            attempts, findings = ev._canonical_relationship_sets(events)
+            ev._validate_retained_relationships(events, attempts, findings)
+            ev._validate_suppression_relationships(events)
+        except FinalizationError as exc:
+            raise reports.ReportError(
+                "incomplete evidence violates canonical record/relationship invariants"
+            ) from exc
         return events, run_id, raw
 
     def guarded_authentication_status(record, resolver):
-        # Reimplement only the credential lookup boundary so operator/task
-        # cancellation (KeyboardInterrupt/SystemExit/GeneratorExit) propagates.
         auth = record.get("authentication")
         if not isinstance(auth, Mapping):
             return VerificationStatus.INVALID, "authentication metadata is malformed"
@@ -579,6 +586,8 @@ def install() -> None:
         try:
             credential = resolver(key_id)
         except Exception:
+            # Ordinary resolver failures degrade to unverified. Process/task
+            # cancellation (BaseException subclasses) deliberately propagates.
             return VerificationStatus.UNVERIFIED, "trusted reviewer credential lookup failed"
         if credential is None:
             return VerificationStatus.UNVERIFIED, "trusted reviewer credential is unavailable"
@@ -616,11 +625,17 @@ def install() -> None:
             if not isinstance(details, Mapping):
                 continue
             try:
-                _normalize_audit_details(str(record.get("event_type")), details)
+                normalized = _normalize_audit_details(str(record.get("event_type")), details)
             except (TypeError, ValueError) as exc:
                 raise audit.ApprovalError(
                     f"audit record {index} has unsafe details: {exc}"
                 ) from exc
+            # Read-side validation must not silently reinterpret persisted legacy
+            # plaintext. Only canonical already-sanitized detail bytes are valid.
+            if to_json_compatible(dict(details)) != normalized:
+                raise audit.ApprovalError(
+                    f"audit record {index} contains unclassified free-form detail text"
+                )
         return validated
 
     finalization._recover_unbound_revision = guarded_recover
