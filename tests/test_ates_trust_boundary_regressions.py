@@ -11,6 +11,7 @@ from argus.ates import (
     ActionId,
     ActionOperationId,
     ActionRecord,
+    ApprovalError,
     AtesEventStore,
     EventType,
     EvidenceValue,
@@ -62,6 +63,30 @@ def test_recovery_does_not_finalize_markerless_terminal_stream(tmp_path):
     assert not (root / "run.json").exists()
     assert not (root / "manifests" / "manifest-0001.json").exists()
     assert inspect_finalization_trust(root).trust_state is FinalizationTrustState.UNVERIFIED_DERIVED
+
+
+def test_recovery_does_not_finalize_interrupted_execution_marker(tmp_path):
+    store = _open_run(tmp_path, provisional=False)
+    run_id = store.run_id
+    root = store.run_dir
+    store.append(
+        EventType.RUN_MARKED_INCOMPLETE,
+        {"reason": "runtime.execution_interrupted", "execution_result": "error"},
+    )
+    before = (root / "evidence.jsonl").read_bytes()
+    store.close()
+
+    with pytest.raises(FinalizationError, match="runtime.finalization_pending"):
+        recover_revision_one(tmp_path, run_id)
+
+    assert (root / "evidence.jsonl").read_bytes() == before
+    assert not (root / "run.json").exists()
+    assert not (root / "manifests" / "manifest-0001.json").exists()
+    with AtesEventStore(tmp_path, run_id) as reopened:
+        assert not any(
+            event.envelope.event_type is EventType.RUN_COMPLETED
+            for event in reopened.events
+        )
 
 
 def test_incomplete_report_rejects_malformed_existing_step_record(tmp_path):
@@ -151,6 +176,47 @@ def test_free_form_audit_details_are_sanitized_before_persistence(tmp_path):
     )
     assert classified["details"]["note"]["value"] == "review-complete"
     validate_audit_chain(root)
+    bundle = render_reports(root)
+    for path in (bundle.json_path, bundle.markdown_path, bundle.html_path, bundle.junit_path):
+        assert secret not in path.read_text("utf-8")
+
+
+@pytest.mark.parametrize(
+    "event_type,dedupe_key",
+    [
+        ("operator.note Bearer TOP-SECRET-123", "operator-note"),
+        ("operator.note", "Bearer TOP-SECRET-123"),
+    ],
+)
+def test_audit_outer_identifiers_reject_free_form_text_on_write(
+    tmp_path, event_type, dedupe_key
+):
+    root = _finalized_package(tmp_path).run_dir
+    before = (root / "audit.jsonl").read_bytes()
+    with pytest.raises(ApprovalError, match="machine-safe"):
+        append_audit_event(
+            root,
+            event_type,
+            actor="reviewer",
+            details={},
+            dedupe_key=dedupe_key,
+        )
+    assert (root / "audit.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("field", ["event_type", "dedupe_key"])
+def test_imported_audit_outer_identifiers_cannot_bypass_report_privacy(tmp_path, field):
+    root = _finalized_package(tmp_path).run_dir
+    audit_path = root / "audit.jsonl"
+    records = [json.loads(line) for line in audit_path.read_text("utf-8").splitlines()]
+    assert len(records) == 1
+    secret = "Bearer TOP-SECRET-123"
+    records[0][field] = secret
+    audit_path.write_bytes(_canonical_lines(records))
+
+    with pytest.raises(ApprovalError, match="unsafe structural identifiers"):
+        validate_audit_chain(root)
+
     bundle = render_reports(root)
     for path in (bundle.json_path, bundle.markdown_path, bundle.html_path, bundle.junit_path):
         assert secret not in path.read_text("utf-8")
