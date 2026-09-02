@@ -72,6 +72,7 @@ _SAFE_DETAIL_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _AUDIT_EVENT_TYPE = re.compile(
     r"^[a-z][a-z0-9_-]{0,31}(?:\.[a-z][a-z0-9_-]{0,31}){0,3}$"
 )
+_AUDIT_ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:+-]{0,127}$")
 _CUSTOM_DEDUPE_KEY = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Approval semantics validate the canonical APPROVAL-* namespace separately.
@@ -116,10 +117,16 @@ _FINALIZATION_AUDIT_KEYS = frozenset(
 )
 
 
-def _validate_audit_identifiers(event_type: object, dedupe_key: object) -> None:
-    """Require persisted audit routing/idempotency strings to be structural."""
+def _validate_audit_identifiers(
+    event_type: object,
+    actor: object,
+    dedupe_key: object,
+) -> None:
+    """Require persisted audit routing/principal/idempotency strings to be structural."""
     if not isinstance(event_type, str) or not _AUDIT_EVENT_TYPE.fullmatch(event_type):
         raise ValueError("audit event_type must be a bounded machine-safe identifier")
+    if not isinstance(actor, str) or not _AUDIT_ACTOR.fullmatch(actor):
+        raise ValueError("audit actor must be a bounded machine-safe principal identifier")
     if dedupe_key is None:
         return
     if not isinstance(dedupe_key, str):
@@ -422,6 +429,16 @@ def _validate_incomplete_prefix(events, run_id, ev) -> None:
                 or sseq >= event.sequence
             ):
                 raise FinalizationError("step attempt completion does not match its start")
+            unfinished_actions = [
+                action_id
+                for action_id, (state, action, _sequence) in actions.items()
+                if str(action.step_attempt_id) == aid and state != "terminal"
+            ]
+            if unfinished_actions:
+                raise FinalizationError(
+                    "step attempt completed with unfinished action lifecycle: "
+                    + ", ".join(sorted(unfinished_actions))
+                )
             closed[aid] = (rec, event.sequence)
             active_attempt = None
             continue
@@ -666,7 +683,7 @@ def install() -> None:
 
     def guarded_normalize_audit_inputs(event_type, actor, details, occurred_at, dedupe_key):
         try:
-            _validate_audit_identifiers(event_type, dedupe_key)
+            _validate_audit_identifiers(event_type, actor, dedupe_key)
         except (TypeError, ValueError) as exc:
             raise audit.ApprovalError(str(exc)) from exc
         when, _converted = base_normalize_audit_inputs(
@@ -683,7 +700,9 @@ def install() -> None:
         for index, record in enumerate(validated, 1):
             try:
                 _validate_audit_identifiers(
-                    record.get("event_type"), record.get("dedupe_key")
+                    record.get("event_type"),
+                    record.get("actor"),
+                    record.get("dedupe_key"),
                 )
             except (TypeError, ValueError) as exc:
                 raise audit.ApprovalError(
