@@ -91,3 +91,11 @@ __all__ = [
     "validate_artifact_path", "validate_audit_chain", "validate_step_attempt_history",
     "validate_step_evidence_relationships", "verify_finalized_run", "verify_report_bundle",
 ]
+
+# Install cross-cutting trust-boundary hardening only after the canonical modules
+# above are fully initialized. Public callable identities/signatures stay intact;
+# the guards replace internal validation hooks used by those callables.
+from .trust_guards import install as _install_trust_guards
+
+_install_trust_guards()
+del _install_trust_guards
