@@ -99,3 +99,11 @@ from .trust_guards import install as _install_trust_guards
 
 _install_trust_guards()
 del _install_trust_guards
+
+# Authority-bearing identifiers and retry transitions must use the same policy
+# after the base trust hooks are installed.  This remains a purpose-based guard,
+# not a review-round implementation layer.
+from .authority_guards import install as _install_authority_guards
+
+_install_authority_guards()
+del _install_authority_guards
