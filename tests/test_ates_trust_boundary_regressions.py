@@ -11,7 +11,6 @@ from argus.ates import (
     ActionId,
     ActionOperationId,
     ActionRecord,
-    ApprovalError,
     AtesEventStore,
     EventType,
     EvidenceValue,
@@ -130,26 +129,27 @@ def test_credential_resolver_process_cancellation_propagates(tmp_path):
         validate_approvals(root, key_resolver=cancelled)
 
 
-def test_free_form_audit_details_require_privacy_classification(tmp_path):
+def test_free_form_audit_details_are_sanitized_before_persistence(tmp_path):
     root = _finalized_package(tmp_path).run_dir
     secret = "Bearer TOP-SECRET-123"
-    with pytest.raises(ApprovalError, match="free-form text"):
-        append_audit_event(
-            root,
-            "operator.note",
-            actor="reviewer",
-            details={"note": secret},
-            dedupe_key="operator-note-raw",
-        )
-
     record = append_audit_event(
         root,
         "operator.note",
         actor="reviewer",
-        details={"note": EvidenceValue.redacted("privacy.audit_note")},
+        details={"note": secret},
+        dedupe_key="operator-note-raw",
+    )
+    assert record["details"]["note"]["disposition"] == "redacted"
+    assert secret not in json.dumps(record, sort_keys=True)
+
+    classified = append_audit_event(
+        root,
+        "operator.note",
+        actor="reviewer",
+        details={"note": EvidenceValue.safe("review-complete")},
         dedupe_key="operator-note-classified",
     )
-    assert isinstance(record["details"]["note"], dict)
+    assert classified["details"]["note"]["value"] == "review-complete"
     validate_audit_chain(root)
     bundle = render_reports(root)
     for path in (bundle.json_path, bundle.markdown_path, bundle.html_path, bundle.junit_path):
