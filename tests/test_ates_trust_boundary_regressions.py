@@ -76,7 +76,7 @@ def test_recovery_does_not_finalize_interrupted_execution_marker(tmp_path):
     before = (root / "evidence.jsonl").read_bytes()
     store.close()
 
-    with pytest.raises(FinalizationError, match="runtime.finalization_pending"):
+    with pytest.raises(FinalizationError, match="completion-ready"):
         recover_revision_one(tmp_path, run_id)
 
     assert (root / "evidence.jsonl").read_bytes() == before
