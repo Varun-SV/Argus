@@ -69,6 +69,10 @@ _EVIDENCE_FIELDS = frozenset(
     {"disposition", "value", "reason", "secret_refs", "protected_ref"}
 )
 _SAFE_DETAIL_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_AUDIT_EVENT_TYPE = re.compile(
+    r"^[a-z][a-z0-9_]{0,31}(?:\.[a-z][a-z0-9_]{0,31}){0,3}$"
+)
+_CUSTOM_DEDUPE_KEY = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Approval semantics validate the canonical APPROVAL-* namespace separately.
 # The audit layer needs only a bounded structural identifier here so malformed
@@ -96,6 +100,28 @@ _FINALIZATION_AUDIT_KEYS = frozenset(
         "manifest_digest",
     }
 )
+
+
+def _validate_audit_identifiers(event_type: object, dedupe_key: object) -> None:
+    """Require persisted audit routing/idempotency strings to be structural."""
+    if not isinstance(event_type, str) or not _AUDIT_EVENT_TYPE.fullmatch(event_type):
+        raise ValueError("audit event_type must be a bounded machine-safe identifier")
+    if dedupe_key is None:
+        return
+    if not isinstance(dedupe_key, str):
+        raise ValueError("audit dedupe_key must be a machine-safe identifier")
+    if dedupe_key.startswith("approval:"):
+        approval_id = dedupe_key.removeprefix("approval:")
+        if not _APPROVAL_ID.fullmatch(approval_id):
+            raise ValueError("approval audit dedupe_key is invalid")
+        return
+    if dedupe_key.startswith("finalization:"):
+        finalization_id = dedupe_key.removeprefix("finalization:")
+        if not _FINALIZATION_ID.fullmatch(finalization_id):
+            raise ValueError("finalization audit dedupe_key is invalid")
+        return
+    if not _CUSTOM_DEDUPE_KEY.fullmatch(dedupe_key):
+        raise ValueError("audit dedupe_key must be a bounded machine-safe identifier")
 
 
 def _evidence_json(value: object, label: str) -> dict[str, object] | None:
@@ -519,9 +545,15 @@ def install() -> None:
             store = AtesEventStore(project, rid, repair_trailing_partial=True)
             try:
                 events = tuple(store.events)
-                if not events or events[-1].envelope.event_type is not EventType.RUN_MARKED_INCOMPLETE:
+                terminal = events[-1] if events else None
+                if (
+                    terminal is None
+                    or terminal.envelope.event_type is not EventType.RUN_MARKED_INCOMPLETE
+                    or terminal.payload.get("reason") != "runtime.finalization_pending"
+                ):
                     raise FinalizationError(
-                        "recovery cannot start a fresh finalization without a producer terminal marker"
+                        "recovery cannot start a fresh finalization without the "
+                        "runtime.finalization_pending producer terminal marker"
                     )
             finally:
                 store.close()
@@ -618,6 +650,10 @@ def install() -> None:
         return VerificationStatus.VERIFIED, None
 
     def guarded_normalize_audit_inputs(event_type, actor, details, occurred_at, dedupe_key):
+        try:
+            _validate_audit_identifiers(event_type, dedupe_key)
+        except (TypeError, ValueError) as exc:
+            raise audit.ApprovalError(str(exc)) from exc
         when, _converted = base_normalize_audit_inputs(
             event_type, actor, details, occurred_at, dedupe_key
         )
@@ -630,6 +666,14 @@ def install() -> None:
     def guarded_validate_audit_records(records):
         validated = base_validate_audit_records(records)
         for index, record in enumerate(validated, 1):
+            try:
+                _validate_audit_identifiers(
+                    record.get("event_type"), record.get("dedupe_key")
+                )
+            except (TypeError, ValueError) as exc:
+                raise audit.ApprovalError(
+                    f"audit record {index} has unsafe structural identifiers: {exc}"
+                ) from exc
             details = record.get("details")
             if not isinstance(details, Mapping):
                 continue
