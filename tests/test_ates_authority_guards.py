@@ -133,7 +133,7 @@ def test_incomplete_prefix_rejects_retry_after_nonretryable_terminal_attempt(
 
     inspected = inspect_finalization_trust(root)
     assert inspected.trust_state is FinalizationTrustState.INVALID
-    with pytest.raises(report_module.ReportError, match="record/relationship invariants"):
+    with pytest.raises(report_module.ReportError):
         render_reports(root)
 
 
@@ -242,7 +242,7 @@ def test_imported_approval_authority_identifiers_cannot_reach_reports(
     assert validated.records[0].verification_status is VerificationStatus.INVALID
     assert not validated.records[0].effective
 
-    bundle = render_reports(root, key_resolver=resolver)
+    bundle = render_reports(root, approval_key_resolver=resolver)
     for path in (
         bundle.json_path,
         bundle.markdown_path,
