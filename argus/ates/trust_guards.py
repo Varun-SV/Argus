@@ -70,7 +70,7 @@ _EVIDENCE_FIELDS = frozenset(
 )
 _SAFE_DETAIL_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _AUDIT_EVENT_TYPE = re.compile(
-    r"^[a-z][a-z0-9_]{0,31}(?:\.[a-z][a-z0-9_]{0,31}){0,3}$"
+    r"^[a-z][a-z0-9_-]{0,31}(?:\.[a-z][a-z0-9_-]{0,31}){0,3}$"
 )
 _CUSTOM_DEDUPE_KEY = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -80,6 +80,20 @@ _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 # classify them as invalid rather than turning them into audit-chain corruption.
 _APPROVAL_ID = re.compile(r"^(?:APPROVAL|APR)-[0-9a-f]{32}$")
 _FINALIZATION_ID = re.compile(r"^FINAL-[0-9a-f]{32}$")
+
+# A fresh finalization may be synthesized only after a producer has returned
+# through one of these synchronous terminal handoffs.  In particular,
+# runtime.execution_interrupted is deliberately absent: that marker describes
+# an exception/crash path and must remain incomplete unless a manifest-backed
+# finalization transaction had already begun and recovery is merely resuming it.
+_FRESH_FINALIZATION_HANDOFF_REASONS = frozenset(
+    {
+        "runtime.finalization_pending",
+        "runtime.provider_check_failed",
+        "runtime.transfer_prepare_failed",
+        "runtime.target_launch_failed",
+    }
+)
 
 _APPROVAL_AUDIT_KEYS = frozenset(
     {
@@ -549,11 +563,12 @@ def install() -> None:
                 if (
                     terminal is None
                     or terminal.envelope.event_type is not EventType.RUN_MARKED_INCOMPLETE
-                    or terminal.payload.get("reason") != "runtime.finalization_pending"
+                    or terminal.payload.get("reason")
+                    not in _FRESH_FINALIZATION_HANDOFF_REASONS
                 ):
                     raise FinalizationError(
-                        "recovery cannot start a fresh finalization without the "
-                        "runtime.finalization_pending producer terminal marker"
+                        "recovery cannot start a fresh finalization without an "
+                        "explicit completion-ready producer terminal marker"
                     )
             finally:
                 store.close()
