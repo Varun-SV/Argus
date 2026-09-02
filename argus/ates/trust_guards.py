@@ -25,9 +25,9 @@ from .ids import RunId
 from .store import AtesEventStore
 
 
-# Structural names emitted by Argus's built-in actions. Unknown/custom action
-# types remain supported, but their parameter names must still be bounded,
-# machine-safe identifiers rather than a free-form plaintext side channel.
+# Structural names emitted by Argus's built-in actions plus the explicitly
+# supported test/extension action used by the canonical JSON type boundary.
+# Every action type therefore has a policy-owned parameter-name contract.
 ACTION_PARAMETER_KEYS: dict[str, frozenset[str]] = {
     "click": frozenset({"element_id", "x", "y"}),
     "double_click": frozenset({"element_id", "x", "y"}),
@@ -42,6 +42,7 @@ ACTION_PARAMETER_KEYS: dict[str, frozenset[str]] = {
     "run": frozenset({"command"}),
     "execute": frozenset({"command"}),
     "report_bug": frozenset({"title", "severity", "expected", "actual", "why"}),
+    "toggle": frozenset({"enabled"}),
 }
 
 OBSERVATION_FACT_KEYS = frozenset(
@@ -68,13 +69,13 @@ _EVIDENCE_FIELDS = frozenset(
     {"disposition", "value", "reason", "secret_refs", "protected_ref"}
 )
 _SAFE_DETAIL_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_SAFE_ACTION_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Approval semantics validate the canonical APPROVAL-* namespace separately.
 # The audit layer needs only a bounded structural identifier here so malformed
 # relationship targets remain safe to render while the approval validator can
 # classify them as invalid rather than turning them into audit-chain corruption.
 _APPROVAL_ID = re.compile(r"^(?:APPROVAL|APR)-[0-9a-f]{32}$")
+_FINALIZATION_ID = re.compile(r"^FINAL-[0-9a-f]{32}$")
 
 _APPROVAL_AUDIT_KEYS = frozenset(
     {
@@ -191,13 +192,20 @@ def _validate_known_audit_details(event_type: str, details: Mapping[str, object]
     if event_type == "finalization.bound":
         if set(details) != _FINALIZATION_AUDIT_KEYS:
             raise ValueError("finalization.bound audit details have unexpected fields")
-        for key in ("run_id", "finalization_id", "effective_status"):
-            if not isinstance(details.get(key), str) or not details.get(key):
-                raise ValueError(f"finalization.bound {key} is invalid")
+        run_id = details.get("run_id")
+        finalization_id = details.get("finalization_id")
+        try:
+            RunId(run_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("finalization.bound run_id is invalid") from exc
+        if not isinstance(finalization_id, str) or not _FINALIZATION_ID.fullmatch(finalization_id):
+            raise ValueError("finalization.bound finalization_id is invalid")
         for key in ("revision", "evidence_revision"):
             value = details.get(key)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"finalization.bound {key} is invalid")
+        if details.get("effective_status") not in {"passed", "failed", "error", "cancelled"}:
+            raise ValueError("finalization.bound effective_status is invalid")
         digest = details.get("manifest_digest")
         if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
             raise ValueError("finalization.bound manifest_digest is invalid")
@@ -238,21 +246,9 @@ def _validate_evidence_map_keys(events, ev) -> None:
                 if parameters:
                     raise FinalizationError("invalid action type cannot carry parameter names")
                 continue
-            if not _SAFE_ACTION_TYPE.fullmatch(action_type):
-                raise FinalizationError("action_type is not a machine-safe structural identifier")
             allowed = ACTION_PARAMETER_KEYS.get(action_type)
             if allowed is None:
-                unsafe = [
-                    key
-                    for key in parameters
-                    if not isinstance(key, str) or not _SAFE_DETAIL_KEY.fullmatch(key)
-                ]
-                if unsafe:
-                    raise FinalizationError(
-                        "action parameters contain unsupported or unsafe structural keys: "
-                        + ", ".join(sorted(str(item) for item in unsafe))
-                    )
-                continue
+                raise FinalizationError("action_type has no supported parameter-key policy")
             unexpected = set(parameters) - allowed
             if unexpected:
                 raise FinalizationError(
@@ -560,6 +556,15 @@ def install() -> None:
         events, run_id, raw = base_incomplete_events(root)
         try:
             _validate_incomplete_prefix(events, run_id, ev)
+            # Prefix incompleteness relaxes only future terminal requirements;
+            # every retained artifact already emitted must satisfy the complete
+            # ArtifactRecord metadata/commitment contract before reports copy it.
+            for event in events:
+                if event.envelope.event_type in {
+                    EventType.CHECKPOINT_CAPTURED,
+                    EventType.ARTIFACT_COLLECTED,
+                }:
+                    ev._artifact_record(event.payload.get("artifact"))
             attempts, findings = ev._canonical_relationship_sets(events)
             ev._validate_retained_relationships(events, attempts, findings)
             ev._validate_suppression_relationships(events)
