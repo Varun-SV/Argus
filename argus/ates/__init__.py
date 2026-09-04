@@ -107,3 +107,11 @@ from .authority_guards import install as _install_authority_guards
 
 _install_authority_guards()
 del _install_authority_guards
+
+# Derived reports, detached ledgers, and crash recovery need transaction-level
+# authority in addition to namespace identity. Install those shared guards last
+# so they wrap the already-hardened report and audit transactions.
+from .transaction_guards import install as _install_transaction_guards
+
+_install_transaction_guards()
+del _install_transaction_guards
