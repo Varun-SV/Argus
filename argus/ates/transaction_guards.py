@@ -261,6 +261,7 @@ def install() -> None:
 
     base_ledger_transaction = audit._ledger_transaction
     base_report_transaction = reports._report_transaction
+    base_recover_unbound_revision = finalization._recover_unbound_revision
 
     @contextmanager
     def guarded_ledger_transaction(root, *, run_id, expected_identity):
@@ -350,6 +351,16 @@ def install() -> None:
         except (TypeError, ValueError) as exc:
             raise ValueError("run_id must be a valid RunId") from exc
         project = Path(project_dir).resolve(strict=True)
+        root = (
+            project
+            / ".argus"
+            / "runs"
+            / finalization._run_directory_key(rid)
+        )
+        manifest_path = root / "manifests" / "manifest-0001.json"
+        if os.path.lexists(root / "run.json") or not os.path.lexists(manifest_path):
+            return base_recover_unbound_revision(project, rid)
+
         store = AtesEventStore(project, rid, repair_trailing_partial=True)
         root = store.run_dir
         manifests = None
