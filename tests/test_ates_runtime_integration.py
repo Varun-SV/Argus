@@ -69,8 +69,8 @@ teardown:
     assert EventType.STEP_ATTEMPT_COMPLETED in types
     assert EventType.TARGET_CLOSED in types
     assert EventType.ENVIRONMENT_RELEASED in types
-    assert types[-1] is EventType.RUN_MARKED_INCOMPLETE
-    assert EventType.RUN_COMPLETED not in types
+    assert EventType.RUN_MARKED_INCOMPLETE in types
+    assert types[-1] is EventType.RUN_COMPLETED
     assert all(event.sequence == index for index, event in enumerate(events, 1))
 
     persisted = _canonical_bytes(events)
@@ -259,8 +259,8 @@ def test_roam_emits_structural_observations_actions_and_findings(tmp_path, monke
     assert EventType.ACTION_EXECUTED in types
     assert EventType.FINDING_RECORDED in types
     assert EventType.STEP_ATTEMPT_COMPLETED in types
-    assert types[-1] is EventType.RUN_MARKED_INCOMPLETE
-    assert EventType.RUN_COMPLETED not in types
+    assert EventType.RUN_MARKED_INCOMPLETE in types
+    assert types[-1] is EventType.RUN_COMPLETED
 
     finding_event = next(
         event for event in events if event.envelope.event_type is EventType.FINDING_RECORDED

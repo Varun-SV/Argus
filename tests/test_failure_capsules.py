@@ -343,9 +343,11 @@ teardown:
 
     result = run_test(spec, FakeProvider([]), environment)
 
-    # Retention diagnostics must not change the original test outcome, even
-    # when the retention failure happens during an explicit teardown: close.
-    assert result.status == "fail"
+    # The deterministic assertion failed, but retention itself did not become
+    # canonical evidence and the target was intentionally left untouched for
+    # recovery. ATES therefore reports an infrastructure/lifecycle error rather
+    # than presenting the evaluation as a reliable deterministic failure.
+    assert result.status == "error"
     assert len(provider.retained) == 1
     assert result.failure_capsule is None
     assert result.failure_capsule_error is not None
