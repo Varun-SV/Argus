@@ -11,6 +11,23 @@ from .enrollment import (
     FleetEnrollmentError,
     FleetEnrollmentRegistry,
 )
+
+from .heartbeat import (
+    CLOCK_ASSESSMENT_VERSION,
+    FLEET_HEARTBEAT_VERSION,
+    CapacityAdvertisement,
+    ClockAssessment,
+    ClockProbeChallenge,
+    ClockProbeResponse,
+    FleetHeartbeatError,
+    FleetHeartbeatRegistry,
+    HeartbeatConflict,
+    HeartbeatReceipt,
+    ImageAdvertisement,
+    NodeHealth,
+    NodeHeartbeat,
+)
+
 from .identity import (
     FLEET_IDENTITY_VERSION,
     PRIVATE_KEY_FILE_VERSION,
@@ -22,6 +39,19 @@ from .identity import (
 )
 
 __all__ = [
+    "NodeHeartbeat",
+    "NodeHealth",
+    "ImageAdvertisement",
+    "HeartbeatReceipt",
+    "HeartbeatConflict",
+    "FleetHeartbeatRegistry",
+    "FleetHeartbeatError",
+    "ClockProbeResponse",
+    "ClockProbeChallenge",
+    "ClockAssessment",
+    "CapacityAdvertisement",
+    "FLEET_HEARTBEAT_VERSION",
+    "CLOCK_ASSESSMENT_VERSION",
     "BOOTSTRAP_DIGEST_PROFILE",
     "FLEET_IDENTITY_VERSION",
     "FLEET_REGISTRY_VERSION",
