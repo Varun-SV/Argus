@@ -115,3 +115,10 @@ from .transaction_guards import install as _install_transaction_guards
 
 _install_transaction_guards()
 del _install_transaction_guards
+
+# Fresh recovery must revalidate its completion-ready producer handoff inside
+# the same writer transaction that performs canonical finalization.
+from .recovery_policy import install as _install_recovery_policy
+
+_install_recovery_policy()
+del _install_recovery_policy
