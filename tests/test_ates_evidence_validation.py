@@ -41,7 +41,7 @@ from tests.ates_test_support import (
 from tests.test_ates_finalization import _open_run, _run_record_json
 
 def test_unfinished_later_attempt_cannot_finalize_passed(tmp_path):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     first_completed = next(
         e for e in store.events if e.envelope.event_type is EventType.STEP_ATTEMPT_COMPLETED
     )
@@ -72,6 +72,7 @@ def test_unfinished_later_attempt_cannot_finalize_passed(tmp_path):
             }
         },
     )
+    _append_pending(store)
     try:
         with pytest.raises(finalization_module.FinalizationError, match="unfinished"):
             finalize_revision_one(store)
@@ -80,7 +81,7 @@ def test_unfinished_later_attempt_cannot_finalize_passed(tmp_path):
 
 
 def test_completion_without_matching_start_is_rejected(tmp_path):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     first = next(
         e for e in store.events if e.envelope.event_type is EventType.STEP_ATTEMPT_COMPLETED
     ).payload["attempt"]
@@ -98,6 +99,7 @@ def test_completion_without_matching_start_is_rejected(tmp_path):
             }
         },
     )
+    _append_pending(store)
     try:
         with pytest.raises(finalization_module.FinalizationError, match="without a matching start"):
             finalize_revision_one(store)
@@ -399,7 +401,7 @@ def test_scripted_run_cannot_spoof_roam_prelaunch_attempt(tmp_path):
     try:
         with pytest.raises(
             FinalizationError,
-            match="scripted runs cannot declare roam steps|before TARGET_LAUNCHED",
+            match="scripted runs may use only|scripted runs cannot declare roam steps|before TARGET_LAUNCHED",
         ):
             finalize_revision_one(store)
     finally:
