@@ -154,11 +154,15 @@ def test_failed_effective_step_derives_failed_even_if_provisional_legacy_says_pa
 
 
 def test_action_outcome_unknown_after_target_close_is_rejected(tmp_path):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     try:
         store.append(
             EventType.ACTION_OUTCOME_UNKNOWN,
             {"action_id": "ACT-unknown", "operation_id": "OP-unknown", "error": None},
+        )
+        store.append(
+            EventType.RUN_MARKED_INCOMPLETE,
+            {"reason": "runtime.finalization_pending", "execution_result": "error"},
         )
         with pytest.raises(FinalizationError, match="active target lifecycle"):
             finalize_revision_one(store)
@@ -190,6 +194,10 @@ def test_missing_required_step_attempt_cannot_pass(tmp_path):
         )
         store.append(EventType.ENVIRONMENT_PREPARED, {"environment_type": "direct", "isolated": False})
         store.append(EventType.ENVIRONMENT_RELEASED, {})
+        store.append(
+            EventType.RUN_MARKED_INCOMPLETE,
+            {"reason": "runtime.finalization_pending", "execution_result": "error"},
+        )
         result = finalize_revision_one(store)
         assert result.outcome.effective_status is RunStatus.ERROR
     finally:
@@ -225,7 +233,7 @@ def test_second_revision_one_finalization_is_rejected(tmp_path):
     store = _open_run(tmp_path)
     try:
         finalize_revision_one(store)
-        with pytest.raises(FinalizationError, match="already contains RUN_COMPLETED"):
+        with pytest.raises(FinalizationError, match="already contains RUN_COMPLETED|final pre-completion producer event"):
             finalize_revision_one(store)
     finally:
         store.close()
