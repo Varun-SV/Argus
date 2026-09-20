@@ -28,9 +28,27 @@ from .heartbeat import (
     NodeHeartbeat,
 )
 
+from .placement import (
+    PLACEMENT_AUTH_VERSION,
+    PLACEMENT_VERSION,
+    RETIREMENT_AUTH_VERSION,
+    CapacityUnavailable,
+    FleetPlacementError,
+    FleetPlacementStore,
+    GenerationRetirementAuthorization,
+    NodeAdmissionStore,
+    NodeAllocationState,
+    PlacementAuthorization,
+    PlacementConflict,
+    PlacementRecord,
+    SessionRequest,
+    StagedInputIdentity,
+)
+
 from .identity import (
     FLEET_IDENTITY_VERSION,
     PRIVATE_KEY_FILE_VERSION,
+    ControlCenterKeyPair,
     FleetIdentityError,
     NodeKeyPair,
     canonical_signed_message,
@@ -39,6 +57,21 @@ from .identity import (
 )
 
 __all__ = [
+    "StagedInputIdentity",
+    "SessionRequest",
+    "PlacementRecord",
+    "PlacementConflict",
+    "PlacementAuthorization",
+    "NodeAllocationState",
+    "NodeAdmissionStore",
+    "GenerationRetirementAuthorization",
+    "FleetPlacementStore",
+    "FleetPlacementError",
+    "CapacityUnavailable",
+    "RETIREMENT_AUTH_VERSION",
+    "PLACEMENT_VERSION",
+    "PLACEMENT_AUTH_VERSION",
+    "ControlCenterKeyPair",
     "NodeHeartbeat",
     "NodeHealth",
     "ImageAdvertisement",

@@ -201,3 +201,7 @@ class NodeKeyPair:
         if record.get("public_key_fingerprint") != pair.fingerprint:
             raise FleetIdentityError("Node private key file fingerprint does not match")
         return pair
+
+
+class ControlCenterKeyPair(NodeKeyPair):
+    """Ed25519 signing identity used for Fleet control-plane authorizations."""
