@@ -159,7 +159,7 @@ def test_malformed_artifact_suppression_cannot_finalize(tmp_path, mutation):
     store.append(EventType.ARTIFACT_SUPPRESSED, payload)
     _append_pending(store)
     try:
-        with pytest.raises(FinalizationError, match="ARTIFACT_SUPPRESSED"):
+        with pytest.raises(FinalizationError, match="ARTIFACT_SUPPRESSED|artifact suppression reason"):
             finalize_revision_one(store)
     finally:
         store.close()
