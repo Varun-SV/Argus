@@ -111,7 +111,7 @@ def test_incomplete_report_rejects_completion_without_matching_start(tmp_path):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     store = AtesEventStore(tmp_path, run_id)
     store.append(
@@ -308,7 +308,7 @@ def test_capsule_retention_must_postdate_settled_failure(tmp_path):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     run = _run_record_json(run_id)
     run["environment_type"] = "capsule"
@@ -378,7 +378,7 @@ def _open_retry_store(tmp_path):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     store = AtesEventStore(tmp_path, run_id)
     store.append(
