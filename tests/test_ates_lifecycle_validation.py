@@ -230,6 +230,10 @@ def test_misordered_target_close_is_rejected(tmp_path):
         {"environment_type": "direct", "isolated": False},
     )
     store.append(EventType.TARGET_CLOSED, {})
+    store.append(
+        EventType.RUN_MARKED_INCOMPLETE,
+        {"reason": "runtime.finalization_pending", "execution_result": "error"},
+    )
     try:
         with pytest.raises(FinalizationError, match="target close lifecycle"):
             finalize_revision_one(store)
