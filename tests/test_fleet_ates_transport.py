@@ -37,7 +37,9 @@ def _binding(run_id: RunId, *, node="NODE-" + ("1" * 32)):
 
 
 def _events(tmp_path, run_id):
-    source = AtesEventStore(tmp_path / "source", run_id)
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = AtesEventStore(source_dir, run_id)
     first = source.append(EventType.RUN_STARTED, {"name": "fleet-test"})
     second = source.append(EventType.ENVIRONMENT_PREPARED, {"isolated": True})
     third = source.append(EventType.TARGET_LAUNCHED, {"target": {"disposition": "suppressed", "reason": "test"}})
@@ -108,7 +110,9 @@ def test_gap_is_explicit_and_pending_event_reconciles_after_missing_sequence(tmp
 
 def test_conflicting_event_content_for_same_sequence_fails_closed(tmp_path):
     run_id = RunId.new()
-    source1 = AtesEventStore(tmp_path / "source1", run_id)
+    source1_dir = tmp_path / "source1"
+    source1_dir.mkdir()
+    source1 = AtesEventStore(source1_dir, run_id)
     original = source1.append(
         EventType.RUN_STARTED,
         {"name": "original"},
@@ -116,7 +120,9 @@ def test_conflicting_event_content_for_same_sequence_fails_closed(tmp_path):
     )
     source1.close()
 
-    source2 = AtesEventStore(tmp_path / "source2", run_id)
+    source2_dir = tmp_path / "source2"
+    source2_dir.mkdir()
+    source2 = AtesEventStore(source2_dir, run_id)
     conflict = source2.append(
         EventType.RUN_STARTED,
         {"name": "different"},
@@ -206,7 +212,6 @@ def test_restart_repairs_pending_receipt_by_exact_event_replay(tmp_path, monkeyp
     def flaky_connect():
         calls["count"] += 1
         conn = real_connect()
-        # First connection is pending receipt, second is post-canonical commit.
         if calls["count"] == 2:
             return _FailingCommitConnection(conn)
         return conn
