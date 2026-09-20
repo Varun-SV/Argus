@@ -216,7 +216,7 @@ def test_misordered_target_close_is_rejected(tmp_path):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     store.append(
         EventType.RUN_STARTED,
@@ -244,7 +244,7 @@ def test_action_terminal_after_target_close_is_rejected(tmp_path):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     store = AtesEventStore(tmp_path, run_id)
     store.append(
@@ -320,12 +320,12 @@ def test_preserved_target_does_not_clear_independent_attempt_error(tmp_path):
         StepRecord(
             step_id=failed_step,
             instruction=EvidenceValue.redacted("privacy.authored_text"),
-            kind="act",
+            kind="step",
         ),
         StepRecord(
             step_id=error_step,
             instruction=EvidenceValue.redacted("privacy.authored_text"),
-            kind="act",
+            kind="step",
         ),
     ]
     store = AtesEventStore(tmp_path, run_id)
