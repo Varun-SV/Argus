@@ -24,7 +24,9 @@ def _terminal_handoff_is_completion_ready(store: Any) -> bool:
     if not events:
         return False
     terminal = events[-1]
-    if terminal.envelope.event_type is not EventType.RUN_MARKED_INCOMPLETE:
+    event_type = terminal.envelope.event_type
+    event_type_value = event_type.value if isinstance(event_type, EventType) else event_type
+    if event_type_value != EventType.RUN_MARKED_INCOMPLETE.value:
         return False
     return terminal.payload.get("reason") in _FRESH_FINALIZATION_HANDOFF_REASONS
 
