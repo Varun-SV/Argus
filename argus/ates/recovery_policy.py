@@ -2,7 +2,7 @@
 
 Recovery may delegate to canonical finalization only while the same writer
 transaction still proves that the producer handed off a completion-ready
-terminal marker.  The context flag below scopes that stricter rule to the
+terminal marker. The context flag below scopes that stricter rule to the
 fresh-recovery path; ordinary explicit finalization keeps its existing API.
 """
 
@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from . import finalization
-from .enums import EventType
+from .core import EventType
 from .errors import FinalizationError
 from .trust_guards import _FRESH_FINALIZATION_HANDOFF_REASONS
 
@@ -49,7 +49,7 @@ def install() -> None:
 
     def guarded_finalize(store: Any, *args: Any, **kwargs: Any):
         # transaction_guards invokes finalization while its AtesEventStore
-        # writer lock is still held.  Revalidate the producer handoff here,
+        # writer lock is still held. Revalidate the producer handoff here,
         # immediately before mutation, so a lock-release/reacquire race cannot
         # turn an interrupted run into RUN_COMPLETED.
         if _fresh_recovery.get() and not _terminal_handoff_is_completion_ready(store):
