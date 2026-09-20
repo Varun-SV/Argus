@@ -39,7 +39,7 @@ def _run_json_dirs(tmp_path: Path):
 
 
 def _open_run_with_protected_artifact(tmp_path):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     repository = AtesArtifactRepository(store)
     captured = repository.capture_bytes(
         b"protected screenshot bytes",
@@ -57,6 +57,7 @@ def _open_run_with_protected_artifact(tmp_path):
             "step_attempt_id": None,
         },
     )
+    _append_pending(store)
     return store, record
 
 
@@ -787,7 +788,7 @@ def _custom_run(tmp_path, *, instruction: str, requirements=()):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.safe(instruction),
-        kind="assert" if requirements else "act",
+        kind="assert" if requirements else "step",
     )
     store = AtesEventStore(tmp_path, run_id)
     store.append(
