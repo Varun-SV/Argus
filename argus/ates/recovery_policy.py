@@ -13,7 +13,6 @@ from typing import Any
 
 from . import finalization
 from .core import EventType
-from .errors import FinalizationError
 from .trust_guards import _FRESH_FINALIZATION_HANDOFF_REASONS
 
 _fresh_recovery: ContextVar[bool] = ContextVar("ates_fresh_recovery", default=False)
@@ -53,7 +52,7 @@ def install() -> None:
         # immediately before mutation, so a lock-release/reacquire race cannot
         # turn an interrupted run into RUN_COMPLETED.
         if _fresh_recovery.get() and not _terminal_handoff_is_completion_ready(store):
-            raise FinalizationError(
+            raise finalization.FinalizationError(
                 "fresh recovery requires a completion-ready terminal handoff"
             )
         return finalize(store, *args, **kwargs)
