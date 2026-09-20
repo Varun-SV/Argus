@@ -88,7 +88,7 @@ def test_valid_finding_survives_into_verified_report(tmp_path):
 
 
 def test_protected_artifact_missing_policy_metadata_cannot_finalize(tmp_path):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     record = _captured_protected_artifact(store)
     artifact = to_json_compatible(record)
     assert artifact["protection_state"] == "protected_ref"
@@ -101,6 +101,7 @@ def test_protected_artifact_missing_policy_metadata_cannot_finalize(tmp_path):
             "step_attempt_id": None,
         },
     )
+    _append_pending(store)
     try:
         with pytest.raises(FinalizationError, match="artifact metadata"):
             finalize_revision_one(store)
@@ -109,7 +110,7 @@ def test_protected_artifact_missing_policy_metadata_cannot_finalize(tmp_path):
 
 
 def test_full_artifact_policy_metadata_is_preserved_in_manifest(tmp_path):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     record = _captured_protected_artifact(store)
     artifact = to_json_compatible(record)
     store.append(
@@ -120,6 +121,7 @@ def test_full_artifact_policy_metadata_is_preserved_in_manifest(tmp_path):
             "step_attempt_id": None,
         },
     )
+    _append_pending(store)
     try:
         result = finalize_revision_one(store)
     finally:
@@ -148,13 +150,14 @@ def test_full_artifact_policy_metadata_is_preserved_in_manifest(tmp_path):
 
 @pytest.mark.parametrize("mutation", ["unsupported_reason", "unexpected_plaintext"])
 def test_malformed_artifact_suppression_cannot_finalize(tmp_path, mutation):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     payload = _valid_suppression_payload()
     if mutation == "unsupported_reason":
         payload["reason"] = "secret password copied from target"
     else:
         payload["secret"] = "must-never-be-certified-or-rendered"
     store.append(EventType.ARTIFACT_SUPPRESSED, payload)
+    _append_pending(store)
     try:
         with pytest.raises(FinalizationError, match="ARTIFACT_SUPPRESSED"):
             finalize_revision_one(store)
@@ -163,8 +166,9 @@ def test_malformed_artifact_suppression_cannot_finalize(tmp_path, mutation):
 
 
 def test_valid_artifact_suppression_contract_remains_finalizable(tmp_path):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     store.append(EventType.ARTIFACT_SUPPRESSED, _valid_suppression_payload())
+    _append_pending(store)
     try:
         result = finalize_revision_one(store)
         assert result.outcome.effective_status is RunStatus.PASSED
@@ -182,11 +186,12 @@ def test_valid_artifact_suppression_contract_remains_finalizable(tmp_path):
 def test_suppression_relationships_must_reference_canonical_history(
     tmp_path, relationship
 ):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     store.append(
         EventType.ARTIFACT_SUPPRESSED,
         _suppression_payload(**relationship),
     )
+    _append_pending(store)
     try:
         with pytest.raises(FinalizationError, match="unknown (step_attempt_id|finding_id)"):
             finalize_revision_one(store)
@@ -195,7 +200,7 @@ def test_suppression_relationships_must_reference_canonical_history(
 
 
 def test_artifact_id_is_unique_across_retained_and_suppressed_outcomes(tmp_path):
-    store = _open_run(tmp_path)
+    store = _open_run(tmp_path, provisional=False)
     captured = AtesArtifactRepository(store).capture_bytes(
         b"round-14 retained screenshot",
         context=ArtifactContext.FAILURE_SCREENSHOT,
@@ -215,6 +220,7 @@ def test_artifact_id_is_unique_across_retained_and_suppressed_outcomes(tmp_path)
         EventType.ARTIFACT_SUPPRESSED,
         _suppression_payload(artifact_id=str(captured.record.artifact_id)),
     )
+    _append_pending(store)
     try:
         with pytest.raises(FinalizationError, match="artifact_id is duplicated"):
             finalize_revision_one(store)
@@ -246,6 +252,7 @@ def test_checkpoint_relationships_are_validated(tmp_path, changes, pattern):
     }
     payload.update(changes)
     store.append(EventType.CHECKPOINT_CAPTURED, payload)
+    _append_pending(store)
     try:
         with pytest.raises(FinalizationError, match=pattern):
             finalize_revision_one(store)
@@ -264,6 +271,7 @@ def test_finding_ids_and_evidence_refs_must_be_unique_and_resolved(tmp_path):
     )
     store.append(EventType.FINDING_RECORDED, {"finding": to_json_compatible(finding)})
     store.append(EventType.FINDING_RECORDED, {"finding": to_json_compatible(finding)})
+    _append_pending(store)
     try:
         with pytest.raises(FinalizationError, match="finding IDs must be unique|unknown canonical evidence"):
             finalize_revision_one(store)
@@ -282,6 +290,7 @@ def test_finding_extension_is_rejected_before_report_generation(tmp_path):
     )
     finding["debug_note"] = "API_TOKEN=plaintext-secret"
     store.append(EventType.FINDING_RECORDED, {"finding": finding})
+    _append_pending(store)
     try:
         with pytest.raises(FinalizationError, match="FINDING_RECORDED finding contains unexpected fields"):
             finalize_revision_one(store)
@@ -332,6 +341,7 @@ def test_collection_ordinals_are_unique_across_retained_and_suppressed(tmp_path,
     try:
         for retained in outcomes:
             _append_collection_outcome(store, retained, 1)
+        _append_pending(store)
         with pytest.raises(FinalizationError, match="collection_ordinal.*duplicated"):
             finalize_revision_one(store)
     finally:
@@ -344,6 +354,7 @@ def test_distinct_collection_ordinals_remain_finalizable(tmp_path, outcomes):
     try:
         for ordinal, retained in enumerate(outcomes, 1):
             _append_collection_outcome(store, retained, ordinal)
+        _append_pending(store)
         assert finalize_revision_one(store).outcome.effective_status is RunStatus.PASSED
     finally:
         store.close()
