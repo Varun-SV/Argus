@@ -1,3 +1,14 @@
+from .ates_transport import (
+    FLEET_ATES_TRANSPORT_VERSION,
+    FleetAtesAggregator,
+    FleetAtesBatch,
+    FleetAtesConflict,
+    FleetAtesError,
+    FleetAtesGap,
+    FleetAtesReceipt,
+    FleetAtesRunBinding,
+)
+
 """Argus Fleet execution-plane primitives."""
 
 from .enrollment import (
@@ -57,6 +68,14 @@ from .identity import (
 )
 
 __all__ = [
+    "FleetAtesRunBinding",
+    "FleetAtesReceipt",
+    "FleetAtesGap",
+    "FleetAtesError",
+    "FleetAtesConflict",
+    "FleetAtesBatch",
+    "FleetAtesAggregator",
+    "FLEET_ATES_TRANSPORT_VERSION",
     "StagedInputIdentity",
     "SessionRequest",
     "PlacementRecord",
