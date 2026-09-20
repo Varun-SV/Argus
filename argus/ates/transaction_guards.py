@@ -249,6 +249,11 @@ def _canonical_event_bytes(events) -> bytes:
     return b"".join(event.canonical_line() for event in events)
 
 
+def _event_type_value(event) -> str:
+    event_type = event.envelope.event_type
+    return event_type.value if isinstance(event_type, EventType) else str(event_type)
+
+
 def install() -> None:
     """Install transaction guards after trust and namespace authority guards."""
     from . import audit
@@ -351,12 +356,7 @@ def install() -> None:
         except (TypeError, ValueError) as exc:
             raise ValueError("run_id must be a valid RunId") from exc
         project = Path(project_dir).resolve(strict=True)
-        root = (
-            project
-            / ".argus"
-            / "runs"
-            / finalization._run_directory_key(rid)
-        )
+        root = project / ".argus" / "runs" / finalization._run_directory_key(rid)
         manifest_path = root / "manifests" / "manifest-0001.json"
         if os.path.lexists(root / "run.json") or not os.path.lexists(manifest_path):
             return base_recover_unbound_revision(project, rid)
@@ -379,7 +379,7 @@ def install() -> None:
                 pass
             elif not fio._entry_exists(run_pin, "manifests"):
                 if any(
-                    event.envelope.event_type is EventType.RUN_COMPLETED
+                    _event_type_value(event) == EventType.RUN_COMPLETED.value
                     for event in store.events
                 ):
                     raise finalization.FinalizationError(
@@ -397,7 +397,7 @@ def install() -> None:
                     if (
                         fio._entry_exists(manifests, package_name)
                         or any(
-                            event.envelope.event_type is EventType.RUN_COMPLETED
+                            _event_type_value(event) == EventType.RUN_COMPLETED.value
                             for event in store.events
                         )
                     ):
@@ -421,7 +421,7 @@ def install() -> None:
                     finals = [
                         event
                         for event in store.events
-                        if event.envelope.event_type is EventType.RUN_COMPLETED
+                        if _event_type_value(event) == EventType.RUN_COMPLETED.value
                     ]
                     if finals:
                         if (
@@ -441,19 +441,15 @@ def install() -> None:
                         )
                     state = finalization._derive(pre, rid)
                     if (
-                        outcome.status_policy_version
-                        != finalization.STATUS_POLICY_VERSION
-                        or derive_run_status(state.status_inputs)
-                        is not outcome.effective_status
+                        outcome.status_policy_version != finalization.STATUS_POLICY_VERSION
+                        or derive_run_status(state.status_inputs) is not outcome.effective_status
                     ):
                         raise finalization.FinalizationError(
                             "recovery outcome differs from canonical derivation"
                         )
                     artifacts = finalization._artifacts(store, state.artifacts)
-                    expected_manifest, expected_package, expected_evidence = (
-                        finalization._documents(
-                            pre, completion, outcome, artifacts
-                        )
+                    expected_manifest, expected_package, expected_evidence = finalization._documents(
+                        pre, completion, outcome, artifacts
                     )
                     manifest_bytes = finalization._json(expected_manifest)
                     package_bytes = finalization._json(expected_package)
@@ -471,21 +467,15 @@ def install() -> None:
                             manifests, package_name, "recovery package manifest"
                         )
                         package_raw = package_hold.read()
-                        fio._strict_json_object(
-                            package_raw, "recovery package manifest"
-                        )
+                        fio._strict_json_object(package_raw, "recovery package manifest")
                         if package_raw != package_bytes:
                             raise finalization.FinalizationError(
                                 "recovery package manifest bytes differ from regenerated candidate"
                             )
 
-                    _assert_recovery_authority(
-                        store, manifests, manifest_hold, package_hold
-                    )
+                    _assert_recovery_authority(store, manifests, manifest_hold, package_hold)
                     if package_hold is None:
-                        finalization._publish(
-                            manifests, package_name, package_bytes
-                        )
+                        finalization._publish(manifests, package_name, package_bytes)
                         package_hold = _HeldRead(
                             manifests, package_name, "recovery package manifest"
                         )
@@ -494,16 +484,11 @@ def install() -> None:
                                 "published recovery package manifest differs from candidate"
                             )
 
-                    _assert_recovery_authority(
-                        store, manifests, manifest_hold, package_hold
-                    )
+                    _assert_recovery_authority(store, manifests, manifest_hold, package_hold)
                     if not finals:
                         try:
                             store.append_event(completion)
                         except AtesAppendError:
-                            # An append error is ambiguous. Drop the old store,
-                            # re-open canonical authority, then revalidate every
-                            # candidate byte before the next mutation (binding).
                             store.close()
                             store = finalization._reopen(project, rid, completion)
                             root = store.run_dir
@@ -525,14 +510,10 @@ def install() -> None:
                                 "manifests", manifests, "ATES manifests directory"
                             )
                             manifest_hold = _HeldRead(
-                                manifests,
-                                manifest_name,
-                                "recovery evidence manifest",
+                                manifests, manifest_name, "recovery evidence manifest"
                             )
                             package_hold = _HeldRead(
-                                manifests,
-                                package_name,
-                                "recovery package manifest",
+                                manifests, package_name, "recovery package manifest"
                             )
                             if manifest_hold.read() != manifest_bytes:
                                 raise finalization.FinalizationError(
@@ -547,9 +528,7 @@ def install() -> None:
                         raise finalization.FinalizationError(
                             "recovered evidence differs from manifest-bound candidate"
                         )
-                    _assert_recovery_authority(
-                        store, manifests, manifest_hold, package_hold
-                    )
+                    _assert_recovery_authority(store, manifests, manifest_hold, package_hold)
                     directories = store._directories
                     if directories is None:
                         raise finalization.FinalizationError(
@@ -560,16 +539,11 @@ def install() -> None:
                         "run.json",
                         finalization._json(
                             finalization._binding(
-                                outcome,
-                                completion,
-                                manifest_bytes,
-                                package_bytes,
+                                outcome, completion, manifest_bytes, package_bytes
                             )
                         ),
                     )
-                    _assert_recovery_authority(
-                        store, manifests, manifest_hold, package_hold
-                    )
+                    _assert_recovery_authority(store, manifests, manifest_hold, package_hold)
         except finalization.FinalizationError:
             raise
         except (OSError, AtesStoreError, ValueError) as exc:
@@ -593,8 +567,6 @@ def install() -> None:
             except BaseException:
                 pass
 
-        # Verification happens only after writer handles are released, which
-        # mirrors the canonical recovery contract and avoids self-locking.
         return finalization.verify_finalized_run(root)
 
     audit._ledger_transaction = guarded_ledger_transaction
