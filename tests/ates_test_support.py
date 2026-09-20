@@ -79,7 +79,7 @@ def _finalize_failed_missing_close(tmp_path, *, retained: bool, capsule: bool = 
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     run_record = _run_record_json(run_id)
     if capsule:
@@ -168,7 +168,7 @@ def _base_lifecycle_store(tmp_path):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     store = AtesEventStore(tmp_path, run_id)
     store.append(
@@ -235,7 +235,7 @@ def _active_action_store(tmp_path):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     store = AtesEventStore(tmp_path, run_id)
     store.append(
@@ -277,7 +277,7 @@ def _payload_validation_store(tmp_path, *, environment, target):
     step = StepRecord(
         step_id=step_id,
         instruction=EvidenceValue.redacted("privacy.authored_text"),
-        kind="act",
+        kind="step",
     )
     store = AtesEventStore(tmp_path, run_id)
     store.append(
@@ -306,7 +306,7 @@ def _payload_validation_store(tmp_path, *, environment, target):
 def _open_validation_store(
     tmp_path,
     *,
-    step_kind="act",
+    step_kind="step",
     step_extra=None,
     run_payload_extra=None,
 ):
@@ -415,7 +415,7 @@ def _target():
     return to_json_compatible(EvidenceValue.redacted("privacy.target_value"))
 
 
-def _open_action_store(tmp_path, *, kind="act"):
+def _open_action_store(tmp_path, *, kind="step"):
     run_id = RunId.new()
     step_id = StepId.new()
     attempt_id = StepAttemptId.new()
@@ -503,7 +503,7 @@ def _open_run_with_id(tmp_path, run_id: RunId) -> AtesEventStore:
             "steps": [
                 {
                     "step_id": str(step_id),
-                    "kind": "act",
+                    "kind": "step",
                     "instruction": {
                         "disposition": "redacted",
                         "value": "<redacted>",
