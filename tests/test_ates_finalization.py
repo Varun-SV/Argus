@@ -65,7 +65,7 @@ def _open_run(tmp_path, *, step_status="passed", provisional=True):
             "steps": [
                 {
                     "step_id": str(step_id),
-                    "kind": "act",
+                    "kind": "step",
                     "instruction": {"disposition": "redacted", "value": "<redacted>", "reason": "policy.default"},
                 }
             ],
@@ -186,7 +186,7 @@ def test_missing_required_step_attempt_cannot_pass(tmp_path):
     try:
         store.append(
             EventType.RUN_STARTED,
-            {"run": _run_record_json(run_id), "steps": [{"step_id": str(step_id), "kind": "act"}]},
+            {"run": _run_record_json(run_id), "steps": [{"step_id": str(step_id), "kind": "step"}]},
         )
         store.append(EventType.ENVIRONMENT_PREPARED, {"environment_type": "direct", "isolated": False})
         store.append(EventType.ENVIRONMENT_RELEASED, {})
