@@ -189,7 +189,7 @@ def test_report_visible_structural_fields_reject_free_form_plaintext(tmp_path, c
 
 @pytest.mark.parametrize("field", ["revision", "evidence_revision"])
 def test_finalization_revision_fields_reject_json_booleans(tmp_path, field):
-    result = _finalized_package(tmp_path).finalization
+    result = _finalized_package(tmp_path)
     document = to_json_compatible(result.outcome)
     document[field] = True
     with pytest.raises(FinalizationError):
