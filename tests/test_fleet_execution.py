@@ -41,6 +41,12 @@ class _FakeCapsuleEnvironment(ExecutionEnvironment):
         pass
 
 
+class _LostResponseCapsuleEnvironment(_FakeCapsuleEnvironment):
+    def launch(self, target: str) -> None:
+        self.launches.append(target)
+        raise RuntimeError("launch response lost")
+
+
 class _FakeLocalEnvironment(_FakeCapsuleEnvironment):
     environment_type = "local"
 
@@ -139,6 +145,48 @@ def test_dispatch_is_capsule_only_idempotent_and_restart_reconcilable(tmp_path):
 
     # Node-agent restart opens the same durable claim and reconciles the live
     # execution instead of creating a replacement Capsule.
+    restarted = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
+    assert restarted.reconcile(
+        request.session_request_id,
+        placement_generation=authorization.placement_generation,
+    ).state == "running"
+    assert restarted.dispatch(request, authorization, target="app.exe").state == "running"
+    assert launches == ["app.exe"]
+    assert len(factory_calls) == 1
+
+
+def test_launch_side_effect_then_lost_response_stays_reconcilable(tmp_path):
+    node, control_key, placements, admissions = _setup(tmp_path)
+    request, image, staged = _request(tmp_path)
+    placements.create_placement(request, owner_node_id=node.node_id, now=1000)
+    authorization = placements.authorization_for_dispatch(request.session_request_id, signer=control_key)
+    launches = []
+    factory_calls = []
+
+    def factory(_request):
+        factory_calls.append(1)
+        return _LostResponseCapsuleEnvironment(launches)
+
+    kwargs = dict(
+        admission_store=admissions,
+        environment_factory=factory,
+        image_path_resolver=lambda _request: image,
+        staged_path_resolver=lambda _identity: staged,
+        execution_probe=lambda _key: "running",
+    )
+    executor = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
+    with pytest.raises(RuntimeError, match="launch response lost"):
+        executor.dispatch(request, authorization, target="app.exe")
+    assert launches == ["app.exe"]
+    assert len(factory_calls) == 1
+
+    # The launch outcome is ambiguous, not failed. A retry must not launch a
+    # replacement, and a restarted agent can recover the existing Capsule via
+    # the stable execution key.
+    assert executor.dispatch(request, authorization, target="app.exe").state == "launching"
+    assert launches == ["app.exe"]
+    assert len(factory_calls) == 1
+
     restarted = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
     assert restarted.reconcile(
         request.session_request_id,
