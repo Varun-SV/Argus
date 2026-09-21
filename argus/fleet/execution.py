@@ -121,9 +121,49 @@ class FleetNodeExecutor:
             raise FleetPlacementError(f"cannot snapshot Fleet launch input: {source}") from exc
         return "sha256:" + digest.hexdigest(), size
 
-    def _snapshot_verified_inputs(self, request: SessionRequest) -> tuple[Path, VerifiedLaunchInputs]:
-        """Copy and verify mutable resolver paths into a private launch snapshot."""
-        root = Path(tempfile.mkdtemp(prefix="fleet-launch-", dir=self.path.parent))
+    @staticmethod
+    def _verify_file(path: Path, expected_digest: str, expected_size: Optional[int] = None) -> None:
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with path.open("rb") as source:
+                while True:
+                    block = source.read(1024 * 1024)
+                    if not block:
+                        break
+                    size += len(block)
+                    digest.update(block)
+        except OSError as exc:
+            raise FleetPlacementError(f"cannot read retained Fleet launch input: {path}") from exc
+        if "sha256:" + digest.hexdigest() != expected_digest or (
+            expected_size is not None and size != expected_size
+        ):
+            raise FleetPlacementError("retained Fleet launch input no longer matches authorized identity")
+
+    def _retained_snapshot_root(self, execution_key: str) -> Path:
+        key_digest = hashlib.sha256(execution_key.encode("utf-8")).hexdigest()
+        return self.path.parent / f"{self.path.name}.launch-inputs" / key_digest
+
+    def _retained_verified_inputs(self, request: SessionRequest, execution_key: str) -> VerifiedLaunchInputs:
+        root = self._retained_snapshot_root(execution_key)
+        image_snapshot = root / "image"
+        self._verify_file(image_snapshot, request.image_digest)
+        staged_paths: dict[str, Path] = {}
+        for index, identity in enumerate(request.staged_inputs):
+            snapshot = root / "staged" / str(index)
+            self._verify_file(snapshot, identity.transfer_digest, identity.size_bytes)
+            staged_paths[identity.logical_name] = snapshot
+        return VerifiedLaunchInputs(image_path=image_snapshot, staged_paths=staged_paths)
+
+    def _snapshot_verified_inputs(
+        self, request: SessionRequest, execution_key: str
+    ) -> tuple[Path, VerifiedLaunchInputs]:
+        """Copy and verify mutable resolver paths into a durable launch snapshot."""
+        final_root = self._retained_snapshot_root(execution_key)
+        final_root.parent.mkdir(parents=True, exist_ok=True)
+        if final_root.exists():
+            return final_root, self._retained_verified_inputs(request, execution_key)
+        root = Path(tempfile.mkdtemp(prefix="fleet-launch-", dir=final_root.parent))
         try:
             image_snapshot = root / "image"
             image = Path(self.image_path_resolver(request))
@@ -143,7 +183,11 @@ class FleetNodeExecutor:
                         f"staged input bytes do not match authorized identity: {identity.logical_name}"
                     )
                 staged_paths[identity.logical_name] = snapshot
-            return root, VerifiedLaunchInputs(image_path=image_snapshot, staged_paths=staged_paths)
+            root.replace(final_root)
+            return final_root, VerifiedLaunchInputs(
+                image_path=final_root / "image",
+                staged_paths={name: final_root / "staged" / str(index) for index, name in enumerate(staged_paths)},
+            )
         except Exception:
             shutil.rmtree(root, ignore_errors=True)
             raise
@@ -195,7 +239,7 @@ class FleetNodeExecutor:
                     return self._state(row)
 
             try:
-                snapshot_root, verified_inputs = self._snapshot_verified_inputs(request)
+                snapshot_root, verified_inputs = self._snapshot_verified_inputs(request, execution_key)
             except Exception:
                 if row is None:
                     self.admission_store.mark_terminal(
@@ -224,7 +268,7 @@ class FleetNodeExecutor:
             conn.commit()
         except Exception:
             conn.rollback()
-            if snapshot_root is not None:
+            if existing_state is None and snapshot_root is not None:
                 shutil.rmtree(snapshot_root, ignore_errors=True)
             raise
         finally:
@@ -233,10 +277,8 @@ class FleetNodeExecutor:
         assert verified_inputs is not None and snapshot_root is not None
         environment: Optional[ExecutionEnvironment] = None
         launch_attempted = existing_state == "launching"
+        completed_launch = False
         try:
-            # The factory is required to bind this stable key to provider-side
-            # Capsule identity. Reconstructing it after a crash must recover the
-            # same logical execution rather than allocate another one.
             environment = self.environment_factory(request, verified_inputs, execution_key)
             if not isinstance(environment, ExecutionEnvironment) or environment.environment_type != "capsule":
                 raise FleetPlacementError("Fleet execution requires a Capsule ExecutionEnvironment; local fallback is forbidden")
@@ -255,9 +297,6 @@ class FleetNodeExecutor:
                     new_state="starting",
                 )
 
-            # Persist ambiguity before crossing the side-effect boundary. A
-            # crash here or during launch is safe because launch is keyed and
-            # idempotent; retry uses this same execution_key.
             self._set_state(request.session_request_id, generation, "launching")
             launch_attempted = True
             environment.launch(target)
@@ -267,6 +306,7 @@ class FleetNodeExecutor:
                 new_state="running",
             )
             self._set_state(request.session_request_id, generation, "running")
+            completed_launch = True
             return FleetExecutionState(request.session_request_id, generation, "running")
         except Exception:
             if launch_attempted:
@@ -287,7 +327,11 @@ class FleetNodeExecutor:
                     pass
             raise
         finally:
-            shutil.rmtree(snapshot_root, ignore_errors=True)
+            # Ambiguous launch recovery must not depend on mutable staging. Keep
+            # the verified snapshot until launch is known to have succeeded or
+            # failed before crossing the side-effect boundary.
+            if completed_launch or not launch_attempted:
+                shutil.rmtree(snapshot_root, ignore_errors=True)
 
     def _set_state(self, session_request_id: str, generation: int, state: str) -> None:
         conn = self._connect()
