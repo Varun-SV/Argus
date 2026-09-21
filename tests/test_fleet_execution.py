@@ -25,10 +25,16 @@ class _FakeCapsuleEnvironment(ExecutionEnvironment):
     location = "test-capsule"
     type_name = "test"
 
-    def __init__(self, launches):
+    def __init__(self, launches, *, execution_key=None, launched_keys=None):
         self.launches = launches
+        self.execution_key = execution_key
+        self.launched_keys = launched_keys
 
     def launch(self, target: str) -> None:
+        if self.execution_key is not None and self.launched_keys is not None:
+            if self.execution_key in self.launched_keys:
+                return
+            self.launched_keys.add(self.execution_key)
         self.launches.append(target)
 
     def observe(self, include_screenshot: bool = True) -> Observation:
@@ -43,13 +49,15 @@ class _FakeCapsuleEnvironment(ExecutionEnvironment):
 
 class _LostResponseCapsuleEnvironment(_FakeCapsuleEnvironment):
     def launch(self, target: str) -> None:
-        self.launches.append(target)
-        raise RuntimeError("launch response lost")
+        already_launched = self.execution_key in self.launched_keys
+        super().launch(target)
+        if not already_launched:
+            raise RuntimeError("launch response lost")
 
 
 class _SnapshotCapsuleEnvironment(_FakeCapsuleEnvironment):
-    def __init__(self, launches, verified: VerifiedLaunchInputs):
-        super().__init__(launches)
+    def __init__(self, launches, verified: VerifiedLaunchInputs, **kwargs):
+        super().__init__(launches, **kwargs)
         self.verified = verified
 
     def launch(self, target: str) -> None:
@@ -128,11 +136,12 @@ def test_dispatch_is_capsule_only_idempotent_and_restart_reconcilable(tmp_path):
     placements.create_placement(request, owner_node_id=node.node_id, now=1000)
     authorization = placements.authorization_for_dispatch(request.session_request_id, signer=control_key)
     launches = []
+    launched_keys = set()
     factory_calls = []
 
-    def factory(_request, _verified):
+    def factory(_request, _verified, execution_key):
         factory_calls.append(1)
-        return _FakeCapsuleEnvironment(launches)
+        return _FakeCapsuleEnvironment(launches, execution_key=execution_key, launched_keys=launched_keys)
 
     kwargs = dict(
         admission_store=admissions,
@@ -168,11 +177,14 @@ def test_launch_side_effect_then_lost_response_stays_reconcilable(tmp_path):
     placements.create_placement(request, owner_node_id=node.node_id, now=1000)
     authorization = placements.authorization_for_dispatch(request.session_request_id, signer=control_key)
     launches = []
+    launched_keys = set()
     factory_calls = []
 
-    def factory(_request, _verified):
+    def factory(_request, _verified, execution_key):
         factory_calls.append(1)
-        return _LostResponseCapsuleEnvironment(launches)
+        return _LostResponseCapsuleEnvironment(
+            launches, execution_key=execution_key, launched_keys=launched_keys
+        )
 
     kwargs = dict(
         admission_store=admissions,
@@ -187,18 +199,64 @@ def test_launch_side_effect_then_lost_response_stays_reconcilable(tmp_path):
     assert launches == ["app.exe"]
     assert len(factory_calls) == 1
 
-    assert executor.dispatch(request, authorization, target="app.exe").state == "launching"
+    # Retry crosses the launch boundary again with the same provider key. The
+    # provider recovers the existing execution instead of creating a duplicate.
+    assert executor.dispatch(request, authorization, target="app.exe").state == "running"
     assert launches == ["app.exe"]
-    assert len(factory_calls) == 1
+    assert len(factory_calls) == 2
 
     restarted = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
     assert restarted.reconcile(
         request.session_request_id,
         placement_generation=authorization.placement_generation,
     ).state == "running"
+    assert launches == ["app.exe"]
+
+
+def test_crash_after_durable_claim_before_launch_is_recoverable(tmp_path):
+    node, control_key, placements, admissions = _setup(tmp_path)
+    request, image, staged = _request(tmp_path)
+    placements.create_placement(request, owner_node_id=node.node_id, now=1000)
+    authorization = placements.authorization_for_dispatch(request.session_request_id, signer=control_key)
+    launches = []
+    launched_keys = set()
+
+    def crash_before_environment(_request, _verified, _execution_key):
+        # BaseException models process death: normal cleanup/failure handling
+        # cannot rewrite the durable pre-side-effect claim as terminal.
+        raise SystemExit("node process died after durable claim")
+
+    executor = FleetNodeExecutor(
+        tmp_path / "execution.sqlite3",
+        admission_store=admissions,
+        environment_factory=crash_before_environment,
+        image_path_resolver=lambda _request: image,
+        staged_path_resolver=lambda _identity: staged,
+    )
+    with pytest.raises(SystemExit, match="node process died"):
+        executor.dispatch(request, authorization, target="app.exe")
+    assert launches == []
+
+    def recovery_factory(_request, _verified, execution_key):
+        return _FakeCapsuleEnvironment(
+            launches, execution_key=execution_key, launched_keys=launched_keys
+        )
+
+    restarted = FleetNodeExecutor(
+        tmp_path / "execution.sqlite3",
+        admission_store=admissions,
+        environment_factory=recovery_factory,
+        image_path_resolver=lambda _request: image,
+        staged_path_resolver=lambda _identity: staged,
+    )
+    recovered = restarted.dispatch(request, authorization, target="app.exe")
+    assert recovered.state == "running"
+    assert launches == ["app.exe"]
+
+    # A further retry observes the terminal running claim and never launches a
+    # second Capsule.
     assert restarted.dispatch(request, authorization, target="app.exe").state == "running"
     assert launches == ["app.exe"]
-    assert len(factory_calls) == 1
 
 
 def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls_back_local(tmp_path):
@@ -212,7 +270,7 @@ def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls
     executor = FleetNodeExecutor(
         tmp_path / "execution.sqlite3",
         admission_store=admissions,
-        environment_factory=lambda _request, _verified: called.append(1) or _FakeCapsuleEnvironment([]),
+        environment_factory=lambda _request, _verified, _key: called.append(1) or _FakeCapsuleEnvironment([]),
         image_path_resolver=lambda _request: image,
         staged_path_resolver=lambda _identity: staged,
     )
@@ -227,7 +285,7 @@ def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls
     executor2 = FleetNodeExecutor(
         tmp_path / "execution-2.sqlite3",
         admission_store=admissions,
-        environment_factory=lambda _request, _verified: _FakeCapsuleEnvironment(launches),
+        environment_factory=lambda _request, _verified, _key: _FakeCapsuleEnvironment(launches),
         image_path_resolver=lambda _request: image2,
         staged_path_resolver=lambda _identity: staged2,
     )
@@ -243,7 +301,7 @@ def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls
     executor3 = FleetNodeExecutor(
         local_root / "execution.sqlite3",
         admission_store=admissions3,
-        environment_factory=lambda _request, _verified: _FakeLocalEnvironment(local_launches),
+        environment_factory=lambda _request, _verified, _key: _FakeLocalEnvironment(local_launches),
         image_path_resolver=lambda _request: image3,
         staged_path_resolver=lambda _identity: staged3,
     )
@@ -259,10 +317,7 @@ def test_launch_consumes_verified_snapshot_not_replaced_source(tmp_path):
     authorization = placements.authorization_for_dispatch(request.session_request_id, signer=control_key)
     launches = []
 
-    def factory(_request, verified):
-        # Model an attacker replacing both resolver paths after verification but
-        # before Capsule launch. The environment is bound to the verified
-        # private snapshots and therefore never consumes these replacements.
+    def factory(_request, verified, _execution_key):
         image.write_bytes(b"replacement image")
         staged.write_bytes(b"replacement input")
         return _SnapshotCapsuleEnvironment(launches, verified)
