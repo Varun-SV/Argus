@@ -22,7 +22,7 @@ from .enrollment import (
     FleetEnrollmentError,
     FleetEnrollmentRegistry,
 )
-
+from .execution import FleetExecutionState, FleetNodeExecutor
 from .heartbeat import (
     CLOCK_ASSESSMENT_VERSION,
     FLEET_HEARTBEAT_VERSION,
@@ -38,7 +38,6 @@ from .heartbeat import (
     NodeHealth,
     NodeHeartbeat,
 )
-
 from .placement import (
     PLACEMENT_AUTH_VERSION,
     PLACEMENT_VERSION,
@@ -55,7 +54,6 @@ from .placement import (
     SessionRequest,
     StagedInputIdentity,
 )
-
 from .identity import (
     FLEET_IDENTITY_VERSION,
     PRIVATE_KEY_FILE_VERSION,
@@ -68,6 +66,8 @@ from .identity import (
 )
 
 __all__ = [
+    "FleetNodeExecutor",
+    "FleetExecutionState",
     "FleetAtesRunBinding",
     "FleetAtesReceipt",
     "FleetAtesGap",
