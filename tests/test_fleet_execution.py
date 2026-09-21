@@ -199,8 +199,6 @@ def test_launch_side_effect_then_lost_response_stays_reconcilable(tmp_path):
     assert launches == ["app.exe"]
     assert len(factory_calls) == 1
 
-    # Mutable staging is no longer required once launch has crossed the
-    # ambiguous side-effect boundary; recovery uses the retained verified copy.
     image.unlink()
     staged.unlink()
 
@@ -332,3 +330,44 @@ def test_launch_consumes_verified_snapshot_not_replaced_source(tmp_path):
     assert launches == ["app.exe"]
     assert image.read_bytes() == b"replacement image"
     assert staged.read_bytes() == b"replacement input"
+
+
+def test_snapshot_survives_crash_after_launch_before_running_commit(tmp_path, monkeypatch):
+    node, control_key, placements, admissions = _setup(tmp_path)
+    request, image, staged = _request(tmp_path)
+    placements.create_placement(request, owner_node_id=node.node_id, now=1000)
+    authorization = placements.authorization_for_dispatch(request.session_request_id, signer=control_key)
+    launches = []
+    launched_keys = set()
+
+    def factory(_request, _verified, execution_key):
+        return _FakeCapsuleEnvironment(
+            launches, execution_key=execution_key, launched_keys=launched_keys
+        )
+
+    kwargs = dict(
+        admission_store=admissions,
+        environment_factory=factory,
+        image_path_resolver=lambda _request: image,
+        staged_path_resolver=lambda _identity: staged,
+    )
+    executor = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
+    original_set_state = executor._set_state
+
+    def crash_before_running_commit(session_request_id, generation, state):
+        if state == "running":
+            raise SystemExit("node process died before running commit")
+        return original_set_state(session_request_id, generation, state)
+
+    monkeypatch.setattr(executor, "_set_state", crash_before_running_commit)
+    with pytest.raises(SystemExit, match="before running commit"):
+        executor.dispatch(request, authorization, target="app.exe")
+    assert launches == ["app.exe"]
+
+    image.unlink()
+    staged.unlink()
+
+    restarted = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
+    recovered = restarted.dispatch(request, authorization, target="app.exe")
+    assert recovered.state == "running"
+    assert launches == ["app.exe"]
