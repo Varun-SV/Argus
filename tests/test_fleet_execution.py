@@ -197,7 +197,7 @@ def test_launch_side_effect_then_lost_response_stays_reconcilable(tmp_path):
     assert len(factory_calls) == 1
 
 
-def test_dispatch_verifies_bytes_before_launch_and_never_falls_back_local(tmp_path):
+def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls_back_local(tmp_path):
     node, control_key, placements, admissions = _setup(tmp_path)
     request, image, staged = _request(tmp_path)
     placements.create_placement(request, owner_node_id=node.node_id, now=1000)
@@ -216,21 +216,36 @@ def test_dispatch_verifies_bytes_before_launch_and_never_falls_back_local(tmp_pa
         executor.dispatch(request, authorization, target="app.exe")
     assert called == []
 
-    # Use a fresh placement/store because the first admission legitimately
-    # reserved capacity before launch verification failed.
-    local_root = tmp_path / "local-case"
-    node2, control_key2, placements2, admissions2 = _setup(local_root)
-    request2, image2, staged2 = _request(local_root)
-    placements2.create_placement(request2, owner_node_id=node2.node_id, now=1000)
-    authorization2 = placements2.authorization_for_dispatch(request2.session_request_id, signer=control_key2)
-    local_launches = []
+    # Verification failed before any Capsule side effect, so the terminalized
+    # admission must release the sole capacity slot for another session.
+    request2, image2, staged2 = _request(tmp_path)
+    placements.create_placement(request2, owner_node_id=node.node_id, now=1001)
+    authorization2 = placements.authorization_for_dispatch(request2.session_request_id, signer=control_key)
+    launches = []
     executor2 = FleetNodeExecutor(
-        local_root / "execution.sqlite3",
-        admission_store=admissions2,
-        environment_factory=lambda _request: _FakeLocalEnvironment(local_launches),
+        tmp_path / "execution-2.sqlite3",
+        admission_store=admissions,
+        environment_factory=lambda _request: _FakeCapsuleEnvironment(launches),
         image_path_resolver=lambda _request: image2,
         staged_path_resolver=lambda _identity: staged2,
     )
+    assert executor2.dispatch(request2, authorization2, target="app.exe").state == "running"
+    assert launches == ["app.exe"]
+
+    # Use a fresh placement/store for the independent local-fallback case.
+    local_root = tmp_path / "local-case"
+    node3, control_key3, placements3, admissions3 = _setup(local_root)
+    request3, image3, staged3 = _request(local_root)
+    placements3.create_placement(request3, owner_node_id=node3.node_id, now=1000)
+    authorization3 = placements3.authorization_for_dispatch(request3.session_request_id, signer=control_key3)
+    local_launches = []
+    executor3 = FleetNodeExecutor(
+        local_root / "execution.sqlite3",
+        admission_store=admissions3,
+        environment_factory=lambda _request: _FakeLocalEnvironment(local_launches),
+        image_path_resolver=lambda _request: image3,
+        staged_path_resolver=lambda _identity: staged3,
+    )
     with pytest.raises(FleetPlacementError, match="local fallback is forbidden"):
-        executor2.dispatch(request2, authorization2, target="app.exe")
+        executor3.dispatch(request3, authorization3, target="app.exe")
     assert local_launches == []
