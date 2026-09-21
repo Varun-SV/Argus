@@ -159,7 +159,18 @@ class FleetNodeExecutor:
                 conn.commit()
                 return self._state(row)
 
-            self._verify_launch_inputs(request)
+            try:
+                self._verify_launch_inputs(request)
+            except Exception:
+                # Verification is still before the durable execution claim and
+                # before any Capsule side effect, so its failure is definitive.
+                # Release the reservation rather than leaking Node capacity.
+                self.admission_store.mark_terminal(
+                    request.session_request_id,
+                    placement_generation=generation,
+                    terminal_state="failed",
+                )
+                raise
             execution_key = self._execution_key(request, generation)
             conn.execute(
                 """
