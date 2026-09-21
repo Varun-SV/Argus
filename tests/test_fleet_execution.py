@@ -11,6 +11,7 @@ from argus.fleet.enrollment import EnrollmentAcknowledgement, EnrollmentRequest,
 from argus.fleet.execution import FleetNodeExecutor, VerifiedLaunchInputs
 from argus.fleet.identity import ControlCenterKeyPair, NodeKeyPair
 from argus.fleet.placement import (
+    CapacityUnavailable,
     FleetPlacementError,
     FleetPlacementStore,
     NodeAdmissionStore,
@@ -371,3 +372,64 @@ def test_snapshot_survives_crash_after_launch_before_running_commit(tmp_path, mo
     recovered = restarted.dispatch(request, authorization, target="app.exe")
     assert recovered.state == "running"
     assert launches == ["app.exe"]
+
+
+def test_reconcile_repairs_terminal_admission_after_execution_commit_crash(tmp_path, monkeypatch):
+    node, control_key, placements, admissions = _setup(tmp_path)
+    request, image, staged = _request(tmp_path)
+    placements.create_placement(request, owner_node_id=node.node_id, now=1000)
+    authorization = placements.authorization_for_dispatch(request.session_request_id, signer=control_key)
+    launches = []
+    launched_keys = set()
+
+    executor = FleetNodeExecutor(
+        tmp_path / "execution.sqlite3",
+        admission_store=admissions,
+        environment_factory=lambda _request, _verified, execution_key: _LostResponseCapsuleEnvironment(
+            launches, execution_key=execution_key, launched_keys=launched_keys
+        ),
+        image_path_resolver=lambda _request: image,
+        staged_path_resolver=lambda _identity: staged,
+        execution_probe=lambda _key: "completed",
+    )
+    with pytest.raises(RuntimeError, match="launch response lost"):
+        executor.dispatch(request, authorization, target="app.exe")
+    assert launches == ["app.exe"]
+
+    original_repair = executor._repair_admission
+
+    def crash_after_execution_commit(session_request_id, generation, state):
+        if state == "completed":
+            raise SystemExit("node process died before admission repair")
+        return original_repair(session_request_id, generation, state)
+
+    monkeypatch.setattr(executor, "_repair_admission", crash_after_execution_commit)
+    with pytest.raises(SystemExit, match="before admission repair"):
+        executor.reconcile(
+            request.session_request_id,
+            placement_generation=authorization.placement_generation,
+        )
+
+    request2, _, _ = _request(tmp_path)
+    placements.create_placement(request2, owner_node_id=node.node_id, now=1001)
+    authorization2 = placements.authorization_for_dispatch(request2.session_request_id, signer=control_key)
+    with pytest.raises(CapacityUnavailable):
+        admissions.admit(request2, authorization2)
+
+    restarted = FleetNodeExecutor(
+        tmp_path / "execution.sqlite3",
+        admission_store=admissions,
+        environment_factory=lambda *_args: pytest.fail("terminal recovery must not relaunch Capsule"),
+        image_path_resolver=lambda _request: image,
+        staged_path_resolver=lambda _identity: staged,
+        execution_probe=lambda _key: pytest.fail("definitive terminal state must not be reprobed"),
+    )
+    repaired = restarted.reconcile(
+        request.session_request_id,
+        placement_generation=authorization.placement_generation,
+    )
+    assert repaired.state == "completed"
+    assert launches == ["app.exe"]
+
+    admitted2 = admissions.admit(request2, authorization2)
+    assert admitted2.state == "reserved"
