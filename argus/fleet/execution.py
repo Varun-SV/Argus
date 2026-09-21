@@ -204,6 +204,21 @@ class FleetNodeExecutor:
             state=row["state"],
         )
 
+    def _repair_admission(self, session_request_id: str, generation: int, state: str) -> None:
+        """Idempotently finish the admission half of a definitive execution outcome."""
+        if state == "running":
+            self.admission_store.transition(
+                session_request_id,
+                placement_generation=generation,
+                new_state="running",
+            )
+        elif state in {"completed", "failed", "cancelled"}:
+            self.admission_store.mark_terminal(
+                session_request_id,
+                placement_generation=generation,
+                terminal_state=state,
+            )
+
     def dispatch(
         self,
         request: SessionRequest,
@@ -236,6 +251,7 @@ class FleetNodeExecutor:
                 existing_state = str(row["state"])
                 if existing_state in {"running", "completed", "failed", "cancelled"}:
                     conn.commit()
+                    self._repair_admission(request.session_request_id, generation, existing_state)
                     return self._state(row)
 
             try:
@@ -358,7 +374,11 @@ class FleetNodeExecutor:
         if row is None:
             raise FleetPlacementError("Fleet execution claim is unknown")
         current = self._state(row)
-        if current.state not in {"launching", "running"} or self.execution_probe is None:
+        if current.state in {"running", "completed", "failed", "cancelled"}:
+            self._repair_admission(session_request_id, placement_generation, current.state)
+            if current.state != "running" or self.execution_probe is None:
+                return current
+        elif current.state != "launching" or self.execution_probe is None:
             return current
         observed = self.execution_probe(row["execution_key"])
         if observed is None:
@@ -366,19 +386,5 @@ class FleetNodeExecutor:
         if observed not in {"running", "completed", "failed", "cancelled"}:
             raise FleetPlacementError("execution reconciliation returned an invalid state")
         self._set_state(session_request_id, placement_generation, observed)
-        if observed == "running":
-            try:
-                self.admission_store.transition(
-                    session_request_id,
-                    placement_generation=placement_generation,
-                    new_state="running",
-                )
-            except FleetPlacementError:
-                pass
-        elif observed in {"completed", "failed", "cancelled"}:
-            self.admission_store.mark_terminal(
-                session_request_id,
-                placement_generation=placement_generation,
-                terminal_state=observed,
-            )
+        self._repair_admission(session_request_id, placement_generation, observed)
         return FleetExecutionState(session_request_id, placement_generation, observed)
