@@ -92,12 +92,36 @@ class FleetHeartbeatRegistry(_impl.FleetHeartbeatRegistry):
         super()._initialize()
         conn = self._connect()
         try:
-            conn.execute(
+            conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS fleet_node_current_boot (
                     node_id TEXT PRIMARY KEY REFERENCES nodes(node_id),
                     boot_id TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS fleet_latest_clock_current_boot_insert
+                BEFORE INSERT ON fleet_node_latest_clock
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM fleet_clock_assessments a
+                      JOIN fleet_node_current_boot b ON b.node_id = NEW.node_id
+                     WHERE a.probe_id = NEW.probe_id
+                       AND a.boot_id != b.boot_id
                 )
+                BEGIN
+                    SELECT RAISE(IGNORE);
+                END;
+                CREATE TRIGGER IF NOT EXISTS fleet_latest_clock_current_boot_update
+                BEFORE UPDATE OF probe_id ON fleet_node_latest_clock
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM fleet_clock_assessments a
+                      JOIN fleet_node_current_boot b ON b.node_id = NEW.node_id
+                     WHERE a.probe_id = NEW.probe_id
+                       AND a.boot_id != b.boot_id
+                )
+                BEGIN
+                    SELECT RAISE(IGNORE);
+                END;
                 """
             )
         except _impl.sqlite3.Error as exc:
