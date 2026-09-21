@@ -35,12 +35,7 @@ class FleetExecutionState:
 
 @dataclass(frozen=True)
 class VerifiedLaunchInputs:
-    """Private immutable-by-convention snapshots bound to one Fleet launch.
-
-    The factory must construct the Capsule from these snapshots rather than
-    re-resolving mutable source paths. The executor keeps them alive through
-    ``launch()`` and removes them afterwards.
-    """
+    """Private immutable-by-convention snapshots bound to one Fleet launch."""
 
     image_path: Path
     staged_paths: Mapping[str, Path]
@@ -49,11 +44,17 @@ class VerifiedLaunchInputs:
 class FleetNodeExecutor:
     """Idempotently translate one authorized Fleet placement into a Capsule.
 
-    ``environment_factory`` must return the existing Capsule execution
-    abstraction and must consume the supplied :class:`VerifiedLaunchInputs`.
+    ``environment_factory`` receives a stable execution key in addition to the
+    authorized request and verified inputs. The returned Capsule environment
+    must bind provider creation/launch to that key so repeating ``launch()`` is
+    an idempotent create-or-recover operation, not a second execution. This is
+    the provider-side half of the crash boundary: the durable claim is written
+    before the side effect and a retry may safely complete an unattempted launch
+    or recover an ambiguously attempted one using the same key.
+
     ``execution_probe`` is the provider/agent reconciliation hook used after
     process restart; it reports ``running``, ``completed``, ``failed``, or
-    ``cancelled`` for the stable Fleet execution key.
+    ``cancelled`` for the same stable Fleet execution key.
     """
 
     def __init__(
@@ -61,7 +62,7 @@ class FleetNodeExecutor:
         path: Path | str,
         *,
         admission_store: NodeAdmissionStore,
-        environment_factory: Callable[[SessionRequest, VerifiedLaunchInputs], ExecutionEnvironment],
+        environment_factory: Callable[[SessionRequest, VerifiedLaunchInputs, str], ExecutionEnvironment],
         image_path_resolver: Callable[[SessionRequest], Path | str],
         staged_path_resolver: Callable[[StagedInputIdentity], Path | str],
         execution_probe: Optional[Callable[[str], Optional[str]]] = None,
@@ -142,10 +143,7 @@ class FleetNodeExecutor:
                         f"staged input bytes do not match authorized identity: {identity.logical_name}"
                     )
                 staged_paths[identity.logical_name] = snapshot
-            return root, VerifiedLaunchInputs(
-                image_path=image_snapshot,
-                staged_paths=staged_paths,
-            )
+            return root, VerifiedLaunchInputs(image_path=image_snapshot, staged_paths=staged_paths)
         except Exception:
             shutil.rmtree(root, ignore_errors=True)
             raise
@@ -169,15 +167,7 @@ class FleetNodeExecutor:
         *,
         target: str,
     ) -> FleetExecutionState:
-        """Admit and launch exactly once for this placement generation.
-
-        Authorized source bytes are first copied into a private verified
-        snapshot. The Capsule factory receives only those snapshots, binding
-        verification to the content consumed through the launch boundary. The
-        durable ``launching`` claim is committed before the Capsule API is
-        called, so a lost response or restart cannot turn a retry into a second
-        launch.
-        """
+        """Admit and idempotently create/recover one Capsule for this generation."""
         admitted = self.admission_store.admit(request, authorization)
         generation = authorization.placement_generation
         if admitted.state in {"completed", "failed", "cancelled", "retained", "released"}:
@@ -186,6 +176,8 @@ class FleetNodeExecutor:
         conn = self._connect()
         snapshot_root: Optional[Path] = None
         verified_inputs: Optional[VerifiedLaunchInputs] = None
+        execution_key = self._execution_key(request, generation)
+        existing_state: Optional[str] = None
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -195,36 +187,40 @@ class FleetNodeExecutor:
             if row is not None:
                 if row["run_id"] != str(request.run_id) or row["request_digest"] != request.request_digest:
                     raise FleetPlacementError("Fleet execution claim conflicts with authorized request")
-                conn.commit()
-                return self._state(row)
+                if row["execution_key"] != execution_key:
+                    raise FleetPlacementError("Fleet execution key conflicts with authorized request")
+                existing_state = str(row["state"])
+                if existing_state in {"running", "completed", "failed", "cancelled"}:
+                    conn.commit()
+                    return self._state(row)
 
             try:
                 snapshot_root, verified_inputs = self._snapshot_verified_inputs(request)
             except Exception:
-                # Snapshot verification is before the durable execution claim
-                # and before any Capsule side effect, so failure is definitive.
-                self.admission_store.mark_terminal(
-                    request.session_request_id,
-                    placement_generation=generation,
-                    terminal_state="failed",
-                )
+                if row is None:
+                    self.admission_store.mark_terminal(
+                        request.session_request_id,
+                        placement_generation=generation,
+                        terminal_state="failed",
+                    )
                 raise
-            execution_key = self._execution_key(request, generation)
-            conn.execute(
-                """
-                INSERT INTO fleet_node_executions(
-                    session_request_id, placement_generation, run_id,
-                    request_digest, execution_key, state
-                ) VALUES(?, ?, ?, ?, ?, 'launching')
-                """,
-                (
-                    request.session_request_id,
-                    generation,
-                    str(request.run_id),
-                    request.request_digest,
-                    execution_key,
-                ),
-            )
+
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO fleet_node_executions(
+                        session_request_id, placement_generation, run_id,
+                        request_digest, execution_key, state
+                    ) VALUES(?, ?, ?, ?, ?, 'prepared')
+                    """,
+                    (
+                        request.session_request_id,
+                        generation,
+                        str(request.run_id),
+                        request.request_digest,
+                        execution_key,
+                    ),
+                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -236,25 +232,33 @@ class FleetNodeExecutor:
 
         assert verified_inputs is not None and snapshot_root is not None
         environment: Optional[ExecutionEnvironment] = None
-        launch_attempted = False
+        launch_attempted = existing_state == "launching"
         try:
-            # The factory receives only the verified private snapshots. A
-            # replacement of the resolver's source path after verification can
-            # therefore never change the bytes used to construct/launch this
-            # Capsule.
-            environment = self.environment_factory(request, verified_inputs)
+            # The factory is required to bind this stable key to provider-side
+            # Capsule identity. Reconstructing it after a crash must recover the
+            # same logical execution rather than allocate another one.
+            environment = self.environment_factory(request, verified_inputs, execution_key)
             if not isinstance(environment, ExecutionEnvironment) or environment.environment_type != "capsule":
                 raise FleetPlacementError("Fleet execution requires a Capsule ExecutionEnvironment; local fallback is forbidden")
-            self.admission_store.transition(
-                request.session_request_id,
-                placement_generation=generation,
-                new_state="allocated",
-            )
-            self.admission_store.transition(
-                request.session_request_id,
-                placement_generation=generation,
-                new_state="starting",
-            )
+
+            if admitted.state == "reserved":
+                self.admission_store.transition(
+                    request.session_request_id,
+                    placement_generation=generation,
+                    new_state="allocated",
+                )
+                admitted = self.admission_store.admit(request, authorization)
+            if admitted.state == "allocated":
+                self.admission_store.transition(
+                    request.session_request_id,
+                    placement_generation=generation,
+                    new_state="starting",
+                )
+
+            # Persist ambiguity before crossing the side-effect boundary. A
+            # crash here or during launch is safe because launch is keyed and
+            # idempotent; retry uses this same execution_key.
+            self._set_state(request.session_request_id, generation, "launching")
             launch_attempted = True
             environment.launch(target)
             self.admission_store.transition(
@@ -283,9 +287,6 @@ class FleetNodeExecutor:
                     pass
             raise
         finally:
-            # launch() is synchronous at this abstraction boundary. Once it has
-            # returned or raised, provider ownership no longer depends on the
-            # host-side source snapshot.
             shutil.rmtree(snapshot_root, ignore_errors=True)
 
     def _set_state(self, session_request_id: str, generation: int, state: str) -> None:
@@ -301,7 +302,7 @@ class FleetNodeExecutor:
             conn.close()
 
     def reconcile(self, session_request_id: str, *, placement_generation: int) -> FleetExecutionState:
-        """Reconcile an ambiguous launch without ever launching a replacement."""
+        """Reconcile an ambiguous launch without ever inventing a second identity."""
         conn = self._connect()
         try:
             row = conn.execute(
