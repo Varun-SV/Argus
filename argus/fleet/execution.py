@@ -58,7 +58,23 @@ class FleetNodeExecutor:
     def _initialize(self) -> None:
         conn = self._connect()
         try:
-            conn.execute("""CREATE TABLE IF NOT EXISTS fleet_node_executions (session_request_id TEXT NOT NULL, placement_generation INTEGER NOT NULL, run_id TEXT NOT NULL, request_digest TEXT NOT NULL, execution_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, PRIMARY KEY(session_request_id, placement_generation))""")
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS fleet_node_executions (
+                    session_request_id TEXT NOT NULL,
+                    placement_generation INTEGER NOT NULL,
+                    run_id TEXT NOT NULL,
+                    request_digest TEXT NOT NULL,
+                    execution_key TEXT NOT NULL UNIQUE,
+                    state TEXT NOT NULL,
+                    PRIMARY KEY(session_request_id, placement_generation)
+                );
+                CREATE TABLE IF NOT EXISTS fleet_execution_reconciliation (
+                    session_request_id TEXT NOT NULL,
+                    placement_generation INTEGER NOT NULL,
+                    observed_state TEXT NOT NULL,
+                    PRIMARY KEY(session_request_id, placement_generation)
+                );
+            """)
         finally:
             conn.close()
 
@@ -137,12 +153,7 @@ class FleetNodeExecutor:
         return FleetExecutionState(row["session_request_id"], int(row["placement_generation"]), row["state"])
 
     def _repair_admission(self, session_request_id: str, generation: int, state: str) -> str:
-        """Repair admission and return the effective durable outcome.
-
-        Cancellation wins a race with a provider terminal observation. This keeps
-        the two durable stores convergent while still recording the provider
-        observation only after the cancellation state has been resolved.
-        """
+        """Repair admission and return the effective durable outcome."""
         if state == "running":
             self.admission_store.transition(session_request_id, placement_generation=generation, new_state="running")
             return state
@@ -153,11 +164,63 @@ class FleetNodeExecutor:
             except FleetPlacementError:
                 if state == "cancelled":
                     raise
-                # mark_terminal(cancelled) succeeds only for the cancellation race;
-                # unrelated admission errors continue to fail closed.
                 self.admission_store.mark_terminal(session_request_id, placement_generation=generation, terminal_state="cancelled")
                 return "cancelled"
         return state
+
+    def _record_reconciliation_intent(self, session_request_id: str, generation: int, observed: str) -> None:
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT observed_state FROM fleet_execution_reconciliation WHERE session_request_id=? AND placement_generation=?",
+                (session_request_id, generation),
+            ).fetchone()
+            if row is not None and row["observed_state"] != observed:
+                raise FleetPlacementError("execution reconciliation conflicts with durable observed state")
+            conn.execute(
+                "INSERT OR IGNORE INTO fleet_execution_reconciliation(session_request_id, placement_generation, observed_state) VALUES(?, ?, ?)",
+                (session_request_id, generation, observed),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _pending_reconciliation(self, session_request_id: str, generation: int) -> Optional[str]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT observed_state FROM fleet_execution_reconciliation WHERE session_request_id=? AND placement_generation=?",
+                (session_request_id, generation),
+            ).fetchone()
+            return None if row is None else str(row["observed_state"])
+        finally:
+            conn.close()
+
+    def _finish_reconciliation(self, session_request_id: str, generation: int, observed: str, execution_key: str) -> FleetExecutionState:
+        effective = self._repair_admission(session_request_id, generation, observed)
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE fleet_node_executions SET state=? WHERE session_request_id=? AND placement_generation=?",
+                (effective, session_request_id, generation),
+            )
+            conn.execute(
+                "DELETE FROM fleet_execution_reconciliation WHERE session_request_id=? AND placement_generation=?",
+                (session_request_id, generation),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        shutil.rmtree(self._retained_snapshot_root(execution_key), ignore_errors=True)
+        return FleetExecutionState(session_request_id, generation, effective)
 
     def dispatch(self, request: SessionRequest, authorization: PlacementAuthorization, *, target: str) -> FleetExecutionState:
         admitted = self.admission_store.admit(request, authorization); generation = authorization.placement_generation
@@ -237,13 +300,16 @@ class FleetNodeExecutor:
         finally: conn.close()
         if row is None: raise FleetPlacementError("Fleet execution claim is unknown")
         current = self._state(row); execution_key = str(row["execution_key"])
+
+        pending = self._pending_reconciliation(session_request_id, placement_generation)
+        if pending is not None:
+            return self._finish_reconciliation(session_request_id, placement_generation, pending, execution_key)
+
         if current.state in {"running", "completed", "failed", "cancelled"}:
             effective = self._repair_admission(session_request_id, placement_generation, current.state)
             if effective != current.state:
                 self._set_state(session_request_id, placement_generation, effective)
                 current = FleetExecutionState(session_request_id, placement_generation, effective)
-            # Once both durable halves agree, retained launch material is no longer
-            # needed for create-or-recover and should not outlive the execution.
             shutil.rmtree(self._retained_snapshot_root(execution_key), ignore_errors=True)
             if current.state != "running" or self.execution_probe is None: return current
         elif current.state != "launching" or self.execution_probe is None:
@@ -252,9 +318,9 @@ class FleetNodeExecutor:
         if observed is None: return current
         if observed not in {"running", "completed", "failed", "cancelled"}:
             raise FleetPlacementError("execution reconciliation returned an invalid state")
-        # Repair admission first. If cancellation raced with completion/failure,
-        # cancellation wins and that effective outcome is what we persist.
-        effective = self._repair_admission(session_request_id, placement_generation, observed)
-        self._set_state(session_request_id, placement_generation, effective)
-        shutil.rmtree(self._retained_snapshot_root(execution_key), ignore_errors=True)
-        return FleetExecutionState(session_request_id, placement_generation, effective)
+
+        # Persist the provider observation before touching the independent admission
+        # database. The intent is replayable after a crash in either write order,
+        # so restart never depends on the provider retaining a terminal execution.
+        self._record_reconciliation_intent(session_request_id, placement_generation, observed)
+        return self._finish_reconciliation(session_request_id, placement_generation, observed, execution_key)
