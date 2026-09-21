@@ -1,14 +1,16 @@
 """Node-side Fleet bridge into the existing Capsule ExecutionEnvironment.
 
 This module owns the mutation boundary between a durable Fleet admission and one
-Capsule launch.  It deliberately has no local-execution fallback: a Fleet
+Capsule launch. It deliberately has no local-execution fallback: a Fleet
 placement either launches through an existing Capsule ExecutionEnvironment or
 fails closed.
 """
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Optional
@@ -31,13 +33,27 @@ class FleetExecutionState:
     state: str
 
 
+@dataclass(frozen=True)
+class VerifiedLaunchInputs:
+    """Private immutable-by-convention snapshots bound to one Fleet launch.
+
+    The factory must construct the Capsule from these snapshots rather than
+    re-resolving mutable source paths. The executor keeps them alive through
+    ``launch()`` and removes them afterwards.
+    """
+
+    image_path: Path
+    staged_paths: Mapping[str, Path]
+
+
 class FleetNodeExecutor:
     """Idempotently translate one authorized Fleet placement into a Capsule.
 
     ``environment_factory`` must return the existing Capsule execution
-    abstraction.  ``execution_probe`` is the provider/agent reconciliation hook
-    used after process restart; it reports ``running``, ``completed``,
-    ``failed``, or ``cancelled`` for the stable Fleet execution key.
+    abstraction and must consume the supplied :class:`VerifiedLaunchInputs`.
+    ``execution_probe`` is the provider/agent reconciliation hook used after
+    process restart; it reports ``running``, ``completed``, ``failed``, or
+    ``cancelled`` for the stable Fleet execution key.
     """
 
     def __init__(
@@ -45,7 +61,7 @@ class FleetNodeExecutor:
         path: Path | str,
         *,
         admission_store: NodeAdmissionStore,
-        environment_factory: Callable[[SessionRequest], ExecutionEnvironment],
+        environment_factory: Callable[[SessionRequest, VerifiedLaunchInputs], ExecutionEnvironment],
         image_path_resolver: Callable[[SessionRequest], Path | str],
         staged_path_resolver: Callable[[StagedInputIdentity], Path | str],
         execution_probe: Optional[Callable[[str], Optional[str]]] = None,
@@ -87,33 +103,52 @@ class FleetNodeExecutor:
             conn.close()
 
     @staticmethod
-    def _digest_file(path: Path) -> tuple[str, int]:
+    def _snapshot_file(source: Path, destination: Path) -> tuple[str, int]:
         digest = hashlib.sha256()
         size = 0
         try:
-            with path.open("rb") as handle:
+            with source.open("rb") as src, destination.open("xb") as dst:
                 while True:
-                    block = handle.read(1024 * 1024)
+                    block = src.read(1024 * 1024)
                     if not block:
                         break
                     size += len(block)
                     digest.update(block)
+                    dst.write(block)
+                dst.flush()
         except OSError as exc:
-            raise FleetPlacementError(f"cannot verify Fleet launch input: {path}") from exc
+            raise FleetPlacementError(f"cannot snapshot Fleet launch input: {source}") from exc
         return "sha256:" + digest.hexdigest(), size
 
-    def _verify_launch_inputs(self, request: SessionRequest) -> None:
-        image = Path(self.image_path_resolver(request))
-        image_digest, _ = self._digest_file(image)
-        if image_digest != request.image_digest:
-            raise FleetPlacementError("Capsule image bytes do not match authorized image digest")
-        for identity in request.staged_inputs:
-            source = Path(self.staged_path_resolver(identity))
-            digest, size = self._digest_file(source)
-            if digest != identity.transfer_digest or size != identity.size_bytes:
-                raise FleetPlacementError(
-                    f"staged input bytes do not match authorized identity: {identity.logical_name}"
-                )
+    def _snapshot_verified_inputs(self, request: SessionRequest) -> tuple[Path, VerifiedLaunchInputs]:
+        """Copy and verify mutable resolver paths into a private launch snapshot."""
+        root = Path(tempfile.mkdtemp(prefix="fleet-launch-", dir=self.path.parent))
+        try:
+            image_snapshot = root / "image"
+            image = Path(self.image_path_resolver(request))
+            image_digest, _ = self._snapshot_file(image, image_snapshot)
+            if image_digest != request.image_digest:
+                raise FleetPlacementError("Capsule image bytes do not match authorized image digest")
+
+            staged_paths: dict[str, Path] = {}
+            staged_root = root / "staged"
+            staged_root.mkdir()
+            for index, identity in enumerate(request.staged_inputs):
+                source = Path(self.staged_path_resolver(identity))
+                snapshot = staged_root / str(index)
+                digest, size = self._snapshot_file(source, snapshot)
+                if digest != identity.transfer_digest or size != identity.size_bytes:
+                    raise FleetPlacementError(
+                        f"staged input bytes do not match authorized identity: {identity.logical_name}"
+                    )
+                staged_paths[identity.logical_name] = snapshot
+            return root, VerifiedLaunchInputs(
+                image_path=image_snapshot,
+                staged_paths=staged_paths,
+            )
+        except Exception:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
 
     @staticmethod
     def _execution_key(request: SessionRequest, generation: int) -> str:
@@ -136,10 +171,12 @@ class FleetNodeExecutor:
     ) -> FleetExecutionState:
         """Admit and launch exactly once for this placement generation.
 
-        The durable ``launching`` claim is committed before the Capsule API is
-        called.  Therefore a lost response or Node-agent restart can never turn
-        a retry into a second launch.  Ambiguous claims are reconciled instead
-        of retried.
+        Authorized source bytes are first copied into a private verified
+        snapshot. The Capsule factory receives only those snapshots, binding
+        verification to the content consumed through the launch boundary. The
+        durable ``launching`` claim is committed before the Capsule API is
+        called, so a lost response or restart cannot turn a retry into a second
+        launch.
         """
         admitted = self.admission_store.admit(request, authorization)
         generation = authorization.placement_generation
@@ -147,6 +184,8 @@ class FleetNodeExecutor:
             return FleetExecutionState(request.session_request_id, generation, admitted.state)
 
         conn = self._connect()
+        snapshot_root: Optional[Path] = None
+        verified_inputs: Optional[VerifiedLaunchInputs] = None
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -160,11 +199,10 @@ class FleetNodeExecutor:
                 return self._state(row)
 
             try:
-                self._verify_launch_inputs(request)
+                snapshot_root, verified_inputs = self._snapshot_verified_inputs(request)
             except Exception:
-                # Verification is still before the durable execution claim and
-                # before any Capsule side effect, so its failure is definitive.
-                # Release the reservation rather than leaking Node capacity.
+                # Snapshot verification is before the durable execution claim
+                # and before any Capsule side effect, so failure is definitive.
                 self.admission_store.mark_terminal(
                     request.session_request_id,
                     placement_generation=generation,
@@ -190,16 +228,21 @@ class FleetNodeExecutor:
             conn.commit()
         except Exception:
             conn.rollback()
+            if snapshot_root is not None:
+                shutil.rmtree(snapshot_root, ignore_errors=True)
             raise
         finally:
             conn.close()
 
-        # The claim is durable before any Capsule side effect.  Do not move this
-        # above the commit: doing so re-opens duplicate launch after lost reply.
+        assert verified_inputs is not None and snapshot_root is not None
         environment: Optional[ExecutionEnvironment] = None
         launch_attempted = False
         try:
-            environment = self.environment_factory(request)
+            # The factory receives only the verified private snapshots. A
+            # replacement of the resolver's source path after verification can
+            # therefore never change the bytes used to construct/launch this
+            # Capsule.
+            environment = self.environment_factory(request, verified_inputs)
             if not isinstance(environment, ExecutionEnvironment) or environment.environment_type != "capsule":
                 raise FleetPlacementError("Fleet execution requires a Capsule ExecutionEnvironment; local fallback is forbidden")
             self.admission_store.transition(
@@ -223,10 +266,6 @@ class FleetNodeExecutor:
             return FleetExecutionState(request.session_request_id, generation, "running")
         except Exception:
             if launch_attempted:
-                # Once launch() is entered, an exception cannot distinguish a
-                # rejected launch from a successful launch whose response was
-                # lost. Keep the durable claim/admission non-terminal so the
-                # stable execution key can be probed after retry or restart.
                 raise
             self._set_state(request.session_request_id, generation, "failed")
             try:
@@ -243,6 +282,11 @@ class FleetNodeExecutor:
                 except Exception:
                     pass
             raise
+        finally:
+            # launch() is synchronous at this abstraction boundary. Once it has
+            # returned or raised, provider ownership no longer depends on the
+            # host-side source snapshot.
+            shutil.rmtree(snapshot_root, ignore_errors=True)
 
     def _set_state(self, session_request_id: str, generation: int, state: str) -> None:
         conn = self._connect()
@@ -278,9 +322,6 @@ class FleetNodeExecutor:
             raise FleetPlacementError("execution reconciliation returned an invalid state")
         self._set_state(session_request_id, placement_generation, observed)
         if observed == "running":
-            # Ambiguous launch failures leave admission in ``starting``. Move
-            # it forward only after the stable execution key proves the
-            # Capsule exists; never launch a replacement to establish this.
             try:
                 self.admission_store.transition(
                     session_request_id,
@@ -288,8 +329,6 @@ class FleetNodeExecutor:
                     new_state="running",
                 )
             except FleetPlacementError:
-                # A normal successful dispatch already moved admission to
-                # running; reconciliation of that state is idempotent here.
                 pass
         elif observed in {"completed", "failed", "cancelled"}:
             self.admission_store.mark_terminal(
