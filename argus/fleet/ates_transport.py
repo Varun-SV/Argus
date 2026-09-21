@@ -233,6 +233,16 @@ class FleetAtesAggregator:
                     image_digest TEXT NOT NULL,
                     bound_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS fleet_ates_run_history (
+                    run_id TEXT NOT NULL,
+                    placement_generation INTEGER NOT NULL,
+                    session_request_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    placement_request_digest TEXT NOT NULL,
+                    image_digest TEXT NOT NULL,
+                    bound_at REAL NOT NULL,
+                    PRIMARY KEY(run_id, placement_generation)
+                );
                 CREATE TABLE IF NOT EXISTS fleet_ates_receipts (
                     run_id TEXT NOT NULL,
                     sequence INTEGER NOT NULL,
@@ -248,6 +258,13 @@ class FleetAtesAggregator:
                     PRIMARY KEY(run_id, sequence),
                     UNIQUE(run_id, event_id)
                 );
+                INSERT OR IGNORE INTO fleet_ates_run_history(
+                    run_id, placement_generation, session_request_id, node_id,
+                    placement_request_digest, image_digest, bound_at
+                )
+                SELECT run_id, placement_generation, session_request_id, node_id,
+                       placement_request_digest, image_digest, bound_at
+                  FROM fleet_ates_runs;
                 """
             )
             expected = {
@@ -284,6 +301,41 @@ class FleetAtesAggregator:
             binding.image_digest,
         )
 
+    @staticmethod
+    def _row_binding_tuple(row: sqlite3.Row) -> tuple[object, ...]:
+        return (
+            row["run_id"],
+            row["session_request_id"],
+            row["node_id"],
+            int(row["placement_generation"]),
+            row["placement_request_digest"],
+            row["image_digest"],
+        )
+
+    def _insert_history(
+        self,
+        conn: sqlite3.Connection,
+        binding: FleetAtesRunBinding,
+        bound_at: float,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO fleet_ates_run_history(
+                run_id, placement_generation, session_request_id, node_id,
+                placement_request_digest, image_digest, bound_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(binding.run_id),
+                binding.placement_generation,
+                binding.session_request_id,
+                binding.node_id,
+                binding.placement_request_digest,
+                binding.image_digest,
+                bound_at,
+            ),
+        )
+
     def bind_run(
         self,
         binding: FleetAtesRunBinding,
@@ -304,18 +356,39 @@ class FleetAtesAggregator:
                 (str(binding.run_id),),
             ).fetchone()
             if row is not None:
-                existing = (
-                    row["run_id"],
-                    row["session_request_id"],
-                    row["node_id"],
-                    int(row["placement_generation"]),
-                    row["placement_request_digest"],
-                    row["image_digest"],
+                existing = self._row_binding_tuple(row)
+                if existing == self._binding_tuple(binding):
+                    conn.commit()
+                    return
+                immutable_matches = (
+                    row["session_request_id"] == binding.session_request_id
+                    and row["placement_request_digest"]
+                    == binding.placement_request_digest
+                    and row["image_digest"] == binding.image_digest
                 )
-                if existing != self._binding_tuple(binding):
+                next_generation = int(row["placement_generation"]) + 1
+                if (
+                    not immutable_matches
+                    or binding.placement_generation != next_generation
+                ):
                     raise FleetAtesConflict(
-                        "ATES run is already bound to different Fleet provenance"
+                        "ATES run rebind must preserve immutable run identity "
+                        "and advance exactly one placement generation"
                     )
+                self._insert_history(conn, binding, current)
+                conn.execute(
+                    """
+                    UPDATE fleet_ates_runs
+                       SET node_id=?, placement_generation=?, bound_at=?
+                     WHERE run_id=?
+                    """,
+                    (
+                        binding.node_id,
+                        binding.placement_generation,
+                        current,
+                        str(binding.run_id),
+                    ),
+                )
                 conn.commit()
                 return
             conn.execute(
@@ -327,10 +400,16 @@ class FleetAtesAggregator:
                 """,
                 (*self._binding_tuple(binding), current),
             )
+            self._insert_history(conn, binding, current)
             conn.commit()
         except FleetAtesError:
             conn.rollback()
             raise
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise FleetAtesConflict(
+                "Fleet ATES placement generation conflicts with retained provenance"
+            ) from exc
         except sqlite3.Error as exc:
             conn.rollback()
             raise FleetAtesError("cannot persist Fleet ATES run binding") from exc
@@ -348,17 +427,9 @@ class FleetAtesAggregator:
         ).fetchone()
         if row is None:
             raise FleetAtesError("ATES run has not been bound to a Fleet placement")
-        existing = (
-            row["run_id"],
-            row["session_request_id"],
-            row["node_id"],
-            int(row["placement_generation"]),
-            row["placement_request_digest"],
-            row["image_digest"],
-        )
-        if existing != self._binding_tuple(binding):
+        if self._row_binding_tuple(row) != self._binding_tuple(binding):
             raise FleetAtesConflict(
-                "Fleet ATES event provenance does not match the bound run"
+                "Fleet ATES event provenance does not match the current bound placement"
             )
 
     @staticmethod
@@ -429,7 +500,6 @@ class FleetAtesAggregator:
             clock_assessment
         )
         digest = _event_digest(event)
-        inserted_pending = False
 
         conn = self._connect()
         try:
@@ -476,7 +546,6 @@ class FleetAtesAggregator:
                         clock_age,
                     ),
                 )
-                inserted_pending = True
             else:
                 if (
                     row["event_id"] != str(event.event_id)
@@ -512,15 +581,12 @@ class FleetAtesAggregator:
                     )
                 mirror.append_event(event)
         except FleetAtesGap:
-            # Keep the exact pending receipt. Once the missing sequence arrives,
-            # replaying this event preserves its original trusted receipt time.
             raise
         except AtesEventConflict as exc:
             raise FleetAtesConflict(
                 f"canonical ATES mirror rejected conflicting event: {exc}"
             ) from exc
         except Exception as exc:
-            # A local I/O failure is retryable with this same event identity.
             raise FleetAtesError(
                 f"canonical ATES mirror append failed: {type(exc).__name__}: {exc}"
             ) from exc
