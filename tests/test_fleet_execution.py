@@ -199,13 +199,16 @@ def test_launch_side_effect_then_lost_response_stays_reconcilable(tmp_path):
     assert launches == ["app.exe"]
     assert len(factory_calls) == 1
 
-    # Retry crosses the launch boundary again with the same provider key. The
-    # provider recovers the existing execution instead of creating a duplicate.
-    assert executor.dispatch(request, authorization, target="app.exe").state == "running"
+    # Mutable staging is no longer required once launch has crossed the
+    # ambiguous side-effect boundary; recovery uses the retained verified copy.
+    image.unlink()
+    staged.unlink()
+
+    restarted = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
+    assert restarted.dispatch(request, authorization, target="app.exe").state == "running"
     assert launches == ["app.exe"]
     assert len(factory_calls) == 2
 
-    restarted = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
     assert restarted.reconcile(
         request.session_request_id,
         placement_generation=authorization.placement_generation,
@@ -222,8 +225,6 @@ def test_crash_after_durable_claim_before_launch_is_recoverable(tmp_path):
     launched_keys = set()
 
     def crash_before_environment(_request, _verified, _execution_key):
-        # BaseException models process death: normal cleanup/failure handling
-        # cannot rewrite the durable pre-side-effect claim as terminal.
         raise SystemExit("node process died after durable claim")
 
     executor = FleetNodeExecutor(
@@ -253,8 +254,6 @@ def test_crash_after_durable_claim_before_launch_is_recoverable(tmp_path):
     assert recovered.state == "running"
     assert launches == ["app.exe"]
 
-    # A further retry observes the terminal running claim and never launches a
-    # second Capsule.
     assert restarted.dispatch(request, authorization, target="app.exe").state == "running"
     assert launches == ["app.exe"]
 
