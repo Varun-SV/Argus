@@ -186,6 +186,7 @@ class FleetNodeExecutor:
         # The claim is durable before any Capsule side effect.  Do not move this
         # above the commit: doing so re-opens duplicate launch after lost reply.
         environment: Optional[ExecutionEnvironment] = None
+        launch_attempted = False
         try:
             environment = self.environment_factory(request)
             if not isinstance(environment, ExecutionEnvironment) or environment.environment_type != "capsule":
@@ -200,6 +201,7 @@ class FleetNodeExecutor:
                 placement_generation=generation,
                 new_state="starting",
             )
+            launch_attempted = True
             environment.launch(target)
             self.admission_store.transition(
                 request.session_request_id,
@@ -209,6 +211,12 @@ class FleetNodeExecutor:
             self._set_state(request.session_request_id, generation, "running")
             return FleetExecutionState(request.session_request_id, generation, "running")
         except Exception:
+            if launch_attempted:
+                # Once launch() is entered, an exception cannot distinguish a
+                # rejected launch from a successful launch whose response was
+                # lost. Keep the durable claim/admission non-terminal so the
+                # stable execution key can be probed after retry or restart.
+                raise
             self._set_state(request.session_request_id, generation, "failed")
             try:
                 self.admission_store.mark_terminal(
@@ -258,7 +266,21 @@ class FleetNodeExecutor:
         if observed not in {"running", "completed", "failed", "cancelled"}:
             raise FleetPlacementError("execution reconciliation returned an invalid state")
         self._set_state(session_request_id, placement_generation, observed)
-        if observed in {"completed", "failed", "cancelled"}:
+        if observed == "running":
+            # Ambiguous launch failures leave admission in ``starting``. Move
+            # it forward only after the stable execution key proves the
+            # Capsule exists; never launch a replacement to establish this.
+            try:
+                self.admission_store.transition(
+                    session_request_id,
+                    placement_generation=placement_generation,
+                    new_state="running",
+                )
+            except FleetPlacementError:
+                # A normal successful dispatch already moved admission to
+                # running; reconciliation of that state is idempotent here.
+                pass
+        elif observed in {"completed", "failed", "cancelled"}:
             self.admission_store.mark_terminal(
                 session_request_id,
                 placement_generation=placement_generation,
