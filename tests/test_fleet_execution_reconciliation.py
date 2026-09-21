@@ -103,26 +103,6 @@ def _setup(tmp_path):
     return control_key, placements, admissions, request, authorization, image, staged
 
 
-def _ambiguous_executor(tmp_path, admissions, request, image, staged, *, observed="completed"):
-    launches: list[str] = []
-    launched_keys: set[str] = set()
-
-    def factory(_request, _verified, execution_key):
-        return _LostResponseCapsule(launches, launched_keys, execution_key)
-
-    executor = FleetNodeExecutor(
-        tmp_path / "execution.sqlite3",
-        admission_store=admissions,
-        environment_factory=factory,
-        image_path_resolver=lambda _request: image,
-        staged_path_resolver=lambda _identity: staged,
-        execution_probe=lambda _key: observed,
-    )
-    with pytest.raises(RuntimeError, match="launch response lost"):
-        executor.dispatch(request, request_authorization := _ambiguous_executor.authorization, target="app.exe")
-    return executor, launches, factory
-
-
 def _launch_ambiguously(tmp_path, admissions, request, authorization, image, staged, *, observed="completed"):
     launches: list[str] = []
     launched_keys: set[str] = set()
@@ -145,7 +125,7 @@ def _launch_ambiguously(tmp_path, admissions, request, authorization, image, sta
 
 def test_cancellation_wins_provider_completion_and_releases_capacity(tmp_path):
     control_key, placements, admissions, request, authorization, image, staged = _setup(tmp_path)
-    executor, launches, factory = _launch_ambiguously(
+    executor, launches, _ = _launch_ambiguously(
         tmp_path, admissions, request, authorization, image, staged
     )
     admissions.cancel(
