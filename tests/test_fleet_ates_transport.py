@@ -139,11 +139,13 @@ def test_conflicting_event_content_for_same_sequence_fails_closed(tmp_path):
         aggregator.ingest_event(binding, conflict, received_at=1001.0)
 
 
-def test_run_binding_cannot_move_between_nodes_or_generations(tmp_path):
+def test_run_binding_advances_one_generation_and_retains_event_provenance(tmp_path):
     run_id = RunId.new()
+    source, events = _events(tmp_path, run_id)
     aggregator = _aggregator(tmp_path)
     first = _binding(run_id)
-    aggregator.bind_run(first)
+    aggregator.bind_run(first, bound_at=1000.0)
+    first_receipt = aggregator.ingest_event(first, events[0], received_at=1100.0)
 
     moved = FleetAtesRunBinding(
         run_id=run_id,
@@ -153,8 +155,29 @@ def test_run_binding_cannot_move_between_nodes_or_generations(tmp_path):
         placement_request_digest=first.placement_request_digest,
         image_digest=first.image_digest,
     )
-    with pytest.raises(FleetAtesConflict, match="different Fleet provenance"):
-        aggregator.bind_run(moved)
+    aggregator.bind_run(moved, bound_at=1200.0)
+    second_receipt = aggregator.ingest_event(moved, events[1], received_at=1300.0)
+
+    assert first_receipt.node_id == first.node_id
+    assert first_receipt.placement_generation == 1
+    assert second_receipt.node_id == moved.node_id
+    assert second_receipt.placement_generation == 2
+    assert aggregator.committed_sequence(run_id) == 2
+
+    with pytest.raises(FleetAtesConflict, match="current bound placement"):
+        aggregator.ingest_event(first, events[2], received_at=1400.0)
+
+    skipped = FleetAtesRunBinding(
+        run_id=run_id,
+        session_request_id=first.session_request_id,
+        node_id="NODE-" + ("8" * 32),
+        placement_generation=4,
+        placement_request_digest=first.placement_request_digest,
+        image_digest=first.image_digest,
+    )
+    with pytest.raises(FleetAtesConflict, match="advance exactly one"):
+        aggregator.bind_run(skipped)
+    source.close()
 
 
 @dataclass(frozen=True)
