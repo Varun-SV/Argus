@@ -8,7 +8,7 @@ from argus.adapters.base import Observation
 from argus.ates import RunId
 from argus.execution.base import ExecutionEnvironment
 from argus.fleet.enrollment import EnrollmentAcknowledgement, EnrollmentRequest, FleetEnrollmentRegistry
-from argus.fleet.execution import FleetNodeExecutor
+from argus.fleet.execution import FleetNodeExecutor, VerifiedLaunchInputs
 from argus.fleet.identity import ControlCenterKeyPair, NodeKeyPair
 from argus.fleet.placement import (
     FleetPlacementError,
@@ -45,6 +45,17 @@ class _LostResponseCapsuleEnvironment(_FakeCapsuleEnvironment):
     def launch(self, target: str) -> None:
         self.launches.append(target)
         raise RuntimeError("launch response lost")
+
+
+class _SnapshotCapsuleEnvironment(_FakeCapsuleEnvironment):
+    def __init__(self, launches, verified: VerifiedLaunchInputs):
+        super().__init__(launches)
+        self.verified = verified
+
+    def launch(self, target: str) -> None:
+        assert self.verified.image_path.read_bytes() == b"immutable capsule image"
+        assert self.verified.staged_paths["input.bin"].read_bytes() == b"immutable staged input"
+        super().launch(target)
 
 
 class _FakeLocalEnvironment(_FakeCapsuleEnvironment):
@@ -119,7 +130,7 @@ def test_dispatch_is_capsule_only_idempotent_and_restart_reconcilable(tmp_path):
     launches = []
     factory_calls = []
 
-    def factory(_request):
+    def factory(_request, _verified):
         factory_calls.append(1)
         return _FakeCapsuleEnvironment(launches)
 
@@ -136,15 +147,11 @@ def test_dispatch_is_capsule_only_idempotent_and_restart_reconcilable(tmp_path):
     assert launches == ["app.exe"]
     assert len(factory_calls) == 1
 
-    # Lost dispatch/start response: an exact retry must return durable state,
-    # not call the Capsule factory/launch path again.
     replay = executor.dispatch(request, authorization, target="app.exe")
     assert replay.state == "running"
     assert launches == ["app.exe"]
     assert len(factory_calls) == 1
 
-    # Node-agent restart opens the same durable claim and reconciles the live
-    # execution instead of creating a replacement Capsule.
     restarted = FleetNodeExecutor(tmp_path / "execution.sqlite3", **kwargs)
     assert restarted.reconcile(
         request.session_request_id,
@@ -163,7 +170,7 @@ def test_launch_side_effect_then_lost_response_stays_reconcilable(tmp_path):
     launches = []
     factory_calls = []
 
-    def factory(_request):
+    def factory(_request, _verified):
         factory_calls.append(1)
         return _LostResponseCapsuleEnvironment(launches)
 
@@ -180,9 +187,6 @@ def test_launch_side_effect_then_lost_response_stays_reconcilable(tmp_path):
     assert launches == ["app.exe"]
     assert len(factory_calls) == 1
 
-    # The launch outcome is ambiguous, not failed. A retry must not launch a
-    # replacement, and a restarted agent can recover the existing Capsule via
-    # the stable execution key.
     assert executor.dispatch(request, authorization, target="app.exe").state == "launching"
     assert launches == ["app.exe"]
     assert len(factory_calls) == 1
@@ -208,7 +212,7 @@ def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls
     executor = FleetNodeExecutor(
         tmp_path / "execution.sqlite3",
         admission_store=admissions,
-        environment_factory=lambda _request: called.append(1) or _FakeCapsuleEnvironment([]),
+        environment_factory=lambda _request, _verified: called.append(1) or _FakeCapsuleEnvironment([]),
         image_path_resolver=lambda _request: image,
         staged_path_resolver=lambda _identity: staged,
     )
@@ -216,8 +220,6 @@ def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls
         executor.dispatch(request, authorization, target="app.exe")
     assert called == []
 
-    # Verification failed before any Capsule side effect, so the terminalized
-    # admission must release the sole capacity slot for another session.
     request2, image2, staged2 = _request(tmp_path)
     placements.create_placement(request2, owner_node_id=node.node_id, now=1001)
     authorization2 = placements.authorization_for_dispatch(request2.session_request_id, signer=control_key)
@@ -225,14 +227,13 @@ def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls
     executor2 = FleetNodeExecutor(
         tmp_path / "execution-2.sqlite3",
         admission_store=admissions,
-        environment_factory=lambda _request: _FakeCapsuleEnvironment(launches),
+        environment_factory=lambda _request, _verified: _FakeCapsuleEnvironment(launches),
         image_path_resolver=lambda _request: image2,
         staged_path_resolver=lambda _identity: staged2,
     )
     assert executor2.dispatch(request2, authorization2, target="app.exe").state == "running"
     assert launches == ["app.exe"]
 
-    # Use a fresh placement/store for the independent local-fallback case.
     local_root = tmp_path / "local-case"
     node3, control_key3, placements3, admissions3 = _setup(local_root)
     request3, image3, staged3 = _request(local_root)
@@ -242,10 +243,38 @@ def test_dispatch_verifies_bytes_before_launch_releases_capacity_and_never_falls
     executor3 = FleetNodeExecutor(
         local_root / "execution.sqlite3",
         admission_store=admissions3,
-        environment_factory=lambda _request: _FakeLocalEnvironment(local_launches),
+        environment_factory=lambda _request, _verified: _FakeLocalEnvironment(local_launches),
         image_path_resolver=lambda _request: image3,
         staged_path_resolver=lambda _identity: staged3,
     )
     with pytest.raises(FleetPlacementError, match="local fallback is forbidden"):
         executor3.dispatch(request3, authorization3, target="app.exe")
     assert local_launches == []
+
+
+def test_launch_consumes_verified_snapshot_not_replaced_source(tmp_path):
+    node, control_key, placements, admissions = _setup(tmp_path)
+    request, image, staged = _request(tmp_path)
+    placements.create_placement(request, owner_node_id=node.node_id, now=1000)
+    authorization = placements.authorization_for_dispatch(request.session_request_id, signer=control_key)
+    launches = []
+
+    def factory(_request, verified):
+        # Model an attacker replacing both resolver paths after verification but
+        # before Capsule launch. The environment is bound to the verified
+        # private snapshots and therefore never consumes these replacements.
+        image.write_bytes(b"replacement image")
+        staged.write_bytes(b"replacement input")
+        return _SnapshotCapsuleEnvironment(launches, verified)
+
+    executor = FleetNodeExecutor(
+        tmp_path / "execution.sqlite3",
+        admission_store=admissions,
+        environment_factory=factory,
+        image_path_resolver=lambda _request: image,
+        staged_path_resolver=lambda _identity: staged,
+    )
+    assert executor.dispatch(request, authorization, target="app.exe").state == "running"
+    assert launches == ["app.exe"]
+    assert image.read_bytes() == b"replacement image"
+    assert staged.read_bytes() == b"replacement input"
