@@ -203,3 +203,59 @@ def test_clock_probe_replay_is_idempotent_and_tamper_conflicts(tmp_path):
     )
     with pytest.raises(HeartbeatConflict, match="conflicting response"):
         registry.complete_clock_probe(altered, control_received_at=1001.06)
+
+
+def test_retired_boot_clock_probe_does_not_replace_latest_assessment(tmp_path):
+    path, active, key = _active_node(tmp_path)
+    registry = FleetHeartbeatRegistry(path, control_center_id="cc://test")
+    old_boot = "BOOTID-" + ("1" * 32)
+    new_boot = "BOOTID-" + ("2" * 32)
+
+    registry.accept_heartbeat(
+        _heartbeat(active, key, boot_id=old_boot), received_at=900.0
+    )
+    old_challenge = registry.begin_clock_probe(active.node_id, control_sent_at=1000.0)
+
+    registry.accept_heartbeat(
+        _heartbeat(
+            active,
+            key,
+            boot_id=new_boot,
+            previous_boot_id=old_boot,
+        ),
+        received_at=1000.1,
+    )
+    new_challenge = registry.begin_clock_probe(active.node_id, control_sent_at=1001.0)
+    new_response = ClockProbeResponse.create(
+        challenge=new_challenge,
+        key_pair=key,
+        boot_id=new_boot,
+        node_received_at=1001.02,
+        node_sent_at=1001.03,
+        node_monotonic_seconds=1.0,
+    )
+    current = registry.complete_clock_probe(new_response, control_received_at=1001.05)
+    assert registry.latest_clock_assessment(active.node_id, now=1001.05).probe_id == current.probe_id
+
+    delayed_old_response = ClockProbeResponse.create(
+        challenge=old_challenge,
+        key_pair=key,
+        boot_id=old_boot,
+        node_received_at=1000.02,
+        node_sent_at=1000.03,
+        node_monotonic_seconds=50.0,
+    )
+    stale = registry.complete_clock_probe(
+        delayed_old_response, control_received_at=1002.0
+    )
+    assert stale.boot_id == old_boot
+    latest = registry.latest_clock_assessment(active.node_id, now=1002.0)
+    assert latest is not None
+    assert latest.probe_id == current.probe_id
+    assert latest.boot_id == new_boot
+
+    replay = registry.complete_clock_probe(
+        delayed_old_response, control_received_at=1003.0
+    )
+    assert replay.probe_id == stale.probe_id
+    assert registry.latest_clock_assessment(active.node_id, now=1003.0).probe_id == current.probe_id
