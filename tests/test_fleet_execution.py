@@ -6,7 +6,7 @@ import pytest
 
 from argus.adapters.base import Observation
 from argus.ates import RunId
-from argus.execution.base import ExecutionEnvironment, LocalExecutionEnvironment
+from argus.execution.base import ExecutionEnvironment
 from argus.fleet.enrollment import EnrollmentAcknowledgement, EnrollmentRequest, FleetEnrollmentRegistry
 from argus.fleet.execution import FleetNodeExecutor
 from argus.fleet.identity import ControlCenterKeyPair, NodeKeyPair
@@ -50,6 +50,7 @@ def _sha(data: bytes) -> str:
 
 
 def _setup(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     registry_path = tmp_path / "control.sqlite3"
     registry = FleetEnrollmentRegistry(registry_path, control_center_id="cc://test")
     credential = registry.issue_bootstrap_credential(now=100, ttl_seconds=60)
@@ -169,13 +170,14 @@ def test_dispatch_verifies_bytes_before_launch_and_never_falls_back_local(tmp_pa
 
     # Use a fresh placement/store because the first admission legitimately
     # reserved capacity before launch verification failed.
-    node2, control_key2, placements2, admissions2 = _setup(tmp_path / "local-case")
-    request2, image2, staged2 = _request(tmp_path / "local-case")
+    local_root = tmp_path / "local-case"
+    node2, control_key2, placements2, admissions2 = _setup(local_root)
+    request2, image2, staged2 = _request(local_root)
     placements2.create_placement(request2, owner_node_id=node2.node_id, now=1000)
     authorization2 = placements2.authorization_for_dispatch(request2.session_request_id, signer=control_key2)
     local_launches = []
     executor2 = FleetNodeExecutor(
-        tmp_path / "local-case" / "execution.sqlite3",
+        local_root / "execution.sqlite3",
         admission_store=admissions2,
         environment_factory=lambda _request: _FakeLocalEnvironment(local_launches),
         image_path_resolver=lambda _request: image2,
