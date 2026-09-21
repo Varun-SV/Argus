@@ -17,13 +17,7 @@ from typing import Callable, Mapping, Optional
 
 from argus.execution.base import ExecutionEnvironment
 
-from .placement import (
-    FleetPlacementError,
-    NodeAdmissionStore,
-    PlacementAuthorization,
-    SessionRequest,
-    StagedInputIdentity,
-)
+from .placement import FleetPlacementError, NodeAdmissionStore, PlacementAuthorization, SessionRequest, StagedInputIdentity
 
 
 @dataclass(frozen=True)
@@ -36,37 +30,14 @@ class FleetExecutionState:
 @dataclass(frozen=True)
 class VerifiedLaunchInputs:
     """Private immutable-by-convention snapshots bound to one Fleet launch."""
-
     image_path: Path
     staged_paths: Mapping[str, Path]
 
 
 class FleetNodeExecutor:
-    """Idempotently translate one authorized Fleet placement into a Capsule.
+    """Idempotently translate one authorized Fleet placement into a Capsule."""
 
-    ``environment_factory`` receives a stable execution key in addition to the
-    authorized request and verified inputs. The returned Capsule environment
-    must bind provider creation/launch to that key so repeating ``launch()`` is
-    an idempotent create-or-recover operation, not a second execution. This is
-    the provider-side half of the crash boundary: the durable claim is written
-    before the side effect and a retry may safely complete an unattempted launch
-    or recover an ambiguously attempted one using the same key.
-
-    ``execution_probe`` is the provider/agent reconciliation hook used after
-    process restart; it reports ``running``, ``completed``, ``failed``, or
-    ``cancelled`` for the same stable Fleet execution key.
-    """
-
-    def __init__(
-        self,
-        path: Path | str,
-        *,
-        admission_store: NodeAdmissionStore,
-        environment_factory: Callable[[SessionRequest, VerifiedLaunchInputs, str], ExecutionEnvironment],
-        image_path_resolver: Callable[[SessionRequest], Path | str],
-        staged_path_resolver: Callable[[StagedInputIdentity], Path | str],
-        execution_probe: Optional[Callable[[str], Optional[str]]] = None,
-    ) -> None:
+    def __init__(self, path: Path | str, *, admission_store: NodeAdmissionStore, environment_factory: Callable[[SessionRequest, VerifiedLaunchInputs, str], ExecutionEnvironment], image_path_resolver: Callable[[SessionRequest], Path | str], staged_path_resolver: Callable[[StagedInputIdentity], Path | str], execution_probe: Optional[Callable[[str], Optional[str]]] = None) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.admission_store = admission_store
@@ -87,35 +58,19 @@ class FleetNodeExecutor:
     def _initialize(self) -> None:
         conn = self._connect()
         try:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS fleet_node_executions (
-                    session_request_id TEXT NOT NULL,
-                    placement_generation INTEGER NOT NULL,
-                    run_id TEXT NOT NULL,
-                    request_digest TEXT NOT NULL,
-                    execution_key TEXT NOT NULL UNIQUE,
-                    state TEXT NOT NULL,
-                    PRIMARY KEY(session_request_id, placement_generation)
-                )
-                """
-            )
+            conn.execute("""CREATE TABLE IF NOT EXISTS fleet_node_executions (session_request_id TEXT NOT NULL, placement_generation INTEGER NOT NULL, run_id TEXT NOT NULL, request_digest TEXT NOT NULL, execution_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, PRIMARY KEY(session_request_id, placement_generation))""")
         finally:
             conn.close()
 
     @staticmethod
     def _snapshot_file(source: Path, destination: Path) -> tuple[str, int]:
-        digest = hashlib.sha256()
-        size = 0
+        digest = hashlib.sha256(); size = 0
         try:
             with source.open("rb") as src, destination.open("xb") as dst:
                 while True:
                     block = src.read(1024 * 1024)
-                    if not block:
-                        break
-                    size += len(block)
-                    digest.update(block)
-                    dst.write(block)
+                    if not block: break
+                    size += len(block); digest.update(block); dst.write(block)
                 dst.flush()
         except OSError as exc:
             raise FleetPlacementError(f"cannot snapshot Fleet launch input: {source}") from exc
@@ -123,21 +78,16 @@ class FleetNodeExecutor:
 
     @staticmethod
     def _verify_file(path: Path, expected_digest: str, expected_size: Optional[int] = None) -> None:
-        digest = hashlib.sha256()
-        size = 0
+        digest = hashlib.sha256(); size = 0
         try:
             with path.open("rb") as source:
                 while True:
                     block = source.read(1024 * 1024)
-                    if not block:
-                        break
-                    size += len(block)
-                    digest.update(block)
+                    if not block: break
+                    size += len(block); digest.update(block)
         except OSError as exc:
             raise FleetPlacementError(f"cannot read retained Fleet launch input: {path}") from exc
-        if "sha256:" + digest.hexdigest() != expected_digest or (
-            expected_size is not None and size != expected_size
-        ):
+        if "sha256:" + digest.hexdigest() != expected_digest or (expected_size is not None and size != expected_size):
             raise FleetPlacementError("retained Fleet launch input no longer matches authorized identity")
 
     def _retained_snapshot_root(self, execution_key: str) -> Path:
@@ -155,10 +105,7 @@ class FleetNodeExecutor:
             staged_paths[identity.logical_name] = snapshot
         return VerifiedLaunchInputs(image_path=image_snapshot, staged_paths=staged_paths)
 
-    def _snapshot_verified_inputs(
-        self, request: SessionRequest, execution_key: str
-    ) -> tuple[Path, VerifiedLaunchInputs]:
-        """Copy and verify mutable resolver paths into a durable launch snapshot."""
+    def _snapshot_verified_inputs(self, request: SessionRequest, execution_key: str) -> tuple[Path, VerifiedLaunchInputs]:
         final_root = self._retained_snapshot_root(execution_key)
         final_root.parent.mkdir(parents=True, exist_ok=True)
         if final_root.exists():
@@ -166,31 +113,20 @@ class FleetNodeExecutor:
         root = Path(tempfile.mkdtemp(prefix="fleet-launch-", dir=final_root.parent))
         try:
             image_snapshot = root / "image"
-            image = Path(self.image_path_resolver(request))
-            image_digest, _ = self._snapshot_file(image, image_snapshot)
+            image_digest, _ = self._snapshot_file(Path(self.image_path_resolver(request)), image_snapshot)
             if image_digest != request.image_digest:
                 raise FleetPlacementError("Capsule image bytes do not match authorized image digest")
-
-            staged_paths: dict[str, Path] = {}
-            staged_root = root / "staged"
-            staged_root.mkdir()
+            staged_paths: dict[str, Path] = {}; staged_root = root / "staged"; staged_root.mkdir()
             for index, identity in enumerate(request.staged_inputs):
-                source = Path(self.staged_path_resolver(identity))
                 snapshot = staged_root / str(index)
-                digest, size = self._snapshot_file(source, snapshot)
+                digest, size = self._snapshot_file(Path(self.staged_path_resolver(identity)), snapshot)
                 if digest != identity.transfer_digest or size != identity.size_bytes:
-                    raise FleetPlacementError(
-                        f"staged input bytes do not match authorized identity: {identity.logical_name}"
-                    )
+                    raise FleetPlacementError(f"staged input bytes do not match authorized identity: {identity.logical_name}")
                 staged_paths[identity.logical_name] = snapshot
             root.replace(final_root)
-            return final_root, VerifiedLaunchInputs(
-                image_path=final_root / "image",
-                staged_paths={name: final_root / "staged" / str(index) for index, name in enumerate(staged_paths)},
-            )
+            return final_root, VerifiedLaunchInputs(image_path=final_root / "image", staged_paths={name: final_root / "staged" / str(index) for index, name in enumerate(staged_paths)})
         except Exception:
-            shutil.rmtree(root, ignore_errors=True)
-            raise
+            shutil.rmtree(root, ignore_errors=True); raise
 
     @staticmethod
     def _execution_key(request: SessionRequest, generation: int) -> str:
@@ -198,51 +134,40 @@ class FleetNodeExecutor:
 
     @staticmethod
     def _state(row: sqlite3.Row) -> FleetExecutionState:
-        return FleetExecutionState(
-            session_request_id=row["session_request_id"],
-            placement_generation=int(row["placement_generation"]),
-            state=row["state"],
-        )
+        return FleetExecutionState(row["session_request_id"], int(row["placement_generation"]), row["state"])
 
-    def _repair_admission(self, session_request_id: str, generation: int, state: str) -> None:
-        """Idempotently finish the admission half of a definitive execution outcome."""
+    def _repair_admission(self, session_request_id: str, generation: int, state: str) -> str:
+        """Repair admission and return the effective durable outcome.
+
+        Cancellation wins a race with a provider terminal observation. This keeps
+        the two durable stores convergent while still recording the provider
+        observation only after the cancellation state has been resolved.
+        """
         if state == "running":
-            self.admission_store.transition(
-                session_request_id,
-                placement_generation=generation,
-                new_state="running",
-            )
-        elif state in {"completed", "failed", "cancelled"}:
-            self.admission_store.mark_terminal(
-                session_request_id,
-                placement_generation=generation,
-                terminal_state=state,
-            )
+            self.admission_store.transition(session_request_id, placement_generation=generation, new_state="running")
+            return state
+        if state in {"completed", "failed", "cancelled"}:
+            try:
+                self.admission_store.mark_terminal(session_request_id, placement_generation=generation, terminal_state=state)
+                return state
+            except FleetPlacementError:
+                if state == "cancelled":
+                    raise
+                # mark_terminal(cancelled) succeeds only for the cancellation race;
+                # unrelated admission errors continue to fail closed.
+                self.admission_store.mark_terminal(session_request_id, placement_generation=generation, terminal_state="cancelled")
+                return "cancelled"
+        return state
 
-    def dispatch(
-        self,
-        request: SessionRequest,
-        authorization: PlacementAuthorization,
-        *,
-        target: str,
-    ) -> FleetExecutionState:
-        """Admit and idempotently create/recover one Capsule for this generation."""
-        admitted = self.admission_store.admit(request, authorization)
-        generation = authorization.placement_generation
+    def dispatch(self, request: SessionRequest, authorization: PlacementAuthorization, *, target: str) -> FleetExecutionState:
+        admitted = self.admission_store.admit(request, authorization); generation = authorization.placement_generation
         if admitted.state in {"completed", "failed", "cancelled", "retained", "released"}:
             return FleetExecutionState(request.session_request_id, generation, admitted.state)
-
-        conn = self._connect()
-        snapshot_root: Optional[Path] = None
-        verified_inputs: Optional[VerifiedLaunchInputs] = None
-        execution_key = self._execution_key(request, generation)
-        existing_state: Optional[str] = None
+        conn = self._connect(); snapshot_root = None; verified_inputs = None
+        execution_key = self._execution_key(request, generation); existing_state = None
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM fleet_node_executions WHERE session_request_id=? AND placement_generation=?",
-                (request.session_request_id, generation),
-            ).fetchone()
+            row = conn.execute("SELECT * FROM fleet_node_executions WHERE session_request_id=? AND placement_generation=?", (request.session_request_id, generation)).fetchone()
             if row is not None:
                 if row["run_id"] != str(request.run_id) or row["request_digest"] != request.request_digest:
                     raise FleetPlacementError("Fleet execution claim conflicts with authorized request")
@@ -251,140 +176,85 @@ class FleetNodeExecutor:
                 existing_state = str(row["state"])
                 if existing_state in {"running", "completed", "failed", "cancelled"}:
                     conn.commit()
-                    self._repair_admission(request.session_request_id, generation, existing_state)
-                    return self._state(row)
-
+                    effective = self._repair_admission(request.session_request_id, generation, existing_state)
+                    if effective != existing_state:
+                        self._set_state(request.session_request_id, generation, effective)
+                    return FleetExecutionState(request.session_request_id, generation, effective)
             try:
                 snapshot_root, verified_inputs = self._snapshot_verified_inputs(request, execution_key)
             except Exception:
                 if row is None:
-                    self.admission_store.mark_terminal(
-                        request.session_request_id,
-                        placement_generation=generation,
-                        terminal_state="failed",
-                    )
+                    self.admission_store.mark_terminal(request.session_request_id, placement_generation=generation, terminal_state="failed")
                 raise
-
             if row is None:
-                conn.execute(
-                    """
-                    INSERT INTO fleet_node_executions(
-                        session_request_id, placement_generation, run_id,
-                        request_digest, execution_key, state
-                    ) VALUES(?, ?, ?, ?, ?, 'prepared')
-                    """,
-                    (
-                        request.session_request_id,
-                        generation,
-                        str(request.run_id),
-                        request.request_digest,
-                        execution_key,
-                    ),
-                )
+                conn.execute("INSERT INTO fleet_node_executions(session_request_id, placement_generation, run_id, request_digest, execution_key, state) VALUES(?, ?, ?, ?, ?, 'prepared')", (request.session_request_id, generation, str(request.run_id), request.request_digest, execution_key))
             conn.commit()
         except Exception:
             conn.rollback()
-            if existing_state is None and snapshot_root is not None:
-                shutil.rmtree(snapshot_root, ignore_errors=True)
+            if existing_state is None and snapshot_root is not None: shutil.rmtree(snapshot_root, ignore_errors=True)
             raise
         finally:
             conn.close()
-
         assert verified_inputs is not None and snapshot_root is not None
-        environment: Optional[ExecutionEnvironment] = None
-        launch_attempted = existing_state == "launching"
-        completed_launch = False
+        environment = None; launch_attempted = existing_state == "launching"; completed_launch = False
         try:
             environment = self.environment_factory(request, verified_inputs, execution_key)
             if not isinstance(environment, ExecutionEnvironment) or environment.environment_type != "capsule":
                 raise FleetPlacementError("Fleet execution requires a Capsule ExecutionEnvironment; local fallback is forbidden")
-
             if admitted.state == "reserved":
-                self.admission_store.transition(
-                    request.session_request_id,
-                    placement_generation=generation,
-                    new_state="allocated",
-                )
+                self.admission_store.transition(request.session_request_id, placement_generation=generation, new_state="allocated")
                 admitted = self.admission_store.admit(request, authorization)
-            if admitted.state == "allocated":
-                self.admission_store.transition(
-                    request.session_request_id,
-                    placement_generation=generation,
-                    new_state="starting",
-                )
-
-            self._set_state(request.session_request_id, generation, "launching")
-            launch_attempted = True
+            if admitted.state == "allocated": self.admission_store.transition(request.session_request_id, placement_generation=generation, new_state="starting")
+            self._set_state(request.session_request_id, generation, "launching"); launch_attempted = True
             environment.launch(target)
-            self.admission_store.transition(
-                request.session_request_id,
-                placement_generation=generation,
-                new_state="running",
-            )
-            self._set_state(request.session_request_id, generation, "running")
-            completed_launch = True
+            self.admission_store.transition(request.session_request_id, placement_generation=generation, new_state="running")
+            self._set_state(request.session_request_id, generation, "running"); completed_launch = True
             return FleetExecutionState(request.session_request_id, generation, "running")
         except Exception:
-            if launch_attempted:
-                raise
+            if launch_attempted: raise
             self._set_state(request.session_request_id, generation, "failed")
-            try:
-                self.admission_store.mark_terminal(
-                    request.session_request_id,
-                    placement_generation=generation,
-                    terminal_state="failed",
-                )
-            except FleetPlacementError:
-                pass
+            try: self.admission_store.mark_terminal(request.session_request_id, placement_generation=generation, terminal_state="failed")
+            except FleetPlacementError: pass
             if environment is not None:
-                try:
-                    environment.close()
-                except Exception:
-                    pass
+                try: environment.close()
+                except Exception: pass
             raise
         finally:
-            # Ambiguous launch recovery must not depend on mutable staging. Keep
-            # the verified snapshot until launch is known to have succeeded or
-            # failed before crossing the side-effect boundary.
-            if completed_launch or not launch_attempted:
-                shutil.rmtree(snapshot_root, ignore_errors=True)
+            if completed_launch or not launch_attempted: shutil.rmtree(snapshot_root, ignore_errors=True)
 
     def _set_state(self, session_request_id: str, generation: int, state: str) -> None:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "UPDATE fleet_node_executions SET state=? WHERE session_request_id=? AND placement_generation=?",
-                (state, session_request_id, generation),
-            )
+            conn.execute("UPDATE fleet_node_executions SET state=? WHERE session_request_id=? AND placement_generation=?", (state, session_request_id, generation))
             conn.commit()
-        finally:
-            conn.close()
+        finally: conn.close()
 
     def reconcile(self, session_request_id: str, *, placement_generation: int) -> FleetExecutionState:
-        """Reconcile an ambiguous launch without ever inventing a second identity."""
         conn = self._connect()
         try:
-            row = conn.execute(
-                "SELECT * FROM fleet_node_executions WHERE session_request_id=? AND placement_generation=?",
-                (session_request_id, placement_generation),
-            ).fetchone()
-        finally:
-            conn.close()
-        if row is None:
-            raise FleetPlacementError("Fleet execution claim is unknown")
-        current = self._state(row)
+            row = conn.execute("SELECT * FROM fleet_node_executions WHERE session_request_id=? AND placement_generation=?", (session_request_id, placement_generation)).fetchone()
+        finally: conn.close()
+        if row is None: raise FleetPlacementError("Fleet execution claim is unknown")
+        current = self._state(row); execution_key = str(row["execution_key"])
         if current.state in {"running", "completed", "failed", "cancelled"}:
-            self._repair_admission(session_request_id, placement_generation, current.state)
-            if current.state != "running" or self.execution_probe is None:
-                return current
+            effective = self._repair_admission(session_request_id, placement_generation, current.state)
+            if effective != current.state:
+                self._set_state(session_request_id, placement_generation, effective)
+                current = FleetExecutionState(session_request_id, placement_generation, effective)
+            # Once both durable halves agree, retained launch material is no longer
+            # needed for create-or-recover and should not outlive the execution.
+            shutil.rmtree(self._retained_snapshot_root(execution_key), ignore_errors=True)
+            if current.state != "running" or self.execution_probe is None: return current
         elif current.state != "launching" or self.execution_probe is None:
             return current
-        observed = self.execution_probe(row["execution_key"])
-        if observed is None:
-            return current
+        observed = self.execution_probe(execution_key)
+        if observed is None: return current
         if observed not in {"running", "completed", "failed", "cancelled"}:
             raise FleetPlacementError("execution reconciliation returned an invalid state")
-        self._set_state(session_request_id, placement_generation, observed)
-        self._repair_admission(session_request_id, placement_generation, observed)
-        return FleetExecutionState(session_request_id, placement_generation, observed)
+        # Repair admission first. If cancellation raced with completion/failure,
+        # cancellation wins and that effective outcome is what we persist.
+        effective = self._repair_admission(session_request_id, placement_generation, observed)
+        self._set_state(session_request_id, placement_generation, effective)
+        shutil.rmtree(self._retained_snapshot_root(execution_key), ignore_errors=True)
+        return FleetExecutionState(session_request_id, placement_generation, effective)
