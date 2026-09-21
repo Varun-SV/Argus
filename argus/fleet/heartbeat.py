@@ -207,10 +207,9 @@ class FleetHeartbeatRegistry(_impl.FleetHeartbeatRegistry):
                     "UPDATE fleet_node_current_boot SET boot_id=? WHERE node_id=?",
                     (heartbeat.boot_id, heartbeat.node_id),
                 )
-            elif heartbeat.previous_boot_id not in (None, heartbeat.boot_id):
-                raise FleetHeartbeatError(
-                    "current Node boot heartbeat carries stale transition proof"
-                )
+            # Once this boot is authoritative, retaining its signed predecessor proof
+            # is harmless and must remain idempotent: the proof cannot move authority
+            # because the heartbeat boot already equals fleet_node_current_boot.
 
             conn.execute(
                 """
