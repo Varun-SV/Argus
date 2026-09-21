@@ -29,18 +29,26 @@ def _active_node(tmp_path):
         now=101.0,
     )
     active = enrollment.acknowledge(
-        EnrollmentAcknowledgement.create(result=pending, key_pair=key),
-        now=102.0,
+        EnrollmentAcknowledgement.create(result=pending, key_pair=key), now=102.0
     )
     return path, active, key
 
 
-def _heartbeat(active, key, *, boot_id, sequence, active_sessions):
+def _heartbeat(
+    active,
+    key,
+    *,
+    boot_id,
+    sequence,
+    active_sessions,
+    previous_boot_id=None,
+):
     return NodeHeartbeat.create(
         node_id=active.node_id,
         control_center_id="cc://test",
         key_pair=key,
         boot_id=boot_id,
+        previous_boot_id=previous_boot_id,
         sequence=sequence,
         agent_version="0.1.0",
         host_os="windows",
@@ -64,15 +72,8 @@ def test_retired_boot_cannot_replace_newer_boot_latest_state(tmp_path):
     registry = FleetHeartbeatRegistry(path, control_center_id="cc://test")
     old_boot = "BOOTID-" + ("1" * 32)
     new_boot = "BOOTID-" + ("2" * 32)
-
     registry.accept_heartbeat(
-        _heartbeat(
-            active,
-            key,
-            boot_id=old_boot,
-            sequence=1,
-            active_sessions=("SESSION-old",),
-        ),
+        _heartbeat(active, key, boot_id=old_boot, sequence=1, active_sessions=("SESSION-old",)),
         received_at=2000.0,
     )
     registry.accept_heartbeat(
@@ -80,38 +81,64 @@ def test_retired_boot_cannot_replace_newer_boot_latest_state(tmp_path):
             active,
             key,
             boot_id=new_boot,
+            previous_boot_id=old_boot,
             sequence=1,
             active_sessions=("SESSION-new",),
         ),
         received_at=2001.0,
     )
+    with pytest.raises(FleetHeartbeatError):
+        registry.accept_heartbeat(
+            _heartbeat(active, key, boot_id=old_boot, sequence=2, active_sessions=("SESSION-stale",)),
+            received_at=2002.0,
+        )
+    assert registry.node_health(active.node_id, now=2002.0).last_received_at == 2001.0
+    reopened = FleetHeartbeatRegistry(path, control_center_id="cc://test")
+    with pytest.raises(FleetHeartbeatError):
+        reopened.accept_heartbeat(
+            _heartbeat(active, key, boot_id=old_boot, sequence=3, active_sessions=("SESSION-stale",)),
+            received_at=2003.0,
+        )
 
-    with pytest.raises(FleetHeartbeatError, match="retired Node boot"):
+
+def test_delayed_first_heartbeat_from_unseen_old_boot_cannot_replace_current(tmp_path):
+    path, active, key = _active_node(tmp_path)
+    registry = FleetHeartbeatRegistry(path, control_center_id="cc://test")
+    predecessor = "BOOTID-" + ("0" * 32)
+    current = "BOOTID-" + ("2" * 32)
+    delayed_old = "BOOTID-" + ("1" * 32)
+
+    # The Control Center first sees the predecessor, then an authenticated restart.
+    registry.accept_heartbeat(
+        _heartbeat(active, key, boot_id=predecessor, sequence=1, active_sessions=()),
+        received_at=2000.0,
+    )
+    registry.accept_heartbeat(
+        _heartbeat(
+            active,
+            key,
+            boot_id=current,
+            previous_boot_id=predecessor,
+            sequence=1,
+            active_sessions=("SESSION-current",),
+        ),
+        received_at=2001.0,
+    )
+
+    # This boot has never been accepted, so history-based retirement alone cannot
+    # identify it as stale. Its signed transition proof names the old predecessor,
+    # not the current boot, and must therefore fail closed.
+    with pytest.raises(FleetHeartbeatError, match="does not prove transition"):
         registry.accept_heartbeat(
             _heartbeat(
                 active,
                 key,
-                boot_id=old_boot,
-                sequence=2,
+                boot_id=delayed_old,
+                previous_boot_id=predecessor,
+                sequence=1,
                 active_sessions=("SESSION-stale",),
             ),
             received_at=2002.0,
         )
 
-    # The newer boot remains authoritative after the delayed old-boot packet.
-    health = registry.node_health(active.node_id, now=2002.0)
-    assert health.last_received_at == 2001.0
-
-    # Reopening the registry must preserve the boot transition durably.
-    reopened = FleetHeartbeatRegistry(path, control_center_id="cc://test")
-    with pytest.raises(FleetHeartbeatError, match="retired Node boot"):
-        reopened.accept_heartbeat(
-            _heartbeat(
-                active,
-                key,
-                boot_id=old_boot,
-                sequence=3,
-                active_sessions=("SESSION-stale",),
-            ),
-            received_at=2003.0,
-        )
+    assert registry.node_health(active.node_id, now=2002.0).last_received_at == 2001.0
