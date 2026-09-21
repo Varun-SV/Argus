@@ -108,7 +108,6 @@ def test_delayed_first_heartbeat_from_unseen_old_boot_cannot_replace_current(tmp
     current = "BOOTID-" + ("2" * 32)
     delayed_old = "BOOTID-" + ("1" * 32)
 
-    # The Control Center first sees the predecessor, then an authenticated restart.
     registry.accept_heartbeat(
         _heartbeat(active, key, boot_id=predecessor, sequence=1, active_sessions=()),
         received_at=2000.0,
@@ -125,9 +124,6 @@ def test_delayed_first_heartbeat_from_unseen_old_boot_cannot_replace_current(tmp
         received_at=2001.0,
     )
 
-    # This boot has never been accepted, so history-based retirement alone cannot
-    # identify it as stale. Its signed transition proof names the old predecessor,
-    # not the current boot, and must therefore fail closed.
     with pytest.raises(FleetHeartbeatError, match="does not prove transition"):
         registry.accept_heartbeat(
             _heartbeat(
@@ -142,3 +138,57 @@ def test_delayed_first_heartbeat_from_unseen_old_boot_cannot_replace_current(tmp
         )
 
     assert registry.node_health(active.node_id, now=2002.0).last_received_at == 2001.0
+
+
+def test_current_boot_transition_proof_survives_lost_response(tmp_path):
+    path, active, key = _active_node(tmp_path)
+    registry = FleetHeartbeatRegistry(path, control_center_id="cc://test")
+    predecessor = "BOOTID-" + ("1" * 32)
+    current = "BOOTID-" + ("2" * 32)
+
+    registry.accept_heartbeat(
+        _heartbeat(active, key, boot_id=predecessor, sequence=1, active_sessions=()),
+        received_at=2000.0,
+    )
+    registry.accept_heartbeat(
+        _heartbeat(
+            active,
+            key,
+            boot_id=current,
+            previous_boot_id=predecessor,
+            sequence=1,
+            active_sessions=("SESSION-current",),
+        ),
+        received_at=2001.0,
+    )
+
+    # Model a lost response: the Node does not know sequence 1 committed and keeps
+    # carrying the same authenticated transition proof on its next heartbeat.
+    receipt = registry.accept_heartbeat(
+        _heartbeat(
+            active,
+            key,
+            boot_id=current,
+            previous_boot_id=predecessor,
+            sequence=2,
+            active_sessions=("SESSION-current",),
+        ),
+        received_at=2002.0,
+    )
+
+    assert receipt.node_id == active.node_id
+    assert registry.node_health(active.node_id, now=2002.0).last_received_at == 2002.0
+
+    # The predecessor is still retired; accepting its delayed traffic would move
+    # authority backward and must remain forbidden.
+    with pytest.raises(FleetHeartbeatError):
+        registry.accept_heartbeat(
+            _heartbeat(
+                active,
+                key,
+                boot_id=predecessor,
+                sequence=2,
+                active_sessions=("SESSION-stale",),
+            ),
+            received_at=2003.0,
+        )
