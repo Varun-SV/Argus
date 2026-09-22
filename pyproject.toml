@@ -26,6 +26,7 @@ dependencies = [
     "rich>=13.0",
     "click>=8.1",
     "pillow>=10.0",
+    "cryptography>=44.0",
 ]
 
 [project.optional-dependencies]
