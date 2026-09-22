@@ -47,8 +47,13 @@ jobs:
 
       - name: Update version, changelog, README and website marker
         id: release
-        run: |
-          python .github/scripts/prepare_release.py             --bump "${{ steps.bump.outputs.value }}"             --pr-number "${{ github.event.pull_request.number }}"             --pr-title "${{ github.event.pull_request.title }}"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: >-
+          python .github/scripts/prepare_release.py
+          --bump "${{ steps.bump.outputs.value }}"
+          --pr-number "${{ github.event.pull_request.number }}"
+          --pr-title "$PR_TITLE"
 
       - name: Commit and tag the exact merged head
         id: push
