@@ -1681,12 +1681,12 @@ def _restore_non_capsule_cleanup_error(events, run_id, state):
     return state
 
 
-def _event_payload_object(event: StoredEvent, key: str) -> Optional[Mapping[str, object]]:
+def _event_payload_object(event: StoredEvent, key: str) -> Mapping[str, object] | None:
     value = event.payload.get(key)
     return value if isinstance(value, Mapping) else None
 
 
-def _normalize_attempt_status(value: object) -> Optional[StepAttemptStatus]:
+def _normalize_attempt_status(value: object) -> StepAttemptStatus | None:
     try:
         return StepAttemptStatus(value)
     except (TypeError, ValueError):
