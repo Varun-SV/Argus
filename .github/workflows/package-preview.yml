@@ -1,0 +1,40 @@
+name: Package preview
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      ref: ${{ steps.ref.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          VERSION=$(python - <<'PY'
+          import re
+          text = open("pyproject.toml", encoding="utf-8").read()
+          print(re.search(r'(?m)^version\s*=\s*"([^"]+)"', text).group(1))
+          PY
+          )
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+      - id: ref
+        run: echo "value=${{ github.event.pull_request.head.sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: metadata
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      ref: ${{ needs.metadata.outputs.ref }}
+      version: ${{ needs.metadata.outputs.version }}

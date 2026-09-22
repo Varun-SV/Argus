@@ -1,50 +1,150 @@
-name: Release
+name: Release existing tag
 
 on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing SemVer tag to rebuild/publish (for example v0.2.0)
+        required: true
+        type: string
+
+concurrency:
+  group: argus-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      sha: ${{ steps.meta.outputs.sha }}
     steps:
+      - name: Resolve requested tag
+        id: requested
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-      - name: Install build tools
-        run: pip install build twine
-
-      - name: Build distribution
-        run: python -m build
-
-      - name: Publish to PyPI
-        if: "!contains(github.ref, '-rc') && !contains(github.ref, '-beta')"
+          ref: ${{ steps.requested.outputs.tag }}
+          fetch-depth: 0
+      - name: Validate immutable tag metadata
+        id: meta
         env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: twine upload dist/*
+          TAG: ${{ steps.requested.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "invalid release tag: $TAG" >&2
+            exit 1
+          }
+          VERSION="${TAG#v}"
+          PROJECT_VERSION=$(python - <<'PY'
+          import re
+          text = open("pyproject.toml", encoding="utf-8").read()
+          print(re.search(r'(?m)^version\s*=\s*"([^"]+)"', text).group(1))
+          PY
+          )
+          RUNTIME_VERSION=$(python - <<'PY'
+          import re
+          text = open("argus/__init__.py", encoding="utf-8").read()
+          print(re.search(r'(?m)^__version__\s*=\s*"([^"]+)"', text).group(1))
+          PY
+          )
+          test "$VERSION" = "$PROJECT_VERSION"
+          test "$VERSION" = "$RUNTIME_VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-list -n 1 "$TAG")" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+  build:
+    needs: metadata
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      ref: ${{ needs.metadata.outputs.sha }}
+      version: ${{ needs.metadata.outputs.version }}
+
+  publish-release:
+    needs: [metadata, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/*
-          generate_release_notes: true
-          body: |
-            ## Installation
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate SHA-256 manifest
+        working-directory: release-assets
+        run: sha256sum * | sort -k2 > SHA256SUMS
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release-assets/*
+      - name: Create or refresh GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* \
+              --verify-tag --title "$TAG" --generate-notes
+          fi
 
-            ```bash
-            pip install argus-app-testing==${{ github.ref_name }}
-            ```
+  publish-pypi-trusted:
+    if: vars.PYPI_TRUSTED_PUBLISHING == 'true'
+    needs: [metadata, build]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-python
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
 
-            Or with all extras:
-            ```bash
-            pip install "argus-app-testing[all]==${{ github.ref_name }}"
-            ```
+  publish-pypi-token:
+    if: vars.PYPI_TRUSTED_PUBLISHING != 'true'
+    needs: [metadata, build]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-python
+          path: dist
+      - name: Check token availability
+        id: token
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$PYPI_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PYPI_API_TOKEN is not configured; GitHub release will still be published."
+          fi
+      - if: steps.token.outputs.enabled == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true

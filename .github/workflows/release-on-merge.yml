@@ -1,133 +1,172 @@
-name: Release on Merge
+name: Automatic release on merge
 
 on:
   pull_request:
     types: [closed]
     branches: [main]
 
+concurrency:
+  group: argus-release-main
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  id-token: write  # required for PyPI trusted publishing
+  contents: read
 
 jobs:
-  release:
-    if: github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
-
+  prepare:
+    name: Prepare release commit
+    if: >-
+      github.event.pull_request.merged == true &&
+      !contains(github.event.pull_request.labels.*.name, 'release:none')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.push.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install build tools
-        run: pip install build twine
-
-      - name: Determine version bump from PR labels
+      - name: Select semantic-version bump
         id: bump
-        run: |
-          LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
-          if echo "$LABELS" | grep -q '"bump:major"'; then
-            echo "type=major" >> $GITHUB_OUTPUT
-          elif echo "$LABELS" | grep -q '"bump:minor"'; then
-            echo "type=minor" >> $GITHUB_OUTPUT
-          else
-            echo "type=patch" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Read current version and compute new version
-        id: version
-        run: |
-          CURRENT=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          BUMP="${{ steps.bump.outputs.type }}"
-          if [ "$BUMP" = "major" ]; then
-            NEW="$((MAJOR + 1)).0.0"
-          elif [ "$BUMP" = "minor" ]; then
-            NEW="$MAJOR.$((MINOR + 1)).0"
-          else
-            NEW="$MAJOR.$MINOR.$((PATCH + 1))"
-          fi
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          echo "new=$NEW"         >> $GITHUB_OUTPUT
-
-      - name: Extract [Unreleased] notes from CHANGELOG
-        id: notes
-        run: |
-          NOTES=$(awk '/^## \[Unreleased\]/{found=1; next} found && /^## \[/{exit} found{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')
-          if [ -z "$NOTES" ]; then
-            echo "No unreleased content in CHANGELOG.md — skipping release."
-            exit 0
-          fi
-          {
-            echo "notes<<EOF_RELEASE_NOTES"
-            echo "$NOTES"
-            echo "EOF_RELEASE_NOTES"
-          } >> $GITHUB_OUTPUT
-
-      - name: Update CHANGELOG.md
-        if: steps.notes.outputs.notes != ''
-        run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          TODAY=$(date +%Y-%m-%d)
-          # Replace "## [Unreleased]" with empty Unreleased + versioned section
-          python3 - <<'PYEOF'
-import re, os
-from datetime import date
-version = os.environ["VERSION"]
-today   = date.today().isoformat()
-text    = open("CHANGELOG.md").read()
-# Insert versioned heading right after [Unreleased] block header
-text = re.sub(
-    r'(## \[Unreleased\]\n)',
-    rf'\1\n## [{version}] - {today}\n',
-    text,
-    count=1,
-)
-open("CHANGELOG.md", "w").write(text)
-PYEOF
         env:
-          VERSION: ${{ steps.version.outputs.new }}
-
-      - name: Update version in pyproject.toml
-        if: steps.notes.outputs.notes != ''
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+          if grep -q '"bump:major"' <<<"$LABELS"; then
+            echo "value=major" >> "$GITHUB_OUTPUT"
+          elif grep -q '"bump:minor"' <<<"$LABELS"; then
+            echo "value=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=patch" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Commit version bump
-        if: steps.notes.outputs.notes != ''
+      - name: Update version, changelog, README and website marker
+        id: release
         run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md pyproject.toml
-          git commit -m "chore: release v${VERSION} [skip ci]"
-          git tag "v${VERSION}"
-          git push origin main
-          git push origin "v${VERSION}"
+          python .github/scripts/prepare_release.py             --bump "${{ steps.bump.outputs.value }}"             --pr-number "${{ github.event.pull_request.number }}"             --pr-title "${{ github.event.pull_request.title }}"
 
-      - name: Build distribution packages
-        if: steps.notes.outputs.notes != ''
-        run: python -m build
+      - name: Commit and tag the exact merged head
+        id: push
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          if [ "$(git rev-parse origin/main)" != "$MERGE_SHA" ]; then
+            echo "main advanced after this PR merged; refusing to version the wrong source tree" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml argus/__init__.py CHANGELOG.md README.md index.html
+          git commit -m "chore(release): $TAG [skip ci]"
+          git tag -a "$TAG" -m "Argus $TAG"
+          git push origin HEAD:main
+          git push origin "$TAG"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Publish to PyPI
-        if: steps.notes.outputs.notes != ''
+  build:
+    name: Build all release artifacts
+    needs: prepare
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+      version: ${{ needs.prepare.outputs.version }}
+
+  publish-release:
+    name: Publish GitHub release
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate SHA-256 manifest
+        working-directory: release-assets
+        run: sha256sum * | sort -k2 > SHA256SUMS
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release-assets/*
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/*               --verify-tag --title "$TAG" --generate-notes
+          fi
+
+  publish-pypi-trusted:
+    name: Publish Python package to PyPI (trusted)
+    if: vars.PYPI_TRUSTED_PUBLISHING == 'true'
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-python
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  publish-pypi-token:
+    name: Publish Python package to PyPI (token fallback)
+    if: vars.PYPI_TRUSTED_PUBLISHING != 'true'
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-python
+          path: dist
+      - name: Check token availability
+        id: token
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$PYPI_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PYPI_API_TOKEN is not configured; GitHub release will still be published."
+          fi
+      - if: steps.token.outputs.enabled == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          packages-dir: dist/
           password: ${{ secrets.PYPI_API_TOKEN }}
 
-      - name: Create GitHub Release
-        if: steps.notes.outputs.notes != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "v${{ steps.version.outputs.new }}"
-          name:     "v${{ steps.version.outputs.new }}"
-          body:     ${{ steps.notes.outputs.notes }}
-          files:    dist/*
-          draft:    false
-          prerelease: false
+  pages:
+    name: Update hosted page
+    needs: prepare
+    uses: ./.github/workflows/static.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}

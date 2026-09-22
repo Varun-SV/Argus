@@ -1,0 +1,20 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Argus"
+      Manufacturer="Varun S V"
+      Version="$(Version)"
+      UpgradeCode="3F5E6BD9-95D5-5E4F-9C3A-DF93D4314D07"
+      Language="1033"
+      Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Argus is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Argus" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Argus" Level="1">
+      <Files Directory="INSTALLFOLDER" Include="$(SourceDir)\**" />
+    </Feature>
+  </Package>
+</Wix>

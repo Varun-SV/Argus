@@ -1,8 +1,16 @@
 # Argus
 
+[![CI](https://github.com/Varun-SV/Argus/actions/workflows/tests.yml/badge.svg)](https://github.com/Varun-SV/Argus/actions/workflows/tests.yml)
+[![CodeQL](https://github.com/Varun-SV/Argus/actions/workflows/codeql.yml/badge.svg)](https://github.com/Varun-SV/Argus/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/Varun-SV/Argus?display_name=tag)](https://github.com/Varun-SV/Argus/releases/latest)
+
 **Argus** is an autonomous application testing tool that uses multimodal LLMs to test desktop GUIs, web applications, CLI tools, and scripts the way a real user would: observe the application, decide what to do, act, and verify the result.
 
 **No brittle selectors. No test scripts for every interaction. Describe the behavior you want to validate.**
+
+<!-- ARGUS_RELEASE_START -->
+**Latest packaged release: v0.1.0** — [download desktop apps and installers](https://github.com/Varun-SV/Argus/releases/latest).
+<!-- ARGUS_RELEASE_END -->
 
 ```text
 $ argus run checkout.test.yaml
@@ -91,6 +99,22 @@ On Windows desktop tests, Argus defaults to target-constrained semantic UI Autom
 ---
 
 ## Install
+
+### Desktop downloads
+
+Each production release publishes native desktop packages from the same tagged source tree.
+
+| Platform | Architectures | Packages |
+|---|---|---|
+| Windows | x64, ARM64 | portable ZIP, setup EXE, MSI |
+| macOS | universal2 (Intel + Apple Silicon) | app ZIP, DMG |
+| Linux | x86_64, ARM64 | AppImage, DEB, RPM, Arch `.pkg.tar.zst` |
+
+[**Download the latest packaged release →**](https://github.com/Varun-SV/Argus/releases/latest)
+
+> **Signing status:** Windows packages are not yet Authenticode-signed. The macOS app is ad-hoc signed but is not Apple Developer ID signed or notarized because the project does not currently have those signing credentials. Release workflows still publish SHA-256 checksums and GitHub build-provenance attestations.
+
+### Python package
 
 ```bash
 # Core
@@ -317,21 +341,17 @@ Argus auto-detects model vision capability. Text-only models can fall back to st
 
 ### ATES — Argus Test Evidence Specification
 
-**Planned / specification stage.**
+**Implemented — ATES v0.1.**
 
-[ATES](docs/ates.md) defines the next documentation foundation for Argus: an always-on canonical evidence stream for every run, with stable run/step/action/observation/assertion identities, stable event IDs and monotonic per-run sequencing, failure and explicit-checkpoint evidence, provenance, artifact hashes, requirement traceability, append-oriented audit history, and optional approvals.
+[ATES](docs/ates.md) is Argus' canonical evidence authority. The current implementation includes durable ordered events, runtime lifecycle evidence, durable action dispatch, evidence privacy controls, protected artifact capture, transactional finalization, manifests and verification, derived reports, requirement traceability, and approval/audit records.
 
-Reports will be derived from that evidence rather than becoming the source of truth themselves. Hashes provide integrity/corruption detection; a package is only described as tamper-evident when its final manifest is independently bound by a signature, trusted external digest, immutable storage boundary, or equivalent mechanism.
-
-ATES is designed as an Argus-native open standard. Future ISO/IEC/IEEE or regulated-industry mappings are optional compatibility layers and will not be required for normal Argus operation.
+Reports are derived from canonical evidence rather than becoming the source of truth themselves. Integrity claims remain explicit: hashes detect corruption, while stronger tamper-evidence requires an independently trusted binding such as a signature, trusted external digest, or immutable storage boundary.
 
 ### Argus Fleet
 
-**Planned / specification stage.**
+**Fleet execution plane implemented; Fleet operations/Observer remain the next layer.**
 
-[Argus Fleet](docs/fleet.md) extends Capsules across multiple physical machines. A central Control Center will enroll Node Agents, schedule Capsule sessions, aggregate ATES events, and expose a **strictly read-only Observer** interface for watching live tests without sending mouse/keyboard/guest-control operations.
-
-Planned architecture:
+[Argus Fleet](docs/fleet.md) extends the existing Capsule boundary across physical machines without inventing a second Capsule abstraction. The implemented execution plane includes Node enrollment and identity, authenticated heartbeats/capabilities and clock assessment, durable placement and fencing, remote Capsule execution, and canonical ATES transport/reconciliation.
 
 ```text
 Control Center
@@ -341,9 +361,11 @@ Control Center
                 -> Adapter
                     -> application under test
 
-              ATES events
-                   -> Observer / reports / audit
+              canonical ATES
+                   -> aggregation / reports / audit
 ```
+
+Fleet deliberately preserves `ExecutionEnvironment -> Capsule -> Adapter`. Scheduler/queue operations, matrix execution, timelines/indexes, and the strictly read-only Fleet Observer are separate follow-on work rather than capabilities claimed by the current execution-plane implementation.
 
 ---
 
@@ -367,17 +389,23 @@ argus/
   adapters/         desktop-gui, cli, browser
   execution/        execution-environment boundary
   capsule/          Capsule providers, guest control, isolation/transfer logic
+  ates/             canonical evidence, artifacts, finalization, reports/audit
+  fleet/            distributed execution-plane identity, placement and transport
   engine/           spec parser, runner, free-roam explorer
   serve/            Flask web dashboard
   gui/              native desktop app
   cli.py            command-line entrypoint
 
+packaging/           Windows/macOS/Linux desktop packaging inputs
+.github/workflows/   CI, package preview, security, releases and Pages
+
 docs/
   README.md               documentation hub
+  releasing.md            release/packaging operations
   capsules-hyperv.md      Windows/Hyper-V Capsule guide
   capsules-multi-os.md    multi-OS + Linux libvirt guide
-  ates.md                 planned evidence specification
-  fleet.md                planned distributed execution architecture
+  ates.md                 ATES specification and implementation docs
+  fleet.md                Fleet execution-plane architecture
 
 tests/              pytest suite
 .argus/             project configuration, tests, runs, roam output
@@ -387,17 +415,13 @@ tests/              pytest suite
 
 ## Architecture history
 
-PRs #8–#14 established the current safety/execution foundation:
+PRs #8–#14 established the safety/execution foundation: policy-constrained local input, the `ExecutionEnvironment` boundary, Hyper-V Capsules, Failure Capsules, explicit transfer, secure Capsule control, and multi-OS Capsule providers.
 
-1. safe execution policy and semantic Windows input;
-2. `ExecutionEnvironment` boundary;
-3. Hyper-V Capsule MVP;
-4. Failure Capsules;
-5. explicit staging/artifact collection;
-6. secure Capsule isolation/control plane;
-7. multi-OS Capsule providers with Linux libvirt/QEMU/KVM.
+PRs #15–#22 built ATES from its core evidence model through durable event/action boundaries, runtime evidence, privacy/protected artifacts, and the v0.1 transactional finalization/report/audit layer.
 
-The next planned layers are ATES and Argus Fleet.
+PR #23 added the secure Fleet execution plane above the existing Capsule boundary: Node identity/enrollment, heartbeats and capabilities, placement/fencing, remote Capsule execution, and ATES transport.
+
+The next distributed layer is Fleet operations + the strictly read-only Observer experience, not a replacement for the execution/evidence authorities already implemented.
 
 ---
 
