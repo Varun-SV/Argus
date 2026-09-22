@@ -28,7 +28,9 @@ jobs:
     steps:
       - name: Resolve requested tag
         id: requested
-        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: echo "tag=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.requested.outputs.tag }}
