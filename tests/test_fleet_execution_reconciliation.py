@@ -131,7 +131,7 @@ def test_cancellation_wins_provider_completion_and_releases_capacity(tmp_path):
     admissions.cancel(
         request.session_request_id,
         placement_generation=authorization.placement_generation,
-        cancellation_operation_id="CANCEL-race-0001",
+        cancellation_operation_id="CANCEL-00000000000000000000000000000001",
     )
 
     reconciled = executor.reconcile(
