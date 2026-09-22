@@ -178,7 +178,27 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ".[gui,browser,serve,watch]" "pyinstaller==6.22.3" pillow
+          python -m pip install ".[gui,browser,serve,watch]" "pyinstaller==6.22.3" "delocate==0.13.0"
+      - name: Make binary dependencies truly universal2
+        run: |
+          set -euxo pipefail
+          PILLOW_VERSION="$(python -c 'import PIL; print(PIL.__version__)')"
+          PLAYWRIGHT_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("playwright"))')"
+
+          mkdir -p build/pillow-arm64 build/pillow-x64 build/pillow-universal build/playwright-universal
+          python -m pip download --only-binary=:all: --no-deps \
+            --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 \
+            "Pillow==$PILLOW_VERSION" -d build/pillow-arm64
+          python -m pip download --only-binary=:all: --no-deps \
+            --platform macosx_10_10_x86_64 --python-version 312 --implementation cp --abi cp312 \
+            "Pillow==$PILLOW_VERSION" -d build/pillow-x64
+          delocate-merge build/pillow-arm64/*.whl build/pillow-x64/*.whl -w build/pillow-universal
+          python -m pip install --force-reinstall --no-deps build/pillow-universal/*.whl
+
+          python -m pip download --only-binary=:all: --no-deps \
+            --platform macosx_11_0_universal2 \
+            "playwright==$PLAYWRIGHT_VERSION" -d build/playwright-universal
+          python -m pip install --force-reinstall --no-deps build/playwright-universal/*.whl
       - name: Generate macOS icon
         run: python packaging/make_icons.py build-assets/argus.icns
       - name: Freeze universal desktop app and CLI
@@ -278,7 +298,7 @@ jobs:
       - name: Install Argus build dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ".[linux,browser,serve,watch]" "pywebview[qt]>=5.0" "pyinstaller==6.22.3" pillow
+          python -m pip install ".[linux,browser,serve,watch]" "pywebview[pyside6]>=5.0" "PySide6==6.7.1" "pyinstaller==6.22.3" pillow
       - name: Freeze desktop app and CLI
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --onedir \
