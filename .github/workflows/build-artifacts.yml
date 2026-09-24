@@ -37,7 +37,6 @@ jobs:
           import os
           import re
           from pathlib import Path
-
           ref = os.environ["BUILD_REF"]
           expected = os.environ["EXPECTED_VERSION"]
           if re.fullmatch(r"v\d+\.\d+\.\d+", ref):
@@ -47,13 +46,9 @@ jobs:
                   raise SystemExit("release build must produce exactly one wheel and one sdist")
               normalized = expected.replace("-", "_")
               if f"-{normalized}-" not in wheels[0].name:
-                  raise SystemExit(
-                      f"wheel version does not match release {expected}: {wheels[0].name}"
-                  )
+                  raise SystemExit(f"wheel version does not match release {expected}: {wheels[0].name}")
               if f"-{normalized}.tar.gz" not in sdists[0].name:
-                  raise SystemExit(
-                      f"sdist version does not match release {expected}: {sdists[0].name}"
-                  )
+                  raise SystemExit(f"sdist version does not match release {expected}: {sdists[0].name}")
           PY
       - uses: actions/upload-artifact@v6
         with:
@@ -99,7 +94,6 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          # 46.0.3 is the newest release that publishes a Windows ARM64 abi3 wheel.
           python -m pip install ".[gui,windows,browser,serve,watch]" "cryptography==46.0.3" "pyinstaller==6.22.3" pillow
       - name: Generate Windows icon
         shell: pwsh
@@ -108,22 +102,8 @@ jobs:
         shell: pwsh
         run: |
           $icon = (Resolve-Path build-assets/argus.ico).Path
-          python -m PyInstaller --noconfirm --clean --windowed --onedir `
-            --name Argus `
-            --icon "$icon" `
-            --collect-data argus.gui `
-            --collect-submodules argus `
-            --copy-metadata argus-app-testing `
-            --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec `
-            argus/gui/__main__.py
-          python -m PyInstaller --noconfirm --clean --console --onefile `
-            --name argus `
-            --icon "$icon" `
-            --collect-data argus.gui `
-            --collect-submodules argus `
-            --copy-metadata argus-app-testing `
-            --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli `
-            argus/__main__.py
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Argus --icon "$icon" --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
+          python -m PyInstaller --noconfirm --clean --console --onefile --name argus --icon "$icon" --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
       - name: Smoke-test frozen CLI
         shell: pwsh
         run: build/pyi-dist/argus.exe --version
@@ -135,18 +115,14 @@ jobs:
           Copy-Item build/pyi-dist/argus.exe release/stage/argus.exe
           Copy-Item LICENSE release/stage/LICENSE
           Copy-Item README.md release/stage/README.md
-          Compress-Archive -Path release/stage/* `
-            -DestinationPath "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-portable.zip"
+          Compress-Archive -Path release/stage/* -DestinationPath "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-portable.zip"
       - name: Build MSI with pinned WiX
         shell: pwsh
         run: |
-          dotnet tool install --global wix --version 7.0.0
-          wix build `
-            -arch "${{ matrix.wix_arch }}" `
-            -d "Version=${{ inputs.version }}" `
-            -d "SourceDir=$((Resolve-Path release/stage).Path)" `
-            packaging/windows/argus.wxs `
-            -o "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}.msi"
+          # WiX 5.0.2 predates the OSMF/EULA mechanism introduced in v6/v7,
+          # avoiding unattended acceptance of terms by CI while retaining WiX v4+ authoring support.
+          dotnet tool install --global wix --version 5.0.2
+          wix build -arch "${{ matrix.wix_arch }}" -d "Version=${{ inputs.version }}" -d "SourceDir=$((Resolve-Path release/stage).Path)" packaging/windows/argus.wxs -o "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}.msi"
       - name: Install pinned Inno Setup
         shell: pwsh
         run: choco install innosetup --version=6.3.3 -y --no-progress
@@ -159,24 +135,12 @@ jobs:
           $output = (Resolve-Path release).Path
           $icon = (Resolve-Path build-assets/argus.ico).Path
           $license = (Resolve-Path LICENSE).Path
-          & $iscc `
-            "/DAppVersion=${{ inputs.version }}" `
-            "/DSourceDir=$source" `
-            "/DOutputDir=$output" `
-            "/DTargetArch=${{ matrix.inno_arch }}" `
-            "/DIconFile=$icon" `
-            "/DLicenseFile=$license" `
-            packaging/windows/argus.iss
+          & $iscc "/DAppVersion=${{ inputs.version }}" "/DSourceDir=$source" "/DOutputDir=$output" "/DTargetArch=${{ matrix.inno_arch }}" "/DIconFile=$icon" "/DLicenseFile=$license" packaging/windows/argus.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify Windows release files
         shell: pwsh
         run: |
-          Get-ChildItem release
-          $required = @(
-            "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-portable.zip",
-            "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}.msi",
-            "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-setup.exe"
-          )
+          $required = @("release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-portable.zip", "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}.msi", "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-setup.exe")
           foreach ($file in $required) { if (-not (Test-Path $file)) { throw "missing $file" } }
       - uses: actions/upload-artifact@v6
         with:
@@ -200,87 +164,48 @@ jobs:
         with:
           python-version: "3.12"
       - name: Verify universal2 build environment
-        shell: bash
-        run: |
-          python - <<'PY'
-          import platform, sys
-          print(sys.executable)
-          print(platform.platform())
-          PY
-          file "$(python -c 'import sys; print(sys.executable)')"
+        run: file "$(python -c 'import sys; print(sys.executable)')"
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install ".[gui,browser,serve,watch]" "pyinstaller==6.22.3" "delocate==0.13.0"
-          # cryptography 46.0.7 is the newest release line that still publishes
-          # an abi3 macOS universal2 wheel. Newer releases are ARM-only on macOS.
           python -m pip install --force-reinstall --no-deps "cryptography==46.0.7"
       - name: Make binary dependencies truly universal2
         run: |
           set -euxo pipefail
           PILLOW_VERSION="$(python -c 'import PIL; print(PIL.__version__)')"
           CFFI_VERSION="$(python -c 'import cffi; print(cffi.__version__)')"
+          MARKUPSAFE_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("markupsafe"))')"
           WATCHDOG_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("watchdog"))')"
           PLAYWRIGHT_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("playwright"))')"
-
-          mkdir -p build/pillow-arm64 build/pillow-x64 build/pillow-universal \
-            build/cffi-arm64 build/cffi-x64 build/cffi-universal \
-            build/watchdog-universal build/playwright-universal
-          python -m pip download --only-binary=:all: --no-deps \
-            --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 \
-            "Pillow==$PILLOW_VERSION" -d build/pillow-arm64
-          python -m pip download --only-binary=:all: --no-deps \
-            --platform macosx_10_13_x86_64 --python-version 312 --implementation cp --abi cp312 \
-            "Pillow==$PILLOW_VERSION" -d build/pillow-x64
+          mkdir -p build/pillow-arm64 build/pillow-x64 build/pillow-universal build/cffi-arm64 build/cffi-x64 build/cffi-universal build/markupsafe-arm64 build/markupsafe-x64 build/markupsafe-universal build/watchdog-universal build/playwright-universal
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 "Pillow==$PILLOW_VERSION" -d build/pillow-arm64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_x86_64 --python-version 312 --implementation cp --abi cp312 "Pillow==$PILLOW_VERSION" -d build/pillow-x64
           delocate-merge build/pillow-arm64/*.whl build/pillow-x64/*.whl -w build/pillow-universal
           python -m pip install --force-reinstall --no-deps build/pillow-universal/*.whl
-
-          python -m pip download --only-binary=:all: --no-deps \
-            --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 \
-            "cffi==$CFFI_VERSION" -d build/cffi-arm64
-          python -m pip download --only-binary=:all: --no-deps \
-            --platform macosx_10_15_x86_64 --python-version 312 --implementation cp --abi cp312 \
-            "cffi==$CFFI_VERSION" -d build/cffi-x64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 "cffi==$CFFI_VERSION" -d build/cffi-arm64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_15_x86_64 --python-version 312 --implementation cp --abi cp312 "cffi==$CFFI_VERSION" -d build/cffi-x64
           delocate-merge build/cffi-arm64/*.whl build/cffi-x64/*.whl -w build/cffi-universal
           python -m pip install --force-reinstall --no-deps build/cffi-universal/*.whl
-
-          python -m pip download --only-binary=:all: --no-deps \
-            --platform macosx_10_13_universal2 --python-version 312 --implementation cp --abi cp312 \
-            "watchdog==$WATCHDOG_VERSION" -d build/watchdog-universal
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 "MarkupSafe==$MARKUPSAFE_VERSION" -d build/markupsafe-arm64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_x86_64 --python-version 312 --implementation cp --abi cp312 "MarkupSafe==$MARKUPSAFE_VERSION" -d build/markupsafe-x64
+          delocate-merge build/markupsafe-arm64/*.whl build/markupsafe-x64/*.whl -w build/markupsafe-universal
+          python -m pip install --force-reinstall --no-deps build/markupsafe-universal/*.whl
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_universal2 --python-version 312 --implementation cp --abi cp312 "watchdog==$WATCHDOG_VERSION" -d build/watchdog-universal
           python -m pip install --force-reinstall --no-deps build/watchdog-universal/*.whl
-
-          python -m pip download --only-binary=:all: --no-deps \
-            --platform macosx_11_0_universal2 \
-            "playwright==$PLAYWRIGHT_VERSION" -d build/playwright-universal
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_universal2 "playwright==$PLAYWRIGHT_VERSION" -d build/playwright-universal
           python -m pip install --force-reinstall --no-deps build/playwright-universal/*.whl
       - name: Generate macOS icon
         run: python packaging/make_icons.py build-assets/argus.icns
       - name: Freeze universal desktop app and CLI
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --onedir \
-            --name Argus \
-            --icon build-assets/argus.icns \
-            --osx-bundle-identifier in.cascadeai.argus \
-            --target-arch universal2 \
-            --collect-data argus.gui \
-            --collect-submodules argus \
-            --copy-metadata argus-app-testing \
-            --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec \
-            argus/gui/__main__.py
-          python -m PyInstaller --noconfirm --clean --console --onefile \
-            --name argus \
-            --target-arch universal2 \
-            --collect-data argus.gui \
-            --collect-submodules argus \
-            --copy-metadata argus-app-testing \
-            --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli \
-            argus/__main__.py
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Argus --icon build-assets/argus.icns --osx-bundle-identifier in.cascadeai.argus --target-arch universal2 --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
+          python -m PyInstaller --noconfirm --clean --console --onefile --name argus --target-arch universal2 --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
       - name: Verify both CPU slices and smoke-test CLI
         run: |
           test -d build/pyi-dist/Argus.app
           for binary in build/pyi-dist/Argus.app/Contents/MacOS/Argus build/pyi-dist/argus; do
             ARCHES="$(lipo -archs "$binary")"
-            echo "$binary: $ARCHES"
             echo "$ARCHES" | grep -q x86_64
             echo "$ARCHES" | grep -q arm64
           done
@@ -293,12 +218,8 @@ jobs:
           cp build/pyi-dist/argus release/dmg/argus
           cp LICENSE release/dmg/LICENSE
           ln -s /Applications release/dmg/Applications
-          ditto -c -k --sequesterRsrc --keepParent \
-            build/pyi-dist/Argus.app \
-            "release/Argus-${{ inputs.version }}-macos-universal2.zip"
-          hdiutil create -volname "Argus ${{ inputs.version }}" \
-            -srcfolder release/dmg -ov -format UDZO \
-            "release/Argus-${{ inputs.version }}-macos-universal2.dmg"
+          ditto -c -k --sequesterRsrc --keepParent build/pyi-dist/Argus.app "release/Argus-${{ inputs.version }}-macos-universal2.zip"
+          hdiutil create -volname "Argus ${{ inputs.version }}" -srcfolder release/dmg -ov -format UDZO "release/Argus-${{ inputs.version }}-macos-universal2.dmg"
       - uses: actions/upload-artifact@v6
         with:
           name: release-macos-universal2
@@ -349,7 +270,7 @@ jobs:
       - name: Install native packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm zstd
+          sudo apt-get install -y rpm zstd libarchive-tools
           gem install --no-document fpm -v 1.17.0
       - name: Install Argus build dependencies
         run: |
@@ -357,27 +278,14 @@ jobs:
           python -m pip install ".[linux,browser,serve,watch]" "pywebview[pyside6]>=5.0" "PySide6==6.7.1" "pyinstaller==6.22.3" pillow
       - name: Freeze desktop app and CLI
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --onedir \
-            --name Argus \
-            --collect-data argus.gui \
-            --collect-submodules argus \
-            --copy-metadata argus-app-testing \
-            --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec \
-            argus/gui/__main__.py
-          python -m PyInstaller --noconfirm --clean --console --onefile \
-            --name argus \
-            --collect-data argus.gui \
-            --collect-submodules argus \
-            --copy-metadata argus-app-testing \
-            --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli \
-            argus/__main__.py
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Argus --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
+          python -m PyInstaller --noconfirm --clean --console --onefile --name argus --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
           build/pyi-dist/argus --version
       - name: Stage Linux filesystem tree
         run: |
           set -euxo pipefail
           ROOT="$PWD/release/pkgroot"
-          mkdir -p "$ROOT/usr/lib/argus" "$ROOT/usr/bin" \
-            "$ROOT/usr/share/applications" "$ROOT/usr/share/icons/hicolor/512x512/apps"
+          mkdir -p "$ROOT/usr/lib/argus" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/icons/hicolor/512x512/apps"
           cp -a build/pyi-dist/Argus "$ROOT/usr/lib/argus/Argus"
           cp build/pyi-dist/argus "$ROOT/usr/lib/argus/argus"
           cp packaging/linux/argus-gui "$ROOT/usr/bin/argus-gui"
@@ -388,31 +296,17 @@ jobs:
       - name: Build DEB, RPM, and Arch Linux packages
         run: |
           set -euxo pipefail
-          COMMON=(
-            -s dir -n argus -v "${{ inputs.version }}"
-            --description "Argus autonomous application testing"
-            --url "https://github.com/Varun-SV/Argus"
-            --license MIT --maintainer "Varun S V"
-            -C release/pkgroot
-          )
-          fpm "${COMMON[@]}" -t deb --architecture "${{ matrix.deb_arch }}" \
-            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb" .
-          fpm "${COMMON[@]}" -t rpm --architecture "${{ matrix.rpm_arch }}" \
-            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm" .
-          fpm "${COMMON[@]}" -t pacman --architecture "${{ matrix.pacman_arch }}" \
-            --pacman-compression zstd \
-            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst" .
+          COMMON=(-s dir -n argus -v "${{ inputs.version }}" --description "Argus autonomous application testing" --url "https://github.com/Varun-SV/Argus" --license MIT --maintainer "Varun S V" -C release/pkgroot)
+          fpm "${COMMON[@]}" -t deb --architecture "${{ matrix.deb_arch }}" -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb" .
+          fpm "${COMMON[@]}" -t rpm --architecture "${{ matrix.rpm_arch }}" -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm" .
+          fpm "${COMMON[@]}" -t pacman --architecture "${{ matrix.pacman_arch }}" --pacman-compression zstd -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst" .
       - name: Download and verify pinned AppImage tooling
         run: |
           set -euxo pipefail
           mkdir -p build/appimage-tools
-          curl --fail --location --retry 3 \
-            -o "build/appimage-tools/${{ matrix.appimagetool_asset }}" \
-            "https://github.com/AppImage/appimagetool/releases/download/1.9.1/${{ matrix.appimagetool_asset }}"
+          curl --fail --location --retry 3 -o "build/appimage-tools/${{ matrix.appimagetool_asset }}" "https://github.com/AppImage/appimagetool/releases/download/1.9.1/${{ matrix.appimagetool_asset }}"
           echo "${{ matrix.appimagetool_sha256 }}  build/appimage-tools/${{ matrix.appimagetool_asset }}" | sha256sum -c -
-          curl --fail --location --retry 3 \
-            -o "build/appimage-tools/${{ matrix.runtime_asset }}" \
-            "https://github.com/AppImage/type2-runtime/releases/download/20251108/${{ matrix.runtime_asset }}"
+          curl --fail --location --retry 3 -o "build/appimage-tools/${{ matrix.runtime_asset }}" "https://github.com/AppImage/type2-runtime/releases/download/20251108/${{ matrix.runtime_asset }}"
           echo "${{ matrix.runtime_sha256 }}  build/appimage-tools/${{ matrix.runtime_asset }}" | sha256sum -c -
           chmod +x "build/appimage-tools/${{ matrix.appimagetool_asset }}"
       - name: Build AppImage
@@ -428,16 +322,12 @@ jobs:
           cp packaging/linux/argus.desktop "$APPDIR/argus.desktop"
           cp "$APPDIR/usr/share/icons/hicolor/512x512/apps/argus.png" "$APPDIR/argus.png"
           chmod +x "$APPDIR/AppRun"
-          "build/appimage-tools/${{ matrix.appimagetool_asset }}" \
-            --runtime-file "build/appimage-tools/${{ matrix.runtime_asset }}" \
-            "$APPDIR" "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
+          "build/appimage-tools/${{ matrix.appimagetool_asset }}" --runtime-file "build/appimage-tools/${{ matrix.runtime_asset }}" "$APPDIR" "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
           chmod +x "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
       - name: Verify Linux release files
         run: |
           set -euxo pipefail
-          for ext in AppImage deb rpm pkg.tar.zst; do
-            test -s "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.${ext}"
-          done
+          for ext in AppImage deb rpm pkg.tar.zst; do test -s "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.${ext}"; done
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-${{ matrix.label }}
