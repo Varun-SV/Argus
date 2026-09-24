@@ -7,9 +7,7 @@
 
 **No brittle selectors. No test scripts for every interaction. Describe the behavior you want to validate.**
 
-<!-- ARGUS_RELEASE_START -->
-**Latest packaged release: v0.1.0** — [download desktop apps and installers](https://github.com/Varun-SV/Argus/releases/latest).
-<!-- ARGUS_RELEASE_END -->
+**Latest packaged release:** [download desktop apps and installers](https://github.com/Varun-SV/Argus/releases/latest). The release badge above always reflects GitHub's current published release.
 
 ```text
 $ argus run checkout.test.yaml
