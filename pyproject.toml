@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "argus-app-testing"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Argus — universal application testing driven by multimodal LLMs. Tests any software: desktop GUI, CLI, web, TUI."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -100,3 +100,6 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+[tool.setuptools_scm]
+fallback_version = "0.1.0"
