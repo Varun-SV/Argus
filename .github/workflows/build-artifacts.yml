@@ -20,10 +20,10 @@ jobs:
     name: Python sdist + wheel
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build and verify Python package
@@ -32,7 +32,7 @@ jobs:
           python -m pip install build twine
           python -m build
           python -m twine check dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-python
           path: dist/*
@@ -57,10 +57,10 @@ jobs:
             inno_arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           architecture: ${{ matrix.python_arch }}
@@ -155,7 +155,7 @@ jobs:
             "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-setup.exe"
           )
           foreach ($file in $required) { if (-not (Test-Path $file)) { throw "missing $file" } }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-windows-${{ matrix.label }}
           path: |
@@ -169,10 +169,10 @@ jobs:
     name: macOS universal2
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Verify universal2 build environment
@@ -252,7 +252,7 @@ jobs:
           hdiutil create -volname "Argus ${{ inputs.version }}" \
             -srcfolder release/dmg -ov -format UDZO \
             "release/Argus-${{ inputs.version }}-macos-universal2.dmg"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-macos-universal2
           path: |
@@ -289,10 +289,10 @@ jobs:
             pacman_arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ruby/setup-ruby@v1
@@ -388,7 +388,7 @@ jobs:
           for ext in AppImage deb rpm pkg.tar.zst; do
             test -s "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.${ext}"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-linux-${{ matrix.label }}
           path: |
