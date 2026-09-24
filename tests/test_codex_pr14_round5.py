@@ -109,7 +109,7 @@ class _NoGuestOSProvider(CapsuleProvider):
     provider_name = "no-guest-os"
     provider_capabilities = CapsuleProviderCapabilities(
         provider="no-guest-os",
-        host_platforms=("windows", "linux"),
+        host_platforms=("windows", "linux", "macos"),
         guest_os=(),
         secure_transport=True,
         network_isolation=True,
