@@ -143,7 +143,7 @@ jobs:
       - name: Build MSI with pinned WiX
         shell: pwsh
         run: |
-          dotnet tool install --global wix --version 4.0.5
+          dotnet tool install --global wix --version 7.0.0
           wix build `
             -arch "${{ matrix.wix_arch }}" `
             -d "Version=${{ inputs.version }}" `
@@ -215,13 +215,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install ".[gui,browser,serve,watch]" "pyinstaller==6.22.3" "delocate==0.13.0"
+          # cryptography 46.0.7 is the newest release line that still publishes
+          # an abi3 macOS universal2 wheel. Newer releases are ARM-only on macOS.
+          python -m pip install --force-reinstall --no-deps "cryptography==46.0.7"
       - name: Make binary dependencies truly universal2
         run: |
           set -euxo pipefail
           PILLOW_VERSION="$(python -c 'import PIL; print(PIL.__version__)')"
+          CFFI_VERSION="$(python -c 'import cffi; print(cffi.__version__)')"
           PLAYWRIGHT_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("playwright"))')"
 
-          mkdir -p build/pillow-arm64 build/pillow-x64 build/pillow-universal build/playwright-universal
+          mkdir -p             build/pillow-arm64 build/pillow-x64 build/pillow-universal             build/cffi-arm64 build/cffi-x64 build/cffi-universal             build/playwright-universal
           python -m pip download --only-binary=:all: --no-deps \
             --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 \
             "Pillow==$PILLOW_VERSION" -d build/pillow-arm64
@@ -230,6 +234,15 @@ jobs:
             "Pillow==$PILLOW_VERSION" -d build/pillow-x64
           delocate-merge build/pillow-arm64/*.whl build/pillow-x64/*.whl -w build/pillow-universal
           python -m pip install --force-reinstall --no-deps build/pillow-universal/*.whl
+
+          python -m pip download --only-binary=:all: --no-deps \
+            --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 \
+            "cffi==$CFFI_VERSION" -d build/cffi-arm64
+          python -m pip download --only-binary=:all: --no-deps \
+            --platform macosx_10_15_x86_64 --python-version 312 --implementation cp --abi cp312 \
+            "cffi==$CFFI_VERSION" -d build/cffi-x64
+          delocate-merge build/cffi-arm64/*.whl build/cffi-x64/*.whl -w build/cffi-universal
+          python -m pip install --force-reinstall --no-deps build/cffi-universal/*.whl
 
           python -m pip download --only-binary=:all: --no-deps \
             --platform macosx_11_0_universal2 \
