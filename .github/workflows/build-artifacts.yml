@@ -23,6 +23,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -32,6 +33,28 @@ jobs:
           python -m pip install build twine
           python -m build
           python -m twine check dist/*
+          BUILD_REF="${{ inputs.ref }}" EXPECTED_VERSION="${{ inputs.version }}" python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          ref = os.environ["BUILD_REF"]
+          expected = os.environ["EXPECTED_VERSION"]
+          if re.fullmatch(r"v\d+\.\d+\.\d+", ref):
+              wheels = list(Path("dist").glob("*.whl"))
+              sdists = list(Path("dist").glob("*.tar.gz"))
+              if len(wheels) != 1 or len(sdists) != 1:
+                  raise SystemExit("release build must produce exactly one wheel and one sdist")
+              normalized = expected.replace("-", "_")
+              if f"-{normalized}-" not in wheels[0].name:
+                  raise SystemExit(
+                      f"wheel version does not match release {expected}: {wheels[0].name}"
+                  )
+              if f"-{normalized}.tar.gz" not in sdists[0].name:
+                  raise SystemExit(
+                      f"sdist version does not match release {expected}: {sdists[0].name}"
+                  )
+          PY
       - uses: actions/upload-artifact@v6
         with:
           name: release-python
@@ -60,6 +83,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -92,6 +116,7 @@ jobs:
             --icon "$icon" `
             --collect-data argus.gui `
             --collect-submodules argus `
+            --copy-metadata argus-app-testing `
             --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec `
             argus/gui/__main__.py
           python -m PyInstaller --noconfirm --clean --console --onefile `
@@ -99,6 +124,7 @@ jobs:
             --icon "$icon" `
             --collect-data argus.gui `
             --collect-submodules argus `
+            --copy-metadata argus-app-testing `
             --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli `
             argus/__main__.py
       - name: Smoke-test frozen CLI
@@ -172,6 +198,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -219,6 +246,7 @@ jobs:
             --target-arch universal2 \
             --collect-data argus.gui \
             --collect-submodules argus \
+            --copy-metadata argus-app-testing \
             --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec \
             argus/gui/__main__.py
           python -m PyInstaller --noconfirm --clean --console --onefile \
@@ -226,6 +254,7 @@ jobs:
             --target-arch universal2 \
             --collect-data argus.gui \
             --collect-submodules argus \
+            --copy-metadata argus-app-testing \
             --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli \
             argus/__main__.py
       - name: Verify both CPU slices and smoke-test CLI
@@ -292,6 +321,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -313,12 +343,14 @@ jobs:
             --name Argus \
             --collect-data argus.gui \
             --collect-submodules argus \
+            --copy-metadata argus-app-testing \
             --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec \
             argus/gui/__main__.py
           python -m PyInstaller --noconfirm --clean --console --onefile \
             --name argus \
             --collect-data argus.gui \
             --collect-submodules argus \
+            --copy-metadata argus-app-testing \
             --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli \
             argus/__main__.py
           build/pyi-dist/argus --version
