@@ -220,9 +220,12 @@ jobs:
           set -euxo pipefail
           PILLOW_VERSION="$(python -c 'import PIL; print(PIL.__version__)')"
           CFFI_VERSION="$(python -c 'import cffi; print(cffi.__version__)')"
+          WATCHDOG_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("watchdog"))')"
           PLAYWRIGHT_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("playwright"))')"
 
-          mkdir -p             build/pillow-arm64 build/pillow-x64 build/pillow-universal             build/cffi-arm64 build/cffi-x64 build/cffi-universal             build/playwright-universal
+          mkdir -p build/pillow-arm64 build/pillow-x64 build/pillow-universal \
+            build/cffi-arm64 build/cffi-x64 build/cffi-universal \
+            build/watchdog-universal build/playwright-universal
           python -m pip download --only-binary=:all: --no-deps \
             --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 \
             "Pillow==$PILLOW_VERSION" -d build/pillow-arm64
@@ -240,6 +243,11 @@ jobs:
             "cffi==$CFFI_VERSION" -d build/cffi-x64
           delocate-merge build/cffi-arm64/*.whl build/cffi-x64/*.whl -w build/cffi-universal
           python -m pip install --force-reinstall --no-deps build/cffi-universal/*.whl
+
+          python -m pip download --only-binary=:all: --no-deps \
+            --platform macosx_10_13_universal2 --python-version 312 --implementation cp --abi cp312 \
+            "watchdog==$WATCHDOG_VERSION" -d build/watchdog-universal
+          python -m pip install --force-reinstall --no-deps build/watchdog-universal/*.whl
 
           python -m pip download --only-binary=:all: --no-deps \
             --platform macosx_11_0_universal2 \
