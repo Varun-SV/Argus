@@ -2,6 +2,17 @@
 
 Argus uses GitHub Actions for CI, cross-platform packaging, release publication, provenance, and GitHub Pages deployment.
 
+## Version authority
+
+Production versions are derived from immutable Git tags with `setuptools-scm`. The source tree does not need a release bot to edit version declarations on protected `main`.
+
+- a commit tagged `v1.2.3` builds Python/package metadata version `1.2.3`;
+- non-tag development commits receive an SCM development version;
+- `argus --version` reads installed distribution metadata;
+- frozen applications copy that same distribution metadata into the bundle.
+
+This design is compatible with the repository's protected-main rules: automatic releases create a tag on the already-merged commit, but do not push a follow-up release commit to `main`.
+
 ## What gets built
 
 A production release builds the same tagged source tree on native GitHub-hosted runners.
@@ -19,9 +30,9 @@ The desktop application uses the existing `argus gui` implementation. A frozen C
 
 `CI` runs tests across supported operating systems and architectures plus package-integrity checks.
 
-`Package preview` invokes the same reusable artifact builder used for real releases. Its artifacts are temporary workflow artifacts; it does not publish a GitHub Release or PyPI version.
+`Package preview` invokes the same reusable artifact builder used for real releases. Preview artifact names use a non-release numeric version solely so installer compilers such as MSI can validate the PR. Preview jobs never publish a GitHub Release or PyPI version.
 
-CodeQL, dependency review, and Dependabot provide additional automated maintenance/security coverage.
+GitHub CodeQL default setup, dependency review, and Dependabot provide additional automated maintenance/security coverage.
 
 ## Automatic release on merge
 
@@ -36,29 +47,35 @@ Release labels:
 
 The automatic workflow:
 
-1. verifies that it is versioning the exact merged `main` head;
-2. updates both `pyproject.toml` and `argus.__version__`;
-3. moves the current `CHANGELOG.md` Unreleased content into the new version;
-4. updates the release marker in `README.md` and `index.html`;
-5. commits the release metadata and creates an annotated SemVer tag;
-6. builds all platform artifacts from that exact release commit;
+1. checks out the exact merged commit with full tag history;
+2. reuses an existing SemVer tag on that commit if a previous release attempt already created one;
+3. otherwise computes the next version from the latest `vX.Y.Z` tag and the PR's bump label;
+4. creates an annotated release tag on the merged commit without mutating protected `main`;
+5. builds all platform artifacts from that exact tag;
+6. verifies tagged Python distribution filenames match the release version;
 7. publishes a GitHub Release with `SHA256SUMS` and build-provenance attestations;
 8. publishes the Python distribution to PyPI when publishing credentials are configured;
-9. explicitly deploys the matching hosted page.
+9. refreshes GitHub Pages from the same release tag.
 
-The Pages deployment is called explicitly because commits/tags pushed with the workflow's `GITHUB_TOKEN` are intentionally not relied upon to trigger a second workflow.
+The tag step is idempotent: if publication fails after the tag was created, rerunning the workflow reuses that tag instead of incrementing the version again.
 
-If `main` advances between the PR merge event and release preparation, the workflow fails closed instead of versioning an unintended source tree. Re-run/release the intended tagged commit after resolving the race.
+### README and hosted-page release status
+
+The README uses GitHub's dynamic release badge and a stable `releases/latest` link, so it reflects the newest published release without an automated commit to protected `main`.
+
+The hosted page queries GitHub's public `releases/latest` API at page load and updates its release badge dynamically. The release workflow also refreshes Pages from the tagged source. If the API is temporarily unavailable or rate-limited, the page falls back to a generic “Latest release” link.
+
+`CHANGELOG.md` keeps an `Unreleased` section for curated project notes. GitHub release notes are generated from the immutable tag comparison; the release workflow does not rewrite the changelog on protected `main`.
 
 ## Rebuilding an existing tag
 
-`Release existing tag` can be triggered by a SemVer tag push or manually with an existing `vX.Y.Z` tag. It validates that the tag version matches both version declarations before rebuilding.
+`Release existing tag` can be triggered by a SemVer tag push or manually with an existing `vX.Y.Z` tag. It validates the tag format/existence and rebuilds from that exact tag. `setuptools-scm` makes the Python metadata reproduce the tag version.
 
-Published PyPI files are immutable. The tag rebuild path therefore uses PyPI's skip-existing behavior and refreshes downloadable GitHub assets without changing the tag.
+Published PyPI files are immutable. The tag rebuild path therefore uses PyPI's skip-existing behavior and refreshes downloadable GitHub assets without moving or rewriting the tag.
 
 ## PyPI authentication
 
-Two modes are supported:
+Two modes are supported.
 
 ### Recommended: Trusted Publishing
 
@@ -96,6 +113,8 @@ When a Developer ID becomes available, add signing/notarization through protecte
 
 - release build jobs have read-only repository permissions;
 - publishing authority is isolated in top-level release jobs;
+- release builders do not consume dependency caches populated by pull-request code;
 - AppImage tooling/runtime are version- and checksum-pinned;
 - release artifacts receive SHA-256 checksums and GitHub provenance attestations;
-- PR code never receives release/PyPI credentials through the package-preview workflow.
+- PR code never receives release/PyPI credentials through the package-preview workflow;
+- protected `main` is not bypassed by release automation.
