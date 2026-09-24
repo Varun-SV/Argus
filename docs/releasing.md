@@ -69,9 +69,9 @@ The hosted page queries GitHub's public `releases/latest` API at page load and u
 
 ## Rebuilding an existing tag
 
-`Release existing tag` can be triggered by a SemVer tag push or manually with an existing `vX.Y.Z` tag. It validates the tag format/existence and rebuilds from that exact tag. `setuptools-scm` makes the Python metadata reproduce the tag version.
+`Release existing tag` is triggered by a SemVer tag push and rebuilds from that exact immutable tag. `setuptools-scm` makes the Python metadata reproduce the tag version. If a release attempt fails after the tag exists, retry the original GitHub Actions run (or its failed jobs) rather than accepting an arbitrary manual source ref.
 
-Published PyPI files are immutable. The tag rebuild path therefore uses PyPI's skip-existing behavior and refreshes downloadable GitHub assets without moving or rewriting the tag.
+Published PyPI files are immutable. Both release paths use PyPI's skip-existing behavior so a retry can finish GitHub assets/Pages without moving the tag or republishing an existing file.
 
 ## PyPI authentication
 
