@@ -360,7 +360,7 @@ class _FakeSecureProvider(CapsuleProvider):
         provider="hyperv",
         # Pure in-process test double; it does not call Hyper-V and is exercised
         # on both Ubuntu and Windows CI. Production Hyper-V remains Windows-only.
-        host_platforms=("windows", "linux"),
+        host_platforms=("windows", "linux", "macos"),
         guest_os=("windows",),
         secure_transport=True,
         network_isolation=True,
