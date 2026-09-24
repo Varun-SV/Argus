@@ -26,7 +26,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
       - name: Build and verify Python package
         run: |
           python -m pip install --upgrade pip
@@ -65,7 +64,17 @@ jobs:
         with:
           python-version: "3.12"
           architecture: ${{ matrix.python_arch }}
-          cache: pip
+      - name: Prepare ARM64 OpenSSL build dependency
+        if: matrix.label == 'arm64'
+        shell: pwsh
+        run: |
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $root) { throw "VCPKG_INSTALLATION_ROOT is not available on the ARM64 runner" }
+          $vcpkg = Join-Path $root "vcpkg.exe"
+          if (-not (Test-Path $vcpkg)) { throw "vcpkg.exe not found at $vcpkg" }
+          "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $vcpkg install openssl:arm64-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install build dependencies
         shell: pwsh
         run: |
@@ -77,16 +86,17 @@ jobs:
       - name: Freeze desktop app and CLI
         shell: pwsh
         run: |
+          $icon = (Resolve-Path build-assets/argus.ico).Path
           python -m PyInstaller --noconfirm --clean --windowed --onedir `
             --name Argus `
-            --icon build-assets/argus.ico `
+            --icon "$icon" `
             --collect-data argus.gui `
             --collect-submodules argus `
             --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec `
             argus/gui/__main__.py
           python -m PyInstaller --noconfirm --clean --console --onefile `
             --name argus `
-            --icon build-assets/argus.ico `
+            --icon "$icon" `
             --collect-data argus.gui `
             --collect-submodules argus `
             --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli `
@@ -165,7 +175,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
       - name: Verify universal2 build environment
         shell: bash
         run: |
@@ -190,7 +199,7 @@ jobs:
             --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 \
             "Pillow==$PILLOW_VERSION" -d build/pillow-arm64
           python -m pip download --only-binary=:all: --no-deps \
-            --platform macosx_10_10_x86_64 --python-version 312 --implementation cp --abi cp312 \
+            --platform macosx_10_13_x86_64 --python-version 312 --implementation cp --abi cp312 \
             "Pillow==$PILLOW_VERSION" -d build/pillow-x64
           delocate-merge build/pillow-arm64/*.whl build/pillow-x64/*.whl -w build/pillow-universal
           python -m pip install --force-reinstall --no-deps build/pillow-universal/*.whl
@@ -286,7 +295,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
@@ -335,15 +343,15 @@ jobs:
             --description "Argus autonomous application testing"
             --url "https://github.com/Varun-SV/Argus"
             --license MIT --maintainer "Varun S V"
-            -C release/pkgroot .
+            -C release/pkgroot
           )
           fpm "${COMMON[@]}" -t deb --architecture "${{ matrix.deb_arch }}" \
-            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb"
+            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb" .
           fpm "${COMMON[@]}" -t rpm --architecture "${{ matrix.rpm_arch }}" \
-            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm"
+            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm" .
           fpm "${COMMON[@]}" -t pacman --architecture "${{ matrix.pacman_arch }}" \
             --pacman-compression zstd \
-            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst"
+            -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst" .
       - name: Download and verify pinned AppImage tooling
         run: |
           set -euxo pipefail
