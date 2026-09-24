@@ -1,7 +1,6 @@
 # Argus
 
 [![CI](https://github.com/Varun-SV/Argus/actions/workflows/tests.yml/badge.svg)](https://github.com/Varun-SV/Argus/actions/workflows/tests.yml)
-[![CodeQL](https://github.com/Varun-SV/Argus/actions/workflows/codeql.yml/badge.svg)](https://github.com/Varun-SV/Argus/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/Varun-SV/Argus?display_name=tag)](https://github.com/Varun-SV/Argus/releases/latest)
 
 **Argus** is an autonomous application testing tool that uses multimodal LLMs to test desktop GUIs, web applications, CLI tools, and scripts the way a real user would: observe the application, decide what to do, act, and verify the result.
