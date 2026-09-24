@@ -21,16 +21,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: version
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          VERSION=$(python - <<'PY'
-          import re
-          text = open("pyproject.toml", encoding="utf-8").read()
-          print(re.search(r'(?m)^version\s*=\s*"([^"]+)"', text).group(1))
-          PY
-          )
-          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ -n "$PR_NUMBER" ]; then
+            echo "value=0.0.$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
       - id: ref
-        run: echo "value=${{ github.event.pull_request.head.sha || github.sha }}" >> "$GITHUB_OUTPUT"
+        env:
+          BUILD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "value=$BUILD_REF" >> "$GITHUB_OUTPUT"
 
   build:
     needs: metadata
