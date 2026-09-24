@@ -19,7 +19,7 @@ jobs:
       version: ${{ steps.version.outputs.value }}
       ref: ${{ steps.ref.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: version
         run: |
           VERSION=$(python - <<'PY'
