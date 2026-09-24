@@ -4,15 +4,8 @@ on:
   push:
     tags:
       - "v*.*.*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing SemVer tag to rebuild/publish (for example v0.2.0)
-        required: true
-        type: string
-
 concurrency:
-  group: argus-release-${{ github.event.inputs.tag || github.ref_name }}
+  group: argus-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -26,10 +19,10 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       sha: ${{ steps.meta.outputs.sha }}
     steps:
-      - name: Resolve requested tag
+      - name: Resolve pushed tag
         id: requested
         env:
-          REQUESTED_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          REQUESTED_TAG: ${{ github.ref_name }}
         run: echo "tag=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
