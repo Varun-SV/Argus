@@ -3,7 +3,6 @@ name: Package preview
 on:
   pull_request:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,15 +22,10 @@ jobs:
       - id: version
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          if [ -n "$PR_NUMBER" ]; then
-            echo "value=0.0.$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=0.0.0" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "value=0.0.$PR_NUMBER" >> "$GITHUB_OUTPUT"
       - id: ref
         env:
-          BUILD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILD_REF: ${{ github.event.pull_request.head.sha }}
         run: echo "value=$BUILD_REF" >> "$GITHUB_OUTPUT"
 
   build:
