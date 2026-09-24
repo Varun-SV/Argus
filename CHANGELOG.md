@@ -26,10 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-platform desktop packaging: Windows x64/ARM64 portable ZIP, setup EXE, and MSI; macOS universal2 app/DMG; Linux x86_64/ARM64 AppImage, DEB, RPM, and Arch packages
 - Native CI coverage across Windows, Linux, macOS, x64, and ARM64 where GitHub-hosted runners support it
 - Reusable release-artifact workflow shared by PR package previews and production releases
-- Automatic release-on-merge with semantic-version labels, README/site release markers, GitHub Release assets, checksums, provenance attestations, PyPI publishing, and explicit Pages deployment
+- Automatic release-on-merge with tag-derived semantic versions, dynamic README/site release status, GitHub Release assets, checksums, provenance attestations, PyPI publishing, and explicit Pages deployment without bypassing protected `main`
 - Reproducible existing-tag release workflow for rebuilding immutable tagged source
 - CodeQL, dependency review, Dependabot, CODEOWNERS, contribution/security policies, and structured PR/issue templates
-- `.github/scripts/prepare_release.py` for deterministic version/changelog/README/site release preparation
+- `setuptools-scm` runtime/package versioning plus `.github/scripts/next_release.py` for deterministic tag calculation
 
 ## [0.1.0] - 2024-01-01
 ### Added
