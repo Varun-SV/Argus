@@ -26,7 +26,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       sha: ${{ steps.push.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
@@ -93,7 +93,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           pattern: release-*
           path: release-assets
@@ -102,7 +102,7 @@ jobs:
         working-directory: release-assets
         run: sha256sum * | sort -k2 > SHA256SUMS
       - name: Attest release artifacts
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: release-assets/*
       - name: Create GitHub Release
@@ -127,7 +127,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: release-python
           path: dist
@@ -144,7 +144,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: release-python
           path: dist
