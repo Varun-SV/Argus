@@ -131,10 +131,10 @@ jobs:
             choco install innosetup --version=6.3.3 -y --no-progress
           }
           if (-not (Test-Path $iscc)) { throw "Inno Setup 6 compiler not found at $iscc" }
-          # ISCC /? prints a useful version banner but does not guarantee a zero
-          # process exit code, so validate the banner rather than the probe status.
+          # Current Inno Setup 6.x identifies itself as "Inno Setup 6 Command-Line Compiler".
+          # /? is only a banner probe and does not guarantee a zero process exit code.
           $banner = (& $iscc /? 2>&1 | Select-Object -First 8) -join "`n"
-          if ($banner -notmatch 'Inno Setup (?:Preprocessor |)Compiler version 6\.') {
+          if ($banner -notmatch '(?m)^Inno Setup 6(?:\.\d+)* Command-Line Compiler\b') {
             throw "Unsupported Inno Setup compiler:`n$banner"
           }
           Write-Host $banner
@@ -274,10 +274,10 @@ jobs:
             rpm_arch: x86_64
             pacman_arch: x86_64
             appimage_arch: x86_64
-            appimagetool_url: https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-            appimagetool_sha256: 7a5b1fdd649669a47ff5a0a05427edb965fbf5ac5f41627b5bfce0a3f2c61e73
-            runtime_url: https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
-            runtime_sha256: 24da8e98f9899499006b2445999cc8a42cc0e3e96dca681ed10b0c4e6935931f
+            appimagetool_url: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+            appimagetool_sha256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+            runtime_url: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+            runtime_sha256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
           - label: aarch64
             runner: ubuntu-24.04-arm
             arch: aarch64
@@ -285,10 +285,10 @@ jobs:
             rpm_arch: aarch64
             pacman_arch: aarch64
             appimage_arch: aarch64
-            appimagetool_url: https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
-            appimagetool_sha256: d4f04abf2e3520278a3f729a63d54088d226e3db70b6a8762cb4efafee067d80
-            runtime_url: https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-aarch64
-            runtime_sha256: a78fafd0f5f9a96efb55e54767520f4be8b0d5dd69d948f4f3b6d5d5c7d31fd0
+            appimagetool_url: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage
+            appimagetool_sha256: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+            runtime_url: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64
+            runtime_sha256: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
