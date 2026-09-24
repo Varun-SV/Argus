@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   prepare:
-    name: Prepare release commit
+    name: Resolve release tag
     if: >-
       github.event.pull_request.merged == true &&
       !contains(github.event.pull_request.labels.*.name, 'release:none')
@@ -24,13 +24,12 @@ jobs:
     outputs:
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
-      sha: ${{ steps.push.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
       - name: Select semantic-version bump
         id: bump
@@ -45,43 +44,66 @@ jobs:
             echo "value=patch" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Update version, changelog, README and website marker
+      - name: Resolve idempotent release version
         id: release
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: >-
-          python .github/scripts/prepare_release.py
-          --bump "${{ steps.bump.outputs.value }}"
-          --pr-number "${{ github.event.pull_request.number }}"
-          --pr-title "$PR_TITLE"
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          BUMP: ${{ steps.bump.outputs.value }}
+        run: |
+          set -euo pipefail
+          git fetch origin --tags --force
 
-      - name: Commit and tag the exact merged head
-        id: push
+          EXISTING_TAG="$(
+            git tag --points-at "$MERGE_SHA" |
+              grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' |
+              sort -V |
+              tail -n 1 || true
+          )"
+          if [ -n "$EXISTING_TAG" ]; then
+            echo "Reusing release tag $EXISTING_TAG already attached to this merge commit."
+            echo "tag=$EXISTING_TAG" >> "$GITHUB_OUTPUT"
+            echo "version=${EXISTING_TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "needs_tag=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LATEST_TAG="$(
+            git tag --list |
+              grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' |
+              sort -V |
+              tail -n 1 || true
+          )"
+          if [ -n "$LATEST_TAG" ]; then
+            CURRENT_VERSION="${LATEST_TAG#v}"
+          else
+            CURRENT_VERSION="0.1.0"
+          fi
+
+          python .github/scripts/next_release.py             --current "$CURRENT_VERSION"             --bump "$BUMP"
+          echo "needs_tag=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create immutable release tag
+        if: steps.release.outputs.needs_tag == 'true'
         env:
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          git fetch origin main --tags
-          if [ "$(git rev-parse origin/main)" != "$MERGE_SHA" ]; then
-            echo "main advanced after this PR merged; refusing to version the wrong source tree" >&2
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Refusing to move existing tag $TAG" >&2
             exit 1
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml argus/__init__.py CHANGELOG.md README.md index.html
-          git commit -m "chore(release): $TAG [skip ci]"
-          git tag -a "$TAG" -m "Argus $TAG"
-          git push origin HEAD:main
-          git push origin "$TAG"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git tag -a "$TAG" "$MERGE_SHA" -m "Argus $TAG"
+          git push origin "refs/tags/$TAG"
 
   build:
     name: Build all release artifacts
     needs: prepare
     uses: ./.github/workflows/build-artifacts.yml
     with:
-      ref: ${{ needs.prepare.outputs.sha }}
+      ref: ${{ needs.prepare.outputs.tag }}
       version: ${{ needs.prepare.outputs.version }}
 
   publish-release:
@@ -105,7 +127,7 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: release-assets/*
-      - name: Create GitHub Release
+      - name: Create or refresh GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
@@ -166,7 +188,7 @@ jobs:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
   pages:
-    name: Update hosted page
+    name: Refresh hosted page
     needs: prepare
     uses: ./.github/workflows/static.yml
     permissions:
@@ -174,4 +196,4 @@ jobs:
       pages: write
       id-token: write
     with:
-      ref: ${{ needs.prepare.outputs.sha }}
+      ref: ${{ needs.prepare.outputs.tag }}
