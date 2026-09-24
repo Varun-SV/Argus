@@ -171,7 +171,7 @@ class _CapabilityProvider(CapsuleProvider):
 def _caps(**overrides) -> CapsuleProviderCapabilities:
     values = dict(
         provider="extension",
-        host_platforms=("linux", "windows"),
+        host_platforms=("linux", "windows", "macos"),
         guest_os=("linux",),
         secure_transport=True,
         network_isolation=True,

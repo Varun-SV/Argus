@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Argus
+Comment=Autonomous application testing with isolated execution
+Exec=argus-gui
+Icon=argus
+Categories=Development;Utility;
+Terminal=false
+StartupNotify=true

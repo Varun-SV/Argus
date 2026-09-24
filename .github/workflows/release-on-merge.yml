@@ -1,133 +1,201 @@
-name: Release on Merge
+name: Automatic release on merge
 
 on:
   pull_request:
     types: [closed]
     branches: [main]
 
+concurrency:
+  group: argus-release-main
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  id-token: write  # required for PyPI trusted publishing
+  contents: read
 
 jobs:
-  release:
-    if: github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
-
+  prepare:
+    name: Resolve release tag
+    if: >-
+      github.event.pull_request.merged == true &&
+      !contains(github.event.pull_request.labels.*.name, 'release:none')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
+          persist-credentials: true
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install build tools
-        run: pip install build twine
-
-      - name: Determine version bump from PR labels
+      - name: Select semantic-version bump
         id: bump
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
-          LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
-          if echo "$LABELS" | grep -q '"bump:major"'; then
-            echo "type=major" >> $GITHUB_OUTPUT
-          elif echo "$LABELS" | grep -q '"bump:minor"'; then
-            echo "type=minor" >> $GITHUB_OUTPUT
+          if grep -q '"bump:major"' <<<"$LABELS"; then
+            echo "value=major" >> "$GITHUB_OUTPUT"
+          elif grep -q '"bump:minor"' <<<"$LABELS"; then
+            echo "value=minor" >> "$GITHUB_OUTPUT"
           else
-            echo "type=patch" >> $GITHUB_OUTPUT
+            echo "value=patch" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Read current version and compute new version
-        id: version
+      - name: Resolve idempotent release version
+        id: release
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          BUMP: ${{ steps.bump.outputs.value }}
         run: |
-          CURRENT=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          BUMP="${{ steps.bump.outputs.type }}"
-          if [ "$BUMP" = "major" ]; then
-            NEW="$((MAJOR + 1)).0.0"
-          elif [ "$BUMP" = "minor" ]; then
-            NEW="$MAJOR.$((MINOR + 1)).0"
-          else
-            NEW="$MAJOR.$MINOR.$((PATCH + 1))"
-          fi
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          echo "new=$NEW"         >> $GITHUB_OUTPUT
+          set -euo pipefail
+          git fetch origin --tags --force
 
-      - name: Extract [Unreleased] notes from CHANGELOG
-        id: notes
-        run: |
-          NOTES=$(awk '/^## \[Unreleased\]/{found=1; next} found && /^## \[/{exit} found{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')
-          if [ -z "$NOTES" ]; then
-            echo "No unreleased content in CHANGELOG.md — skipping release."
+          EXISTING_TAG="$(
+            git tag --points-at "$MERGE_SHA" |
+              grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' |
+              sort -V |
+              tail -n 1 || true
+          )"
+          if [ -n "$EXISTING_TAG" ]; then
+            echo "Reusing release tag $EXISTING_TAG already attached to this merge commit."
+            echo "tag=$EXISTING_TAG" >> "$GITHUB_OUTPUT"
+            echo "version=${EXISTING_TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "needs_tag=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          {
-            echo "notes<<EOF_RELEASE_NOTES"
-            echo "$NOTES"
-            echo "EOF_RELEASE_NOTES"
-          } >> $GITHUB_OUTPUT
 
-      - name: Update CHANGELOG.md
-        if: steps.notes.outputs.notes != ''
-        run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          TODAY=$(date +%Y-%m-%d)
-          # Replace "## [Unreleased]" with empty Unreleased + versioned section
-          python3 - <<'PYEOF'
-import re, os
-from datetime import date
-version = os.environ["VERSION"]
-today   = date.today().isoformat()
-text    = open("CHANGELOG.md").read()
-# Insert versioned heading right after [Unreleased] block header
-text = re.sub(
-    r'(## \[Unreleased\]\n)',
-    rf'\1\n## [{version}] - {today}\n',
-    text,
-    count=1,
-)
-open("CHANGELOG.md", "w").write(text)
-PYEOF
+          LATEST_TAG="$(
+            git tag --list |
+              grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' |
+              sort -V |
+              tail -n 1 || true
+          )"
+          if [ -n "$LATEST_TAG" ]; then
+            CURRENT_VERSION="${LATEST_TAG#v}"
+          else
+            CURRENT_VERSION="0.1.0"
+          fi
+
+          python .github/scripts/next_release.py             --current "$CURRENT_VERSION"             --bump "$BUMP"
+          echo "needs_tag=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create immutable release tag
+        if: steps.release.outputs.needs_tag == 'true'
         env:
-          VERSION: ${{ steps.version.outputs.new }}
-
-      - name: Update version in pyproject.toml
-        if: steps.notes.outputs.notes != ''
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Refusing to move existing tag $TAG" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$MERGE_SHA" -m "Argus $TAG"
+          git push origin "refs/tags/$TAG"
 
-      - name: Commit version bump
-        if: steps.notes.outputs.notes != ''
+  build:
+    name: Build all release artifacts
+    needs: prepare
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      ref: ${{ needs.prepare.outputs.tag }}
+      version: ${{ needs.prepare.outputs.version }}
+
+  publish-release:
+    name: Publish GitHub release
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate SHA-256 manifest
+        working-directory: release-assets
+        run: sha256sum * | sort -k2 > SHA256SUMS
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release-assets/*
+      - name: Create or refresh GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md pyproject.toml
-          git commit -m "chore: release v${VERSION} [skip ci]"
-          git tag "v${VERSION}"
-          git push origin main
-          git push origin "v${VERSION}"
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/*               --verify-tag --title "$TAG" --generate-notes
+          fi
 
-      - name: Build distribution packages
-        if: steps.notes.outputs.notes != ''
-        run: python -m build
+  publish-pypi-trusted:
+    name: Publish Python package to PyPI (trusted)
+    if: vars.PYPI_TRUSTED_PUBLISHING == 'true'
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-python
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
 
-      - name: Publish to PyPI
-        if: steps.notes.outputs.notes != ''
+  publish-pypi-token:
+    name: Publish Python package to PyPI (token fallback)
+    if: vars.PYPI_TRUSTED_PUBLISHING != 'true'
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-python
+          path: dist
+      - name: Check token availability
+        id: token
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$PYPI_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PYPI_API_TOKEN is not configured; GitHub release will still be published."
+          fi
+      - if: steps.token.outputs.enabled == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          packages-dir: dist/
+          skip-existing: true
           password: ${{ secrets.PYPI_API_TOKEN }}
 
-      - name: Create GitHub Release
-        if: steps.notes.outputs.notes != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "v${{ steps.version.outputs.new }}"
-          name:     "v${{ steps.version.outputs.new }}"
-          body:     ${{ steps.notes.outputs.notes }}
-          files:    dist/*
-          draft:    false
-          prerelease: false
+  pages:
+    name: Refresh hosted page
+    needs: prepare
+    uses: ./.github/workflows/static.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    with:
+      ref: ${{ needs.prepare.outputs.tag }}

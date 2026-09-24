@@ -1,0 +1,36 @@
+name: Package preview
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      ref: ${{ steps.ref.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: echo "value=0.0.$PR_NUMBER" >> "$GITHUB_OUTPUT"
+      - id: ref
+        env:
+          BUILD_REF: ${{ github.event.pull_request.head.sha }}
+        run: echo "value=$BUILD_REF" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: metadata
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      ref: ${{ needs.metadata.outputs.ref }}
+      version: ${{ needs.metadata.outputs.version }}

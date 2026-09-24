@@ -62,30 +62,34 @@ Two specifications are being designed as the next layer above Capsules:
 
 ### [ATES — Argus Test Evidence Specification](ates.md)
 
-ATES defines an **always-on canonical evidence model** for every Argus execution. It standardizes what Argus records, how observations are distinguished from AI interpretations, how checkpoints and failures capture evidence, how provenance and integrity are represented, and how reports are generated from the canonical record.
+ATES is the **implemented canonical evidence authority** for Argus runs. ATES v0.1 includes durable ordered events, runtime lifecycle evidence, durable action dispatch, evidence privacy, protected artifacts, transactional finalization, manifests/verification, derived reports, requirement traceability, and approval/audit records.
 
-ATES is intended to be Argus-native and open. Future ISO/IEC/IEEE or industry-specific compatibility will be implemented as optional mappings rather than making Argus dependent on proprietary standards.
-
-**Status: specification / not implemented yet.**
+**Status: ATES v0.1 implemented.**
 
 ### [Argus Fleet](fleet.md)
 
-Argus Fleet defines distributed Capsule execution across multiple physical hosts on a network. A central Control Center schedules work, receives evidence and health events, and provides a separate read-only Observer experience for live monitoring.
+Argus Fleet extends the existing Capsule boundary across physical machines. The current execution plane implements Node enrollment/identity, authenticated heartbeats and capability advertisements, clock assessment, durable placement/fencing, remote Capsule execution, and canonical ATES transport/reconciliation.
 
-**Status: specification / not implemented yet.**
+**Status: Fleet execution plane implemented. Fleet operations and the strictly read-only Observer are follow-on work.**
+
+### [Release engineering](releasing.md)
+
+Argus CI now validates Windows, Linux, and macOS across x64/ARM64 where supported. Production releases build Windows portable/EXE/MSI packages, a macOS universal2 app/DMG, Linux AppImage/DEB/RPM/Arch packages, and Python distributions from the same tagged source.
+
+**Status: automated cross-platform packaging/release pipeline.**
 
 ## Architectural direction
 
 ```text
-Argus Control Center                 (planned Fleet)
+Argus Control Center
         |
         v
-Argus Node Agent                     (planned Fleet)
+Argus Node Agent                     (Fleet execution plane)
         |
         v
-ExecutionEnvironment                 (implemented)
+ExecutionEnvironment
     |           |
-    |           +--> Capsule         (implemented)
+    |           +--> Capsule
     |                  |
     |                  v
     |              Guest Agent
@@ -100,12 +104,11 @@ ExecutionEnvironment                 (implemented)
 
 Every execution
         |
-        +--> ATES canonical evidence (planned)
+        +--> ATES canonical evidence
                  |
-                 +--> reports
-                 +--> read-only monitoring
-                 +--> audit packages
-                 +--> compliance mappings
+                 +--> reports / audit
+                 +--> Fleet aggregation
+                 +--> future read-only Observer
 ```
 
 ## Principle

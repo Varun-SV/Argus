@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible Argus defect
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Argus. For security-sensitive reports, please use the process in SECURITY.md instead of posting exploit details publicly.
+
+  - type: input
+    id: version
+    attributes:
+      label: Argus version
+      description: Run `argus --version` or provide the release tag.
+      placeholder: v0.2.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows x64
+        - Windows ARM64
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux x86_64
+        - Linux ARM64
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest reliable reproduction you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or evidence
+      description: Redact credentials, tokens, private hostnames, and sensitive application data.
+      render: text

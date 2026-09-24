@@ -1,0 +1,365 @@
+name: Build release artifacts
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit or tag to build
+        required: true
+        type: string
+      version:
+        description: Release version without the leading v
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  python-dist:
+    name: Python sdist + wheel
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build and verify Python package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+          BUILD_REF="${{ inputs.ref }}" EXPECTED_VERSION="${{ inputs.version }}" python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          ref = os.environ["BUILD_REF"]
+          expected = os.environ["EXPECTED_VERSION"]
+          if re.fullmatch(r"v\d+\.\d+\.\d+", ref):
+              wheels = list(Path("dist").glob("*.whl"))
+              sdists = list(Path("dist").glob("*.tar.gz"))
+              if len(wheels) != 1 or len(sdists) != 1:
+                  raise SystemExit("release build must produce exactly one wheel and one sdist")
+              normalized = expected.replace("-", "_")
+              if f"-{normalized}-" not in wheels[0].name:
+                  raise SystemExit(f"wheel version does not match release {expected}: {wheels[0].name}")
+              if f"-{normalized}.tar.gz" not in sdists[0].name:
+                  raise SystemExit(f"sdist version does not match release {expected}: {sdists[0].name}")
+          PY
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-python
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: x64
+            runner: windows-2025
+            python_arch: x64
+            wix_arch: x64
+            inno_arch: x64
+          - label: arm64
+            runner: windows-11-arm
+            python_arch: arm64
+            wix_arch: arm64
+            inno_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.python_arch }}
+      - name: Install build dependencies (x64)
+        if: matrix.label == 'x64'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[gui,windows,browser,serve,watch]" "pyinstaller==6.22.3" pillow
+      - name: Install build dependencies (ARM64)
+        if: matrix.label == 'arm64'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[gui,windows,browser,serve,watch]" "cryptography==46.0.3" "pyinstaller==6.22.3" pillow
+      - name: Generate Windows icon
+        shell: pwsh
+        run: python packaging/make_icons.py build-assets/argus.ico
+      - name: Freeze desktop app and CLI
+        shell: pwsh
+        run: |
+          $icon = (Resolve-Path build-assets/argus.ico).Path
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Argus --icon "$icon" --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
+          python -m PyInstaller --noconfirm --clean --console --onefile --name argus --icon "$icon" --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
+      - name: Smoke-test frozen CLI
+        shell: pwsh
+        run: build/pyi-dist/argus.exe --version
+      - name: Stage portable application
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release/stage | Out-Null
+          Copy-Item build/pyi-dist/Argus release/stage/Argus -Recurse
+          Copy-Item build/pyi-dist/argus.exe release/stage/argus.exe
+          Copy-Item LICENSE release/stage/LICENSE
+          Copy-Item README.md release/stage/README.md
+          Compress-Archive -Path release/stage/* -DestinationPath "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-portable.zip"
+      - name: Build MSI with pinned WiX
+        shell: pwsh
+        run: |
+          # WiX 5.0.2 predates the OSMF/EULA mechanism introduced in v6/v7,
+          # avoiding unattended acceptance of terms by CI while retaining WiX v4+ authoring support.
+          dotnet tool install --global wix --version 5.0.2
+          wix build -arch "${{ matrix.wix_arch }}" -d "Version=${{ inputs.version }}" -d "SourceDir=$((Resolve-Path release/stage).Path)" packaging/windows/argus.wxs -o "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}.msi"
+      - name: Ensure Inno Setup 6 compiler
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --version=6.3.3 -y --no-progress
+          }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 compiler not found at $iscc" }
+          # Current Inno Setup 6.x identifies itself as "Inno Setup 6 Command-Line Compiler".
+          # /? is only a banner probe and does not guarantee a zero process exit code.
+          $banner = (& $iscc /? 2>&1 | Select-Object -First 8) -join "`n"
+          if ($banner -notmatch '(?m)^Inno Setup 6(?:\.\d+)* Command-Line Compiler\b') {
+            throw "Unsupported Inno Setup compiler:`n$banner"
+          }
+          Write-Host $banner
+      - name: Build installer EXE
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found at $iscc" }
+          $source = (Resolve-Path release/stage).Path
+          $output = (Resolve-Path release).Path
+          $icon = (Resolve-Path build-assets/argus.ico).Path
+          $license = (Resolve-Path LICENSE).Path
+          & $iscc "/DAppVersion=${{ inputs.version }}" "/DSourceDir=$source" "/DOutputDir=$output" "/DTargetArch=${{ matrix.inno_arch }}" "/DIconFile=$icon" "/DLicenseFile=$license" packaging/windows/argus.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify Windows release files
+        shell: pwsh
+        run: |
+          $required = @("release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-portable.zip", "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}.msi", "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-setup.exe")
+          foreach ($file in $required) { if (-not (Test-Path $file)) { throw "missing $file" } }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-windows-${{ matrix.label }}
+          path: |
+            release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-portable.zip
+            release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}.msi
+            release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS universal2
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Verify universal2 build environment
+        run: file "$(python -c 'import sys; print(sys.executable)')"
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[gui,browser,serve,watch]" "pyinstaller==6.22.3" "delocate==0.13.0"
+          python -m pip install --force-reinstall --no-deps "cryptography==46.0.7"
+      - name: Make binary dependencies truly universal2
+        run: |
+          set -euxo pipefail
+          PILLOW_VERSION="$(python -c 'import PIL; print(PIL.__version__)')"
+          CFFI_VERSION="$(python -c 'import cffi; print(cffi.__version__)')"
+          MARKUPSAFE_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("markupsafe"))')"
+          PYYAML_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("pyyaml"))')"
+          WATCHDOG_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("watchdog"))')"
+          PLAYWRIGHT_VERSION="$(python -c 'import importlib.metadata; print(importlib.metadata.version("playwright"))')"
+          mkdir -p build/pillow-arm64 build/pillow-x64 build/pillow-universal build/cffi-arm64 build/cffi-x64 build/cffi-universal build/markupsafe-arm64 build/markupsafe-x64 build/markupsafe-universal build/pyyaml-arm64 build/pyyaml-x64 build/pyyaml-universal build/watchdog-universal build/playwright-universal
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 "Pillow==$PILLOW_VERSION" -d build/pillow-arm64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_x86_64 --python-version 312 --implementation cp --abi cp312 "Pillow==$PILLOW_VERSION" -d build/pillow-x64
+          delocate-merge build/pillow-arm64/*.whl build/pillow-x64/*.whl -w build/pillow-universal
+          python -m pip install --force-reinstall --no-deps build/pillow-universal/*.whl
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 "cffi==$CFFI_VERSION" -d build/cffi-arm64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_15_x86_64 --python-version 312 --implementation cp --abi cp312 "cffi==$CFFI_VERSION" -d build/cffi-x64
+          delocate-merge build/cffi-arm64/*.whl build/cffi-x64/*.whl -w build/cffi-universal
+          python -m pip install --force-reinstall --no-deps build/cffi-universal/*.whl
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 "MarkupSafe==$MARKUPSAFE_VERSION" -d build/markupsafe-arm64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_x86_64 --python-version 312 --implementation cp --abi cp312 "MarkupSafe==$MARKUPSAFE_VERSION" -d build/markupsafe-x64
+          delocate-merge build/markupsafe-arm64/*.whl build/markupsafe-x64/*.whl -w build/markupsafe-universal
+          python -m pip install --force-reinstall --no-deps build/markupsafe-universal/*.whl
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 "PyYAML==$PYYAML_VERSION" -d build/pyyaml-arm64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_x86_64 --python-version 312 --implementation cp --abi cp312 "PyYAML==$PYYAML_VERSION" -d build/pyyaml-x64
+          delocate-merge build/pyyaml-arm64/*.whl build/pyyaml-x64/*.whl -w build/pyyaml-universal
+          python -m pip install --force-reinstall --no-deps build/pyyaml-universal/*.whl
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_universal2 --python-version 312 --implementation cp --abi cp312 "watchdog==$WATCHDOG_VERSION" -d build/watchdog-universal
+          python -m pip install --force-reinstall --no-deps build/watchdog-universal/*.whl
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_universal2 "playwright==$PLAYWRIGHT_VERSION" -d build/playwright-universal
+          python -m pip install --force-reinstall --no-deps build/playwright-universal/*.whl
+          python - <<'PY'
+          import pathlib, subprocess, sysconfig
+          root = pathlib.Path(sysconfig.get_paths()["purelib"])
+          bad = []
+          for binary in root.rglob("*.so"):
+              relative = binary.relative_to(root)
+              if relative.parts and relative.parts[0] == "delocate":
+                  continue
+              out = subprocess.check_output(["file", str(binary)], text=True)
+              if "x86_64" not in out or "arm64" not in out:
+                  bad.append(str(binary))
+          if bad:
+              raise SystemExit("non-universal runtime native extensions remain:\n" + "\n".join(bad))
+          PY
+      - name: Generate macOS icon
+        run: python packaging/make_icons.py build-assets/argus.icns
+      - name: Freeze universal desktop app and CLI
+        run: |
+          ICON="$(pwd)/build-assets/argus.icns"
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Argus --icon "$ICON" --osx-bundle-identifier in.cascadeai.argus --target-arch universal2 --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
+          python -m PyInstaller --noconfirm --clean --console --onefile --name argus --target-arch universal2 --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
+      - name: Verify both CPU slices and smoke-test CLI
+        run: |
+          test -d build/pyi-dist/Argus.app
+          for binary in build/pyi-dist/Argus.app/Contents/MacOS/Argus build/pyi-dist/argus; do
+            ARCHES="$(lipo -archs "$binary")"
+            echo "$ARCHES" | grep -q x86_64
+            echo "$ARCHES" | grep -q arm64
+          done
+          build/pyi-dist/argus --version
+          codesign --verify --deep --strict build/pyi-dist/Argus.app
+      - name: Create DMG and ZIP
+        run: |
+          mkdir -p release/dmg
+          cp -R build/pyi-dist/Argus.app release/dmg/Argus.app
+          cp build/pyi-dist/argus release/dmg/argus
+          cp LICENSE release/dmg/LICENSE
+          ln -s /Applications release/dmg/Applications
+          ditto -c -k --sequesterRsrc --keepParent build/pyi-dist/Argus.app "release/Argus-${{ inputs.version }}-macos-universal2.zip"
+          hdiutil create -volname Argus -srcfolder release/dmg -ov -format UDZO "release/Argus-${{ inputs.version }}-macos-universal2.dmg"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-macos-universal2
+          path: |
+            release/Argus-${{ inputs.version }}-macos-universal2.zip
+            release/Argus-${{ inputs.version }}-macos-universal2.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: x86_64
+            runner: ubuntu-24.04
+            arch: x86_64
+            deb_arch: amd64
+            rpm_arch: x86_64
+            pacman_arch: x86_64
+            appimage_arch: x86_64
+            appimagetool_url: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+            appimagetool_sha256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+            runtime_url: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+            runtime_sha256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+          - label: aarch64
+            runner: ubuntu-24.04-arm
+            arch: aarch64
+            deb_arch: arm64
+            rpm_arch: aarch64
+            pacman_arch: aarch64
+            appimage_arch: aarch64
+            appimagetool_url: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage
+            appimagetool_sha256: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+            runtime_url: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64
+            runtime_sha256: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Install native packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm zstd libarchive-tools
+          gem install fpm --version 1.17.0 --no-document
+      - name: Install Argus build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[gui,browser,serve,watch]" "pyinstaller==6.22.3"
+      - name: Freeze desktop app and CLI
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir --name Argus --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
+          python -m PyInstaller --noconfirm --clean --onefile --name argus --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
+      - name: Stage Linux filesystem tree
+        run: |
+          mkdir -p release/AppDir/usr/lib/argus release/AppDir/usr/bin release/AppDir/usr/share/applications release/AppDir/usr/share/icons/hicolor/256x256/apps release/AppDir/usr/share/doc/argus
+          cp -a build/pyi-dist/Argus/. release/AppDir/usr/lib/argus/
+          cp build/pyi-dist/argus release/AppDir/usr/bin/argus
+          cp packaging/linux/argus.desktop release/AppDir/usr/share/applications/argus.desktop
+          python packaging/make_icons.py release/AppDir/usr/share/icons/hicolor/256x256/apps/argus.png
+          cp LICENSE README.md release/AppDir/usr/share/doc/argus/
+          cat > release/AppDir/AppRun <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/lib/argus/Argus" "$@"
+          EOF
+          chmod +x release/AppDir/AppRun
+          ln -s usr/share/icons/hicolor/256x256/apps/argus.png release/AppDir/argus.png
+          ln -s usr/share/applications/argus.desktop release/AppDir/argus.desktop
+      - name: Build DEB, RPM, and Arch Linux packages
+        run: |
+          mkdir -p release/packages
+          fpm -s dir -t deb -n argus-app-testing -v "${{ inputs.version }}" -a "${{ matrix.deb_arch }}" --license Apache-2.0 --description "Argus cross-platform application testing framework" -C release/AppDir -p "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb" usr
+          fpm -s dir -t rpm -n argus-app-testing -v "${{ inputs.version }}" -a "${{ matrix.rpm_arch }}" --license Apache-2.0 --description "Argus cross-platform application testing framework" -C release/AppDir -p "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm" usr
+          fpm -s dir -t pacman -n argus-app-testing -v "${{ inputs.version }}" -a "${{ matrix.pacman_arch }}" --license Apache-2.0 --description "Argus cross-platform application testing framework" -C release/AppDir -p "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst" usr
+      - name: Download and verify pinned AppImage tooling
+        run: |
+          curl --fail --location --retry 3 "${{ matrix.appimagetool_url }}" -o build/appimagetool.AppImage
+          curl --fail --location --retry 3 "${{ matrix.runtime_url }}" -o build/runtime
+          echo "${{ matrix.appimagetool_sha256 }}  build/appimagetool.AppImage" | sha256sum -c -
+          echo "${{ matrix.runtime_sha256 }}  build/runtime" | sha256sum -c -
+          chmod +x build/appimagetool.AppImage build/runtime
+      - name: Build AppImage
+        env:
+          ARCH: ${{ matrix.appimage_arch }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          build/appimagetool.AppImage --runtime-file build/runtime release/AppDir "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
+      - name: Verify Linux release files
+        run: |
+          test -f "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
+          test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb"
+          test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm"
+          test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-${{ matrix.label }}
+          path: |
+            release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage
+            release/packages/*
+          if-no-files-found: error
+          retention-days: 14
