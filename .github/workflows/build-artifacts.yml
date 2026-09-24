@@ -131,9 +131,12 @@ jobs:
             choco install innosetup --version=6.3.3 -y --no-progress
           }
           if (-not (Test-Path $iscc)) { throw "Inno Setup 6 compiler not found at $iscc" }
-          $version = (Get-Item $iscc).VersionInfo.ProductVersion
-          if (-not $version.StartsWith("6.")) { throw "Unsupported Inno Setup version: $version" }
-          Write-Host "Using Inno Setup $version"
+          $banner = (& $iscc /? 2>&1 | Select-Object -First 8) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler version probe failed with exit code $LASTEXITCODE" }
+          if ($banner -notmatch 'Inno Setup (?:Preprocessor |)Compiler version 6\.') {
+            throw "Unsupported Inno Setup compiler:`n$banner"
+          }
+          Write-Host $banner
       - name: Build installer EXE
         shell: pwsh
         run: |
@@ -213,10 +216,14 @@ jobs:
           root = pathlib.Path(sysconfig.get_paths()["purelib"])
           bad = []
           for binary in root.rglob("*.so"):
-              if "x86_64" not in (out := subprocess.check_output(["file", str(binary)], text=True)) or "arm64" not in out:
+              relative = binary.relative_to(root)
+              if relative.parts and relative.parts[0] == "delocate":
+                  continue
+              out = subprocess.check_output(["file", str(binary)], text=True)
+              if "x86_64" not in out or "arm64" not in out:
                   bad.append(str(binary))
           if bad:
-              raise SystemExit("non-universal native extensions remain:\n" + "\n".join(bad))
+              raise SystemExit("non-universal runtime native extensions remain:\n" + "\n".join(bad))
           PY
       - name: Generate macOS icon
         run: python packaging/make_icons.py build-assets/argus.icns
