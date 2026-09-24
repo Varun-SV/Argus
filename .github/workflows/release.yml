@@ -31,7 +31,7 @@ jobs:
         env:
           REQUESTED_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: echo "tag=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.requested.outputs.tag }}
           fetch-depth: 0
@@ -79,7 +79,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           pattern: release-*
           path: release-assets
@@ -87,7 +87,7 @@ jobs:
       - name: Generate SHA-256 manifest
         working-directory: release-assets
         run: sha256sum * | sort -k2 > SHA256SUMS
-      - uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: release-assets/*
       - name: Create or refresh GitHub Release
@@ -112,7 +112,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: release-python
           path: dist
@@ -129,7 +129,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: release-python
           path: dist
