@@ -131,8 +131,9 @@ jobs:
             choco install innosetup --version=6.3.3 -y --no-progress
           }
           if (-not (Test-Path $iscc)) { throw "Inno Setup 6 compiler not found at $iscc" }
+          # ISCC /? prints a useful version banner but does not guarantee a zero
+          # process exit code, so validate the banner rather than the probe status.
           $banner = (& $iscc /? 2>&1 | Select-Object -First 8) -join "`n"
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler version probe failed with exit code $LASTEXITCODE" }
           if ($banner -notmatch 'Inno Setup (?:Preprocessor |)Compiler version 6\.') {
             throw "Unsupported Inno Setup compiler:`n$banner"
           }
@@ -229,7 +230,8 @@ jobs:
         run: python packaging/make_icons.py build-assets/argus.icns
       - name: Freeze universal desktop app and CLI
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Argus --icon build-assets/argus.icns --osx-bundle-identifier in.cascadeai.argus --target-arch universal2 --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
+          ICON="$(pwd)/build-assets/argus.icns"
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Argus --icon "$ICON" --osx-bundle-identifier in.cascadeai.argus --target-arch universal2 --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
           python -m PyInstaller --noconfirm --clean --console --onefile --name argus --target-arch universal2 --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
       - name: Verify both CPU slices and smoke-test CLI
         run: |
@@ -249,7 +251,7 @@ jobs:
           cp LICENSE release/dmg/LICENSE
           ln -s /Applications release/dmg/Applications
           ditto -c -k --sequesterRsrc --keepParent build/pyi-dist/Argus.app "release/Argus-${{ inputs.version }}-macos-universal2.zip"
-          hdiutil create -volname "Argus ${{ inputs.version }}" -srcfolder release/dmg -ov -format UDZO "release/Argus-${{ inputs.version }}-macos-universal2.dmg"
+          hdiutil create -volname Argus -srcfolder release/dmg -ov -format UDZO "release/Argus-${{ inputs.version }}-macos-universal2.dmg"
       - uses: actions/upload-artifact@v6
         with:
           name: release-macos-universal2
@@ -266,25 +268,27 @@ jobs:
       matrix:
         include:
           - label: x86_64
-            runner: ubuntu-22.04
-            appimage_arch: x86_64
-            appimagetool_asset: appimagetool-x86_64.AppImage
-            appimagetool_sha256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
-            runtime_asset: runtime-x86_64
-            runtime_sha256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+            runner: ubuntu-24.04
+            arch: x86_64
             deb_arch: amd64
             rpm_arch: x86_64
             pacman_arch: x86_64
+            appimage_arch: x86_64
+            appimagetool_url: https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            appimagetool_sha256: 7a5b1fdd649669a47ff5a0a05427edb965fbf5ac5f41627b5bfce0a3f2c61e73
+            runtime_url: https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
+            runtime_sha256: 24da8e98f9899499006b2445999cc8a42cc0e3e96dca681ed10b0c4e6935931f
           - label: aarch64
-            runner: ubuntu-22.04-arm
-            appimage_arch: aarch64
-            appimagetool_asset: appimagetool-aarch64.AppImage
-            appimagetool_sha256: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
-            runtime_asset: runtime-aarch64
-            runtime_sha256: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
+            runner: ubuntu-24.04-arm
+            arch: aarch64
             deb_arch: arm64
             rpm_arch: aarch64
             pacman_arch: aarch64
+            appimage_arch: aarch64
+            appimagetool_url: https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
+            appimagetool_sha256: d4f04abf2e3520278a3f729a63d54088d226e3db70b6a8762cb4efafee067d80
+            runtime_url: https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-aarch64
+            runtime_sha256: a78fafd0f5f9a96efb55e54767520f4be8b0d5dd69d948f4f3b6d5d5c7d31fd0
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -301,70 +305,61 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm zstd libarchive-tools
-          gem install --no-document fpm -v 1.17.0
+          gem install fpm --version 1.17.0 --no-document
       - name: Install Argus build dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ".[linux,browser,serve,watch]" "pywebview[pyside6]>=5.0" "PySide6==6.7.1" "pyinstaller==6.22.3" pillow
+          python -m pip install ".[gui,browser,serve,watch]" "pyinstaller==6.22.3"
       - name: Freeze desktop app and CLI
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Argus --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
-          python -m PyInstaller --noconfirm --clean --console --onefile --name argus --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
-          build/pyi-dist/argus --version
+          python -m PyInstaller --noconfirm --clean --onedir --name Argus --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work --specpath build/spec argus/gui/__main__.py
+          python -m PyInstaller --noconfirm --clean --onefile --name argus --collect-data argus.gui --collect-submodules argus --copy-metadata argus-app-testing --distpath build/pyi-dist --workpath build/pyi-work-cli --specpath build/spec-cli argus/__main__.py
       - name: Stage Linux filesystem tree
         run: |
-          set -euxo pipefail
-          ROOT="$PWD/release/pkgroot"
-          mkdir -p "$ROOT/usr/lib/argus" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/icons/hicolor/512x512/apps"
-          cp -a build/pyi-dist/Argus "$ROOT/usr/lib/argus/Argus"
-          cp build/pyi-dist/argus "$ROOT/usr/lib/argus/argus"
-          cp packaging/linux/argus-gui "$ROOT/usr/bin/argus-gui"
-          cp packaging/linux/argus-cli "$ROOT/usr/bin/argus"
-          chmod 0755 "$ROOT/usr/bin/argus-gui" "$ROOT/usr/bin/argus" "$ROOT/usr/lib/argus/argus"
-          cp packaging/linux/argus.desktop "$ROOT/usr/share/applications/argus.desktop"
-          python packaging/make_icons.py "$ROOT/usr/share/icons/hicolor/512x512/apps/argus.png"
+          mkdir -p release/AppDir/usr/lib/argus release/AppDir/usr/bin release/AppDir/usr/share/applications release/AppDir/usr/share/icons/hicolor/256x256/apps release/AppDir/usr/share/doc/argus
+          cp -a build/pyi-dist/Argus/. release/AppDir/usr/lib/argus/
+          cp build/pyi-dist/argus release/AppDir/usr/bin/argus
+          cp packaging/linux/argus.desktop release/AppDir/usr/share/applications/argus.desktop
+          python packaging/make_icons.py release/AppDir/usr/share/icons/hicolor/256x256/apps/argus.png
+          cp LICENSE README.md release/AppDir/usr/share/doc/argus/
+          cat > release/AppDir/AppRun <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/lib/argus/Argus" "$@"
+          EOF
+          chmod +x release/AppDir/AppRun
+          ln -s usr/share/icons/hicolor/256x256/apps/argus.png release/AppDir/argus.png
+          ln -s usr/share/applications/argus.desktop release/AppDir/argus.desktop
       - name: Build DEB, RPM, and Arch Linux packages
         run: |
-          set -euxo pipefail
-          COMMON=(-s dir -n argus -v "${{ inputs.version }}" --description "Argus autonomous application testing" --url "https://github.com/Varun-SV/Argus" --license MIT --maintainer "Varun S V" -C release/pkgroot)
-          fpm "${COMMON[@]}" -t deb --architecture "${{ matrix.deb_arch }}" -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb" .
-          fpm "${COMMON[@]}" -t rpm --architecture "${{ matrix.rpm_arch }}" -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm" .
-          fpm "${COMMON[@]}" -t pacman --architecture "${{ matrix.pacman_arch }}" --pacman-compression zstd -p "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst" .
+          mkdir -p release/packages
+          fpm -s dir -t deb -n argus-app-testing -v "${{ inputs.version }}" -a "${{ matrix.deb_arch }}" --license Apache-2.0 --description "Argus cross-platform application testing framework" -C release/AppDir -p "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb" usr
+          fpm -s dir -t rpm -n argus-app-testing -v "${{ inputs.version }}" -a "${{ matrix.rpm_arch }}" --license Apache-2.0 --description "Argus cross-platform application testing framework" -C release/AppDir -p "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm" usr
+          fpm -s dir -t pacman -n argus-app-testing -v "${{ inputs.version }}" -a "${{ matrix.pacman_arch }}" --license Apache-2.0 --description "Argus cross-platform application testing framework" -C release/AppDir -p "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst" usr
       - name: Download and verify pinned AppImage tooling
         run: |
-          set -euxo pipefail
-          mkdir -p build/appimage-tools
-          curl --fail --location --retry 3 -o "build/appimage-tools/${{ matrix.appimagetool_asset }}" "https://github.com/AppImage/appimagetool/releases/download/1.9.1/${{ matrix.appimagetool_asset }}"
-          echo "${{ matrix.appimagetool_sha256 }}  build/appimage-tools/${{ matrix.appimagetool_asset }}" | sha256sum -c -
-          curl --fail --location --retry 3 -o "build/appimage-tools/${{ matrix.runtime_asset }}" "https://github.com/AppImage/type2-runtime/releases/download/20251108/${{ matrix.runtime_asset }}"
-          echo "${{ matrix.runtime_sha256 }}  build/appimage-tools/${{ matrix.runtime_asset }}" | sha256sum -c -
-          chmod +x "build/appimage-tools/${{ matrix.appimagetool_asset }}"
+          curl --fail --location --retry 3 "${{ matrix.appimagetool_url }}" -o build/appimagetool.AppImage
+          curl --fail --location --retry 3 "${{ matrix.runtime_url }}" -o build/runtime
+          echo "${{ matrix.appimagetool_sha256 }}  build/appimagetool.AppImage" | sha256sum -c -
+          echo "${{ matrix.runtime_sha256 }}  build/runtime" | sha256sum -c -
+          chmod +x build/appimagetool.AppImage build/runtime
       - name: Build AppImage
         env:
           ARCH: ${{ matrix.appimage_arch }}
-          VERSION: ${{ inputs.version }}
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          set -euxo pipefail
-          APPDIR="$PWD/release/Argus.AppDir"
-          cp -a release/pkgroot "$APPDIR"
-          cp packaging/linux/AppRun "$APPDIR/AppRun"
-          cp packaging/linux/argus.desktop "$APPDIR/argus.desktop"
-          cp "$APPDIR/usr/share/icons/hicolor/512x512/apps/argus.png" "$APPDIR/argus.png"
-          chmod +x "$APPDIR/AppRun"
-          "build/appimage-tools/${{ matrix.appimagetool_asset }}" --runtime-file "build/appimage-tools/${{ matrix.runtime_asset }}" "$APPDIR" "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
-          chmod +x "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
+          build/appimagetool.AppImage --runtime-file build/runtime release/AppDir "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
       - name: Verify Linux release files
         run: |
-          set -euxo pipefail
-          for ext in AppImage deb rpm pkg.tar.zst; do test -s "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.${ext}"; done
+          test -f "release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage"
+          test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb"
+          test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm"
+          test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst"
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-${{ matrix.label }}
           path: |
             release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.AppImage
-            release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb
-            release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm
-            release/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst
+            release/packages/*
           if-no-files-found: error
           retention-days: 14
