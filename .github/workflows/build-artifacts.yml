@@ -50,7 +50,7 @@ jobs:
               if f"-{normalized}.tar.gz" not in sdists[0].name:
                   raise SystemExit(f"sdist version does not match release {expected}: {sdists[0].name}")
           PY
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: release-python
           path: dist/*
@@ -154,7 +154,7 @@ jobs:
         run: |
           $required = @("release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-portable.zip", "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}.msi", "release/Argus-${{ inputs.version }}-windows-${{ matrix.label }}-setup.exe")
           foreach ($file in $required) { if (-not (Test-Path $file)) { throw "missing $file" } }
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: release-windows-${{ matrix.label }}
           path: |
@@ -252,7 +252,7 @@ jobs:
           ln -s /Applications release/dmg/Applications
           ditto -c -k --sequesterRsrc --keepParent build/pyi-dist/Argus.app "release/Argus-${{ inputs.version }}-macos-universal2.zip"
           hdiutil create -volname Argus -srcfolder release/dmg -ov -format UDZO "release/Argus-${{ inputs.version }}-macos-universal2.dmg"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: release-macos-universal2
           path: |
@@ -355,7 +355,7 @@ jobs:
           test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.deb"
           test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.rpm"
           test -f "release/packages/Argus-${{ inputs.version }}-linux-${{ matrix.label }}.pkg.tar.zst"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: release-linux-${{ matrix.label }}
           path: |
