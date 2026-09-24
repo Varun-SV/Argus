@@ -10,11 +10,32 @@
     <MediaTemplate EmbedCab="yes" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="INSTALLFOLDER" Name="Argus" />
+      <Directory Id="INSTALLFOLDER" Name="Argus">
+        <Directory Id="GUIFOLDER" Name="Argus">
+          <Component Id="ArgusGuiComponent">
+            <File
+                Id="ArgusGuiExecutable"
+                Source="$(SourceDir)\Argus\Argus.exe"
+                KeyPath="yes">
+              <Shortcut
+                  Id="ArgusStartMenuShortcut"
+                  Directory="ProgramMenuFolder"
+                  Name="Argus"
+                  Description="Argus autonomous application testing"
+                  WorkingDirectory="INSTALLFOLDER" />
+            </File>
+          </Component>
+        </Directory>
+      </Directory>
     </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
 
     <Feature Id="MainFeature" Title="Argus" Level="1">
-      <Files Directory="INSTALLFOLDER" Include="$(SourceDir)\**" />
+      <ComponentRef Id="ArgusGuiComponent" />
+      <Files Directory="INSTALLFOLDER" Include="$(SourceDir)\*" />
+      <Files Directory="GUIFOLDER" Include="$(SourceDir)\Argus\**">
+        <Exclude Files="$(SourceDir)\Argus\Argus.exe" />
+      </Files>
     </Feature>
   </Package>
 </Wix>
