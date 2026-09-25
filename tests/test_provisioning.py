@@ -255,3 +255,47 @@ def test_derived_manifest_rejects_wrong_definition(tmp_path: Path) -> None:
 
     with pytest.raises(ProvisioningError, match="environment identity mismatch"):
         capsule_settings_from_derived_image(different, manifest, image)
+
+def test_derived_image_bridge_derives_provider_from_manifest(tmp_path: Path) -> None:
+    definition = _definition(tmp_path)
+    image = tmp_path / "base.qcow2"
+    image.write_bytes(b"derived-image")
+    manifest = DerivedImageManifest(
+        environment_id=definition.environment_id,
+        definition_sha256=definition.definition_sha256,
+        source_sha256=definition.source.sha256,
+        provider="libvirt",
+        image_format="qcow2",
+        image_sha256=_digest(b"derived-image"),
+        architecture="x86_64",
+        created_at="2026-09-25T00:00:00Z",
+    )
+
+    settings = capsule_settings_from_derived_image(definition, manifest, image)
+
+    assert settings.provider == "libvirt"
+    assert settings.image == str(image.resolve())
+
+
+def test_derived_image_bridge_rejects_explicit_provider_mismatch(tmp_path: Path) -> None:
+    definition = _definition(tmp_path)
+    image = tmp_path / "base.qcow2"
+    image.write_bytes(b"derived-image")
+    manifest = DerivedImageManifest(
+        environment_id=definition.environment_id,
+        definition_sha256=definition.definition_sha256,
+        source_sha256=definition.source.sha256,
+        provider="libvirt",
+        image_format="qcow2",
+        image_sha256=_digest(b"derived-image"),
+        architecture="x86_64",
+        created_at="2026-09-25T00:00:00Z",
+    )
+
+    with pytest.raises(ProvisioningError, match="provider mismatch"):
+        capsule_settings_from_derived_image(
+            definition,
+            manifest,
+            image,
+            settings=CapsuleSettings(provider="hyperv"),
+        )
