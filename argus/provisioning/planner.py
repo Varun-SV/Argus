@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+import platform
 from typing import Iterable
 
 from argus.provisioning.model import (
@@ -62,7 +63,13 @@ def validate_provider_capabilities(
     machine = definition.machine
     source = definition.source
     output_format = output_format.strip().lower()
+    host_platform = platform.system().strip().lower()
 
+    if not _contains(capabilities.host_platforms, host_platform):
+        raise ProvisioningError(
+            f"provider {capabilities.provider!r} does not support host platform "
+            f"{host_platform!r}"
+        )
     if not _contains(capabilities.architectures, machine.architecture):
         raise ProvisioningError(
             f"provider {capabilities.provider!r} does not support architecture "

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
+import platform
 
 import pytest
 
@@ -63,7 +64,7 @@ def _definition(tmp_path: Path, **overrides) -> EnvironmentDefinition:
 def _capabilities() -> ProvisioningProviderCapabilities:
     return ProvisioningProviderCapabilities(
         provider="hyperv",
-        host_platforms=("windows",),
+        host_platforms=(platform.system().lower(),),
         architectures=("x86_64",),
         media_types=("iso",),
         image_formats=("vhdx",),
@@ -169,6 +170,19 @@ def test_iso_verification_requires_iso_locator(tmp_path: Path) -> None:
     )
     with pytest.raises(ProvisioningError, match=r"\.iso"):
         verify_installation_media(definition)
+
+
+def test_plan_rejects_provider_for_different_host_platform(tmp_path: Path) -> None:
+    definition = _definition(tmp_path)
+    unsupported = replace(_capabilities(), host_platforms=("unsupported-host",))
+
+    with pytest.raises(ProvisioningError, match="host platform"):
+        build_provisioning_plan(
+            definition,
+            unsupported,
+            output_format="vhdx",
+            cache_root=tmp_path / "cache",
+        )
 
 
 def test_plan_is_content_addressed_and_provider_gated(tmp_path: Path) -> None:
