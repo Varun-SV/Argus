@@ -81,6 +81,10 @@ class CapsuleSettings:
     allow_insecure_http: bool = False
     rotate_session_token: bool = True
     network_mode: str = "host_only"
+    # None preserves legacy provider behavior. Provisioned images bind this
+    # explicitly so the runtime cannot silently change the build contract.
+    secure_boot: Optional[bool] = None
+    tpm_version: str = ""
     egress_allowlist: tuple[str, ...] = ()
     allow_dhcp: bool = True
     disable_guest_file_copy: bool = True
@@ -109,6 +113,7 @@ class CapsuleSettings:
             "rotate_session_token",
             "allow_dhcp",
             "disable_guest_file_copy",
+            "secure_boot",
         ):
             if name in raw:
                 raw[name] = _strict_bool(raw[name], name)
