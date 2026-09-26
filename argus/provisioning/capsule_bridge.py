@@ -14,6 +14,69 @@ from argus.provisioning.model import (
 )
 
 
+def _bind_machine_contract(
+    definition: EnvironmentDefinition,
+    manifest: DerivedImageManifest,
+    settings: CapsuleSettings | None,
+) -> CapsuleSettings:
+    """Bind runtime-equivalent Capsule settings to the immutable machine contract."""
+
+    machine = definition.machine
+    architecture = machine.architecture if manifest.provider == "libvirt" else ""
+
+    if settings is None:
+        return CapsuleSettings(
+            provider=manifest.provider,
+            cpu_count=machine.cpu_count,
+            memory_mb=machine.memory_mb,
+            network_mode=machine.network_mode,
+            libvirt_arch=architecture,
+        )
+
+    requested_provider = settings.provider.strip().lower()
+    if requested_provider != manifest.provider:
+        raise ProvisioningError(
+            "derived image provider mismatch: "
+            f"manifest requires {manifest.provider!r}, "
+            f"Capsule settings request {settings.provider!r}"
+        )
+
+    mismatches: list[str] = []
+    if settings.cpu_count != machine.cpu_count:
+        mismatches.append(
+            f"cpu_count requires {machine.cpu_count}, got {settings.cpu_count}"
+        )
+    if settings.memory_mb != machine.memory_mb:
+        mismatches.append(
+            f"memory_mb requires {machine.memory_mb}, got {settings.memory_mb}"
+        )
+    if settings.network_mode.strip().lower() != machine.network_mode:
+        mismatches.append(
+            f"network_mode requires {machine.network_mode!r}, got {settings.network_mode!r}"
+        )
+    if manifest.provider == "libvirt":
+        requested_arch = settings.libvirt_arch.strip().lower()
+        if requested_arch and requested_arch != machine.architecture:
+            mismatches.append(
+                f"libvirt_arch requires {machine.architecture!r}, got {settings.libvirt_arch!r}"
+            )
+
+    if mismatches:
+        raise ProvisioningError(
+            "Capsule settings contradict derived environment machine contract: "
+            + "; ".join(mismatches)
+        )
+
+    return replace(
+        settings,
+        provider=manifest.provider,
+        cpu_count=machine.cpu_count,
+        memory_mb=machine.memory_mb,
+        network_mode=machine.network_mode,
+        libvirt_arch=architecture if manifest.provider == "libvirt" else settings.libvirt_arch,
+    )
+
+
 def capsule_settings_from_derived_image(
     definition: EnvironmentDefinition,
     manifest: DerivedImageManifest,
@@ -44,15 +107,5 @@ def capsule_settings_from_derived_image(
         candidate,
         expected_sha256=manifest.image_sha256,
     )
-    if settings is None:
-        base = CapsuleSettings(provider=manifest.provider)
-    else:
-        requested_provider = settings.provider.strip().lower()
-        if requested_provider != manifest.provider:
-            raise ProvisioningError(
-                "derived image provider mismatch: "
-                f"manifest requires {manifest.provider!r}, "
-                f"Capsule settings request {settings.provider!r}"
-            )
-        base = replace(settings, provider=manifest.provider)
+    base = _bind_machine_contract(definition, manifest, settings)
     return replace(base, image=str(verified.path))
