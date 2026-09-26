@@ -291,7 +291,9 @@ class DerivedImageManifest:
     image_sha256: str
     architecture: str
     created_at: str
-    manifest_version: str = "argus-derived-image-v1"
+    # v1 manifests predate the required boot/agent baseline check. They must
+    # not be silently reused as if the installed OS had been validated.
+    manifest_version: str = "argus-derived-image-v2"
 
     def __post_init__(self) -> None:
         environment_id = _text(self.environment_id, "environment_id")
@@ -321,9 +323,9 @@ class DerivedImageManifest:
             _enum(self.architecture, "architecture", _ALLOWED_ARCH),
         )
         object.__setattr__(self, "created_at", _text(self.created_at, "created_at"))
-        if self.manifest_version != "argus-derived-image-v1":
+        if self.manifest_version != "argus-derived-image-v2":
             raise ProvisioningError(
-                "manifest_version must be 'argus-derived-image-v1'"
+                "manifest_version must be 'argus-derived-image-v2'"
             )
 
     def validate_against(self, definition: EnvironmentDefinition) -> None:
@@ -340,6 +342,8 @@ class DerivedImageManifest:
     def from_mapping(cls, value: Mapping[str, Any]) -> "DerivedImageManifest":
         if not isinstance(value, Mapping):
             raise ProvisioningError("derived image manifest must be a mapping")
+        if "manifest_version" not in value:
+            raise ProvisioningError("derived image manifest_version is required")
         allowed = {
             "environment_id",
             "definition_sha256",

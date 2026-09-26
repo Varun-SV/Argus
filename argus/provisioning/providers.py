@@ -2,14 +2,16 @@
 
 These builders deliberately advertise only machine contracts they can carry
 through to today's Capsule providers. OS-specific unattended answers, package
-installation, TPM state and Secure Boot are not emulated or silently dropped.
+installation and portable TPM state are not emulated or silently dropped.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
+import stat
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -17,7 +19,9 @@ from pathlib import Path
 from typing import Callable, Sequence
 from uuid import uuid4
 
+from argus.capsule.base import CapsuleSettings
 from argus.capsule.hyperv import _ps_quote
+from argus.provisioning.baseline import validate_secure_capsule_baseline
 from argus.provisioning.build import ProvisioningCleanupError, publish_derived_image
 from argus.provisioning.model import EnvironmentDefinition, ProvisioningError
 from argus.provisioning.planner import (
@@ -67,12 +71,16 @@ class HyperVProvisioner(EnvironmentProvisioner):
         runner: Callable[[str, float], str] | None = None,
         on_started: Callable[[str], None] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        baseline_settings: CapsuleSettings | None = None,
+        baseline_validator: Callable[[Path], None] | None = None,
     ) -> None:
         self.switch_name = switch_name
         self.install_timeout_seconds = install_timeout_seconds
         self._runner = runner
         self._on_started = on_started
         self._sleep = sleeper
+        self._baseline_settings = baseline_settings
+        self._baseline_validator = baseline_validator
         self._powershell = None
 
     def capabilities(self) -> ProvisioningProviderCapabilities:
@@ -203,8 +211,23 @@ class HyperVProvisioner(EnvironmentProvisioner):
             raise ProvisioningError("Hyper-V provisioning requires Windows")
         if not self.switch_name:
             raise ProvisioningError("Hyper-V Internal switch name is required")
+        if self._baseline_validator is not None and self._runner is None:
+            raise ProvisioningError("baseline test hook requires an injected hypervisor runner")
+        if self._baseline_validator is None and self._baseline_settings is None:
+            raise ProvisioningError("secure Capsule baseline settings are required")
+
+        def validate(image: Path) -> None:
+            if self._baseline_validator is not None:
+                self._baseline_validator(image)
+            else:
+                assert self._baseline_settings is not None
+                validate_secure_capsule_baseline(
+                    definition, image, provider="hyperv", image_format="vhdx",
+                    settings=self._baseline_settings,
+                )
         return publish_derived_image(
-            definition, plan, lambda iso, image: self._install(definition, iso, image)
+            definition, plan, lambda iso, image: self._install(definition, iso, image),
+            validate_baseline=validate,
         )
 
 
@@ -216,12 +239,18 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         runner: Callable[[Sequence[str], float], str] | None = None,
         on_started: Callable[[str], None] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        baseline_settings: CapsuleSettings | None = None,
+        baseline_validator: Callable[[Path], None] | None = None,
+        qemu_group: str = "",
     ) -> None:
         self.network_name = network_name
         self.install_timeout_seconds = install_timeout_seconds
         self._runner = runner
         self._on_started = on_started
         self._sleep = sleeper
+        self._baseline_settings = baseline_settings
+        self._baseline_validator = baseline_validator
+        self.qemu_group = qemu_group
 
     def capabilities(self) -> ProvisioningProviderCapabilities:
         return ProvisioningProviderCapabilities(
@@ -253,6 +282,32 @@ class LibvirtProvisioner(EnvironmentProvisioner):
             raise ProvisioningError("libvirt provisioning requires a non-forwarding host network")
         if self._virsh("net-info", self.network_name, timeout=15).find("Active: yes") < 0:
             raise ProvisioningError("libvirt host-only network is not active")
+
+    def _grant_qemu_access(self, iso: Path, image: Path) -> None:
+        """Let the configured QEMU group traverse/read/write only this build."""
+        if not self.qemu_group:
+            raise ProvisioningError("libvirt provisioning requires an explicit QEMU group")
+        import grp
+
+        try:
+            gid = grp.getgrnam(self.qemu_group).gr_gid
+            if gid not in {*os.getgroups(), os.getgid()}:
+                raise ProvisioningError("Argus process must belong to the QEMU group")
+            # A group grant on the private workspace cannot bypass an opaque
+            # ancestor such as a user's mode-0700 home directory.
+            for parent in (image.parent.parent, *image.parent.parent.parents):
+                info = parent.stat()
+                if not (info.st_mode & stat.S_IXOTH) and not (
+                    info.st_gid == gid and info.st_mode & stat.S_IXGRP
+                ):
+                    raise ProvisioningError("QEMU cannot traverse the provisioning cache root")
+            for path, mode in ((image.parent, 0o2770), (iso, 0o640), (image, 0o660)):
+                if path.is_symlink():
+                    raise ProvisioningError("libvirt build resource cannot be a symlink")
+                os.chown(path, -1, gid)
+                path.chmod(mode)
+        except (KeyError, OSError) as exc:
+            raise ProvisioningError("cannot grant QEMU access to private build resources") from exc
 
     def _domain_xml(self, name: str, iso: Path, image: Path,
                     definition: EnvironmentDefinition, fmt: str) -> str:
@@ -293,6 +348,8 @@ class LibvirtProvisioner(EnvironmentProvisioner):
             raise ProvisioningError("provisioning VM name already exists")
         self._run(("qemu-img", "create", "-f", fmt, str(image),
                    f"{definition.machine.disk_size_gib}G"), 90)
+        if self._runner is None or self.qemu_group:
+            self._grant_qemu_access(iso, image)
         xml = image.parent / "domain.xml"
         xml.write_text(self._domain_xml(name, iso, image, definition, fmt), encoding="utf-8")
         owned = False
@@ -358,7 +415,24 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         _attended_only(definition)
         if platform.system().lower() != "linux" and self._runner is None:
             raise ProvisioningError("libvirt provisioning requires Linux")
+        if self._baseline_validator is not None and self._runner is None:
+            raise ProvisioningError("baseline test hook requires an injected hypervisor runner")
+        if self._baseline_validator is None and self._baseline_settings is None:
+            raise ProvisioningError("secure Capsule baseline settings are required")
+        if self._runner is None and not self.qemu_group:
+            raise ProvisioningError("libvirt provisioning requires an explicit QEMU group")
+
+        def validate(image: Path) -> None:
+            if self._baseline_validator is not None:
+                self._baseline_validator(image)
+            else:
+                assert self._baseline_settings is not None
+                validate_secure_capsule_baseline(
+                    definition, image, provider="libvirt", image_format=plan.output_format,
+                    settings=self._baseline_settings,
+                )
         return publish_derived_image(
             definition, plan,
             lambda iso, image: self._install(definition, iso, image, plan.output_format),
+            validate_baseline=validate,
         )

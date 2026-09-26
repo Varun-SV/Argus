@@ -88,13 +88,20 @@ def publish_derived_image(
     definition: EnvironmentDefinition,
     plan: ProvisioningPlan,
     install: Callable[[Path, Path], None],
+    *,
+    validate_baseline: Callable[[Path], None] | None = None,
 ) -> ProvisioningResult:
     """Stage media, build privately, then publish image and manifest together.
 
     ``install(iso, image)`` must return only after the installer VM has shut
     down and all provider-owned mutable resources have been destroyed. It must
     clean those resources in a ``finally`` block even on cancellation.
+    The baseline check must boot a disposable child of the candidate image and
+    prove that the expected guest OS and secure Argus agent are ready. A disk
+    format check or installer shutdown alone cannot authorize publication.
     """
+    if validate_baseline is None:
+        raise ProvisioningError("baseline Capsule validation is required before publication")
     if (plan.environment_id, plan.definition_sha256) != (
         definition.environment_id, definition.definition_sha256
     ):
@@ -118,6 +125,7 @@ def publish_derived_image(
             install(staged_iso, image)
             if not image.is_file() or image.is_symlink():
                 raise ProvisioningError("installer did not produce a regular base image")
+            validate_baseline(image)
             digest = sha256()
             with image.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):

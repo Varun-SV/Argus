@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import ssl
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
@@ -114,6 +115,12 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                 "service": "argus-guest-agent",
                 "secure": True,
                 "auth_session_id": self.server.auth_session_id,
+                "guest_os": platform.system().lower(),
+                "architecture": (
+                    "x86_64" if platform.machine().lower() in {"amd64", "x86_64"}
+                    else "aarch64" if platform.machine().lower() in {"arm64", "aarch64"}
+                    else "unknown"
+                ),
             },
         )
 

@@ -29,6 +29,11 @@ A derived image has a separate manifest binding:
 - architecture;
 - creation timestamp.
 
+The v2 derived-image manifest requires a successful disposable secure Capsule
+boot before publication. Older v1 cache entries fail validation; an operator
+must quarantine an old entry and rebuild it rather than treating a format-valid
+disk as a proven OS image.
+
 Before a derived image is handed to CapsuleSettings, Argus verifies both the manifest
 binding and the final image bytes.
 
@@ -104,6 +109,9 @@ escape path.
     provider installs OS
           |
           v
+    disposable secure Capsule baseline boot
+          |
+          v
     immutable derived image + manifest
           |
           v
@@ -119,10 +127,14 @@ escape path.
 
 The provider-neutral contract is separated from the Hyper-V and libvirt builders.
 Both create a temporary installer VM from the verified ISO, wait for an orderly
-guest shutdown, destroy the installer VM, hash the output image, and publish the
-image and manifest in one cache directory. A per-key kernel lock serializes
-cooperating builders. Existing published images are verified and reused, never
-overwritten. Failure and ordinary interruption remove temporary files and VM
+guest shutdown, destroy the installer VM, then boot a disposable Capsule child
+from the candidate disk. The baseline requires a pinned HTTPS secure guest
+agent that reports the expected OS family and architecture after per-session
+bearer rotation. Only then does the builder hash and publish the image and
+manifest in one cache directory. This verifies boot and agent readiness, but
+does not attest a specific Windows or Ubuntu release or installed package set.
+A per-key kernel lock serializes cooperating builders. Existing published images
+are verified and reused, never overwritten. Failure and ordinary interruption remove temporary files and VM
 resources. If VM cleanup cannot be confirmed, the private workspace is retained
 for operator recovery rather than deleting a disk still attached to a VM. An
 abrupt host crash can also require operator cleanup of an orphan VM.
@@ -142,20 +154,36 @@ must not be assumed bootable in a fresh Capsule. Libvirt currently rejects
 Secure Boot and TPM requests. Unsupported disk buses, firmware, architectures,
 and `isolated` networking likewise fail instead of changing the machine
 contract. Hyper-V needs an Internal switch. Libvirt needs an active,
-non-forwarding local system network and local `virsh`/`qemu-img` access; the
+non-forwarding local system network and local `virsh`/`qemu-img` access. It
+also requires an explicit QEMU group shared with the Argus process and a cache
+root whose ancestors the group can traverse. The private build directory and
+its ISO/image grant only that group the needed read/write access; the
 installer console uses VNC bound to localhost. These providers build images
 with an operator at the installer console. Use `unattended: false`,
 `update_policy: manual`, and no edition, package list, or credential reference.
 Nondefault locale/timezone are rejected because the generic provider cannot
-apply them. An operator must verify the installed OS, its Argus guest agent,
-licensing, and readiness before using the image in a Capsule run.
+apply them. An operator must install/configure the secure Argus guest agent,
+its dedicated TLS certificate and bootstrap bearer, and the required guest
+service policy before shutting down the installer. Installation/licensing and
+release/package verification remain the operator's responsibility.
 
 For example, from Python after loading a definition with those attended fields:
 
 ```python
+import os
+from argus.capsule.base import CapsuleSettings
 from argus.provisioning import HyperVProvisioner, build_provisioning_plan
 
-provider = HyperVProvisioner(switch_name="Argus-Internal", on_started=print)
+baseline = CapsuleSettings(
+    provider="hyperv", guest_os="windows", switch_name="Argus-Internal",
+    cpu_count=definition.machine.cpu_count, memory_mb=definition.machine.memory_mb,
+    network_mode="host_only", guest_transport="https",
+    guest_ca_cert="C:/Argus/certs/guest-ca.pem",
+    guest_token=os.environ["ARGUS_CAPSULE_GUEST_TOKEN"],
+)
+provider = HyperVProvisioner(
+    switch_name="Argus-Internal", on_started=print, baseline_settings=baseline
+)
 plan = build_provisioning_plan(
     definition, provider.capabilities(), output_format="vhdx", cache_root="./images"
 )
@@ -163,8 +191,10 @@ result = provider.provision(definition, plan)
 ```
 
 The `on_started` hook receives only the temporary VM name. Finish installation
-and shut the guest down; the provider will remove the temporary VM. For Linux,
-use `LibvirtProvisioner(network_name="argus-local")` and a qcow2/raw plan.
+and shut the guest down; the provider removes the temporary VM and performs the
+baseline Capsule boot. For Linux, use
+`LibvirtProvisioner(network_name="argus-local", qemu_group="libvirt-qemu",
+baseline_settings=...)` and a qcow2/raw plan. The group name varies by host.
 Use `capsule_settings_from_derived_image` to verify and bind the published image
 to `CapsuleSettings`, then configure the normal secure guest transport. Fleet
 can call `derived_image_advertisement` to advertise its verified SHA-256;

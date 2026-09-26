@@ -28,6 +28,7 @@ from argus.provisioning import (
     verify_installation_media,
 )
 from argus.provisioning.build import publish_derived_image
+from argus.provisioning.baseline import validate_secure_capsule_baseline
 from argus.provisioning.providers import HyperVProvisioner, LibvirtProvisioner
 
 
@@ -551,8 +552,8 @@ def test_build_publishes_once_and_rejects_corrupt_cache(tmp_path: Path, monkeypa
         calls.append(iso)
         image.write_bytes(b"installed-os")
 
-    first = publish_derived_image(definition, plan, install)
-    second = publish_derived_image(definition, plan, install)
+    first = publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
+    second = publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
     assert first.manifest == second.manifest
     assert len(calls) == 1
     assert plan.image_path.read_bytes() == b"installed-os"
@@ -561,8 +562,97 @@ def test_build_publishes_once_and_rejects_corrupt_cache(tmp_path: Path, monkeypa
     plan.image_path.chmod(0o644)
     plan.image_path.write_bytes(b"tampered")
     with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
-        publish_derived_image(definition, plan, install)
+        publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
     assert len(calls) == 1
+
+
+def test_publication_requires_booted_baseline_and_rejects_pre_baseline_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    provider = LibvirtProvisioner(network_name="argus-local")
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
+    )
+
+    def install(iso: Path, image: Path) -> None:
+        image.write_bytes(b"blank, structurally valid disk")
+
+    def reject_baseline(image: Path) -> None:
+        raise ProvisioningError("baseline failed")
+
+    with pytest.raises(ProvisioningError, match="baseline Capsule validation is required"):
+        publish_derived_image(definition, plan, install)
+    with pytest.raises(ProvisioningError, match="baseline failed"):
+        publish_derived_image(
+            definition, plan, install,
+            validate_baseline=reject_baseline,
+        )
+    assert not plan.cache_dir.exists()
+    assert not list(plan.cache_dir.parent.glob(".building-*"))
+    result = publish_derived_image(
+        definition, plan, install, validate_baseline=lambda image: None
+    )
+    assert result.manifest.manifest_version == "argus-derived-image-v2"
+    old = plan.manifest_path.read_text().replace("argus-derived-image-v2", "argus-derived-image-v1")
+    plan.manifest_path.write_text(old)
+    with pytest.raises(ProvisioningError, match="published derived-image manifest is invalid"):
+        publish_derived_image(
+            definition, plan, install, validate_baseline=lambda image: None
+        )
+
+
+def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import argus.provisioning.baseline as baseline_module
+
+    definition = _runtime_definition(tmp_path, "libvirt")
+    image = tmp_path / "base.qcow2"
+    image.write_bytes(b"candidate")
+    settings = CapsuleSettings(
+        provider="libvirt", cpu_count=4, memory_mb=8192, network_mode="host_only"
+    )
+    sessions = []
+
+    class FakeCapsule:
+        def __init__(self, adapter_type, bound):
+            assert adapter_type == "cli"
+            assert bound.image == str(image.resolve())
+            self.session_id = "probe-1"
+            self._handle = None
+            self._client = self
+            sessions.append(self)
+
+        def prepare(self):
+            self._handle = object()
+
+        def health(self):
+            return {
+                "ok": True, "service": "argus-guest-agent", "secure": True,
+                "auth_session_id": self.session_id, "guest_os": "linux",
+                "architecture": "x86_64",
+            }
+
+        def close(self):
+            self._handle = None
+
+    monkeypatch.setattr(baseline_module, "SecureCapsuleExecutionEnvironment", FakeCapsule)
+    validate_secure_capsule_baseline(
+        definition, image, provider="libvirt", image_format="qcow2", settings=settings
+    )
+    assert sessions[-1]._handle is None
+
+    original_health = FakeCapsule.health
+    monkeypatch.setattr(FakeCapsule, "health", lambda self: {
+        **original_health(self), "guest_os": "windows"
+    })
+    with pytest.raises(ProvisioningError, match="baseline Capsule boot or agent validation failed"):
+        validate_secure_capsule_baseline(
+            definition, image, provider="libvirt", image_format="qcow2", settings=settings
+        )
+    assert sessions[-1]._handle is None
 
 
 def test_failed_build_removes_private_resources_and_can_retry(tmp_path: Path, monkeypatch) -> None:
@@ -578,11 +668,12 @@ def test_failed_build_removes_private_resources_and_can_retry(tmp_path: Path, mo
         raise ProvisioningError("installer failed")
 
     with pytest.raises(ProvisioningError, match="installer failed"):
-        publish_derived_image(definition, plan, fail)
+        publish_derived_image(definition, plan, fail, validate_baseline=lambda image: None)
     assert not plan.cache_dir.exists()
     assert not list(plan.cache_dir.parent.glob(".building-*"))
     assert publish_derived_image(
-        definition, plan, lambda iso, image: image.write_bytes(b"retry image")
+        definition, plan, lambda iso, image: image.write_bytes(b"retry image"),
+        validate_baseline=lambda image: None,
     ).manifest.image_sha256 == _digest(b"retry image")
 
 
@@ -605,9 +696,15 @@ def test_concurrent_same_key_builds_publish_one_image(tmp_path: Path, monkeypatc
         image.write_bytes(b"one published image")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(publish_derived_image, definition, plan, install)
+        first = executor.submit(
+            publish_derived_image, definition, plan, install,
+            validate_baseline=lambda image: None,
+        )
         assert entered.wait(5)
-        second = executor.submit(publish_derived_image, definition, plan, install)
+        second = executor.submit(
+            publish_derived_image, definition, plan, install,
+            validate_baseline=lambda image: None,
+        )
         release.set()
         assert first.result(timeout=10).manifest == second.result(timeout=10).manifest
     assert len(calls) == 1
@@ -632,7 +729,8 @@ def test_media_swap_before_staging_does_not_publish(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(build_module, "verify_installation_media", swap_after_check)
     with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
         publish_derived_image(
-            definition, plan, lambda iso, image: image.write_bytes(b"should not run")
+            definition, plan, lambda iso, image: image.write_bytes(b"should not run"),
+            validate_baseline=lambda image: None,
         )
     assert not plan.cache_dir.exists()
 
@@ -656,15 +754,52 @@ def test_libvirt_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> N
             return "shut off"
         return ""
 
-    provider = LibvirtProvisioner(network_name="argus-local", runner=run)
+    validated = []
+
+    def validate(image: Path) -> None:
+        assert any("undefine" in command for command in commands)
+        validated.append(image.read_bytes())
+
+    provider = LibvirtProvisioner(
+        network_name="argus-local", runner=run, baseline_validator=validate
+    )
     plan = build_provisioning_plan(
         definition, provider.capabilities(), output_format="qcow2", cache_root=tmp_path / "cache"
     )
     result = provider.provision(definition, plan)
     assert result.manifest.image_sha256 == _digest(b"bootable image fixture")
+    assert validated == [b"bootable image fixture"]
     assert any("define" in command for command in commands)
     assert any("undefine" in command for command in commands)
     assert not (plan.cache_dir / "domain.xml").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX QEMU group permissions")
+def test_libvirt_private_build_is_accessible_to_configured_qemu_group() -> None:
+    import grp
+    import stat
+    import tempfile
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as root_name:
+        root = Path(root_name)
+        shared = root / "shared"
+        shared.mkdir(mode=0o755)
+        work = shared / "build"
+        work.mkdir(mode=0o700)
+        iso, image = work / "installation.iso", work / "base.qcow2"
+        iso.write_bytes(b"iso")
+        image.write_bytes(b"disk")
+        provider = LibvirtProvisioner(
+            network_name="argus-local", qemu_group=grp.getgrgid(os.getgid()).gr_name
+        )
+        with pytest.raises(ProvisioningError, match="cannot traverse"):
+            provider._grant_qemu_access(iso, image)
+
+        root.chmod(0o755)
+        provider._grant_qemu_access(iso, image)
+        assert stat.S_IMODE(work.stat().st_mode) == 0o2770
+        assert stat.S_IMODE(iso.stat().st_mode) == 0o640
+        assert stat.S_IMODE(image.stat().st_mode) == 0o660
 
 
 def test_libvirt_failure_after_start_cleans_vm_and_does_not_publish(
@@ -690,7 +825,8 @@ def test_libvirt_failure_after_start_cleans_vm_and_does_not_publish(
         raise KeyboardInterrupt()
 
     provider = LibvirtProvisioner(
-        network_name="argus-local", runner=run, on_started=interrupt
+        network_name="argus-local", runner=run, on_started=interrupt,
+        baseline_validator=lambda image: None,
     )
     plan = build_provisioning_plan(
         definition, provider.capabilities(), output_format="qcow2", cache_root=tmp_path / "cache"
@@ -726,7 +862,10 @@ def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> No
         return ""
 
     monkeypatch.setattr(platform, "system", lambda: "Windows")
-    provider = HyperVProvisioner(switch_name="Argus-Internal", runner=run)
+    provider = HyperVProvisioner(
+        switch_name="Argus-Internal", runner=run,
+        baseline_validator=lambda image: None,
+    )
     plan = build_provisioning_plan(
         definition, provider.capabilities(), output_format="vhdx", cache_root=tmp_path / "cache"
     )
@@ -746,7 +885,8 @@ def test_fleet_advertisement_uses_verified_image_digest_not_alias(tmp_path: Path
         definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
     )
     result = publish_derived_image(
-        definition, plan, lambda iso, image: image.write_bytes(b"guest os")
+        definition, plan, lambda iso, image: image.write_bytes(b"guest os"),
+        validate_baseline=lambda image: None,
     )
     first = derived_image_advertisement(
         definition, result.manifest, plan.image_path, alias="latest", guest_os="linux"
