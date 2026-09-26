@@ -276,6 +276,13 @@ class IsolatedHyperVProvider(HyperVProvider):
                 30,
             )
 
+            if settings.secure_boot is False:
+                self._run_ps(
+                    f"Set-VMFirmware -VMName {_ps_quote(vm_name)} "
+                    "-EnableSecureBoot Off -ErrorAction Stop",
+                    30,
+                )
+
             self._disable_host_file_copy(vm_name)
             self._apply_network_isolation(
                 vm_name,

@@ -35,12 +35,12 @@ binding and the final image bytes.
 ## Example definition
 
     schema_version: argus-environment-v1
-    name: win11-24h2-clean
+    name: windows-lab-clean
 
     source:
       kind: installation_media
       media_type: iso
-      path: D:/isos/Win11_24H2_English_x64.iso
+      path: D:/isos/Windows_English_x64.iso
       sha256: <64-character sha256>
       architecture: x86_64
 
@@ -49,22 +49,18 @@ binding and the final image bytes.
       cpu_count: 8
       memory_mb: 16384
       firmware: uefi
-      secure_boot: true
-      tpm_version: "2.0"
+      secure_boot: false
+      tpm_version: null
       disk_size_gib: 128
-      disk_bus: nvme
-      network_mode: isolated
+      disk_bus: scsi
+      network_mode: host_only
 
     installation:
-      unattended: true
-      edition: professional
+      unattended: false
       locale: en-US
-      timezone: Asia/Kolkata
-      packages:
-        - python
-        - git
-      update_policy: frozen
-      credential_ref: secret://windows-lab/installer
+      timezone: UTC
+      packages: []
+      update_policy: manual
 
 ## Media ownership and licensing
 
@@ -76,10 +72,10 @@ An ISO filename alone is never trusted as identity.
 
 ## Security boundary
 
-The current foundation verifies a regular file and its expected SHA-256. A future concrete
-provisioning provider must stage or re-open and re-verify those bytes immediately before
-hypervisor attachment. The verifier does not claim that a pathname remains pinned after
-its verified handle is closed.
+The provider re-verifies the operator-supplied ISO, copies it into a private build
+directory, hashes that copy against the expected SHA-256, then attaches only the
+staged path. The verifier does not claim that a pathname remains pinned after its
+verified handle is closed.
 
 Provider selection is fail-closed. A provider must explicitly advertise support for the
 requested architecture, media type, output format, firmware, disk bus, network mode,
@@ -119,23 +115,66 @@ escape path.
           v
     ExecutionEnvironment -> Capsule -> Adapter
 
-## Planned concrete providers
+## Concrete attended providers
 
-The provider-neutral contract is intentionally separated from concrete installers.
+The provider-neutral contract is separated from the Hyper-V and libvirt builders.
+Both create a temporary installer VM from the verified ISO, wait for an orderly
+guest shutdown, destroy the installer VM, hash the output image, and publish the
+image and manifest in one cache directory. A per-key kernel lock serializes
+cooperating builders. Existing published images are verified and reused, never
+overwritten. Failure and ordinary interruption remove temporary files and VM
+resources. If VM cleanup cannot be confirmed, the private workspace is retained
+for operator recovery rather than deleting a disk still attached to a VM. An
+abrupt host crash can also require operator cleanup of an orphan VM.
 
-Hyper-V should produce VHDX base images on supported Windows hosts. Libvirt/QEMU should
-produce qcow2 or raw base images on supported Linux hosts. Each provider must preserve
-the requested firmware/security contract and must not weaken an unsupported machine
-definition.
+The initial supported build and Capsule contracts are deliberately narrow:
 
-Unattended installation mechanics are OS-specific. Windows may use an operator-controlled
-answer-file workflow; Linux distributions may use their supported unattended installer
-mechanisms. Secret material must be injected from a secret reference and must not be
-persisted in the environment definition, derived manifest, logs, reports, or ATES payloads.
+| Provider | Host | Architecture | Firmware | Disk bus | Output | Network |
+| --- | --- | --- | --- | --- | --- | --- |
+| Hyper-V | Windows | x86_64 | UEFI | SCSI | VHDX | host_only |
+| libvirt/QEMU | Linux | x86_64 | BIOS | virtio | qcow2/raw | host_only |
+
+Secure Boot and TPM requests fail closed until both the installer VM and the
+disposable Capsule runtime can preserve them. Unsupported disk buses, firmware,
+architectures, and `isolated` networking likewise fail instead of changing the
+machine contract. Hyper-V needs an Internal switch. Libvirt needs an active,
+non-forwarding local system network and local `virsh`/`qemu-img` access; the
+installer console uses VNC bound to localhost. These providers build images
+with an operator at the installer console. Use `unattended: false`,
+`update_policy: manual`, and no edition, package list, or credential reference.
+Nondefault locale/timezone are rejected because the generic provider cannot
+apply them. An operator must verify the installed OS, its Argus guest agent,
+licensing, and readiness before using the image in a Capsule run.
+
+For example, from Python after loading a definition with those attended fields:
+
+```python
+from argus.provisioning import HyperVProvisioner, build_provisioning_plan
+
+provider = HyperVProvisioner(switch_name="Argus-Internal", on_started=print)
+plan = build_provisioning_plan(
+    definition, provider.capabilities(), output_format="vhdx", cache_root="./images"
+)
+result = provider.provision(definition, plan)
+```
+
+The `on_started` hook receives only the temporary VM name. Finish installation
+and shut the guest down; the provider will remove the temporary VM. For Linux,
+use `LibvirtProvisioner(network_name="argus-local")` and a qcow2/raw plan.
+Use `capsule_settings_from_derived_image` to verify and bind the published image
+to `CapsuleSettings`, then configure the normal secure guest transport. Fleet
+can call `derived_image_advertisement` to advertise its verified SHA-256;
+aliases remain labels and never become execution identity.
+
+Unattended installation mechanics are OS-specific and are not claimed by these
+attended providers. They reject `credential_ref`, packages and unattended mode
+instead of storing credentials or claiming to have applied unsupported inputs.
+Future OS-specific drivers must inject secrets ephemerally and keep them out of
+definitions, manifests, logs, reports, and ATES payloads.
 
 ## ATES direction
 
-Provisioning events should eventually become canonical ATES evidence: media verification,
+Provisioning events still need to become canonical ATES evidence: media verification,
 provider selection, machine definition, installation start/completion, driver/package
 steps, baseline validation, final image hashing, and publication. Provisioning evidence
 must follow the existing privacy pipeline rather than creating a parallel evidence format.

@@ -1,6 +1,7 @@
 """OS installation-media provisioning primitives for Argus."""
 
 from argus.provisioning.capsule_bridge import capsule_settings_from_derived_image
+from argus.provisioning.fleet_bridge import derived_image_advertisement
 from argus.provisioning.integrity import VerifiedFile, verify_regular_file
 from argus.provisioning.media import verify_installation_media
 from argus.provisioning.model import (
@@ -19,6 +20,7 @@ from argus.provisioning.planner import (
     build_provisioning_plan,
     validate_provider_capabilities,
 )
+from argus.provisioning.providers import HyperVProvisioner, LibvirtProvisioner
 from argus.provisioning.spec import (
     environment_definition_from_mapping,
     load_environment_definition,
@@ -30,6 +32,8 @@ __all__ = [
     "EnvironmentProvisioner",
     "InstallationMediaSource",
     "InstallationSpec",
+    "HyperVProvisioner",
+    "LibvirtProvisioner",
     "MachineSpec",
     "ProvisioningError",
     "ProvisioningPlan",
@@ -38,6 +42,7 @@ __all__ = [
     "VerifiedFile",
     "build_provisioning_plan",
     "capsule_settings_from_derived_image",
+    "derived_image_advertisement",
     "environment_definition_from_mapping",
     "load_environment_definition",
     "validate_provider_capabilities",
