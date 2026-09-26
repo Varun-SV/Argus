@@ -23,6 +23,45 @@ def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+def _windows_final_path(fd: int) -> Path:
+    """Return the canonical DOS/UNC path for an already-open Windows file handle."""
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    handle = msvcrt.get_osfhandle(fd)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_final_path = kernel32.GetFinalPathNameByHandleW
+    get_final_path.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    get_final_path.restype = wintypes.DWORD
+
+    size = 32768
+    while True:
+        buffer = ctypes.create_unicode_buffer(size)
+        written = get_final_path(handle, buffer, size, 0)
+        if written == 0:
+            error = ctypes.get_last_error()
+            raise OSError(error, "GetFinalPathNameByHandleW failed")
+        if written < size:
+            raw = buffer.value
+            break
+        size = written + 1
+
+    unc_prefix = "\\\\?\\UNC\\"
+    device_prefix = "\\\\?\\"
+    if raw.startswith(unc_prefix):
+        raw = "\\\\" + raw[len(unc_prefix):]
+    elif raw.startswith(device_prefix):
+        raw = raw[len(device_prefix):]
+    return Path(raw)
+
+
 def verify_regular_file(
     path: str | Path,
     *,
@@ -58,37 +97,72 @@ def verify_regular_file(
 
     fd: int | None = None
     if roots:
-        # Anchor the open to an already-opened trusted root so an intermediate
-        # directory cannot be swapped between the containment check and open.
-        if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
-            raise ProvisioningError(
-                "secure allowed-root verification is not supported on this platform"
-            )
         matching_roots = [root for root in roots if _is_within(resolved, root)]
         root = max(matching_roots, key=lambda item: len(item.parts))
-        relative = resolved.relative_to(root)
-        root_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        root_flags |= getattr(os, "O_DIRECTORY", 0)
-        try:
-            dir_fd = os.open(root, root_flags)
+
+        if os.name == "nt":
+            # Windows has no dir_fd/openat traversal in Python. Pin the exact
+            # pre-validated file identity, then verify the path of the opened
+            # kernel handle before reading any bytes. A directory/junction swap
+            # to another file or outside the trusted roots therefore fails closed.
             try:
-                parts = relative.parts
-                if not parts:
-                    raise ProvisioningError("provisioning source must be a file")
-                for component in parts[:-1]:
-                    next_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-                    next_flags |= getattr(os, "O_DIRECTORY", 0)
-                    next_flags |= os.O_NOFOLLOW
-                    next_fd = os.open(component, next_flags, dir_fd=dir_fd)
+                expected = os.stat(resolved, follow_symlinks=False)
+                if not stat.S_ISREG(expected.st_mode):
+                    raise ProvisioningError("provisioning source must be a regular file")
+                fd = os.open(resolved, flags)
+                opened_path = _windows_final_path(fd)
+                opened = os.fstat(fd)
+            except OSError as exc:
+                if fd is not None:
+                    os.close(fd)
+                    fd = None
+                raise ProvisioningError(
+                    f"cannot securely open provisioning file {resolved}: {exc}"
+                ) from exc
+
+            if not any(_is_within(opened_path, allowed) for allowed in roots):
+                os.close(fd)
+                fd = None
+                raise ProvisioningError(
+                    f"opened provisioning file {opened_path} is outside the configured allowed roots"
+                )
+            if expected.st_dev != opened.st_dev or expected.st_ino != opened.st_ino:
+                os.close(fd)
+                fd = None
+                raise ProvisioningError(
+                    "provisioning file changed while it was being securely opened"
+                )
+        else:
+            # Anchor each path component to a trusted directory descriptor so
+            # an intermediate symlink swap cannot redirect the final open.
+            if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
+                raise ProvisioningError(
+                    "secure allowed-root verification is not supported on this platform"
+                )
+            relative = resolved.relative_to(root)
+            root_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            root_flags |= getattr(os, "O_DIRECTORY", 0)
+            root_flags |= os.O_NOFOLLOW
+            try:
+                dir_fd = os.open(root, root_flags)
+                try:
+                    parts = relative.parts
+                    if not parts:
+                        raise ProvisioningError("provisioning source must be a file")
+                    for component in parts[:-1]:
+                        next_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                        next_flags |= getattr(os, "O_DIRECTORY", 0)
+                        next_flags |= os.O_NOFOLLOW
+                        next_fd = os.open(component, next_flags, dir_fd=dir_fd)
+                        os.close(dir_fd)
+                        dir_fd = next_fd
+                    fd = os.open(parts[-1], flags, dir_fd=dir_fd)
+                finally:
                     os.close(dir_fd)
-                    dir_fd = next_fd
-                fd = os.open(parts[-1], flags, dir_fd=dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError as exc:
-            raise ProvisioningError(
-                f"cannot securely open provisioning file {resolved}: {exc}"
-            ) from exc
+            except OSError as exc:
+                raise ProvisioningError(
+                    f"cannot securely open provisioning file {resolved}: {exc}"
+                ) from exc
     else:
         try:
             fd = os.open(resolved, flags)
