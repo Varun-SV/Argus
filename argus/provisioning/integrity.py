@@ -56,10 +56,44 @@ def verify_regular_file(
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
 
-    try:
-        fd = os.open(resolved, flags)
-    except OSError as exc:
-        raise ProvisioningError(f"cannot open provisioning file {resolved}: {exc}") from exc
+    fd: int | None = None
+    if roots:
+        # Anchor the open to an already-opened trusted root so an intermediate
+        # directory cannot be swapped between the containment check and open.
+        if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
+            raise ProvisioningError(
+                "secure allowed-root verification is not supported on this platform"
+            )
+        matching_roots = [root for root in roots if _is_within(resolved, root)]
+        root = max(matching_roots, key=lambda item: len(item.parts))
+        relative = resolved.relative_to(root)
+        root_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        root_flags |= getattr(os, "O_DIRECTORY", 0)
+        try:
+            dir_fd = os.open(root, root_flags)
+            try:
+                parts = relative.parts
+                if not parts:
+                    raise ProvisioningError("provisioning source must be a file")
+                for component in parts[:-1]:
+                    next_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                    next_flags |= getattr(os, "O_DIRECTORY", 0)
+                    next_flags |= os.O_NOFOLLOW
+                    next_fd = os.open(component, next_flags, dir_fd=dir_fd)
+                    os.close(dir_fd)
+                    dir_fd = next_fd
+                fd = os.open(parts[-1], flags, dir_fd=dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as exc:
+            raise ProvisioningError(
+                f"cannot securely open provisioning file {resolved}: {exc}"
+            ) from exc
+    else:
+        try:
+            fd = os.open(resolved, flags)
+        except OSError as exc:
+            raise ProvisioningError(f"cannot open provisioning file {resolved}: {exc}") from exc
 
     try:
         before = os.fstat(fd)
