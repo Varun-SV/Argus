@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from hashlib import sha256
+import os
 from pathlib import Path
 import platform
 
@@ -158,6 +159,51 @@ def test_iso_verification_binds_actual_bytes(tmp_path: Path) -> None:
         verify_installation_media(definition, allowed_roots=(tmp_path,))
 
 
+@pytest.mark.skipif(
+    os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"),
+    reason="requires dir_fd + O_NOFOLLOW secure traversal",
+)
+def test_iso_verification_rejects_intermediate_symlink_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted = tmp_path / "trusted"
+    slot = trusted / "slot"
+    outside = tmp_path / "outside"
+    slot.mkdir(parents=True)
+    outside.mkdir()
+
+    iso = slot / "windows.iso"
+    iso.write_bytes(b"installation-media")
+    (outside / "windows.iso").write_bytes(b"attacker-media")
+    definition = _definition(
+        tmp_path,
+        source=InstallationMediaSource(
+            path=str(iso),
+            sha256=_digest(b"installation-media"),
+        ),
+    )
+
+    resolved_iso = iso.resolve()
+    original_relative_to = Path.relative_to
+    swapped = False
+
+    def swapping_relative_to(self: Path, *other: object) -> Path:
+        nonlocal swapped
+        result = original_relative_to(self, *other)
+        if not swapped and self == resolved_iso:
+            slot.rename(trusted / "slot-original")
+            slot.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(Path, "relative_to", swapping_relative_to)
+
+    with pytest.raises(ProvisioningError, match="cannot securely open"):
+        verify_installation_media(definition, allowed_roots=(trusted,))
+    assert swapped
+
+
 def test_iso_verification_requires_iso_locator(tmp_path: Path) -> None:
     blob = tmp_path / "windows.img"
     blob.write_bytes(b"installation-media")
@@ -250,7 +296,13 @@ def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path) ->
         created_at="2026-09-25T00:00:00Z",
     )
 
-    base = CapsuleSettings(provider="hyperv", memory_mb=12288)
+    base = CapsuleSettings(
+        provider="hyperv",
+        memory_mb=8192,
+        cpu_count=4,
+        network_mode="isolated",
+        guest_port=9443,
+    )
     settings = capsule_settings_from_derived_image(
         definition,
         manifest,
@@ -258,7 +310,10 @@ def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path) ->
         settings=base,
     )
     assert settings.provider == "hyperv"
-    assert settings.memory_mb == 12288
+    assert settings.memory_mb == 8192
+    assert settings.cpu_count == 4
+    assert settings.network_mode == "isolated"
+    assert settings.guest_port == 9443
     assert settings.image == str(image.resolve())
 
 
@@ -302,7 +357,42 @@ def test_derived_image_bridge_derives_provider_from_manifest(tmp_path: Path) -> 
     settings = capsule_settings_from_derived_image(definition, manifest, image)
 
     assert settings.provider == "libvirt"
+    assert settings.cpu_count == 4
+    assert settings.memory_mb == 8192
+    assert settings.network_mode == "isolated"
+    assert settings.libvirt_arch == "x86_64"
     assert settings.image == str(image.resolve())
+
+
+def test_derived_image_bridge_rejects_explicit_machine_contract_mismatch(
+    tmp_path: Path,
+) -> None:
+    definition = _definition(tmp_path)
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"derived-image")
+    manifest = DerivedImageManifest(
+        environment_id=definition.environment_id,
+        definition_sha256=definition.definition_sha256,
+        source_sha256=definition.source.sha256,
+        provider="hyperv",
+        image_format="vhdx",
+        image_sha256=_digest(b"derived-image"),
+        architecture="x86_64",
+        created_at="2026-09-25T00:00:00Z",
+    )
+
+    with pytest.raises(ProvisioningError, match="memory_mb requires 8192"):
+        capsule_settings_from_derived_image(
+            definition,
+            manifest,
+            image,
+            settings=CapsuleSettings(
+                provider="hyperv",
+                cpu_count=4,
+                memory_mb=12288,
+                network_mode="isolated",
+            ),
+        )
 
 
 def test_derived_image_bridge_rejects_explicit_provider_mismatch(tmp_path: Path) -> None:
