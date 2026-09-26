@@ -207,6 +207,34 @@ def test_plan_is_content_addressed_and_provider_gated(tmp_path: Path) -> None:
         )
 
 
+def test_plan_separates_manifest_by_output_format(tmp_path: Path) -> None:
+    definition = _definition(tmp_path)
+    capabilities = replace(
+        _capabilities(),
+        provider="libvirt",
+        image_formats=("qcow2", "raw"),
+    )
+
+    qcow2 = build_provisioning_plan(
+        definition,
+        capabilities,
+        output_format="qcow2",
+        cache_root=tmp_path / "cache",
+    )
+    raw = build_provisioning_plan(
+        definition,
+        capabilities,
+        output_format="raw",
+        cache_root=tmp_path / "cache",
+    )
+
+    assert qcow2.cache_dir != raw.cache_dir
+    assert qcow2.manifest_path != raw.manifest_path
+    assert qcow2.manifest_path.name == raw.manifest_path.name == "manifest.json"
+    assert qcow2.image_path.name == "base.qcow2"
+    assert raw.image_path.name == "base.raw"
+
+
 def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path) -> None:
     definition = _definition(tmp_path)
     image = tmp_path / "base.vhdx"
