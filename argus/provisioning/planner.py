@@ -135,7 +135,7 @@ def build_provisioning_plan(
         )
 
     root = Path(cache_root).expanduser().resolve()
-    cache_dir = root / definition.environment_id / provider
+    cache_dir = root / definition.environment_id / provider / normalized_format
     image_path = cache_dir / f"base.{normalized_format}"
     manifest_path = cache_dir / "manifest.json"
     return ProvisioningPlan(
