@@ -123,6 +123,10 @@ class HyperVProvider(CapsuleProvider):
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
         self._ensure_host()
         settings = request.settings
+        if settings.secure_boot is not None or settings.tpm_version:
+            raise CapsuleError(
+                "provisioned firmware/TPM contracts require SecureCapsuleExecutionEnvironment"
+            )
         if settings.provider.lower() != "hyperv":
             raise CapsuleError(f"HyperVProvider cannot handle provider {settings.provider!r}")
         if not settings.guest_token:

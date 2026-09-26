@@ -10,7 +10,9 @@ import threading
 
 import pytest
 
-from argus.capsule.base import CapsuleSettings
+from argus.capsule.base import CapsuleError, CapsuleRequest, CapsuleSettings
+from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
+from argus.capsule.hyperv import HyperVProvider
 from argus.provisioning import (
     DerivedImageManifest,
     EnvironmentDefinition,
@@ -451,8 +453,7 @@ def test_bridge_rejects_security_and_hardware_downgrade(tmp_path: Path) -> None:
         "hyperv", "vhdx", _digest(b"image"), "x86_64", "2026-09-26T00:00:00Z",
     )
     for machine in (
-        replace(definition.machine, secure_boot=True),
-        replace(definition.machine, tpm_version="2.0"),
+        replace(definition.machine, tpm_version="1.2"),
         replace(definition.machine, disk_bus="nvme"),
         replace(definition.machine, network_mode="isolated"),
     ):
@@ -463,6 +464,77 @@ def test_bridge_rejects_security_and_hardware_downgrade(tmp_path: Path) -> None:
         )
         with pytest.raises(ProvisioningError, match="cannot be preserved"):
             capsule_settings_from_derived_image(changed, changed_manifest, image)
+
+
+def test_windows_11_security_contract_reaches_capsule(tmp_path: Path) -> None:
+    original = _runtime_definition(tmp_path)
+    definition = replace(
+        original, machine=replace(original.machine, secure_boot=True, tpm_version="2.0")
+    )
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"win11 image")
+    manifest = DerivedImageManifest(
+        definition.environment_id, definition.definition_sha256, definition.source.sha256,
+        "hyperv", "vhdx", _digest(b"win11 image"), "x86_64", "2026-09-26T00:00:00Z",
+    )
+    settings = capsule_settings_from_derived_image(definition, manifest, image)
+    assert settings.secure_boot is True
+    assert settings.tpm_version == "2.0"
+    with pytest.raises(CapsuleError, match="require SecureCapsuleExecutionEnvironment"):
+        HyperVProvider(runner=lambda script, timeout: "").create(
+            CapsuleRequest("legacy", "cli", settings)
+        )
+    with pytest.raises(ProvisioningError, match="secure_boot requires True"):
+        capsule_settings_from_derived_image(
+            definition, manifest, image,
+            settings=CapsuleSettings(
+                provider="hyperv", cpu_count=4, memory_mb=8192,
+                network_mode="host_only", secure_boot=False,
+            ),
+        )
+
+
+def test_hyperv_capsule_configures_derived_secure_boot_and_tpm_before_start(
+    tmp_path: Path,
+) -> None:
+    definition = _runtime_definition(tmp_path)
+    definition = replace(
+        definition, machine=replace(definition.machine, secure_boot=True, tpm_version="2.0")
+    )
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"win11 image")
+    manifest = DerivedImageManifest(
+        definition.environment_id, definition.definition_sha256, definition.source.sha256,
+        "hyperv", "vhdx", _digest(b"win11 image"), "x86_64", "2026-09-26T00:00:00Z",
+    )
+    settings = replace(
+        capsule_settings_from_derived_image(definition, manifest, image),
+        switch_name="Argus-Internal", vm_root=str(tmp_path / "sessions"),
+        guest_token="test-token", guest_transport="http", allow_insecure_http=True,
+        guest_address="10.0.0.2", boot_timeout_seconds=2,
+    )
+    commands = []
+
+    def run(script: str, timeout: float) -> str:
+        commands.append(script)
+        if "Get-VMSwitch" in script and "SwitchType" in script:
+            return "Internal"
+        if "Get-VMNetworkAdapter -ManagementOS" in script:
+            return "10.0.0.1"
+        if "Get-VMNetworkAdapter -VMName" in script and "IPAddresses" in script:
+            return "10.0.0.2"
+        return ""
+
+    provider = IsolatedHyperVProvider(runner=run)
+    handle = provider.create(CapsuleRequest("win11-session", "cli", settings))
+    try:
+        secure_boot = next(i for i, command in enumerate(commands)
+                           if "-EnableSecureBoot On -SecureBootTemplate MicrosoftWindows" in command)
+        tpm = next(i for i, command in enumerate(commands) if "Enable-VMTPM" in command)
+        start = next(i for i, command in enumerate(commands) if "Start-VM" in command)
+        assert secure_boot < tpm < start
+    finally:
+        provider.destroy(handle)
 
 
 def test_build_publishes_once_and_rejects_corrupt_cache(tmp_path: Path, monkeypatch) -> None:
@@ -634,7 +706,10 @@ def test_libvirt_failure_after_start_cleans_vm_and_does_not_publish(
 def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> None:
     import re
 
-    definition = _runtime_definition(tmp_path)
+    original = _runtime_definition(tmp_path)
+    definition = replace(
+        original, machine=replace(original.machine, secure_boot=True, tpm_version="2.0")
+    )
     commands = []
 
     def run(script, timeout):
@@ -657,7 +732,9 @@ def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> No
     )
     result = provider.provision(definition, plan)
     assert result.manifest.image_sha256 == _digest(b"installed Windows fixture")
-    assert any("Set-VMFirmware" in command for command in commands)
+    assert any("-EnableSecureBoot On -SecureBootTemplate MicrosoftWindows" in command
+               for command in commands)
+    assert any("Enable-VMTPM" in command for command in commands)
     assert any("Remove-VM" in command for command in commands)
 
 

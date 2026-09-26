@@ -276,10 +276,23 @@ class IsolatedHyperVProvider(HyperVProvider):
                 30,
             )
 
-            if settings.secure_boot is False:
+            if settings.secure_boot is not None:
+                boot_mode = (
+                    "On -SecureBootTemplate MicrosoftWindows"
+                    if settings.secure_boot else "Off"
+                )
                 self._run_ps(
                     f"Set-VMFirmware -VMName {_ps_quote(vm_name)} "
-                    "-EnableSecureBoot Off -ErrorAction Stop",
+                    f"-EnableSecureBoot {boot_mode} -ErrorAction Stop",
+                    30,
+                )
+            if settings.tpm_version:
+                if settings.tpm_version != "2.0":
+                    raise CapsuleError("Hyper-V Capsule supports TPM 2.0 only")
+                self._run_ps(
+                    f"Set-VMKeyProtector -VMName {_ps_quote(vm_name)} "
+                    "-NewLocalKeyProtector -ErrorAction Stop; "
+                    f"Enable-VMTPM -VMName {_ps_quote(vm_name)} -ErrorAction Stop",
                     30,
                 )
 

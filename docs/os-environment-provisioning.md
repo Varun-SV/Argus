@@ -35,12 +35,12 @@ binding and the final image bytes.
 ## Example definition
 
     schema_version: argus-environment-v1
-    name: windows-lab-clean
+    name: win11-lab-clean
 
     source:
       kind: installation_media
       media_type: iso
-      path: D:/isos/Windows_English_x64.iso
+      path: D:/isos/Win11_English_x64.iso
       sha256: <64-character sha256>
       architecture: x86_64
 
@@ -49,8 +49,8 @@ binding and the final image bytes.
       cpu_count: 8
       memory_mb: 16384
       firmware: uefi
-      secure_boot: false
-      tpm_version: null
+      secure_boot: true
+      tpm_version: "2.0"
       disk_size_gib: 128
       disk_bus: scsi
       network_mode: host_only
@@ -131,13 +131,17 @@ The initial supported build and Capsule contracts are deliberately narrow:
 
 | Provider | Host | Architecture | Firmware | Disk bus | Output | Network |
 | --- | --- | --- | --- | --- | --- | --- |
-| Hyper-V | Windows | x86_64 | UEFI | SCSI | VHDX | host_only |
+| Hyper-V | Windows | x86_64 | UEFI, optional Secure Boot and TPM 2.0 | SCSI | VHDX | host_only |
 | libvirt/QEMU | Linux | x86_64 | BIOS | virtio | qcow2/raw | host_only |
 
-Secure Boot and TPM requests fail closed until both the installer VM and the
-disposable Capsule runtime can preserve them. Unsupported disk buses, firmware,
-architectures, and `isolated` networking likewise fail instead of changing the
-machine contract. Hyper-V needs an Internal switch. Libvirt needs an active,
+Hyper-V applies the requested Secure Boot mode and TPM 2.0 to both the installer
+VM and disposable Capsule. Its output is a disk image; vTPM state is not a
+portable part of the VHDX, so a guest that seals its disk to the installer
+VM's TPM (for example, with BitLocker) needs additional recovery handling and
+must not be assumed bootable in a fresh Capsule. Libvirt currently rejects
+Secure Boot and TPM requests. Unsupported disk buses, firmware, architectures,
+and `isolated` networking likewise fail instead of changing the machine
+contract. Hyper-V needs an Internal switch. Libvirt needs an active,
 non-forwarding local system network and local `virsh`/`qemu-img` access; the
 installer console uses VNC bound to localhost. These providers build images
 with an operator at the installer console. Use `unattended: false`,

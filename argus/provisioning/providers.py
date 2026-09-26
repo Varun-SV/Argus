@@ -81,6 +81,7 @@ class HyperVProvisioner(EnvironmentProvisioner):
             architectures=("x86_64",), media_types=("iso",), image_formats=("vhdx",),
             firmware_modes=("uefi",), disk_buses=("scsi",),
             network_modes=("host_only",),
+            secure_boot=True, tpm_versions=("2.0",),
         )
 
     def _ps(self, script: str, timeout: float = 30) -> str:
@@ -119,18 +120,29 @@ class HyperVProvisioner(EnvironmentProvisioner):
                 f"-SwitchName {_ps_quote(self.switch_name)} -ErrorAction Stop | Out-Null", 90
             )
             owned = True
-            self._ps(
+            secure_boot = (
+                "On -SecureBootTemplate MicrosoftWindows"
+                if definition.machine.secure_boot else "Off"
+            )
+            tpm_setup = (
+                f"Set-VMKeyProtector -VMName {vm} -NewLocalKeyProtector; "
+                f"Enable-VMTPM -VMName {vm}; "
+                if definition.machine.tpm_version == "2.0" else ""
+            )
+            setup_script = (
                 f"Set-VMProcessor -VMName {vm} -Count {definition.machine.cpu_count}; "
                 f"Set-VM -Name {vm} -AutomaticCheckpointsEnabled $false "
                 "-AutomaticStartAction Nothing -AutomaticStopAction TurnOff; "
                 f"Add-VMDvdDrive -VMName {vm} -Path {_ps_quote(str(iso))}; "
-                f"Set-VMFirmware -VMName {vm} -EnableSecureBoot Off "
+                f"Set-VMFirmware -VMName {vm} -EnableSecureBoot {secure_boot} "
                 f"-FirstBootDevice (Get-VMDvdDrive -VMName {vm}); "
+            ) + tpm_setup + (
                 f"Add-VMNetworkAdapterExtendedAcl -VMName {vm} -Action Deny "
                 "-Direction Inbound -Weight 1; "
                 f"Add-VMNetworkAdapterExtendedAcl -VMName {vm} -Action Deny "
-                "-Direction Outbound -Weight 1", 60
+                "-Direction Outbound -Weight 1"
             )
+            self._ps(setup_script, 60)
             self._ps(f"Start-VM -Name {vm} -ErrorAction Stop | Out-Null", 60)
             if self._on_started is not None:
                 self._on_started(name)

@@ -41,8 +41,9 @@ def _bind_machine_contract(
         or machine.firmware != firmware
         or machine.disk_bus != disk_bus
         or machine.network_mode != network
-        or machine.secure_boot
-        or machine.tpm_version is not None
+        or (manifest.provider == "libvirt" and machine.secure_boot)
+        or (manifest.provider == "libvirt" and machine.tpm_version is not None)
+        or (manifest.provider == "hyperv" and machine.tpm_version not in {None, "2.0"})
     ):
         raise ProvisioningError(
             "derived machine contract cannot be preserved by the current Capsule provider"
@@ -55,7 +56,8 @@ def _bind_machine_contract(
             cpu_count=machine.cpu_count,
             memory_mb=machine.memory_mb,
             network_mode=machine.network_mode,
-            secure_boot=False,
+            secure_boot=machine.secure_boot,
+            tpm_version=machine.tpm_version or "",
             libvirt_arch=architecture,
         )
 
@@ -80,8 +82,10 @@ def _bind_machine_contract(
         mismatches.append(
             f"network_mode requires {machine.network_mode!r}, got {settings.network_mode!r}"
         )
-    if settings.secure_boot is True:
-        mismatches.append("secure_boot requires false")
+    if settings.secure_boot is not None and settings.secure_boot != machine.secure_boot:
+        mismatches.append(f"secure_boot requires {machine.secure_boot}")
+    if settings.tpm_version and settings.tpm_version != (machine.tpm_version or ""):
+        mismatches.append(f"tpm_version requires {machine.tpm_version!r}")
     if manifest.provider == "libvirt":
         requested_arch = settings.libvirt_arch.strip().lower()
         if requested_arch and requested_arch != machine.architecture:
@@ -101,7 +105,8 @@ def _bind_machine_contract(
         cpu_count=machine.cpu_count,
         memory_mb=machine.memory_mb,
         network_mode=machine.network_mode,
-        secure_boot=False,
+        secure_boot=machine.secure_boot,
+        tpm_version=machine.tpm_version or "",
         libvirt_arch=architecture if manifest.provider == "libvirt" else settings.libvirt_arch,
     )
 

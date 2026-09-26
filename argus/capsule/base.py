@@ -84,6 +84,7 @@ class CapsuleSettings:
     # None preserves legacy provider behavior. Provisioned images bind this
     # explicitly so the runtime cannot silently change the build contract.
     secure_boot: Optional[bool] = None
+    tpm_version: str = ""
     egress_allowlist: tuple[str, ...] = ()
     allow_dhcp: bool = True
     disable_guest_file_copy: bool = True
