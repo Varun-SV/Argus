@@ -58,7 +58,7 @@ def validate_secure_capsule_baseline(
         raise ProvisioningError("baseline guest OS contradicts provider contract")
 
     environment = SecureCapsuleExecutionEnvironment("cli", bound)
-    problem: Exception | None = None
+    failed = False
     try:
         environment.prepare()
         client = environment._client
@@ -74,15 +74,15 @@ def validate_secure_capsule_baseline(
             or health.get("architecture") != definition.machine.architecture
         ):
             raise ProvisioningError("baseline guest OS or secure agent identity is invalid")
-    except Exception as exc:
-        problem = exc
+    except Exception:
+        failed = True
     finally:
         try:
             environment.close()
-        except Exception as exc:
-            raise ProvisioningCleanupError("baseline Capsule teardown is uncertain") from exc
+        except Exception:
+            raise ProvisioningCleanupError("baseline Capsule teardown is uncertain") from None
         if environment._handle is not None:
             raise ProvisioningCleanupError("baseline Capsule teardown is uncertain")
-    if problem is not None:
+    if failed:
         # Guest and hypervisor exceptions may contain operator-supplied input.
-        raise ProvisioningError("baseline Capsule boot or agent validation failed") from problem
+        raise ProvisioningError("baseline Capsule boot or agent validation failed")

@@ -648,10 +648,11 @@ def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
     monkeypatch.setattr(FakeCapsule, "health", lambda self: {
         **original_health(self), "guest_os": "windows"
     })
-    with pytest.raises(ProvisioningError, match="baseline Capsule boot or agent validation failed"):
+    with pytest.raises(ProvisioningError, match="baseline Capsule boot or agent validation failed") as failure:
         validate_secure_capsule_baseline(
             definition, image, provider="libvirt", image_format="qcow2", settings=settings
         )
+    assert failure.value.__cause__ is None
     assert sessions[-1]._handle is None
 
 
