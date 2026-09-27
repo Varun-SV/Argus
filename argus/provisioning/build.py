@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -18,6 +19,9 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Iterator
 
+from argus.ates import RunId
+from argus.ates.store import _run_directory_key
+from argus.provisioning.evidence import AtesProvisioningRecorder, verify_provisioning_evidence
 from argus.provisioning.integrity import verify_regular_file
 from argus.provisioning.media import verify_installation_media
 from argus.provisioning.model import DerivedImageManifest, EnvironmentDefinition, ProvisioningError
@@ -26,6 +30,27 @@ from argus.provisioning.planner import ProvisioningPlan, ProvisioningResult
 
 class ProvisioningCleanupError(ProvisioningError):
     """A provider could not prove its temporary VM was removed."""
+
+
+def _evidence_root(plan: ProvisioningPlan) -> Path:
+    return plan.evidence_root or plan.cache_dir.parents[2]
+
+
+def _evidence_run_dir(plan: ProvisioningPlan, run_id: str) -> Path:
+    return _evidence_root(plan) / ".argus" / "runs" / _run_directory_key(RunId(run_id))
+
+
+def _remove_private_dir(path: Path) -> None:
+    """Remove a failed unpublished build, including read-only image bytes on Windows."""
+    def writable_remove(func, name, _exc) -> None:
+        target = Path(name)
+        target.chmod(0o700 if target.is_dir() else 0o600)
+        func(name)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=writable_remove)
+    else:
+        shutil.rmtree(path, onerror=writable_remove)
 
 
 @contextmanager
@@ -69,6 +94,12 @@ def _published(definition: EnvironmentDefinition, plan: ProvisioningPlan) -> Pro
         raise ProvisioningError("published derived-image provider or format conflicts with plan")
     verify_regular_file(plan.image_path, expected_sha256=manifest.image_sha256,
                         allowed_roots=(plan.cache_dir,))
+    if manifest.evidence_run_id is None:
+        raise ProvisioningError("published derived image lacks canonical ATES evidence")
+    verify_provisioning_evidence(
+        _evidence_run_dir(plan, manifest.evidence_run_id), definition, plan,
+        manifest.image_sha256,
+    )
     return ProvisioningResult(plan, manifest)
 
 
@@ -118,14 +149,26 @@ def publish_derived_image(
 
         workspace = Path(tempfile.mkdtemp(prefix=".building-", dir=plan.cache_dir.parent))
         preserve_workspace = False
+        published_here = False
+        recorder: AtesProvisioningRecorder | None = None
         try:
+            recorder = AtesProvisioningRecorder(_evidence_root(plan), definition, plan)
             staged_iso = workspace / "installation.iso"
             image = workspace / plan.image_path.name
+            recorder.begin_stage("media_verified")
             _copy_verified_media(definition, staged_iso)
+            recorder.complete_stage("media_verified")
+            recorder.begin_stage("provider_selected")
+            recorder.complete_stage("provider_selected")
+            recorder.begin_stage("installation")
             install(staged_iso, image)
             if not image.is_file() or image.is_symlink():
                 raise ProvisioningError("installer did not produce a regular base image")
+            recorder.complete_stage("installation")
+            recorder.begin_stage("baseline_validated")
             validate_baseline(image)
+            recorder.complete_stage("baseline_validated")
+            recorder.begin_stage("image_hashed")
             digest = sha256()
             with image.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -134,6 +177,7 @@ def publish_derived_image(
                 raise ProvisioningError("installer produced an empty base image")
             verify_regular_file(image, expected_sha256=digest.hexdigest(),
                                 allowed_roots=(workspace,))
+            recorder.complete_stage("image_hashed", image_sha256=digest.hexdigest())
             manifest = DerivedImageManifest(
                 environment_id=definition.environment_id,
                 definition_sha256=definition.definition_sha256,
@@ -143,6 +187,7 @@ def publish_derived_image(
                 image_sha256=digest.hexdigest(),
                 architecture=definition.machine.architecture,
                 created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                evidence_run_id=str(recorder.run_id),
             )
             staged_iso.unlink()
             with (workspace / "manifest.json").open("x", encoding="utf-8") as handle:
@@ -150,17 +195,43 @@ def publish_derived_image(
                 handle.flush()
                 os.fsync(handle.fileno())
             image.chmod(0o444)
+            recorder.begin_stage("publication")
             # The lock protects cooperating builders. A foreign cache entry is
             # never overwritten, even when it appears during installation.
             if plan.cache_dir.exists() or plan.cache_dir.is_symlink():
                 raise ProvisioningError("derived-image cache was published concurrently")
             workspace.rename(plan.cache_dir)
+            published_here = True
+            recorder.complete_stage("publication")
+            recorder.finish()
+            # ATES verification reacquires the run authority; release the
+            # producer's handle first (especially required by Windows locks).
+            recorder.close()
+            verify_provisioning_evidence(
+                recorder.run_dir, definition, plan, manifest.image_sha256,
+            )
             return ProvisioningResult(plan, manifest)
         except ProvisioningCleanupError as exc:
             preserve_workspace = True
+            if recorder is not None:
+                try:
+                    recorder.abort(cleanup_confirmed=False)
+                except Exception:
+                    pass
             raise ProvisioningCleanupError(
                 f"provisioning VM cleanup is uncertain; private workspace retained at {workspace}"
             ) from exc
+        except BaseException:
+            if published_here:
+                _remove_private_dir(plan.cache_dir)
+            if recorder is not None:
+                try:
+                    recorder.abort(cleanup_confirmed=True)
+                except Exception:
+                    pass
+            raise
         finally:
+            if recorder is not None:
+                recorder.close()
             if not preserve_workspace and workspace.exists():
-                shutil.rmtree(workspace)
+                _remove_private_dir(workspace)

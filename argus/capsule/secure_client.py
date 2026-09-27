@@ -95,3 +95,16 @@ class SecureGuestAgentClient(GuestAgentClient):
             raise rotate_exc
         else:
             self.token = token
+
+    def installed_packages(self, names: tuple[str, ...]) -> dict[str, str]:
+        """Query installed Debian packages over the bound secure guest session."""
+        result = self._request(
+            "POST", "/v1/provisioning/packages", {"packages": list(names)},
+        )
+        installed = result.get("installed")
+        if not isinstance(installed, dict) or any(
+            not isinstance(name, str) or not isinstance(version, str)
+            for name, version in installed.items()
+        ):
+            raise CapsuleGuestError("guest package inventory is invalid")
+        return installed

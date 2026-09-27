@@ -13,6 +13,37 @@ from argus.provisioning.capsule_bridge import capsule_settings_from_derived_imag
 from argus.provisioning.model import DerivedImageManifest, EnvironmentDefinition, ProvisioningError
 
 
+def _attest_installed_profile(definition: EnvironmentDefinition, health: dict, client) -> None:
+    """Check OS-specific facts reported by the authenticated secure guest agent."""
+    installation = definition.installation
+    if installation.target_os is None:
+        return
+    if health.get("os_id") != installation.target_os:
+        raise ProvisioningError("installed OS identity differs from environment definition")
+    if installation.target_os == "windows-11":
+        if (
+            health.get("os_release") != installation.target_release
+            or not isinstance(health.get("os_build"), int)
+            or health["os_build"] < 22000
+            or health.get("os_edition") != installation.edition
+        ):
+            raise ProvisioningError("installed Windows release or edition differs")
+        return
+    if installation.target_os == "ubuntu":
+        release = installation.target_release
+        if release is None or health.get("os_release") != ".".join(release.split(".")[:2]):
+            raise ProvisioningError("installed Ubuntu release differs")
+        meta = {
+            "desktop": "ubuntu-desktop", "server": "ubuntu-server",
+        }.get(installation.target_flavor)
+        if meta is None:
+            raise ProvisioningError("installed Ubuntu flavor cannot be attested")
+        required = tuple(dict.fromkeys((*installation.packages, meta)))
+        installed = client.installed_packages(required)
+        if not all(isinstance(installed.get(name), str) and installed[name] for name in required):
+            raise ProvisioningError("installed Ubuntu flavor or requested packages are missing")
+
+
 def validate_secure_capsule_baseline(
     definition: EnvironmentDefinition,
     image: Path,
@@ -74,6 +105,7 @@ def validate_secure_capsule_baseline(
             or health.get("architecture") != definition.machine.architecture
         ):
             raise ProvisioningError("baseline guest OS or secure agent identity is invalid")
+        _attest_installed_profile(definition, health, client)
     except Exception:
         failed = True
     finally:

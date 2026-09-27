@@ -87,6 +87,10 @@ def environment_definition_from_mapping(value: Mapping[str, Any]) -> Environment
             "packages",
             "update_policy",
             "credential_ref",
+            "target_os",
+            "target_release",
+            "target_flavor",
+            "apt_mirror",
         },
     )
 

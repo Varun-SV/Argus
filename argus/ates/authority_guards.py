@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from .core import (
     EventType,
     ExecutionKind,
+    PROVISIONING_STAGES,
     StepAttemptStatus,
     VerificationStatus,
     to_json_compatible,
@@ -148,6 +149,10 @@ def _validate_structural_evidence_identifiers(events) -> None:
                 elif execution_kind == ExecutionKind.ROAM.value and kinds != ["roam"]:
                     raise FinalizationError(
                         "roam runs must declare exactly one canonical roam step"
+                    )
+                elif execution_kind == ExecutionKind.PROVISIONING.value and tuple(kinds) != PROVISIONING_STAGES:
+                    raise FinalizationError(
+                        "provisioning runs must declare the canonical build stages"
                     )
 
         elif kind is EventType.OBSERVATION_CAPTURED:

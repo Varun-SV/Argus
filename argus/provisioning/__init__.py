@@ -1,6 +1,7 @@
 """OS installation-media provisioning primitives for Argus."""
 
 from argus.provisioning.capsule_bridge import capsule_settings_from_derived_image
+from argus.provisioning.evidence import AtesProvisioningRecorder, verify_provisioning_evidence
 from argus.provisioning.fleet_bridge import derived_image_advertisement
 from argus.provisioning.integrity import VerifiedFile, verify_regular_file
 from argus.provisioning.media import verify_installation_media
@@ -27,6 +28,7 @@ from argus.provisioning.spec import (
 )
 
 __all__ = [
+    "AtesProvisioningRecorder",
     "DerivedImageManifest",
     "EnvironmentDefinition",
     "EnvironmentProvisioner",
@@ -47,5 +49,6 @@ __all__ = [
     "load_environment_definition",
     "validate_provider_capabilities",
     "verify_installation_media",
+    "verify_provisioning_evidence",
     "verify_regular_file",
 ]

@@ -19,7 +19,9 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
 import ssl
+import subprocess
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -33,6 +35,66 @@ from argus.capsule.guest_agent import (
     GuestAgentState,
     _consume_control_token,
 )
+
+
+_DEB_PACKAGE = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,127}$")
+
+
+def _release_identity() -> dict[str, str | int]:
+    """Report installed OS facts; unknown facts are omitted so callers fail closed."""
+    if platform.system().lower() == "windows":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            ) as key:
+                build = int(winreg.QueryValueEx(key, "CurrentBuildNumber")[0])
+                release = str(winreg.QueryValueEx(key, "DisplayVersion")[0])
+                edition = str(winreg.QueryValueEx(key, "EditionID")[0])
+            if build >= 22000 and re.fullmatch(r"\d{2}H[12]", release):
+                return {
+                    "os_id": "windows-11", "os_release": release,
+                    "os_edition": edition.lower(), "os_build": build,
+                }
+        except (OSError, ValueError, TypeError):
+            return {}
+        return {}
+    if platform.system().lower() == "linux":
+        try:
+            info = platform.freedesktop_os_release()
+            os_id, release = info.get("ID"), info.get("VERSION_ID")
+            if os_id and release and re.fullmatch(r"[a-z0-9._-]{1,64}", os_id) and re.fullmatch(
+                r"\d{2}\.\d{2}", release
+            ):
+                return {"os_id": os_id, "os_release": release}
+        except (OSError, ValueError):
+            return {}
+    return {}
+
+
+def _installed_deb_packages(names: list[str]) -> dict[str, str]:
+    if platform.system().lower() != "linux":
+        return {}
+    if len(names) > 128 or any(not isinstance(name, str) or not _DEB_PACKAGE.fullmatch(name)
+                                for name in names):
+        raise AdapterError("package inventory request is invalid")
+    if not names:
+        return {}
+    try:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Package}\t${Status}\t${Version}\n", "--", *names],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AdapterError("package inventory is unavailable") from exc
+    installed: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0] in names and parts[1] == "install ok installed":
+            installed[parts[0]] = parts[2]
+    return installed
 
 
 def _consume_tls_private_key(path: str) -> None:
@@ -121,8 +183,20 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                     else "aarch64" if platform.machine().lower() in {"arm64", "aarch64"}
                     else "unknown"
                 ),
+                **_release_identity(),
             },
         )
+
+    def _provisioning_packages(self) -> None:
+        if not self._authorized():
+            self._send(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
+            return
+        names = self._payload().get("packages")
+        if not isinstance(names, list):
+            raise AdapterError("package inventory request is invalid")
+        self._send(HTTPStatus.OK, {
+            "ok": True, "installed": _installed_deb_packages(names),
+        })
 
     def _begin_bound_files(self) -> None:
         if not self._authorized():
@@ -148,6 +222,9 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                 return
             if self.command == "POST" and parsed.path == "/v1/files/begin":
                 self._begin_bound_files()
+                return
+            if self.command == "POST" and parsed.path == "/v1/provisioning/packages":
+                self._provisioning_packages()
                 return
         except (AdapterError, ValueError) as exc:
             self._send(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})

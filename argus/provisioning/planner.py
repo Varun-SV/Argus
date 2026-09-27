@@ -42,6 +42,7 @@ class ProvisioningPlan:
     cache_dir: Path
     image_path: Path
     manifest_path: Path
+    evidence_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,7 @@ def build_provisioning_plan(
     *,
     output_format: str,
     cache_root: str | Path,
+    evidence_root: str | Path | None = None,
 ) -> ProvisioningPlan:
     """Compile an immutable definition into a deterministic provider cache location."""
 
@@ -146,6 +148,8 @@ def build_provisioning_plan(
         cache_dir=cache_dir,
         image_path=image_path,
         manifest_path=manifest_path,
+        evidence_root=(Path(evidence_root).expanduser().resolve()
+                       if evidence_root is not None else root),
     )
 
 

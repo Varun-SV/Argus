@@ -62,6 +62,7 @@ execution:
   #   memory_mb: 4096
   #   cpu_count: 2
   #   guest_port: 8765
+  #   guest_token_ref: secret://argus/capsule/bootstrap # optional per-user store reference
   #   guest_input_mode: physical
   #   guest_address: null
   #   boot_timeout_seconds: 120
@@ -127,6 +128,7 @@ class CapsuleConfig:
     cpu_count: int = 2
     guest_port: int = 8765
     guest_token_env: str = CAPSULE_GUEST_TOKEN_ENV
+    guest_token_ref: str = ""
     guest_input_mode: str = "physical"
     guest_address: str = ""
     boot_timeout_seconds: float = 120.0
@@ -183,10 +185,10 @@ class ArgusConfig:
     ):
         """Build the configured local or Capsule execution environment.
 
-        The reusable bootstrap credential always comes from the dedicated host
-        variable ``ARGUS_CAPSULE_GUEST_TOKEN``. Project configuration cannot
-        select an arbitrary host environment variable. PR6 rotates that token
-        to a fresh bearer after the HTTPS control channel is authenticated.
+        The reusable bootstrap credential comes from the configured Argus
+        secret reference or the legacy dedicated host variable. Project
+        configuration cannot select an arbitrary host environment variable.
+        PR6 rotates the credential after HTTPS authentication.
         """
         from argus.execution import create_execution_environment
 
@@ -205,6 +207,12 @@ class ArgusConfig:
                 "execution.capsule.guest_token_env cannot select a host secret; "
                 f"Capsule credentials are read only from {CAPSULE_GUEST_TOKEN_ENV}"
             )
+        if cc.guest_token_ref:
+            from argus.secrets import ArgusSecretStore
+
+            guest_token = ArgusSecretStore().get(cc.guest_token_ref)
+        else:
+            guest_token = os.environ.get(CAPSULE_GUEST_TOKEN_ENV, "")
         capsule_config = {
             "provider": os.environ.get("ARGUS_CAPSULE_PROVIDER") or cc.provider,
             "guest_os": os.environ.get("ARGUS_CAPSULE_GUEST_OS") or cc.guest_os,
@@ -214,7 +222,7 @@ class ArgusConfig:
             "memory_mb": _env_int("ARGUS_CAPSULE_MEMORY_MB", cc.memory_mb),
             "cpu_count": _env_int("ARGUS_CAPSULE_CPU_COUNT", cc.cpu_count),
             "guest_port": _env_int("ARGUS_CAPSULE_GUEST_PORT", cc.guest_port),
-            "guest_token": os.environ.get(CAPSULE_GUEST_TOKEN_ENV, ""),
+            "guest_token": guest_token,
             "guest_input_mode": (
                 os.environ.get("ARGUS_CAPSULE_GUEST_INPUT_MODE") or cc.guest_input_mode
             ),
@@ -402,6 +410,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             cpu_count=int(capsule_raw.get("cpu_count") or 2),
             guest_port=int(capsule_raw.get("guest_port") or 8765),
             guest_token_env=CAPSULE_GUEST_TOKEN_ENV,
+            guest_token_ref=str(capsule_raw.get("guest_token_ref") or ""),
             guest_input_mode=str(capsule_raw.get("guest_input_mode") or "physical"),
             guest_address=str(capsule_raw.get("guest_address") or ""),
             boot_timeout_seconds=float(

@@ -1,8 +1,9 @@
-"""Attended ISO installation backends for the existing Capsule image formats.
+"""ISO installation backends for the existing Capsule image formats.
 
-These builders deliberately advertise only machine contracts they can carry
-through to today's Capsule providers. OS-specific unattended answers, package
-installation and portable TPM state are not emulated or silently dropped.
+These builders advertise only machine contracts they can carry through to
+Capsule. Their narrow unattended profiles reject unsupported installation
+inputs rather than silently dropping them. A Hyper-V virtual TPM is recreated
+for the disposable Capsule; its installer state is not portable with the VHDX.
 """
 
 from __future__ import annotations
@@ -31,6 +32,13 @@ from argus.provisioning.planner import (
     ProvisioningResult,
     validate_provider_capabilities,
 )
+from argus.provisioning.windows_unattended import (
+    create_windows_11_answer_iso, windows_11_answer_xml,
+)
+from argus.provisioning.ubuntu_unattended import (
+    UbuntuAutoinstallProfile, temporary_nocloud_seed_iso, validate_ubuntu_source_id,
+)
+from argus.secrets import ArgusSecretStore, SecretStoreError
 
 
 def _attended_only(definition: EnvironmentDefinition) -> None:
@@ -116,6 +124,10 @@ class HyperVProvisioner(EnvironmentProvisioner):
             raise ProvisioningError("provisioning VM name already exists")
         owned = False
         vm_dir = image.parent / "vm"
+        answer_iso = (
+            create_windows_11_answer_iso(definition, image.parent)
+            if definition.installation.unattended else None
+        )
         try:
             size = definition.machine.disk_size_gib
             self._ps(f"New-VHD -Path {_ps_quote(str(image))} -SizeBytes {size}GB "
@@ -142,8 +154,13 @@ class HyperVProvisioner(EnvironmentProvisioner):
                 f"Set-VM -Name {vm} -AutomaticCheckpointsEnabled $false "
                 "-AutomaticStartAction Nothing -AutomaticStopAction TurnOff; "
                 f"Add-VMDvdDrive -VMName {vm} -Path {_ps_quote(str(iso))}; "
+                f"$installDrive=Get-VMDvdDrive -VMName {vm} | "
+                f"Where-Object {{ $_.Path -eq {_ps_quote(str(iso))} }}; "
+                "if (!$installDrive) { throw 'installer DVD is unavailable' }; "
+                + (f"Add-VMDvdDrive -VMName {vm} -Path {_ps_quote(str(answer_iso))}; "
+                   if answer_iso is not None else "") +
                 f"Set-VMFirmware -VMName {vm} -EnableSecureBoot {secure_boot} "
-                f"-FirstBootDevice (Get-VMDvdDrive -VMName {vm}); "
+                "-FirstBootDevice $installDrive; "
             ) + tpm_setup + (
                 f"Add-VMNetworkAdapterExtendedAcl -VMName {vm} -Action Deny "
                 "-Direction Inbound -Weight 1; "
@@ -186,6 +203,8 @@ class HyperVProvisioner(EnvironmentProvisioner):
                         shutil.rmtree(vm_dir)
                 except Exception as exc:
                     raise ProvisioningCleanupError("cannot clean up provisioning VM") from exc
+        if answer_iso is not None:
+            answer_iso.unlink()
         metadata = self._ps(
             f"$v=Get-VHD -Path {_ps_quote(str(image))} -ErrorAction Stop; "
             "\"$($v.VhdType):$($v.Size)\"", 30,
@@ -206,7 +225,10 @@ class HyperVProvisioner(EnvironmentProvisioner):
         if plan.provider != "hyperv" or plan.output_format != "vhdx":
             raise ProvisioningError("Hyper-V plan provider or output format mismatch")
         validate_provider_capabilities(definition, self.capabilities(), output_format="vhdx")
-        _attended_only(definition)
+        if definition.installation.unattended:
+            windows_11_answer_xml(definition)
+        else:
+            _attended_only(definition)
         if platform.system().lower() != "windows" and self._runner is None:
             raise ProvisioningError("Hyper-V provisioning requires Windows")
         if not self.switch_name:
@@ -242,6 +264,7 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         baseline_settings: CapsuleSettings | None = None,
         baseline_validator: Callable[[Path], None] | None = None,
         qemu_group: str = "",
+        secret_store: ArgusSecretStore | None = None,
     ) -> None:
         self.network_name = network_name
         self.install_timeout_seconds = install_timeout_seconds
@@ -251,6 +274,7 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         self._baseline_settings = baseline_settings
         self._baseline_validator = baseline_validator
         self.qemu_group = qemu_group
+        self._secret_store = secret_store
 
     def capabilities(self) -> ProvisioningProviderCapabilities:
         return ProvisioningProviderCapabilities(
@@ -283,8 +307,7 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         if self._virsh("net-info", self.network_name, timeout=15).find("Active: yes") < 0:
             raise ProvisioningError("libvirt host-only network is not active")
 
-    def _grant_qemu_access(self, iso: Path, image: Path) -> None:
-        """Let the configured QEMU group traverse/read/write only this build."""
+    def _qemu_gid(self) -> int:
         if not self.qemu_group:
             raise ProvisioningError("libvirt provisioning requires an explicit QEMU group")
         import grp
@@ -293,6 +316,14 @@ class LibvirtProvisioner(EnvironmentProvisioner):
             gid = grp.getgrnam(self.qemu_group).gr_gid
             if gid not in {*os.getgroups(), os.getgid()}:
                 raise ProvisioningError("Argus process must belong to the QEMU group")
+            return gid
+        except (KeyError, OSError) as exc:
+            raise ProvisioningError("cannot resolve configured QEMU group") from exc
+
+    def _grant_qemu_access(self, iso: Path, image: Path) -> None:
+        """Let the configured QEMU group traverse/read/write only this build."""
+        gid = self._qemu_gid()
+        try:
             # A group grant on the private workspace cannot bypass an opaque
             # ancestor such as a user's mode-0700 home directory.
             for parent in (image.parent.parent, *image.parent.parent.parents):
@@ -306,11 +337,13 @@ class LibvirtProvisioner(EnvironmentProvisioner):
                     raise ProvisioningError("libvirt build resource cannot be a symlink")
                 os.chown(path, -1, gid)
                 path.chmod(mode)
-        except (KeyError, OSError) as exc:
+        except OSError as exc:
             raise ProvisioningError("cannot grant QEMU access to private build resources") from exc
 
     def _domain_xml(self, name: str, iso: Path, image: Path,
-                    definition: EnvironmentDefinition, fmt: str) -> str:
+                    definition: EnvironmentDefinition, fmt: str, *,
+                    kernel: Path | None = None, initrd: Path | None = None,
+                    seed: Path | None = None) -> str:
         machine = definition.machine
         root = ET.Element("domain", {"type": "kvm"})
         ET.SubElement(root, "name").text = name
@@ -318,9 +351,15 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         ET.SubElement(root, "vcpu").text = str(machine.cpu_count)
         os_node = ET.SubElement(root, "os")
         ET.SubElement(os_node, "type", {"arch": "x86_64"}).text = "hvm"
-        ET.SubElement(os_node, "boot", {"dev": "cdrom"})
-        ET.SubElement(os_node, "boot", {"dev": "hd"})
+        if kernel is not None and initrd is not None and seed is not None:
+            ET.SubElement(os_node, "kernel").text = str(kernel)
+            ET.SubElement(os_node, "initrd").text = str(initrd)
+            ET.SubElement(os_node, "cmdline").text = "autoinstall"
+        else:
+            ET.SubElement(os_node, "boot", {"dev": "cdrom"})
+            ET.SubElement(os_node, "boot", {"dev": "hd"})
         ET.SubElement(root, "on_poweroff").text = "destroy"
+        ET.SubElement(root, "on_reboot").text = "destroy"
         devices = ET.SubElement(root, "devices")
         disk = ET.SubElement(devices, "disk", {"type": "file", "device": "disk"})
         ET.SubElement(disk, "driver", {"name": "qemu", "type": fmt})
@@ -331,6 +370,12 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         ET.SubElement(cd, "source", {"file": str(iso)})
         ET.SubElement(cd, "target", {"dev": "hda", "bus": "ide"})
         ET.SubElement(cd, "readonly")
+        if seed is not None:
+            answers = ET.SubElement(devices, "disk", {"type": "file", "device": "cdrom"})
+            ET.SubElement(answers, "driver", {"name": "qemu", "type": "raw"})
+            ET.SubElement(answers, "source", {"file": str(seed)})
+            ET.SubElement(answers, "target", {"dev": "hdb", "bus": "ide"})
+            ET.SubElement(answers, "readonly")
         interface = ET.SubElement(devices, "interface", {"type": "network"})
         ET.SubElement(interface, "source", {"network": self.network_name})
         ET.SubElement(interface, "model", {"type": "virtio"})
@@ -341,7 +386,8 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         return ET.tostring(root, encoding="unicode")
 
     def _install(self, definition: EnvironmentDefinition, iso: Path,
-                 image: Path, fmt: str) -> None:
+                 image: Path, fmt: str, *, kernel: Path | None = None,
+                 initrd: Path | None = None, seed: Path | None = None) -> None:
         self._network()
         name = "argus-provision-" + uuid4().hex[:20]
         if self._virsh("list", "--all", "--name").splitlines().count(name):
@@ -351,7 +397,9 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         if self._runner is None or self.qemu_group:
             self._grant_qemu_access(iso, image)
         xml = image.parent / "domain.xml"
-        xml.write_text(self._domain_xml(name, iso, image, definition, fmt), encoding="utf-8")
+        xml.write_text(self._domain_xml(
+            name, iso, image, definition, fmt, kernel=kernel, initrd=initrd, seed=seed,
+        ), encoding="utf-8")
         owned = False
         try:
             self._virsh("define", str(xml), timeout=60)
@@ -405,6 +453,45 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         if not valid:
             raise ProvisioningError("libvirt image format or virtual size is invalid")
 
+    def _install_unattended(
+        self, definition: EnvironmentDefinition, iso: Path, image: Path,
+        fmt: str, profile: UbuntuAutoinstallProfile,
+    ) -> None:
+        runner = self._run if self._runner is not None else None
+        validate_ubuntu_source_id(iso, profile, runner=runner)
+        kernel = image.parent / "ubuntu-vmlinuz"
+        initrd = image.parent / "ubuntu-initrd"
+        preserve_boot = False
+        try:
+            for source, destination in (
+                ("/casper/vmlinuz", kernel), ("/casper/initrd", initrd),
+            ):
+                self._run((
+                    "xorriso", "-osirrox", "on", "-indev", str(iso),
+                    "-extract", source, str(destination),
+                ), 90)
+                info = destination.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_size == 0 or info.st_nlink != 1:
+                    raise ProvisioningError("Ubuntu installer kernel or initrd is invalid")
+            gid = self._qemu_gid() if self._runner is None or self.qemu_group else None
+            if gid is not None:
+                for path in (kernel, initrd):
+                    os.chown(path, -1, gid)
+                    path.chmod(0o640)
+            with temporary_nocloud_seed_iso(
+                profile, workspace=image.parent, qemu_gid=gid, runner=runner,
+            ) as seed:
+                self._install(
+                    definition, iso, image, fmt, kernel=kernel, initrd=initrd, seed=seed,
+                )
+        except ProvisioningCleanupError:
+            preserve_boot = True
+            raise
+        finally:
+            if not preserve_boot:
+                kernel.unlink(missing_ok=True)
+                initrd.unlink(missing_ok=True)
+
     def provision(self, definition: EnvironmentDefinition,
                   plan: ProvisioningPlan) -> ProvisioningResult:
         if plan.provider != "libvirt" or plan.output_format not in {"qcow2", "raw"}:
@@ -412,7 +499,20 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         validate_provider_capabilities(
             definition, self.capabilities(), output_format=plan.output_format
         )
-        _attended_only(definition)
+        profile = None
+        if definition.installation.unattended:
+            ref = definition.installation.credential_ref
+            if ref is None:
+                raise ProvisioningError("Ubuntu autoinstall requires a credential reference")
+            try:
+                password_hash = (self._secret_store or ArgusSecretStore()).get(ref)
+            except SecretStoreError:
+                raise ProvisioningError("Ubuntu autoinstall credential cannot be resolved") from None
+            profile = UbuntuAutoinstallProfile(
+                definition=definition, password_hash=password_hash,
+            )
+        else:
+            _attended_only(definition)
         if platform.system().lower() != "linux" and self._runner is None:
             raise ProvisioningError("libvirt provisioning requires Linux")
         if self._baseline_validator is not None and self._runner is None:
@@ -433,6 +533,10 @@ class LibvirtProvisioner(EnvironmentProvisioner):
                 )
         return publish_derived_image(
             definition, plan,
-            lambda iso, image: self._install(definition, iso, image, plan.output_format),
+            lambda iso, image: (
+                self._install_unattended(definition, iso, image, plan.output_format, profile)
+                if profile is not None else
+                self._install(definition, iso, image, plan.output_format)
+            ),
             validate_baseline=validate,
         )

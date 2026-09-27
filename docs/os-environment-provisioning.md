@@ -6,6 +6,13 @@ base images that feed the existing ExecutionEnvironment -> Capsule -> Adapter ru
 This is intentionally not a second VM execution stack. Provisioning owns the build-time
 installation of an operating system. Capsules still own disposable test execution.
 
+**Draft status:** The unattended profiles and their static checks are implemented,
+but no live Windows 11 or Ubuntu install has passed the required secure Capsule
+baseline. The providers do not yet inject a guest-agent bundle or per-session
+bootstrap token and TLS private key into the disposable guest. Publication must
+continue to fail until those pieces and live host tests are complete. Reusable
+guest secrets must not be placed in a base image to make the baseline pass.
+
 ## Identity model
 
 An environment identity is derived from:
@@ -27,15 +34,17 @@ A derived image has a separate manifest binding:
 - output image format;
 - final image SHA-256;
 - architecture;
-- creation timestamp.
+- creation timestamp;
+- the finalized ATES provisioning run ID.
 
 The v2 derived-image manifest requires a successful disposable secure Capsule
 boot before publication. Older v1 cache entries fail validation; an operator
 must quarantine an old entry and rebuild it rather than treating a format-valid
 disk as a proven OS image.
 
-Before a derived image is handed to CapsuleSettings, Argus verifies both the manifest
-binding and the final image bytes.
+Before a derived image is reused by a builder, Argus verifies the manifest binding,
+final image bytes, and the passed ATES run. A caller that imports a manifest directly
+must also use the same ATES verification path before trusting its provenance.
 
 ## Example definition
 
@@ -123,16 +132,17 @@ escape path.
           v
     ExecutionEnvironment -> Capsule -> Adapter
 
-## Concrete attended providers
+## Hyper-V and libvirt providers
 
 The provider-neutral contract is separated from the Hyper-V and libvirt builders.
 Both create a temporary installer VM from the verified ISO, wait for an orderly
 guest shutdown, destroy the installer VM, then boot a disposable Capsule child
 from the candidate disk. The baseline requires a pinned HTTPS secure guest
 agent that reports the expected OS family and architecture after per-session
-bearer rotation. Only then does the builder hash and publish the image and
-manifest in one cache directory. This verifies boot and agent readiness, but
-does not attest a specific Windows or Ubuntu release or installed package set.
+bearer rotation. When a target OS profile is present, the baseline also checks
+its reported release and Windows edition or Ubuntu flavor and package set.
+Only then does the builder hash and publish the image and manifest in one cache
+directory.
 A per-key kernel lock serializes cooperating builders. Existing published images
 are verified and reused, never overwritten. Failure and ordinary interruption remove temporary files and VM
 resources. If VM cleanup cannot be confirmed, the private workspace is retained
@@ -158,8 +168,7 @@ non-forwarding local system network and local `virsh`/`qemu-img` access. It
 also requires an explicit QEMU group shared with the Argus process and a cache
 root whose ancestors the group can traverse. The private build directory and
 its ISO/image grant only that group the needed read/write access; the
-installer console uses VNC bound to localhost. These providers build images
-with an operator at the installer console. Use `unattended: false`,
+installer console uses VNC bound to localhost. For an attended build, use `unattended: false`,
 `update_policy: manual`, and no edition, package list, or credential reference.
 Nondefault locale/timezone are rejected because the generic provider cannot
 apply them. An operator must install/configure the secure Argus guest agent,
@@ -167,7 +176,7 @@ its dedicated TLS certificate and bootstrap bearer, and the required guest
 service policy before shutting down the installer. Installation/licensing and
 release/package verification remain the operator's responsibility.
 
-For example, from Python after loading a definition with those attended fields:
+For example, from Python after loading an attended definition:
 
 ```python
 import os
@@ -200,18 +209,68 @@ to `CapsuleSettings`, then configure the normal secure guest transport. Fleet
 can call `derived_image_advertisement` to advertise its verified SHA-256;
 aliases remain labels and never become execution identity.
 
-Unattended installation mechanics are OS-specific and are not claimed by these
-attended providers. They reject `credential_ref`, packages and unattended mode
-instead of storing credentials or claiming to have applied unsupported inputs.
-Future OS-specific drivers must inject secrets ephemerally and keep them out of
-definitions, manifests, logs, reports, and ATES payloads.
+### Narrow unattended profiles
 
-## ATES direction
+The Windows 11 Hyper-V profile creates a private `Autounattend.xml` disc alongside
+the verified installer ISO. It selects a named Professional, Education, or Enterprise
+image, partitions the target disk for UEFI, and shuts down in Audit mode. It accepts
+23H2 or 24H2, `en-US`, `UTC`, `update_policy: manual`, and no package or credential
+reference. It does not install the Argus guest agent or create a non-admin test
+account. A stock Windows ISO alone therefore cannot pass the mandatory secure
+Capsule baseline. An approved offline agent/runtime/TLS bundle and session
+bootstrap are still required, along with validation of the intended account and
+service policy.
 
-Provisioning events still need to become canonical ATES evidence: media verification,
-provider selection, machine definition, installation start/completion, driver/package
-steps, baseline validation, final image hashing, and publication. Provisioning evidence
-must follow the existing privacy pipeline rather than creating a parallel evidence format.
+The Ubuntu libvirt profile uses the verified ISO's `casper/install-sources.yaml` to
+pin a full desktop or server source. It boots the installer kernel with a private
+NoCloud seed disc and the `autoinstall` argument. The seed contains a SHA-512 crypt
+password hash resolved at build time from `installation.credential_ref`; the secret
+reference is excluded from environment identity. The seed is removed after the
+installer VM is destroyed. Ubuntu requires `update_policy: latest`, a specific
+`target_release` and `target_flavor`, and an explicit `apt_mirror` reachable from
+the host-only network. The installer does not bootstrap the Argus guest agent.
+Its required baseline therefore also needs approved agent installation and
+session bootstrap. The baseline checks the reported Ubuntu release,
+desktop/server metapackage, and each requested package.
+
+Both unattended profiles remain subject to a successful live install and secure
+Capsule boot on suitable hosts. Static answer generation and mocked provider tests
+alone do not establish a usable base image.
+
+### Per-user secret store
+
+`argus secrets set secret://argus/ubuntu/install` prompts without echo and replaces
+an existing value. `argus secrets list` displays references only, and
+`argus secrets remove secret://argus/ubuntu/install` deletes one. `set --stdin` and
+`set --file PATH` support non-interactive input; avoid exposing values in shell
+arguments or recorded terminal history. The Ubuntu value must already be a
+SHA-512 crypt password hash, not a plaintext password. Configure the guest agent
+bootstrap token with another reference and set `execution.capsule.guest_token_ref`
+to it. The token is resolved into host Capsule settings when they are created.
+Per-session delivery to the guest remains to be implemented. The secure client
+rotates the bootstrap bearer after authenticating with the guest agent.
+
+Windows stores encrypted values with user-scoped DPAPI under `%APPDATA%/Argus/Secrets`.
+Linux uses `$XDG_DATA_HOME/argus/secrets` or `~/.local/share/argus/secrets`; macOS
+uses `~/Library/Application Support/Argus/Secrets`. The latter two encrypt the
+database with a local key readable only by the same OS account. This protects a
+copied database, while host account permissions protect the key. Do not copy the
+key and database together to a less trusted machine.
+
+## ATES provisioning evidence
+
+`AtesProvisioningRecorder` uses the normal ATES event store, run identity, step-attempt
+lifecycle, finalization transaction, manifest verification, and derived reports. Its
+`PROVISIONING` run source records the requested machine contract, definition/media
+digests, provider, architecture, and image format. Fixed ordered stages record media
+verification, provider selection, installation start/completion, secure Capsule baseline,
+image hashing, and publication. The final image SHA-256 is a validated safe digest in
+an ATES observation. On failure, the recorder emits an `error` outcome without copying
+hypervisor output or exception text; uncertain cleanup leaves the run incomplete.
+ISO locators, operator names, credential references, and guest secrets never enter the
+canonical event stream. The derived-image manifest binds the finalized ATES run
+identity; cache reuse verifies both the image bytes and that run. Release, edition,
+and package checks occur in the secure Capsule baseline before the image is published.
 
 ## Fleet direction
 

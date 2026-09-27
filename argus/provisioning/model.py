@@ -183,6 +183,12 @@ class InstallationSpec:
     packages: tuple[str, ...] = ()
     update_policy: str = "frozen"
     credential_ref: Optional[str] = None
+    # These assertions are part of the immutable definition. Providers must
+    # also verify the installed guest before claiming the asserted release.
+    target_os: Optional[str] = None
+    target_release: Optional[str] = None
+    target_flavor: Optional[str] = None
+    apt_mirror: Optional[str] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -220,10 +226,33 @@ class InstallationSpec:
                     "installation.credential_ref must be an opaque secret:// reference"
                 )
             object.__setattr__(self, "credential_ref", ref)
+        if self.target_os is not None:
+            object.__setattr__(
+                self, "target_os",
+                _enum(self.target_os, "installation.target_os", {"ubuntu", "windows-11"}),
+            )
+        if self.target_release is not None:
+            object.__setattr__(
+                self, "target_release", _text(self.target_release, "installation.target_release")
+            )
+        if self.target_flavor is not None:
+            object.__setattr__(
+                self, "target_flavor", _text(self.target_flavor, "installation.target_flavor").lower()
+            )
+        if self.target_os is None and (self.target_release or self.target_flavor):
+            raise ProvisioningError("installation target release/flavor requires target_os")
+        if self.apt_mirror is not None:
+            mirror = _text(self.apt_mirror, "installation.apt_mirror")
+            object.__setattr__(self, "apt_mirror", mirror)
+            if self.target_os != "ubuntu":
+                raise ProvisioningError("installation.apt_mirror requires target_os=ubuntu")
 
     def identity_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload.pop("credential_ref", None)
+        for optional in ("target_os", "target_release", "target_flavor", "apt_mirror"):
+            if payload[optional] is None:
+                payload.pop(optional)
         return payload
 
 
@@ -291,6 +320,7 @@ class DerivedImageManifest:
     image_sha256: str
     architecture: str
     created_at: str
+    evidence_run_id: Optional[str] = None
     # v1 manifests predate the required boot/agent baseline check. They must
     # not be silently reused as if the installed OS had been validated.
     manifest_version: str = "argus-derived-image-v2"
@@ -323,6 +353,11 @@ class DerivedImageManifest:
             _enum(self.architecture, "architecture", _ALLOWED_ARCH),
         )
         object.__setattr__(self, "created_at", _text(self.created_at, "created_at"))
+        if self.evidence_run_id is not None:
+            run_id = _text(self.evidence_run_id, "evidence_run_id")
+            if not re.fullmatch(r"RUN-[A-Za-z0-9][A-Za-z0-9_-]{0,95}", run_id):
+                raise ProvisioningError("evidence_run_id must be a canonical ATES RunId")
+            object.__setattr__(self, "evidence_run_id", run_id)
         if self.manifest_version != "argus-derived-image-v2":
             raise ProvisioningError(
                 "manifest_version must be 'argus-derived-image-v2'"
@@ -353,6 +388,7 @@ class DerivedImageManifest:
             "image_sha256",
             "architecture",
             "created_at",
+            "evidence_run_id",
             "manifest_version",
         }
         unknown = sorted(set(value) - allowed)

@@ -29,6 +29,7 @@ from argus.provisioning import (
 )
 from argus.provisioning.build import publish_derived_image
 from argus.provisioning.baseline import validate_secure_capsule_baseline
+from argus.provisioning.baseline import _attest_installed_profile
 from argus.provisioning.providers import HyperVProvisioner, LibvirtProvisioner
 
 
@@ -876,6 +877,47 @@ def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> No
                for command in commands)
     assert any("Enable-VMTPM" in command for command in commands)
     assert any("Remove-VM" in command for command in commands)
+
+
+def test_baseline_attests_target_release_edition_and_ubuntu_packages(tmp_path: Path) -> None:
+    windows = _runtime_definition(tmp_path)
+    windows = replace(windows, installation=InstallationSpec(
+        unattended=True, target_os="windows-11", target_release="24H2",
+        edition="professional",
+    ))
+    health = {
+        "os_id": "windows-11", "os_release": "24H2",
+        "os_edition": "professional", "os_build": 26100,
+    }
+    _attest_installed_profile(windows, health, object())
+    with pytest.raises(ProvisioningError, match="Windows release or edition"):
+        _attest_installed_profile(windows, {**health, "os_release": "23H2"}, object())
+
+    ubuntu = _runtime_definition(tmp_path, "libvirt")
+    ubuntu = replace(ubuntu, installation=InstallationSpec(
+        unattended=True, target_os="ubuntu", target_release="24.04.1",
+        target_flavor="desktop", packages=("git",), update_policy="latest",
+        apt_mirror="http://mirror.internal/ubuntu",
+        credential_ref="secret://argus/ubuntu/bootstrap",
+    ))
+
+    class Guest:
+        def installed_packages(self, names):
+            assert set(names) == {"git", "ubuntu-desktop"}
+            return {"git": "1:2.43.0", "ubuntu-desktop": "1.539"}
+
+    _attest_installed_profile(ubuntu, {"os_id": "ubuntu", "os_release": "24.04"}, Guest())
+    with pytest.raises(ProvisioningError, match="Ubuntu release"):
+        _attest_installed_profile(ubuntu, {"os_id": "ubuntu", "os_release": "22.04"}, Guest())
+
+    class MissingGuest:
+        def installed_packages(self, names):
+            return {"git": "1:2.43.0"}
+
+    with pytest.raises(ProvisioningError, match="packages are missing"):
+        _attest_installed_profile(
+            ubuntu, {"os_id": "ubuntu", "os_release": "24.04"}, MissingGuest(),
+        )
 
 
 def test_fleet_advertisement_uses_verified_image_digest_not_alias(tmp_path: Path, monkeypatch) -> None:
