@@ -11,8 +11,10 @@ background threads; the UI polls :meth:`ArgusAPI.job_status` and
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import sys
 import threading
 import time
 import uuid
@@ -474,6 +476,7 @@ class ArgusAPI:
             for index, run in enumerate(job["runs"]):
                 job["current"] = index
                 if run["status"] == "error":
+                    self._record_run_error(job, run, run["notes"][-1] if run["notes"] else "run setup failed")
                     continue
                 if self._stop.is_set():
                     run["status"] = "stopped"
@@ -542,10 +545,14 @@ class ArgusAPI:
                     self._last_failed = key
         except (SpecError, AdapterError, ProviderError, OSError, ValueError) as exc:
             run["status"] = "error"
-            run["notes"].append(str(exc))
+            message = str(exc)
+            run["notes"].append(message)
+            self._record_run_error(job, run, message)
         except Exception as exc:  # e.g. a browser driver failing to start
             run["status"] = "error"
-            run["notes"].append(f"{type(exc).__name__}: {exc}")
+            message = f"{type(exc).__name__}: {exc}"
+            run["notes"].append(message)
+            self._record_run_error(job, run, message)
         finally:
             if ks is not None:
                 job["stats"] = self.live_stats(run["launch"])
@@ -553,6 +560,25 @@ class ArgusAPI:
             self._active_ks = None
             self._job_tracker = None
             self._charge(tracker, cfg)
+
+    def _record_run_error(self, job: dict, run: dict, message: str) -> None:
+        """Make wrapper/setup failures the current explainable terminal result."""
+        data = {
+            "kind": "run",
+            "test_file": run.get("file"),
+            "status": "error",
+            "error": message,
+            "environment_type": job.get("env"),
+            "steps": list(run.get("steps") or []),
+            "ates_run_id": None,
+        }
+        key = "error-" + uuid.uuid4().hex
+        run["key"] = key
+        run["result"] = data
+        with self._lock:
+            self._results[key] = data
+            self._last_finished = key
+            self._last_failed = key
 
     def start_roam(self, target: str, adapter: Optional[str] = None,
                    minutes: Optional[float] = None, memory: Optional[bool] = None,
@@ -1069,18 +1095,40 @@ class ArgusAPI:
     # ---- conversations -----------------------------------------------------------
 
     def load_conversations(self) -> list:
+        cfg = self._config()
         try:
-            path = _argus_subdir(self._config(), "gui", create=False) / "conversations.json"
+            path = _conversation_path(cfg)
             if path.is_symlink():
                 return []
-            data = json.loads(path.read_text(encoding="utf-8"))
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data if isinstance(data, list) else []
+
+            # One-time migration from the PR's earlier project-local location.
+            # The legacy path is attested before reading and removed only after
+            # the user-data copy succeeds.
+            try:
+                legacy = _argus_subdir(cfg, "gui", create=False) / "conversations.json"
+            except OSError:
+                return []
+            if legacy.is_symlink() or not legacy.is_file():
+                return []
+            data = json.loads(legacy.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return []
+            data = data[:30]
+            _write_atomic(path, json.dumps(data).encode("utf-8"))
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+            return data
         except (OSError, json.JSONDecodeError):
             return []
-        return data if isinstance(data, list) else []
 
     def save_conversations(self, conversations: list) -> dict:
         try:
-            path = _argus_subdir(self._config(), "gui") / "conversations.json"
+            path = _conversation_path(self._config())
             _write_atomic(path, json.dumps(list(conversations or [])[:30]).encode("utf-8"))
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
@@ -1160,6 +1208,26 @@ def _run_notes(data: dict) -> List[str]:
     if data.get("error"):
         notes.append(data["error"])
     return notes
+
+
+def _conversation_path(cfg: ArgusConfig) -> Path:
+    """Per-user GUI state path, keyed by project without storing chats in its repo."""
+    override = os.environ.get("ARGUS_GUI_STATE_DIR")
+    if override:
+        root = Path(override).expanduser()
+    elif os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+                    or (Path.home() / "AppData" / "Local")) / "Argus"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support" / "Argus"
+    else:
+        root = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")) / "argus"
+
+    project = str(Path(cfg.project_dir).resolve())
+    project_key = hashlib.sha256(project.encode("utf-8")).hexdigest()[:24]
+    directory = root / "projects" / project_key
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "conversations.json"
 
 
 def _argus_root(cfg: ArgusConfig, create: bool = False) -> Path:
