@@ -332,18 +332,83 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
-def _mentions_target(text: str, target: str) -> bool:
-    """Return whether target is explicitly named in free text.
+def _mentions_target(text: str, target: str, adapter: str) -> bool:
+    """Return whether target is the complete launch target named by the user.
 
-    A model-selected roam target must be a delimited token/span from the user's
-    message, not an arbitrary substring (for example, sh inside should).
-    Path/URL punctuation counts as part of a token so a model also cannot shorten
-    /bin/sh to sh and pass the guard.
+    The router is allowed to copy a target, never shorten one. In particular,
+    dropping a CLI flag/positional argument or a URL query string can change side
+    effects, so a mere substring/boundary match is not sufficient.
     """
     if not target:
         return False
-    pattern = r"(?<![A-Za-z0-9_./:\\\\-])" + re.escape(target) + r"(?![A-Za-z0-9_./:\\\\-])"
-    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+    target = target.strip()
+    if adapter == "browser":
+        # URLs are whitespace-delimited in natural language. Compare the whole
+        # URL token so /path cannot authorize /path?safe=true.
+        for match in re.finditer(
+            r"(?:https?://[^\s<>\"']+|(?:localhost|127\.0\.0\.1)(?::\d+)?[^\s<>\"']*)",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            candidate = match.group(0).rstrip(".,!;:)]}")
+            if candidate.lower() == target.lower():
+                return True
+        return False
+
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_./:\\\\-])" + re.escape(target) + r"(?![A-Za-z0-9_./:\\\\-])",
+        flags=re.IGNORECASE,
+    )
+    for match in pattern.finditer(text):
+        start, end = match.span()
+
+        # A bare target may be wrapped in matching quotes in the user's text.
+        if start and end < len(text) and text[start - 1] in "\"'" and text[end] == text[start - 1]:
+            start -= 1
+            end += 1
+
+        suffix = text[end:]
+        if suffix and not suffix[0].isspace():
+            # Sentence punctuation may immediately follow a target, but command/
+            # URL punctuation followed by more text is part of the target.
+            if suffix[0] in ".,!?;:" and (len(suffix) == 1 or suffix[1].isspace()):
+                suffix = suffix[1:]
+            else:
+                continue
+
+        tail = suffix.lstrip()
+        if not tail:
+            return True
+
+        # CLI targets are especially sensitive: only Argus-level natural-language
+        # modifiers may follow. Any other token may be a dropped command argument.
+        if adapter == "cli":
+            if re.match(r"^(?:for\b|with\b|without\b|in\b|locally\b)", tail, re.IGNORECASE):
+                return True
+            continue
+
+        # Desktop app names commonly have prose after them (and find bugs).
+        if re.match(
+            r"^(?:for\b|with\b|without\b|in\b|locally\b|and\b|then\b|to\b)",
+            tail,
+            re.IGNORECASE,
+        ):
+            return True
+
+    return False
+
+
+def _refers_to_last_target(text: str) -> bool:
+    """Require an explicit deictic reference before reusing the previous target."""
+    has_action = re.search(r"\b(?:roam|explore)\b", text, re.IGNORECASE)
+    has_reference = re.search(
+        r"\b(?:it|that|again|same(?:\s+(?:app|target))?|previous(?:\s+(?:app|target))?|"
+        r"last(?:\s+(?:app|target))?)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(has_action and has_reference)
 
 
 def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
@@ -384,9 +449,11 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     if name == "roam":
         target = str(args.get("target") or "").strip().strip("'\"")
         last = str(context.get("last_target") or "")
-        if not target or not (_mentions_target(text, target) or (last and target == last)):
-            return intent("chat", reply="Which app should I roam? Give me the command, file or URL, e.g. roam notepad.exe for 5 minutes.")
         adapter = args.get("adapter") if args.get("adapter") in ADAPTERS else adapter_for(target)
+        explicitly_named = _mentions_target(text, target, adapter)
+        reuses_previous = bool(last and target == last and _refers_to_last_target(text))
+        if not target or not (explicitly_named or reuses_previous):
+            return intent("chat", reply="Which app should I roam? Give me the command, file or URL, e.g. roam notepad.exe for 5 minutes.")
         memory = args.get("memory")  # None: use the app's Memory toggle
         return intent(
             "roam", target=target, adapter=adapter, minutes=_minutes(args.get("minutes")),
