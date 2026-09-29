@@ -388,13 +388,15 @@ class ArgusAPI:
             parse_spec(content)
         except assistant.SPEC_ERRORS as exc:
             return {"ok": False, "error": f"The spec doesn't parse: {exc}"}
-        cfg.argus_dir.mkdir(parents=True, exist_ok=True)
-        dest = cfg.argus_dir / name
         try:
+            argus_dir = _argus_root(cfg, create=True)
+            dest = argus_dir / name
             with open(dest, "x", encoding="utf-8") as fh:  # exclusive create: never overwrite
                 fh.write(content)
         except FileExistsError:
             return {"ok": False, "error": f".argus/{name} already exists; I won't overwrite it."}
+        except OSError as exc:
+            return {"ok": False, "error": f"Could not save the test: {exc}"}
         draft["saved"] = True
         return {"ok": True, "path": f".argus/{name}", "file": name, "draft_id": draft.get("id")}
 
@@ -1018,14 +1020,19 @@ class ArgusAPI:
 
     def _history(self, limit: int):
         """(id, result) pairs for persisted runs, newest first — the same files load_runs reads."""
-        runs_dir = self._config().argus_dir / "runs"
-        if not runs_dir.is_dir():
+        try:
+            runs_dir = _argus_subdir(self._config(), "runs", create=False)
+        except OSError:
             return []
         out = []
         for path in sorted(runs_dir.glob("*.json"), reverse=True)[:limit]:
             try:
-                out.append((path.name, json.loads(path.read_text(encoding="utf-8"))))
-            except (json.JSONDecodeError, OSError):
+                if path.is_symlink():
+                    continue
+                resolved = path.resolve(strict=True)
+                resolved.relative_to(runs_dir)
+                out.append((path.name, json.loads(resolved.read_text(encoding="utf-8"))))
+            except (json.JSONDecodeError, OSError, ValueError):
                 continue
         return out
 
@@ -1033,10 +1040,15 @@ class ArgusAPI:
         name = Path(history_id).name
         if name != history_id or not name.endswith(".json") or name.startswith("."):
             return None
-        path = self._config().argus_dir / "runs" / name
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            runs_dir = _argus_subdir(self._config(), "runs", create=False)
+            path = runs_dir / name
+            if path.is_symlink():
+                return None
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(runs_dir)
+            data = json.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
             return None
         return dict(data, kind="run") if isinstance(data, dict) else None
 
@@ -1150,6 +1162,24 @@ def _run_notes(data: dict) -> List[str]:
     return notes
 
 
+def _argus_root(cfg: ArgusConfig, create: bool = False) -> Path:
+    """Return an attested project-local ``.argus`` root."""
+    project_root = Path(cfg.project_dir).resolve(strict=True)
+    argus_dir = project_root / ".argus"
+    if argus_dir.is_symlink():
+        raise OSError(f".argus cannot be a symlink: {argus_dir}")
+    if create:
+        argus_dir.mkdir(exist_ok=True)
+    elif not argus_dir.is_dir():
+        raise OSError("no .argus directory")
+    resolved = argus_dir.resolve(strict=True)
+    try:
+        resolved.relative_to(project_root)
+    except ValueError as exc:
+        raise OSError(f".argus escapes the project: {argus_dir}") from exc
+    return resolved
+
+
 def _argus_subdir(cfg: ArgusConfig, name: str, create: bool = True) -> Path:
     """``.argus/<name>`` inside the project, refusing symlinks that would redirect writes.
 
@@ -1157,11 +1187,7 @@ def _argus_subdir(cfg: ArgusConfig, name: str, create: bool = True) -> Path:
     so neither ``.argus`` nor the subdirectory may point outside it.
     """
     project_root = Path(cfg.project_dir).resolve(strict=True)
-    argus_dir = project_root / ".argus"
-    if argus_dir.is_symlink():
-        raise OSError(f".argus cannot be a symlink: {argus_dir}")
-    if not argus_dir.is_dir():
-        raise OSError("no .argus directory")
+    argus_dir = _argus_root(cfg, create=False)
     sub = argus_dir / name
     if sub.is_symlink():
         raise OSError(f".argus/{name} cannot be a symlink: {sub}")
