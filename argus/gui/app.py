@@ -79,7 +79,8 @@ class ArgusAPI:
         self._results: Dict[str, dict] = {}
         self._last_finished: Optional[str] = None
         self._last_failed: Optional[str] = None
-        self._draft: Optional[dict] = None
+        self._draft: Optional[dict] = None          # the most recent draft
+        self._drafts: Dict[str, dict] = {}          # draft id -> draft, so cards act on their own
         self._last_target = ""
         self._latest_screenshot: Optional[bytes] = None
         self._latest_screenshot_ts = 0.0
@@ -308,13 +309,31 @@ class ArgusAPI:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "content": path.read_text(encoding="utf-8")}
 
-    def dry_run(self, tests="all") -> dict:
+    def _get_draft(self, draft_id: Optional[str]):
+        """Return (draft, error). With an id, only that draft; without one, the latest."""
+        if draft_id:
+            draft = self._drafts.get(draft_id)
+            if draft is None:
+                return None, ("That draft is from an earlier session, so I no longer have it. "
+                              "Ask me to write it again, then save that one.")
+            return draft, None
+        if self._draft is None:
+            return None, "There's no drafted test yet. Ask me to write one first."
+        return self._draft, None
+
+    def _keep_draft(self, draft: dict) -> dict:
+        draft["id"] = uuid.uuid4().hex[:12]
+        self._drafts[draft["id"]] = draft
+        self._draft = draft
+        return draft
+
+    def dry_run(self, tests="all", draft_id: Optional[str] = None) -> dict:
         cfg = self._config()
         items = []
         if tests == "draft":
-            if not self._draft:
-                return {"ok": False, "error": "There's no drafted test yet. Ask me to write one first."}
-            d = self._draft
+            d, err = self._get_draft(draft_id)
+            if err:
+                return {"ok": False, "error": err}
             items.append({"file": d["file"], "adapter": d["adapter"], "launch": d.get("launch", ""),
                           "steps": d["steps"], "error": None})
             return {"ok": True, "items": items}
@@ -347,17 +366,21 @@ class ArgusAPI:
             self._charge(tracker, cfg)
         draft["saved"] = False
         if draft["ok"]:
-            self._draft = draft
+            self._keep_draft(draft)
         return draft
 
-    def save_test(self) -> dict:
-        """Save the current draft as ``.argus/<file>``. Never overwrites an existing file."""
+    def save_test(self, draft_id: Optional[str] = None) -> dict:
+        """Save a draft (the one shown on the card, else the latest) as ``.argus/<file>``.
+
+        Never overwrites an existing file.
+        """
         cfg = self._config()
-        draft = self._draft
-        if draft is None:
-            return {"ok": False, "error": "There's no drafted test to save."}
+        draft, err = self._get_draft(draft_id)
+        if err:
+            return {"ok": False, "error": err}
         if draft.get("saved"):
-            return {"ok": True, "path": f".argus/{draft['file']}", "file": draft["file"]}
+            return {"ok": True, "path": f".argus/{draft['file']}", "file": draft["file"],
+                    "draft_id": draft.get("id")}
         content, file_name = draft["yaml"], draft["file"]
         name = Path(str(file_name or "")).name
         if not name.endswith(".test.yaml") or name != file_name or name.startswith("."):
@@ -374,7 +397,7 @@ class ArgusAPI:
         except FileExistsError:
             return {"ok": False, "error": f".argus/{name} already exists; I won't overwrite it."}
         draft["saved"] = True
-        return {"ok": True, "path": f".argus/{name}", "file": name}
+        return {"ok": True, "path": f".argus/{name}", "file": name, "draft_id": draft.get("id")}
 
     def init_project(self) -> dict:
         cfg = self._config()
@@ -653,7 +676,7 @@ class ArgusAPI:
         draft["saved"] = False
         draft["from_finding"] = True
         if draft.get("ok"):
-            self._draft = draft
+            self._keep_draft(draft)
         return draft
 
     def stop(self) -> dict:

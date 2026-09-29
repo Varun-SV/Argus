@@ -135,7 +135,7 @@ def test_draft_and_save_never_overwrite(project, fake_llm):
 
     saved = api.save_test()
     assert saved == {"ok": True, "path": ".argus/search-returns-results.test.yaml",
-                     "file": "search-returns-results.test.yaml"}
+                     "file": "search-returns-results.test.yaml", "draft_id": draft["id"]}
     assert (project / ".argus" / saved["file"]).read_text() == GOOD_SPEC
     assert api.save_test()["ok"] is True  # already saved: idempotent, nothing rewritten
 
@@ -443,3 +443,19 @@ def test_save_never_replaces_an_existing_file(project, fake_llm):
     dest.write_text("# written by someone else\n", encoding="utf-8")
     assert "already exists" in api.save_test()["error"]
     assert dest.read_text(encoding="utf-8") == "# written by someone else\n"
+
+
+def test_draft_actions_use_the_draft_shown_on_the_card(project, fake_llm):
+    other = GOOD_SPEC.replace("Search returns results", "Login works")
+    api = ArgusAPI()
+    fake_llm[:] = [GOOD_SPEC]
+    first = api.draft_test("search works")
+    fake_llm[:] = [other]
+    second = api.draft_test("login works")  # e.g. drafted in another conversation
+    assert first["file"] != second["file"]
+    assert api.dry_run("draft", first["id"])["items"][0]["file"] == first["file"]
+    saved = api.save_test(first["id"])
+    assert (saved["file"], saved["draft_id"]) == (first["file"], first["id"])
+    assert not (project / ".argus" / second["file"]).exists()
+    stale = ArgusAPI().save_test(first["id"])  # after a restart the draft is gone
+    assert stale["ok"] is False and "earlier session" in stale["error"]

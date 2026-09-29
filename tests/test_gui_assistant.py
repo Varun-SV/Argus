@@ -98,7 +98,7 @@ def test_llm_roam_target_must_come_from_the_user():
     invented = validate_intent({"intent": "roam", "args": {"target": "rm -rf /"}}, "explore my app", CONTEXT)
     assert invented["intent"] == "chat"
     quoted = validate_intent({"intent": "roam", "args": {"target": "calc.exe", "minutes": 3}}, "roam calc.exe for 3 min", CONTEXT)
-    assert quoted["args"] == {"target": "calc.exe", "adapter": "desktop-gui", "minutes": 3.0, "memory": True}
+    assert quoted["args"] == {"target": "calc.exe", "adapter": "desktop-gui", "minutes": 3.0, "memory": None}
     again = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}}, "roam it again", CONTEXT)
     assert again["args"]["target"] == "notepad.exe"
 
@@ -176,3 +176,29 @@ def test_llm_run_with_an_unknown_test_runs_nothing():
                           "run checkout and payment", CONTEXT)
     assert got["intent"] == "chat"
     assert "payment" in got["args"]["reply"]
+
+
+def test_unspecified_roam_memory_defers_to_the_app_toggle():
+    assert parse_slash("/roam notepad.exe", TESTS)["args"]["memory"] is None
+    assert parse_slash("/roam notepad.exe --no-memory", TESTS)["args"]["memory"] is False
+    assert parse_slash("/roam notepad.exe --memory", TESTS)["args"]["memory"] is True
+    llm = validate_intent({"intent": "roam", "args": {"target": "a.exe"}}, "roam a.exe", CONTEXT)
+    assert llm["args"]["memory"] is None
+    explicit = validate_intent({"intent": "roam", "args": {"target": "a.exe", "memory": False}},
+                               "roam a.exe without memory", CONTEXT)
+    assert explicit["args"]["memory"] is False
+
+
+def test_slash_roam_keeps_multi_word_targets():
+    got = parse_slash("/roam python tool.py --check --minutes 2", TESTS)
+    assert got["args"]["target"] == "python tool.py --check"
+    assert got["args"]["adapter"] == "cli"
+    assert got["args"]["minutes"] == 2.0
+
+
+def test_exact_test_stem_wins_over_substring_matches():
+    tests = [{"file": "checkout.test.yaml", "name": "Checkout happy path"},
+             {"file": "checkout-refund.test.yaml", "name": "Refund"}]
+    assert assistant.resolve_tests("checkout", tests) == ["checkout.test.yaml"]
+    assert parse_slash("/run checkout", tests)["args"]["tests"] == ["checkout.test.yaml"]
+    assert assistant.resolve_tests("check", tests) == ["checkout.test.yaml", "checkout-refund.test.yaml"]

@@ -105,13 +105,22 @@ def resolve_tests(query: str, tests: Sequence[Mapping]) -> List[str]:
     q = query.strip().lower()
     if not q:
         return []
-    exact = [t["file"] for t in tests if q in (t["file"].lower(), str(t.get("name", "")).lower())]
+    exact = [t["file"] for t in tests
+             if q in (t["file"].lower(), _test_stem(t["file"]), str(t.get("name", "")).lower())]
     if exact:
         return exact
     return [
         t["file"] for t in tests
         if q in t["file"].lower() or q in str(t.get("name", "")).lower()
     ]
+
+
+def _test_stem(file_name: str) -> str:
+    name = file_name.lower()
+    for suffix in (".test.yaml", ".test.yml", ".yaml", ".yml"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 # --------------------------------------------------------------- slash ----
@@ -197,7 +206,9 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
         parts = shlex.split(rest, posix=True)
     except ValueError as exc:
         raise IntentError(f"Could not read the roam command: {exc}") from exc
-    target, adapter, minutes, memory = "", None, None, True
+    # Argus's own options are --minutes/-m N, --adapter X and --[no-]memory; every other
+    # token belongs to the target command, e.g. `/roam python tool.py --check`.
+    words, adapter, minutes, memory = [], None, None, None
     i = 0
     while i < len(parts):
         p = parts[i]
@@ -209,12 +220,12 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
             adapter = parts[i + 1]
             i += 2
             continue
-        if p == "--no-memory":
-            memory = False
-        elif not target:
-            target = p
+        if p in ("--no-memory", "--memory"):
+            memory = p == "--memory"
+        else:
+            words.append(p)
         i += 1
-    target = target or last_target
+    target = (words[0] if len(words) == 1 else shlex.join(words)) if words else last_target
     if not target:
         raise IntentError('Tell Argus what to roam, e.g. /roam notepad.exe --minutes 5')
     adapter = adapter or adapter_for(target)
@@ -344,10 +355,10 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         if not target or not (target.lower() in text.lower() or (last and target == last)):
             return intent("chat", reply="Which app should I roam? Give me the command, file or URL, e.g. roam notepad.exe for 5 minutes.")
         adapter = args.get("adapter") if args.get("adapter") in ADAPTERS else adapter_for(target)
-        memory = args.get("memory")
+        memory = args.get("memory")  # None: use the app's Memory toggle
         return intent(
             "roam", target=target, adapter=adapter, minutes=_minutes(args.get("minutes")),
-            memory=True if memory is None else bool(memory),
+            memory=memory if isinstance(memory, bool) else None,
         )
 
     if name == "write_test":

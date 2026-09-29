@@ -71,6 +71,7 @@ const state = {
   liveJob: null,
   pollTimer: null,
   saveTimer: null,
+  watchOn: false,
 };
 const nodeCache = new Map();
 
@@ -78,13 +79,14 @@ function newConversation() {
   return { id: "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     title: "", updated: Date.now(), msgs: [], followups: [], seq: 1 };
 }
-function push(msg) {
-  const conv = state.conv;
+// Every write names the conversation it belongs to, so an answer that arrives
+// after the user switched conversations lands where it was asked.
+function pushIn(conv, msg) {
   msg.id = conv.id + ":" + conv.seq++;
   msg.v = 1;
   conv.msgs.push(msg);
   conv.updated = Date.now();
-  renderThread();
+  if (conv === state.conv) renderThread();
   return msg;
 }
 function update(msg, patch) {
@@ -92,17 +94,32 @@ function update(msg, patch) {
   msg.v = (msg.v || 0) + 1;
   renderThread();
 }
-function remove(msg) {
-  const i = state.conv.msgs.indexOf(msg);
-  if (i >= 0) state.conv.msgs.splice(i, 1);
-  renderThread();
+function removeIn(conv, msg) {
+  const i = conv.msgs.indexOf(msg);
+  if (i >= 0) conv.msgs.splice(i, 1);
+  if (conv === state.conv) renderThread();
 }
-const say = (text, extra) => push(Object.assign({ role: "argus", kind: "text", text }, extra || {}));
-const sayError = (text) => say(text, { error: true });
-function setFollowups(list) {
-  state.conv.followups = list || [];
-  renderFollowups();
+const sayIn = (conv, text, extra) => pushIn(conv, Object.assign({ role: "argus", kind: "text", text }, extra || {}));
+function followupsIn(conv, list) {
+  conv.followups = list || [];
+  if (conv === state.conv) renderFollowups();
 }
+async function thinkingIn(conv, fn) {
+  const thinking = pushIn(conv, { role: "argus", kind: "thinking" });
+  try { return await fn(); } finally { removeIn(conv, thinking); }
+}
+// Conversation-bound helpers used by every action below.
+function inConv(conv) {
+  return {
+    push: (m) => pushIn(conv, m),
+    say: (t, x) => sayIn(conv, t, x),
+    sayError: (t) => sayIn(conv, t, { error: true }),
+    setFollowups: (l) => followupsIn(conv, l),
+    withThinking: (fn) => thinkingIn(conv, fn),
+  };
+}
+const push = (m) => pushIn(state.conv, m);
+const setFollowups = (l) => followupsIn(state.conv, l);
 
 /* ------------------------------------------------------------ intents --- */
 const I = (intent, args) => ({ intent, args: args || {} });
@@ -110,34 +127,30 @@ const I = (intent, args) => ({ intent, args: args || {} });
 async function sendText(text) {
   text = (text || "").trim();
   if (!text) return;
-  if (!state.conv.title) { state.conv.title = text.slice(0, 60); renderRecents(); }
-  push({ role: "user", kind: "user", text });
-  setFollowups([]);
-  const thinking = push({ role: "argus", kind: "thinking" });
+  const conv = state.conv;
+  if (!conv.title) { conv.title = text.slice(0, 60); renderRecents(); }
+  pushIn(conv, { role: "user", kind: "user", text });
+  followupsIn(conv, []);
   let res;
   try {
-    res = await api().interpret(text);
+    res = await thinkingIn(conv, () => api().interpret(text));
   } catch (e) {
     res = I("error", { text: String(e) });
   }
-  remove(thinking);
-  await execute(res);
+  await execute(res, conv);
 }
 
 async function runChip(label, intentObj) {
-  if (!state.conv.title) { state.conv.title = label.slice(0, 60); renderRecents(); }
-  push({ role: "user", kind: "user", text: label });
-  setFollowups([]);
-  await execute(intentObj);
+  const conv = state.conv;
+  if (!conv.title) { conv.title = label.slice(0, 60); renderRecents(); }
+  pushIn(conv, { role: "user", kind: "user", text: label });
+  followupsIn(conv, []);
+  await execute(intentObj, conv);
 }
 
-async function withThinking(fn) {
-  const thinking = push({ role: "argus", kind: "thinking" });
-  try { return await fn(); } finally { remove(thinking); }
-}
-
-async function execute(res) {
+async function execute(res, conv = state.conv) {
   const a = res.args || {};
+  const { push, say, sayError, setFollowups, withThinking } = inConv(conv);
   try {
     switch (res.intent) {
       case "none": return;
@@ -159,26 +172,26 @@ async function execute(res) {
         poll();
         return;
       }
-      case "run": return startRun(a.tests || "all", pick(a, ["environment", "capsule_provider", "retain"]));
+      case "run": return startRun(a.tests || "all", pick(a, ["environment", "capsule_provider", "retain"]), conv);
       case "dry_run": {
-        const r = await api().dry_run(a.tests || "all");
+        const r = await api().dry_run(a.tests || "all", a.draft || null);
         if (!r.ok) return sayError(r.error);
         push({ role: "argus", kind: "dry", items: r.items });
         setFollowups(a.tests === "draft"
-          ? [{ label: "Save it to .argus", intent: I("save_test") }]
+          ? [{ label: "Save it to .argus", intent: I("save_test", { draft: a.draft || null }) }]
           : [{ label: "Run all tests", intent: I("run", { tests: "all" }) }, { label: "Watch for changes", intent: I("watch", { action: "start" }) }]);
         return;
       }
-      case "roam": return startRoam(a);
+      case "roam": return startRoam(a, conv);
       case "write_test": {
         const draft = await withThinking(() => api().draft_test(a.description || ""));
-        showDraft(draft);
+        showDraft(draft, conv);
         return;
       }
       case "save_test": {
-        const r = await api().save_test();
+        const r = await api().save_test(a.draft || null);
         if (!r.ok) return sayError(r.error);
-        markDraftSaved(r.file);
+        markDraftSaved(r.draft_id);
         say(`Saved to ${r.path}. It now runs with the rest of the suite, and watch mode picks it up on every change.`);
         await refreshTests();
         setFollowups([{ label: `Run ${r.file}`, intent: I("run", { tests: [r.file] }) }, { label: "Dry run all", intent: I("dry_run", { tests: "all" }) }]);
@@ -195,7 +208,7 @@ async function execute(res) {
         ]);
         return;
       }
-      case "knowledge": return knowledge(a.action || "show", a.target || "");
+      case "knowledge": return knowledge(a.action || "show", a.target || "", conv);
       case "evidence": {
         const r = await withThinking(() => api().evidence(a.key || null));
         if (!r.ok) return sayError(r.error);
@@ -225,7 +238,7 @@ async function execute(res) {
         setFollowups([{ label: "Token usage", intent: I("tokens") }, { label: "Run all tests", intent: I("run", { tests: "all" }) }]);
         return;
       }
-      case "switch_provider": return switchProvider(a.provider);
+      case "switch_provider": return switchProvider(a.provider, conv);
       case "environment": {
         if (a.environment) {
           const r = await api().set_environment(a.environment, a.capsule_provider || null);
@@ -250,12 +263,14 @@ async function execute(res) {
       case "watch": {
         if (a.action === "stop") {
           await api().watch_stop();
+          state.watchOn = false;
           say("Stopped watching .argus/.");
           poll();
           return;
         }
         const r = await api().watch_start();
         if (!r.ok) return sayError(r.error);
+        state.watchOn = true;
         push({ role: "argus", kind: "watch", watch: r.watch });
         setFollowups([{ label: "Stop watching", intent: I("watch", { action: "stop" }) }]);
         poll();
@@ -276,7 +291,8 @@ function pick(obj, keys) {
   return out;
 }
 
-async function startRun(tests, overrides) {
+async function startRun(tests, overrides, conv = state.conv) {
+  const { push, sayError, setFollowups } = inConv(conv);
   const r = await api().run_tests(tests, overrides || {});
   if (!r.ok) return sayError(r.error);
   const job = r.job;
@@ -286,7 +302,8 @@ async function startRun(tests, overrides) {
 }
 const runMeta = (job) => ({ env_label: job.env_label, provider: job.provider, running: job.running });
 
-async function startRoam(a) {
+async function startRoam(a, conv = state.conv) {
+  const { push, sayError, setFollowups } = inConv(conv);
   const overrides = pick(a, ["environment", "capsule_provider"]);
   const r = await api().start_roam(a.target, a.adapter || null, a.minutes || null,
     typeof a.memory === "boolean" ? a.memory : null, overrides);
@@ -297,21 +314,27 @@ async function startRoam(a) {
   poll();
 }
 
-function showDraft(draft) {
+function showDraft(draft, conv = state.conv) {
+  const { push, sayError, setFollowups } = inConv(conv);
   if (!draft) return;
   if (!draft.ok && !draft.yaml) return sayError(draft.error || "The model didn't return a test.");
   push({ role: "argus", kind: "spec", draft });
   setFollowups(draft.ok
-    ? [{ label: "Dry run it", intent: I("dry_run", { tests: "draft" }) }, { label: "Save it to .argus", intent: I("save_test") }]
+    ? [{ label: "Dry run it", intent: I("dry_run", { tests: "draft", draft: draft.id }) },
+       { label: "Save it to .argus", intent: I("save_test", { draft: draft.id }) }]
     : [{ label: "Try again with more detail", prefill: "/write " }]);
 }
-function markDraftSaved(file) {
-  for (const m of state.conv.msgs) {
-    if (m.kind === "spec" && m.draft && m.draft.file === file) update(m, { draft: Object.assign({}, m.draft, { saved: true }) });
+function markDraftSaved(draftId) {
+  if (!draftId) return;
+  for (const c of [state.conv, ...state.conversations]) {
+    for (const m of c.msgs) {
+      if (m.kind === "spec" && m.draft && m.draft.id === draftId) update(m, { draft: Object.assign({}, m.draft, { saved: true }) });
+    }
   }
 }
 
-async function knowledge(action, target) {
+async function knowledge(action, target, conv = state.conv) {
+  const { push, say, sayError, setFollowups } = inConv(conv);
   if (action === "reset") {
     const k = await api().knowledge(target);
     const name = k.ok ? k.target : target;
@@ -340,7 +363,8 @@ async function knowledge(action, target) {
   ]);
 }
 
-async function switchProvider(name) {
+async function switchProvider(name, conv = state.conv) {
+  const { say, sayError, setFollowups } = inConv(conv);
   const r = await api().set_provider(name);
   if (!r.ok) return sayError(r.error);
   state.info = r;
@@ -360,7 +384,7 @@ function activeJobIds() {
   return ids;
 }
 function watchRunning() {
-  return state.conv.msgs.some((m) => m.kind === "watch" && m.watch.running);
+  return state.watchOn;
 }
 function poll() {
   if (state.pollTimer) return;
@@ -390,8 +414,9 @@ async function tick() {
       }
     }
   }
-  if (watchRunning()) {
+  if (state.watchOn || state.conv.msgs.some((m) => m.kind === "watch" && m.watch.running)) {
     const w = await api().watch_status();
+    state.watchOn = !!w.running;
     for (const m of state.conv.msgs) {
       if (m.kind === "watch" && m.watch.id === w.id && JSON.stringify(w) !== JSON.stringify(m.watch)) update(m, { watch: w });
     }
@@ -412,10 +437,11 @@ function onFinished(msgs) {
   if (last.kind === "run") {
     const runs = state.conv.msgs.filter((m) => m.kind === "run" && m.job === last.job);
     const failed = runs.find((m) => m.snap.status !== "pass");
+    const explainable = failed && failed.snap.key && failed.snap.result;
     setFollowups(failed
-      ? [{ label: "Why did it fail?", intent: I("explain") },
+      ? [explainable ? { label: `Why did ${failed.snap.file} fail?`, intent: I("explain", { key: failed.snap.key }) } : null,
          { label: "Re-run in a Capsule and keep the Failure Capsule", intent: I("run", { tests: [failed.snap.file], environment: "capsule", retain: true }) },
-         { label: "Show ATES evidence", intent: I("evidence") }]
+         explainable ? { label: "Show ATES evidence", intent: I("evidence", { key: failed.snap.key }) } : null].filter(Boolean)
       : [{ label: "Show ATES evidence", intent: I("evidence") }, { label: "Run history", intent: I("report") },
          { label: "Run all tests", intent: I("run", { tests: "all" }) }]);
   } else if (last.kind === "roam") {
@@ -428,10 +454,10 @@ function onFinished(msgs) {
   }
 }
 
-async function regressionStub(job, index) {
+async function regressionStub(job, index, conv = state.conv) {
   const draft = await api().regression_stub(job, index || 0);
-  if (!draft.ok && !draft.yaml) return sayError(draft.error);
-  showDraft(draft);
+  if (!draft.ok && !draft.yaml) return sayIn(conv, draft.error, { error: true });
+  showDraft(draft, conv);
 }
 
 /* ---------------------------------------------------------- live panel --- */
@@ -697,8 +723,8 @@ function renderSpec(m) {
     h("div", { class: "card-bar" },
       d.ok ? h("span", { class: "grow", text: d.saved ? `Saved to .argus/${d.file}` : (d.from_finding ? "From a roam finding · refine before committing" : "Review it, then save it to .argus/") })
         : h("span", { class: "grow bad", text: "Not valid yet: " + (d.error || "unknown error") }),
-      d.ok ? h("button", { class: "btn hov", text: "Dry run", onClick: () => runChip("Dry run it", I("dry_run", { tests: "draft" })) }) : null,
-      d.ok ? h("button", { class: "btn dark", text: d.saved ? "Saved" : "Save to .argus", disabled: d.saved, onClick: () => runChip("Save it to .argus", I("save_test")) }) : null));
+      d.ok ? h("button", { class: "btn hov", text: "Dry run", onClick: () => runChip("Dry run it", I("dry_run", { tests: "draft", draft: d.id })) }) : null,
+      d.ok ? h("button", { class: "btn dark", text: d.saved ? "Saved" : "Save to .argus", disabled: d.saved, onClick: () => runChip("Save it to .argus", I("save_test", { draft: d.id })) }) : null));
 }
 
 function renderProviders(m) {
@@ -888,7 +914,7 @@ function buildMenu(name) {
     ];
     items = opts.map(([label, desc, e, c]) => menuItem(label, "", async () => {
       const r = await api().set_environment(e, c);
-      if (r.ok) { state.info = r; renderInfo(); } else sayError(r.error);
+      if (r.ok) { state.info = r; renderInfo(); } else sayIn(state.conv, r.error, { error: true });
     }, { desc, radio: true, current: env === e && (e === "local" || cap === c) }));
   } else if (name === "model") {
     items = (info.providers || []).map((p) => menuItem(`${p.type} · ${p.model}`, "", () => {
