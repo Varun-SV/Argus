@@ -982,14 +982,21 @@ class ArgusAPI:
         )
         return out
 
-    def explain(self, key: Optional[str] = None) -> dict:
-        """Explain a failed run: ``key`` is an in-session result key or a history id from recent_runs."""
+    def explain(self, key: Optional[str] = None, restored: Optional[dict] = None) -> dict:
+        """Explain a failed run: ``key`` is an in-session result key or a history id from recent_runs.
+
+        ``restored`` is the result saved on a conversation card. After a restart the new
+        process has no in-memory result for that card's key (setup errors never reach disk),
+        so the card's own result is used, reduced to the fields an explanation reads.
+        """
         data = None
         if key and key.startswith("history:"):
             data = self._history_result(key[len("history:"):])
         else:
             key = key or self._last_failed
             data = self._results.get(key) if key else None
+            if data is None and key and isinstance(restored, dict) and restored.get("kind") == "run":
+                data = _restored_result(restored)
             if data is None and not key:
                 for hid, run in self._history(20):
                     if run.get("status") != "pass":
@@ -1008,9 +1015,10 @@ class ArgusAPI:
             return {"ok": False, "error": f"The model couldn't explain it: {exc}"}
         finally:
             self._charge(tracker, cfg)
-        # Evidence can only be verified for runs of this session (persisted results
-        # don't carry their ATES run id), so only offer it for those.
-        evidence_key = key if key in self._results and data.get("ates_run_id") else None
+        # Evidence is verifiable for runs with an ATES run id: this session's, or a restored
+        # card's (its key is that id). Persisted history rows don't carry one.
+        evidence_key = key if data.get("ates_run_id") and (
+            key in self._results or data.get("ates_run_id") == key) else None
         return {"ok": True, "text": text, "test": data.get("test_file"), "key": key,
                 "evidence_key": evidence_key}
 
@@ -1286,6 +1294,17 @@ def _argus_subdir(cfg: ArgusConfig, name: str, create: bool = True) -> Path:
     except ValueError as exc:
         raise OSError(f".argus/{name} escapes the project: {sub}") from exc
     return resolved
+
+
+def _restored_result(card_result: dict) -> dict:
+    """The fields of a card's saved run result that an explanation uses, nothing else."""
+    steps = [dict((k, st.get(k)) for k in ("index", "kind", "text", "status", "expected",
+                                           "actual", "note", "actions"))
+             for st in (card_result.get("steps") or [])[:200] if isinstance(st, dict)]
+    out = {k: card_result.get(k) for k in ("test_file", "status", "error", "environment_type")}
+    rid = card_result.get("ates_run_id")
+    out.update(kind="run", steps=steps, ates_run_id=rid if isinstance(rid, str) else None)
+    return out
 
 
 def _read_nofollow(path: Path) -> bytes:

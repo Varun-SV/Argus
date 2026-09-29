@@ -199,7 +199,12 @@ async function execute(res, conv = state.conv) {
         return;
       }
       case "explain": {
-        const r = await withThinking(() => api().explain(a.key || null));
+        // After a restart the API has no in-memory result for a card's key, so send the
+        // card's own saved result along; the API only uses it when the key is unknown.
+        const card = a.key ? allConversations().flatMap((c) => c.msgs)
+          .find((m) => m.kind === "run" && m.snap && m.snap.key === a.key) : null;
+        const restored = card && card.snap.result ? card.snap.result : null;
+        const r = await withThinking(() => api().explain(a.key || null, restored));
         if (!r.ok) return sayError(r.error);
         say(r.text);
         setFollowups([
@@ -386,8 +391,10 @@ async function switchProvider(name, conv = state.conv) {
 function allConversations() {
   return [...new Set([state.conv, ...state.conversations])];
 }
-const isActiveCard = (m) => (m.kind === "run" && (m.snap.status === "running" || m.snap.status === "queued")) ||
-  (m.kind === "roam" && m.snap.running);
+// A run card is active while its job runs, even when the card itself is already terminal
+// (a spec error is final at once while the worker is still recording it).
+const isActiveCard = (m) => (m.kind === "run" && (m.snap.status === "running" || m.snap.status === "queued" ||
+  !!(m.meta && m.meta.running))) || (m.kind === "roam" && m.snap.running);
 function activeJobIds() {
   const ids = new Set();
   for (const c of allConversations()) for (const m of c.msgs) if (isActiveCard(m)) ids.add(m.job);
@@ -407,17 +414,23 @@ async function tick() {
   for (const id of ids) {
     let job;
     try { job = await api().job_status(id); } catch (e) { continue; }
-    if (!job.ok) continue;
+    if (!job.ok) {
+      // The API no longer knows this job: stop treating its cards as active.
+      for (const c of allConversations()) for (const m of c.msgs) if (m.job === id && m.meta) m.meta.running = false;
+      continue;
+    }
     for (const c of allConversations()) {
       for (const m of c.msgs) {
         if (m.job !== id) continue;
         if (m.kind === "run") {
           const snap = job.runs[m.idx];
           const was = m.snap.status;
+          const jobWasRunning = !!m.meta.running;
           if (JSON.stringify(snap) !== JSON.stringify(m.snap) || m.meta.running !== job.running) {
             update(m, { snap, meta: runMeta(job) });
           }
-          if ((was === "running" || was === "queued") && !["running", "queued"].includes(snap.status)) finished.push([c, m]);
+          if (((was === "running" || was === "queued") && !["running", "queued"].includes(snap.status)) ||
+              (jobWasRunning && !job.running)) finished.push([c, m]);
         } else if (m.kind === "roam") {
           const was = m.snap.running;
           if (JSON.stringify(job) !== JSON.stringify(m.snap)) update(m, { snap: job });
@@ -1014,6 +1027,7 @@ async function boot() {
   for (const c of state.conversations) {
     for (const m of c.msgs) {
       if (m.kind === "run" && ["running", "queued"].includes(m.snap.status)) m.snap.status = "stopped";
+      if (m.kind === "run" && m.meta) m.meta.running = false;
       if (m.kind === "roam" && m.snap.running) { m.snap.running = false; m.snap.status = "stopped"; }
       if (m.kind === "watch") m.watch.running = false;
     }

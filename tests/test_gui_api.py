@@ -709,3 +709,26 @@ def test_knowledge_export_never_reads_a_symlinked_graph(project, tmp_path_factor
     out = api.knowledge_export("notepad.exe")
     assert out["ok"] is False
     assert not (project / ".argus" / "exports" / "notepad-exe.graph.json").exists()
+
+
+def test_explain_works_for_cards_restored_after_restart(project, fake_llm, monkeypatch):
+    (project / ".argus" / "cli.test.yaml").write_text(CLI_SPEC, encoding="utf-8")
+
+    def no_env(self, adapter_type, environment_type=None, capsule_overrides=None):
+        raise RuntimeError("driver failed to start")
+
+    monkeypatch.setattr(ArgusConfig, "make_execution_environment", no_env)
+    first = ArgusAPI()
+    card = _wait(first, first.run_tests(["cli.test.yaml"])["job"]["id"])["runs"][0]
+    assert card["status"] == "error" and card["key"].startswith("error-")
+    first.save_conversations([{"id": "c", "msgs": [{"kind": "run", "snap": card}]}])
+
+    restarted = ArgusAPI()  # the setup error only ever existed in the old process's memory
+    saved = restarted.load_conversations()[0]["msgs"][0]["snap"]
+    assert restarted.explain(saved["key"])["ok"] is False  # the key alone can't be resolved
+    fake_llm.append("The driver failed to start before any step ran.")
+    out = restarted.explain(saved["key"], saved["result"])
+    assert out["ok"] is True and out["test"] == "cli.test.yaml"
+    assert out["evidence_key"] is None  # a setup error has no ATES evidence
+    # Only the explanation fields of a restored result are used.
+    assert restarted.explain("error-x", {"kind": "roam"})["ok"] is False

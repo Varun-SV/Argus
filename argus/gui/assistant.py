@@ -334,15 +334,25 @@ def extract_json(text: str) -> Optional[dict]:
 
 _ROAM_VERB = re.compile(r"\b(?:roam|explore)\b", re.IGNORECASE)
 _DURATION_UNITS = {"s": 1 / 60, "m": 1.0, "h": 60.0}
-# Argus-owned modifiers a user may put after the target. They are stripped from the end of
-# the request (repeatedly, in any order) and their values are read from the user's own text.
-_ROAM_SUFFIXES = (
-    re.compile(r"\s+for\s+(?:(?P<n>\d+(?:\.\d+)?)\s*(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
-               r"|(?P<one>a\s+minute|an\s+hour))\s*[.!]?\s*$", re.IGNORECASE),
-    re.compile(r"\s+(?P<mem>with|without)\s+memory\s*[.!]?\s*$", re.IGNORECASE),
-    re.compile(r"\s+(?:(?P<local>locally)|in\s+(?:a\s+)?(?:(?P<cap>hyper-?v|libvirt)\s+)?capsule)"
-               r"\s*[.!]?\s*$", re.IGNORECASE),
-)
+_DURATION = (r"for\s+(?:(?P<n>\d+(?:\.\d+)?)\s*(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
+             r"|(?P<one>a\s+minute|an\s+hour))")
+_MEMORY = r"(?P<mem>with|without)\s+memory"
+_ENVIRONMENT = r"(?:(?P<local>locally)|in\s+(?:a\s+)?(?:(?P<cap>hyper-?v|libvirt)\s+)?capsule)"
+# Argus-owned modifiers. After the target they are stripped from the end (repeatedly, in any
+# order); before the roam verb they may appear anywhere. Their values always come from the
+# user's own words, never from the model.
+_ROAM_SUFFIXES = tuple(re.compile(r"\s+" + p + r"\s*[.!]?\s*$", re.IGNORECASE)
+                       for p in (_DURATION, _MEMORY, _ENVIRONMENT))
+_ROAM_PHRASES = tuple(re.compile(r"\b" + p + r"\b", re.IGNORECASE)
+                      for p in (_DURATION, _MEMORY, _ENVIRONMENT))
+# Words that signal a run modifier; left over after parsing, they make a request ambiguous.
+_MODIFIER_WORDS = re.compile(
+    r"\b(?:capsules?|locally|local|memory|hyper-?v|libvirt|seconds?|secs?|minutes?|mins?|hours?|hrs?)\b",
+    re.IGNORECASE)
+_DEICTIC_TARGET = re.compile(
+    r"^(?:(?:it|that)(?:\s+again)?|again|(?:the\s+)?same(?:\s+(?:app|target))?|"
+    r"(?:the\s+)?(?:previous|last)(?:\s+(?:app|target))?)[.!]?$", re.IGNORECASE)
+_QUOTED_HEAD = re.compile(r'^(?P<q>["\'])(?P<body>.*?)(?P=q)(?P<tail>.*)$', re.DOTALL)
 
 
 def _roam_modifier(m: "re.Match") -> dict:
@@ -357,34 +367,119 @@ def _roam_modifier(m: "re.Match") -> dict:
         return {"memory": g["mem"].lower() == "with"}
     if g.get("local"):
         return {"environment": "local"}
-    cap = (g.get("cap") or "auto").lower().replace("-", "")
-    return {"environment": "capsule", "capsule_provider": cap}
+    if g.get("cap"):  # "in a hyper-v capsule"; a plain "capsule" keeps the session's provider
+        return {"environment": "capsule", "capsule_provider": g["cap"].lower().replace("-", "")}
+    return {"environment": "capsule"}
 
 
-def split_roam_request(text: str) -> Optional[tuple]:
-    """Split a free-text roam request into (target text, modifiers) from the user's words.
+class RoamRequest:
+    """A free-text roam request read from the user's words: target, modifiers, or a problem."""
 
-    The target is everything after the explicit roam/explore verb once the Argus-owned
-    modifiers (duration, memory, execution environment) are removed from the end. The
-    modifiers are returned as intent args, so the model can neither drop nor invent them.
-    Returns None when the message has no roam/explore verb.
-    """
-    match = _ROAM_VERB.search(text)
-    if not match:
-        return None
-    candidate = text[match.end():].strip()
-    modifiers: dict = {}
+    def __init__(self, target: str, modifiers: dict, problem: Optional[str] = None) -> None:
+        self.target = target
+        self.modifiers = modifiers
+        self.problem = problem
+
+
+_QUOTE_HINT = ('Put the command in quotes to separate it, e.g. roam "python tool.py --flag" '
+               "in a capsule for 5 minutes, or use /roam with --minutes and --memory/--no-memory "
+               "and /env for the environment.")
+
+
+def _merge(into: dict, found: dict) -> Optional[str]:
+    for key, value in found.items():
+        if key in into and into[key] != value:
+            return "You asked for two different settings for this roam, so I didn't start it. " + _QUOTE_HINT
+        into[key] = value
+    return None
+
+
+def _strip_suffixes(candidate: str, modifiers: dict) -> tuple:
+    """Strip trailing modifiers off ``candidate``. Returns (rest, stripped phrases, problem)."""
+    stripped, problem = [], None
     changed = True
     while changed:
         changed = False
         for pattern in _ROAM_SUFFIXES:
             m = pattern.search(candidate)
             if m:
-                for key, value in _roam_modifier(m).items():
-                    modifiers.setdefault(key, value)  # the last occurrence in the text wins
+                problem = problem or _merge(modifiers, _roam_modifier(m))
+                stripped.append(m.group(0).strip().rstrip(".!"))
                 candidate = candidate[:m.start()].rstrip()
                 changed = True
-    return _unquote(candidate), modifiers
+    return candidate, stripped, problem
+
+
+def split_roam_request(text: str) -> Optional[RoamRequest]:
+    """Read a free-text roam request deterministically from the user's words.
+
+    The target follows the explicit roam/explore verb. A quoted target is taken literally,
+    with modifiers allowed only after the closing quote. An unquoted target has trailing
+    modifiers (duration, memory, environment) stripped, but only when what remains is a
+    single token: stripping a modifier-shaped phrase off a multi-word command could cut off
+    one of its arguments, so that is reported as a problem instead of guessed. Modifiers may
+    also come before the verb ("In a capsule, roam notepad.exe"). Any modifier wording that
+    can't be read unambiguously is a problem, so nothing runs with settings the user didn't
+    choose. Returns None when the message has no roam/explore verb.
+    """
+    match = _ROAM_VERB.search(text)
+    if not match:
+        return None
+    modifiers: dict = {}
+    problem = None
+
+    prefix = text[:match.start()]
+    for pattern in _ROAM_PHRASES:
+        for m in pattern.finditer(prefix):
+            problem = problem or _merge(modifiers, _roam_modifier(m))
+        prefix = pattern.sub(" ", prefix)
+    leftover = _MODIFIER_WORDS.search(prefix)
+    if leftover and not problem:
+        problem = f'I couldn\'t tell how "{leftover.group(0)}" should apply to this roam. ' + _QUOTE_HINT
+
+    rest = text[match.end():].strip()
+    quoted = _QUOTED_HEAD.match(rest)
+    if quoted:
+        target = quoted.group("body").strip()
+        tail, _, tail_problem = _strip_suffixes(" " + quoted.group("tail").strip(), modifiers)
+        problem = problem or tail_problem
+        if tail.strip(" .!") and not problem:
+            problem = (f'I couldn\'t read "{tail.strip()}" after the quoted command. ' + _QUOTE_HINT)
+        return RoamRequest(target, modifiers, problem)
+
+    target, stripped, suffix_problem = _strip_suffixes(rest, modifiers)
+    problem = problem or suffix_problem
+    target = _unquote(target)
+    deictic = bool(_DEICTIC_TARGET.match(target))
+    if not problem and not deictic:
+        if stripped and re.search(r"\s", target):
+            problem = (f'I wasn\'t sure whether "{stripped[-1]}" is part of the command '
+                       f'"{target}". ' + _QUOTE_HINT)
+        elif re.search(r"\s", target) and any(p.search(target) for p in _ROAM_PHRASES):
+            problem = ("Part of that command reads like a run setting, so I didn't guess. " + _QUOTE_HINT)
+    return RoamRequest(target, modifiers, problem)
+
+
+def run_settings_from_text(text: str) -> tuple:
+    """Execution settings a free-text run or environment request states in the user's words.
+
+    Returns (settings, problem). Only what the user actually wrote is returned, so the model
+    can neither override the session's pickers nor invent an environment or retention choice.
+    """
+    settings: dict = {}
+    problem = None
+    for m in re.finditer(r"\b" + _ENVIRONMENT + r"\b", text, re.IGNORECASE):
+        problem = problem or _merge(settings, _roam_modifier(m))
+    if re.search(r"\b(?:don'?t|do\s+not|without)\s+(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?"
+                 r"failure\s+capsule\b", text, re.IGNORECASE):
+        settings["retain"] = False
+    elif re.search(r"\b(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?failure\s+capsule\b", text, re.IGNORECASE):
+        settings["retain"] = True
+    if "retain" in settings and "environment" not in settings:
+        settings["environment"] = "capsule"  # a Failure Capsule only exists in a Capsule
+    if problem:
+        problem = "You asked for both Local and a Capsule, so I didn't run anything. Pick one, e.g. /env capsule."
+    return settings, problem
 
 
 def _mentions_target(text: str, target: str, adapter: str) -> bool:
@@ -397,9 +492,9 @@ def _mentions_target(text: str, target: str, adapter: str) -> bool:
     """
     del adapter  # kept in the signature so validation is explicit about the routed adapter
     request = split_roam_request(text)
-    if not target or request is None:
+    if not target or request is None or request.problem:
         return False
-    candidate = request[0]
+    candidate = request.target
     wanted = target.casefold()
     if candidate.casefold() == wanted:
         return True
@@ -450,13 +545,20 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
                     "run anything. The Tests list in the sidebar shows what's there."))
         out = intent(name, tests=chosen)
         if name == "run":
-            out["args"].update(_env_args(args))
+            # Like roam: only settings the user stated, never ones the model supplies.
+            settings, problem = run_settings_from_text(text)
+            if problem:
+                return intent("chat", reply=problem)
+            out["args"].update(settings)
         return out
 
     if name == "roam":
         target = _unquote(str(args.get("target") or "").strip())
         last = str(context.get("last_target") or "")
         adapter = args.get("adapter") if args.get("adapter") in ADAPTERS else adapter_for(target)
+        request = split_roam_request(text)
+        if request is not None and request.problem:
+            return intent("chat", reply=request.problem)
         explicitly_named = _mentions_target(text, target, adapter)
         reuses_previous = bool(last and target == last and _refers_to_last_target(text))
         if not target or not (explicitly_named or reuses_previous):
@@ -464,8 +566,7 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         # Duration, memory and environment come from the user's own words, never from the
         # model: a dropped "in a capsule" must not turn into a local roam. Anything the user
         # didn't say stays None, so the session's pickers and project defaults apply.
-        request = split_roam_request(text)
-        mods = request[1] if request else {}
+        mods = request.modifiers if request is not None else {}
         return intent(
             "roam", target=target, adapter=adapter, minutes=mods.get("minutes"),
             memory=mods.get("memory"),
@@ -488,24 +589,26 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         return intent("switch_provider", provider=wanted)
 
     if name == "environment":
-        return intent("environment", **_env_args(args))
+        settings, problem = run_settings_from_text(text)
+        if not problem and "environment" not in settings:
+            # "switch to local" / "use a hyper-v capsule": read the choice from the user's words.
+            words = {w.lower().replace("-", "") for w in re.findall(
+                r"\b(?:local|capsule|hyper-?v|libvirt)\b", text, re.IGNORECASE)}
+            if words == {"local"}:
+                settings["environment"] = "local"
+            elif words and "local" not in words:
+                cap = next((w for w in ("hyperv", "libvirt") if w in words), "auto")
+                settings.update(environment="capsule", capsule_provider=cap)
+        if problem or "environment" not in settings:
+            return intent("chat", reply=problem or "Local or a Capsule? Try /env local, /env capsule, /env hyperv or /env libvirt.")
+        if settings["environment"] == "capsule":
+            settings.setdefault("capsule_provider", "auto")  # as /env capsule does
+        return intent("environment", **settings)
 
     if name == "watch":
         return intent("watch", action="stop" if args.get("action") == "stop" else "start")
 
     return intent("chat", reply=_plain(str(args.get("reply") or "")) or "Type /help to see what Argus can do.")
-
-
-def _env_args(args: Mapping) -> dict:
-    out = {}
-    if args.get("environment") in ENVIRONMENTS:
-        out["environment"] = args["environment"]
-    if args.get("capsule_provider") in CAPSULE_PROVIDERS:
-        out["capsule_provider"] = args["capsule_provider"]
-        out.setdefault("environment", "capsule")
-    if isinstance(args.get("retain"), bool):
-        out["retain"] = args["retain"]
-    return out
 
 
 def _plain(text: str, limit: int = 1500) -> str:

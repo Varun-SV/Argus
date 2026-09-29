@@ -212,7 +212,7 @@ def test_roam_modifiers_come_from_the_user_not_the_model():
     dropped = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}}, text, CONTEXT)
     assert dropped["intent"] == "roam"
     assert dropped["args"]["environment"] == "capsule"
-    assert dropped["args"]["capsule_provider"] == "auto"
+    assert "capsule_provider" not in dropped["args"]  # the session's Capsule provider applies
     assert dropped["args"]["memory"] is False
     assert dropped["args"]["minutes"] == 1.0
 
@@ -327,3 +327,58 @@ def test_slash_roam_keeps_windows_backslashes():
 
     multi = parse_slash(r'/roam "C:\Program Files\App\app.exe" --safe-mode', TESTS)
     assert multi["args"]["target"] == r'"C:\Program Files\App\app.exe" --safe-mode'
+
+
+def test_roam_modifiers_before_the_verb_are_honoured():
+    got = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}},
+                          "In a capsule, roam notepad.exe", CONTEXT)
+    assert got["intent"] == "roam"
+    assert got["args"]["environment"] == "capsule" and "capsule_provider" not in got["args"]
+    got = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}},
+                          "Without memory, roam notepad.exe for 2 minutes", CONTEXT)
+    assert got["args"]["memory"] is False and got["args"]["minutes"] == 2.0
+    # Conflicting or unreadable modifier wording runs nothing.
+    for text in ("Locally, roam notepad.exe in a capsule", "run the local build and roam notepad.exe"):
+        got = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}}, text, CONTEXT)
+        assert got["intent"] == "chat", text
+
+
+@pytest.mark.parametrize("text,target", [
+    ("roam python deploy.py --region locally", "python deploy.py --region"),
+    ("roam python tool.py without memory", "python tool.py"),
+    ("roam python tool.py for 1 minute", "python tool.py"),
+    ("roam python tool.py locally --fast", "python tool.py locally --fast"),
+])
+def test_command_arguments_that_look_like_modifiers_are_never_stripped(text, target):
+    got = validate_intent({"intent": "roam", "args": {"target": target}}, text, CONTEXT)
+    assert got["intent"] == "chat"
+    assert "quotes" in got["args"]["reply"]
+
+
+def test_quoted_commands_are_literal_and_modifiers_follow_the_quote():
+    got = validate_intent({"intent": "roam", "args": {"target": "python tool.py for 1 minute"}},
+                          'roam "python tool.py for 1 minute"', CONTEXT)
+    assert got["intent"] == "roam" and got["args"]["target"] == "python tool.py for 1 minute"
+    assert got["args"]["minutes"] is None
+    got = validate_intent({"intent": "roam", "args": {"target": "python deploy.py --region locally"}},
+                          'roam "python deploy.py --region locally" in a capsule for 1 minute', CONTEXT)
+    assert got["args"]["target"] == "python deploy.py --region locally"
+    assert got["args"]["environment"] == "capsule" and got["args"]["minutes"] == 1.0
+
+
+def test_run_settings_come_from_the_user_not_the_model():
+    # A Capsule session plus a model-invented "local" must not become a local run.
+    got = validate_intent({"intent": "run", "args": {"tests": ["checkout"], "environment": "local",
+                                                     "retain": True}}, "run checkout", CONTEXT)
+    assert got["intent"] == "run"
+    assert not {"environment", "capsule_provider", "retain"} & set(got["args"])
+    got = validate_intent({"intent": "run", "args": {"tests": ["checkout"]}},
+                          "run checkout in a hyper-v capsule and keep the failure capsule", CONTEXT)
+    assert got["args"]["environment"] == "capsule" and got["args"]["capsule_provider"] == "hyperv"
+    assert got["args"]["retain"] is True
+    # Switching the session environment also needs the user's own words.
+    got = validate_intent({"intent": "environment", "args": {"environment": "local"}}, "what can you do", CONTEXT)
+    assert got["intent"] == "chat"
+    got = validate_intent({"intent": "environment", "args": {"environment": "local"}},
+                          "switch to a libvirt capsule", CONTEXT)
+    assert got["args"] == {"environment": "capsule", "capsule_provider": "libvirt"}
