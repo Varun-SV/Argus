@@ -333,83 +333,54 @@ def extract_json(text: str) -> Optional[dict]:
 
 
 def _mentions_target(text: str, target: str, adapter: str) -> bool:
-    """Return whether target is the complete launch target named by the user.
+    """Verify that the routed target preserves the user's complete roam target.
 
-    The router is allowed to copy a target, never shorten one. In particular,
-    dropping a CLI flag/positional argument or a URL query string can change side
-    effects, so a mere substring/boundary match is not sufficient.
+    Free-text execution is deliberately conservative: after the explicit roam/explore
+    verb, the target must equal the remaining user text after removing only Argus-owned
+    modifiers (duration, memory and execution environment). This prevents a model from
+    silently dropping command arguments, flags, or URL query strings.
     """
+    del adapter  # kept in the signature so validation is explicit about the routed adapter
     if not target:
         return False
-
-    target = target.strip()
-    if adapter == "browser":
-        # URLs are whitespace-delimited in natural language. Compare the whole
-        # URL token so /path cannot authorize /path?safe=true.
-        for match in re.finditer(
-            r"(?:https?://[^\s<>\"']+|(?:localhost|127\.0\.0\.1)(?::\d+)?[^\s<>\"']*)",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            candidate = match.group(0).rstrip(".,!;:)]}")
-            if candidate.lower() == target.lower():
-                return True
+    match = re.search(r"\b(?:roam|explore)\b", text, re.IGNORECASE)
+    if not match:
         return False
 
-    pattern = re.compile(
-        r"(?<![A-Za-z0-9_./:\\\\-])" + re.escape(target) + r"(?![A-Za-z0-9_./:\\\\-])",
-        flags=re.IGNORECASE,
+    candidate = text[match.end():].strip()
+    suffixes = (
+        r"\s+for\s+(?:\d+(?:\.\d+)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)|"
+        r"a\s+minute|an\s+hour)\s*[.!]?\s*$",
+        r"\s+(?:with|without)\s+memory\s*[.!]?\s*$",
+        r"\s+(?:locally|in\s+(?:a\s+)?capsule)\s*[.!]?\s*$",
     )
-    for match in pattern.finditer(text):
-        start, end = match.span()
+    changed = True
+    while changed:
+        changed = False
+        for pattern in suffixes:
+            stripped = re.sub(pattern, "", candidate, flags=re.IGNORECASE)
+            if stripped != candidate:
+                candidate = stripped.rstrip()
+                changed = True
 
-        # A bare target may be wrapped in matching quotes in the user's text.
-        if start and end < len(text) and text[start - 1] in "\"'" and text[end] == text[start - 1]:
-            start -= 1
-            end += 1
-
-        suffix = text[end:]
-        if suffix and not suffix[0].isspace():
-            # Sentence punctuation may immediately follow a target, but command/
-            # URL punctuation followed by more text is part of the target.
-            if suffix[0] in ".,!?;:" and (len(suffix) == 1 or suffix[1].isspace()):
-                suffix = suffix[1:]
-            else:
-                continue
-
-        tail = suffix.lstrip()
-        if not tail:
-            return True
-
-        # CLI targets are especially sensitive: only Argus-level natural-language
-        # modifiers may follow. Any other token may be a dropped command argument.
-        if adapter == "cli":
-            if re.match(r"^(?:for\b|with\b|without\b|in\b|locally\b)", tail, re.IGNORECASE):
-                return True
-            continue
-
-        # Desktop app names commonly have prose after them (and find bugs).
-        if re.match(
-            r"^(?:for\b|with\b|without\b|in\b|locally\b|and\b|then\b|to\b)",
-            tail,
-            re.IGNORECASE,
-        ):
-            return True
-
-    return False
+    candidate = _unquote(candidate)
+    wanted = target.casefold()
+    if candidate.casefold() == wanted:
+        return True
+    # Permit ordinary sentence punctuation only when removing it yields the exact
+    # target. A URL query marker is never treated as punctuation here.
+    return bool(candidate.endswith((".", "!")) and candidate[:-1].casefold() == wanted)
 
 
 def _refers_to_last_target(text: str) -> bool:
-    """Require an explicit deictic reference before reusing the previous target."""
-    has_action = re.search(r"\b(?:roam|explore)\b", text, re.IGNORECASE)
-    has_reference = re.search(
-        r"\b(?:it|that|again|same(?:\s+(?:app|target))?|previous(?:\s+(?:app|target))?|"
-        r"last(?:\s+(?:app|target))?)\b",
+    """Require an explicit command-like reference before reusing the previous target."""
+    return bool(re.search(
+        r"\b(?:roam|explore)\s+(?:(?:it|that)(?:\s+again)?|again|"
+        r"(?:the\s+)?same(?:\s+(?:app|target))?|"
+        r"(?:the\s+)?(?:previous|last)(?:\s+(?:app|target))?)\b",
         text,
         re.IGNORECASE,
-    )
-    return bool(has_action and has_reference)
-
+    ))
 
 def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     """Turn a model's routing answer into a safe intent, or a chat reply."""
@@ -447,7 +418,7 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         return out
 
     if name == "roam":
-        target = str(args.get("target") or "").strip().strip("'\"")
+        target = _unquote(str(args.get("target") or "").strip())
         last = str(context.get("last_target") or "")
         adapter = args.get("adapter") if args.get("adapter") in ADAPTERS else adapter_for(target)
         explicitly_named = _mentions_target(text, target, adapter)
