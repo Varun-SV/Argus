@@ -10,4 +10,3 @@ venv/
 .argus/runs/
 .argus/roam/
 .argus/usage.json
-.argus/gui/
