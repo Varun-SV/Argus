@@ -211,5 +211,8 @@ def test_slash_roam_keeps_windows_backslashes():
     assert got["args"]["target"] == r"C:\Tools\app.exe"
     assert got["args"]["adapter"] == "desktop-gui" and got["args"]["minutes"] == 3.0
     spaced = parse_slash(r'/roam "C:\Program Files\App\app.exe" --no-memory', TESTS)
-    assert spaced["args"]["target"] == r'"C:\Program Files\App\app.exe"'
+    assert spaced["args"]["target"] == r"C:\Program Files\App\app.exe"  # bare executable path
     assert spaced["args"]["memory"] is False
+
+    multi = parse_slash(r'/roam "C:\Program Files\App\app.exe" --safe-mode', TESTS)
+    assert multi["args"]["target"] == r'"C:\Program Files\App\app.exe" --safe-mode'

@@ -26,6 +26,10 @@ import yaml
 
 from argus.engine.spec import ASSERTION_KINDS, SpecError, parse_spec
 
+# parse_spec converts scalars directly, so a well-formed YAML file such as `retries: once`
+# raises ValueError/TypeError rather than SpecError. Anything reading user specs catches all.
+SPEC_ERRORS = (SpecError, ValueError, TypeError, AttributeError, KeyError)
+
 ADAPTERS = ("desktop-gui", "browser", "cli")
 ENVIRONMENTS = ("local", "capsule")
 CAPSULE_PROVIDERS = ("auto", "hyperv", "libvirt")
@@ -233,10 +237,12 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
         else:
             words.append(p)
         i += 1
-    if len(words) == 1 and not re.search(r"\s", _unquote(words[0])):
-        target = _unquote(words[0])  # "http://localhost:3000" -> http://localhost:3000
+    if len(words) == 1:
+        # One (possibly quoted) token is the whole target: "C:\Program Files\App\app.exe"
+        # -> C:\Program Files\App\app.exe, so the executable name reaches the adapter bare.
+        target = _unquote(words[0])
     else:
-        # A quoted path with spaces keeps its quotes, as it would in a spec's launch string.
+        # A multi-part command line keeps its quotes for the adapter to split.
         target = " ".join(words) if words else last_target
     if not target:
         raise IntentError('Tell Argus what to roam, e.g. /roam notepad.exe --minutes 5')
@@ -465,8 +471,7 @@ def check_draft(text: str, existing: Iterable[str] = ()) -> dict:
     except SpecError as exc:
         out["error"] = str(exc)
         return out
-    except (ValueError, TypeError, AttributeError, KeyError) as exc:
-        # parse_spec converts scalars directly, so e.g. `retries: once` raises ValueError.
+    except SPEC_ERRORS as exc:
         out["error"] = f"invalid spec: {exc}"
         return out
     if spec.adapter not in ADAPTERS:

@@ -781,7 +781,7 @@ function renderWatch(m) {
       h("span", { class: "badge " + (w.running ? "running" : "stopped"), text: w.running ? "Watching" : "Stopped" }),
       w.running ? h("button", { class: "btn hov", style: { height: "28px" }, text: "Stop", onClick: () => execute(I("watch", { action: "stop" })) }) : null),
     (w.events || []).length ? w.events.slice(-12).map((e) => h("div", { class: "ev" },
-      h("span", { class: "at", text: e.at }), h("span", { class: "t", text: `${e.file} changed` }),
+      h("span", { class: "at", text: e.at }), h("span", { class: "t", text: `${e.file} ${e.change === "removed" ? "removed" : "changed"}` }),
       h("span", { class: "st-" + (["pass", "fail", "error"].includes(e.status) ? e.status : "other"), text: e.summary })))
       : h("div", { class: "lbl", text: "Edit any .test.yaml in .argus/ and Argus re-runs it here." })));
 }

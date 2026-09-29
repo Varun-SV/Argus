@@ -13,7 +13,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import shutil
 import threading
 import time
 import uuid
@@ -291,7 +290,7 @@ class ArgusAPI:
             try:
                 spec = load_spec(path)
                 entry.update(name=spec.name, steps=len(spec.steps), adapter=spec.adapter)
-            except SpecError as exc:
+            except assistant.SPEC_ERRORS as exc:
                 entry["error"] = str(exc)
             out.append(entry)
         return out
@@ -346,7 +345,7 @@ class ArgusAPI:
         for path in paths:
             try:
                 spec = load_spec(path)
-            except SpecError as exc:
+            except assistant.SPEC_ERRORS as exc:
                 items.append({"file": path.name, "adapter": "?", "launch": "", "steps": [], "error": str(exc)})
                 continue
             items.append({"file": path.name, "adapter": spec.adapter, "launch": spec.launch,
@@ -387,7 +386,7 @@ class ArgusAPI:
             return {"ok": False, "error": "Test files must be named <name>.test.yaml."}
         try:
             parse_spec(content)
-        except SpecError as exc:
+        except assistant.SPEC_ERRORS as exc:
             return {"ok": False, "error": f"The spec doesn't parse: {exc}"}
         cfg.argus_dir.mkdir(parents=True, exist_ok=True)
         dest = cfg.argus_dir / name
@@ -451,7 +450,7 @@ class ArgusAPI:
                 runs.append({"file": path.name, "name": spec.name, "adapter": spec.adapter,
                              "launch": spec.launch, "planned": steps, "steps": [],
                              "status": "queued", "result": None, "key": None, "notes": []})
-            except SpecError as exc:
+            except assistant.SPEC_ERRORS as exc:
                 runs.append({"file": path.name, "name": path.stem, "adapter": "?", "launch": "",
                              "planned": [], "steps": [], "status": "error", "result": None,
                              "key": None, "notes": [f"spec error: {exc}"]})
@@ -784,6 +783,11 @@ class ArgusAPI:
                              "status": "running", "summary": "re-running…"}
                     watch["events"].append(event)
                     pending[name] = event
+            for name in sorted(set(seen) - set(current)):
+                # A deleted spec has nothing to re-run; record it so the sidebar refreshes.
+                watch["events"].append({"at": time.strftime("%H:%M:%S"), "file": name, "change": "removed",
+                                        "status": "removed", "summary": "spec removed"})
+                pending.pop(name, None)
             seen = current
             for name in list(pending):
                 if not watch["running"]:
@@ -839,6 +843,11 @@ class ArgusAPI:
             chosen = target or self._last_target or (targets[0] if targets else "")
             if not chosen:
                 return {"ok": False, "error": "Argus hasn't learned anything yet. Roam an app to build its state graph."}
+            if target_key(chosen) not in targets:
+                # Querying an unknown target makes the store create (and on close, save) an
+                # empty graph for it, so a typo would become a permanent "target".
+                known = f" Known targets: {', '.join(targets)}." if targets else ""
+                return {"ok": False, "error": f"Argus has no knowledge for {chosen!r} yet.{known}"}
             s = ks.get_stats(chosen).get(chosen, {})
         finally:
             ks.close()
@@ -867,10 +876,11 @@ class ArgusAPI:
         graph = persist / f"{key}.graph.json"
         if not graph.is_file():
             return {"ok": False, "error": f"No graph for '{target}' yet."}
-        dest_dir = cfg.argus_dir / "exports"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / f"{key}.graph.json"
-        shutil.copy2(graph, dest)
+        try:
+            dest = _argus_subdir(cfg, "exports") / f"{key}.graph.json"
+            _write_atomic(dest, graph.read_bytes())
+        except OSError as exc:
+            return {"ok": False, "error": f"Could not export the graph: {exc}"}
         return {"ok": True, "path": _rel(cfg, dest), "target": target}
 
     # ---- evidence / explain -----------------------------------------------------
@@ -1047,22 +1057,21 @@ class ArgusAPI:
     # ---- conversations -----------------------------------------------------------
 
     def load_conversations(self) -> list:
-        path = self._config().argus_dir / "gui" / "conversations.json"
         try:
+            path = _argus_subdir(self._config(), "gui", create=False) / "conversations.json"
+            if path.is_symlink():
+                return []
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return []
         return data if isinstance(data, list) else []
 
     def save_conversations(self, conversations: list) -> dict:
-        cfg = self._config()
-        if not cfg.argus_dir.is_dir():
-            return {"ok": False, "error": "no .argus directory"}
-        path = cfg.argus_dir / "gui" / "conversations.json"
-        path.parent.mkdir(exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(list(conversations or [])[:30]), encoding="utf-8")
-        tmp.replace(path)
+        try:
+            path = _argus_subdir(self._config(), "gui") / "conversations.json"
+            _write_atomic(path, json.dumps(list(conversations or [])[:30]).encode("utf-8"))
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
         return {"ok": True}
 
 
@@ -1139,6 +1148,53 @@ def _run_notes(data: dict) -> List[str]:
     if data.get("error"):
         notes.append(data["error"])
     return notes
+
+
+def _argus_subdir(cfg: ArgusConfig, name: str, create: bool = True) -> Path:
+    """``.argus/<name>`` inside the project, refusing symlinks that would redirect writes.
+
+    Mirrors the runs-root attestation in argus.engine.results: a project may be untrusted,
+    so neither ``.argus`` nor the subdirectory may point outside it.
+    """
+    project_root = Path(cfg.project_dir).resolve(strict=True)
+    argus_dir = project_root / ".argus"
+    if argus_dir.is_symlink():
+        raise OSError(f".argus cannot be a symlink: {argus_dir}")
+    if not argus_dir.is_dir():
+        raise OSError("no .argus directory")
+    sub = argus_dir / name
+    if sub.is_symlink():
+        raise OSError(f".argus/{name} cannot be a symlink: {sub}")
+    if create:
+        sub.mkdir(exist_ok=True)
+    resolved = sub.resolve(strict=create)
+    try:
+        resolved.relative_to(project_root)
+    except ValueError as exc:
+        raise OSError(f".argus/{name} escapes the project: {sub}") from exc
+    return resolved
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Replace ``path`` with ``data`` via a fresh, exclusively created temp file.
+
+    The temp name is random and opened with O_EXCL (and O_NOFOLLOW where available), so a
+    planted symlink is never followed; os.replace then swaps the directory entry itself.
+    """
+    tmp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _mtimes(project_dir: Path) -> Dict[str, float]:

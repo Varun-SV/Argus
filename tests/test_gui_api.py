@@ -522,3 +522,95 @@ def test_evidence_for_a_card_restored_after_restart(project, fake_llm):
     missing = restarted.evidence("RUN-doesnotexist")
     assert missing["ok"] is False and "No ATES evidence found" in missing["error"]
     assert restarted.evidence("../../etc")["ok"] is False  # not a RunId, never a path
+
+
+def test_malformed_scalar_spec_is_listed_as_an_error(project):
+    (project / ".argus" / "cli.test.yaml").write_text(CLI_SPEC, encoding="utf-8")
+    (project / ".argus" / "bad.test.yaml").write_text(
+        CLI_SPEC + "retries: once\n", encoding="utf-8")
+    api = ArgusAPI()
+    tests = {t["file"]: t for t in api.list_tests()}
+    assert tests["cli.test.yaml"]["error"] is None
+    assert "once" in tests["bad.test.yaml"]["error"]
+    assert api.dry_run(["bad.test.yaml"])["items"][0]["error"]
+    run = api.run_tests(["bad.test.yaml"])
+    assert run["ok"] and run["job"]["runs"][0]["status"] == "error"
+
+
+def test_unknown_knowledge_target_does_not_create_a_graph(project, monkeypatch):
+    graphs = project / ".argus" / "knowledge"
+    graphs.mkdir()
+    (graphs / "notepad-exe.graph.json").write_text("{}", encoding="utf-8")
+    asked = []
+
+    class Store:
+        def get_stats(self, target=None):
+            asked.append(target)
+            return {target: {"states": 1}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ArgusConfig, "make_knowledge_store", lambda self: Store())
+    api = ArgusAPI()
+    k = api.knowledge("zzqq")
+    assert k["ok"] is False and "notepad-exe" in k["error"]
+    assert asked == []  # the store was never asked about the unknown target
+    api._last_target = "never-roamed.exe"
+    assert api.knowledge("")["ok"] is False and asked == []
+
+
+def test_watch_reports_deleted_specs(project, fake_llm):
+    spec = project / ".argus" / "cli.test.yaml"
+    spec.write_text(CLI_SPEC, encoding="utf-8")
+    api = ArgusAPI()
+    watch = {"id": "w", "running": True, "pattern": ".argus/*.test.yaml", "events": []}
+    worker = threading.Thread(target=api._watch_worker, args=(watch, project, 0.05), daemon=True)
+    worker.start()
+    time.sleep(0.2)
+    spec.unlink()
+    deadline = time.time() + 10
+    while time.time() < deadline and not watch["events"]:
+        time.sleep(0.05)
+    watch["running"] = False
+    worker.join(timeout=5)
+    assert watch["events"] and watch["events"][0]["file"] == "cli.test.yaml"
+    assert watch["events"][0]["status"] == "removed"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_conversation_and_export_writes_never_follow_symlinks(project, monkeypatch, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside")
+    victim = outside / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    api = ArgusAPI()
+
+    gui = project / ".argus" / "gui"
+    gui.symlink_to(outside, target_is_directory=True)  # repository-controlled redirect
+    assert api.save_conversations([{"id": "c"}])["ok"] is False
+    assert api.load_conversations() == []
+    gui.unlink()
+
+    gui.mkdir()
+    (gui / "conversations.json").symlink_to(victim)
+    (gui / "conversations.tmp").symlink_to(victim)  # the old fixed temp name
+    assert api.save_conversations([{"id": "c"}])["ok"] is True
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    assert not (gui / "conversations.json").is_symlink()
+    assert api.load_conversations() == [{"id": "c"}]
+
+    graphs = project / ".argus" / "knowledge"
+    graphs.mkdir()
+    (graphs / "notepad-exe.graph.json").write_text('{"nodes": []}', encoding="utf-8")
+    exports = project / ".argus" / "exports"
+    exports.mkdir()
+    (exports / "notepad-exe.graph.json").symlink_to(victim)
+    assert api.knowledge_export("notepad.exe")["ok"] is True
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    exports_link = project / ".argus" / "exports"
+    for child in exports_link.iterdir():
+        child.unlink()
+    exports_link.rmdir()
+    exports_link.symlink_to(outside, target_is_directory=True)
+    assert api.knowledge_export("notepad.exe")["ok"] is False
+    assert not (outside / "notepad-exe.graph.json").exists()
