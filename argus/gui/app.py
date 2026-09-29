@@ -1,63 +1,254 @@
 """Argus desktop app — a pywebview window over the engine.
 
-The UI (``web/index.html``) talks to this Python API via ``window.pywebview.api``.
-Long work (runs, roam) happens on background threads; the UI polls for status.
+The UI (``web/index.html``) is a conversation. It talks to this Python API via
+``window.pywebview.api``: typed messages go through :meth:`ArgusAPI.interpret`
+(slash commands, or LLM routing for free text) and every card the UI draws is
+backed by one of the methods below. Long work (runs, roam, watch) happens on
+background threads; the UI polls :meth:`ArgusAPI.job_status` and
+:meth:`ArgusAPI.live` while it runs.
 """
 
 from __future__ import annotations
 
 import base64
+import json
+import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 from argus import __version__
-from argus.config import init_project, load_config
+from argus.config import ArgusConfig, init_project, load_config
 from argus.engine.results import load_runs
-from argus.engine.spec import SpecError, discover_tests, load_spec
+from argus.engine.spec import AssertStep, SpecError, discover_tests, load_spec, parse_spec
+from argus.gui import assistant
 from argus.providers.base import ProviderError
-from argus.tokens import TokenTracker
+from argus.providers.registry import PROVIDER_TYPES
+from argus.tokens import Budget, TokenTracker
 
 WEB_DIR = Path(__file__).parent / "web"
 
+_MAX_LOG_LINES = 400
+_CAPSULE_LABELS = {"auto": "auto", "hyperv": "Hyper-V", "libvirt": "libvirt/KVM"}
+
+
+class _StoppableBudget(Budget):
+    """A run budget that also reports exhaustion when the user presses Stop.
+
+    The runner and roam loop already check ``exhausted()`` between steps, so a
+    stop request ends the session at the next step boundary without touching
+    the engine.
+    """
+
+    def __init__(self, inner: Budget, stop: threading.Event) -> None:
+        super().__init__(inner.max_seconds, inner.max_tokens, inner.tracker)
+        self._stop_event = stop
+
+    def exhausted(self) -> Optional[str]:
+        if self._stop_event.is_set():
+            return "stopped by you"
+        return super().exhausted()
+
 
 class ArgusAPI:
-    """Methods exposed to the web UI."""
+    """Methods exposed to the web UI. Every public method returns JSON-safe data."""
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._tracker = TokenTracker()
-        self._run_state: dict = {"running": False, "steps": [], "result": None, "test": None}
-        self._roam_state: dict = {"running": False, "log": [], "report": None, "findings": 0}
-        self._roam_stop = False
+    def __init__(self, project_dir: Optional[Path] = None) -> None:
+        self._project_dir = project_dir
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+        self._job_tracker: Optional[TokenTracker] = None
+        self._jobs: Dict[str, dict] = {}
+        self._active_job: Optional[str] = None
+        self._results: Dict[str, dict] = {}
+        self._last_finished: Optional[str] = None
+        self._last_failed: Optional[str] = None
+        self._draft: Optional[dict] = None
+        self._last_target = ""
         self._latest_screenshot: Optional[bytes] = None
-        self._active_ks = None  # live knowledge store during a session
+        self._latest_screenshot_ts = 0.0
+        self._active_ks = None
+        self._watch: Optional[dict] = None
+        self._session = {
+            "provider": None,           # None = config default
+            "environment": None,        # None = config default
+            "capsule_provider": None,
+            "retain": None,
+            "memory": True,
+        }
 
-    # ---- project / config -------------------------------------------------
+    # ---- config / session ---------------------------------------------------
+
+    def _config(self) -> ArgusConfig:
+        return load_config(self._project_dir, provider=self._session["provider"])
+
+    def _session_view(self, cfg: ArgusConfig) -> dict:
+        env = self._session["environment"] or cfg.execution.environment or "local"
+        cap = self._session["capsule_provider"] or cfg.execution.capsule.provider or "auto"
+        retain = self._session["retain"]
+        if retain is None:
+            retain = cfg.execution.capsule.retain_on_failure
+        return {"environment": env, "capsule_provider": cap, "retain": bool(retain),
+                "memory": bool(self._session["memory"])}
+
+    @staticmethod
+    def _env_label(env: str, cap: str) -> str:
+        if env == "capsule":
+            return f"Capsule · {_CAPSULE_LABELS.get(cap, cap)}"
+        return "Local"
 
     def app_info(self) -> dict:
-        cfg = load_config()
+        cfg = self._config()
+        s = self._session_view(cfg)
         return {
             "version": __version__,
             "project": str(cfg.project_dir),
+            "project_name": cfg.project_dir.name,
+            "initialized": cfg.argus_dir.is_dir(),
             "provider": cfg.provider.type,
             "model": cfg.provider.model,
+            "providers": self._configured_providers(cfg),
             "time_minutes": cfg.time_minutes,
             "max_tokens": cfg.max_tokens,
+            "environment": s["environment"],
+            "capsule_provider": s["capsule_provider"],
+            "env_label": self._env_label(s["environment"], s["capsule_provider"]),
+            "retain": s["retain"],
+            "memory": s["memory"],
+            "last_target": self._last_target,
+            "tokens": self._usage_now(),
         }
 
-    def init_project(self) -> dict:
-        path = init_project()
-        return {"ok": True, "path": str(path)}
+    @staticmethod
+    def _configured_providers(cfg: ArgusConfig) -> List[dict]:
+        entries = cfg.raw.get("providers") or {}
+        out = []
+        for name in PROVIDER_TYPES:
+            entry = entries.get(name)
+            if name != cfg.provider.type and not isinstance(entry, dict):
+                continue
+            entry = entry if isinstance(entry, dict) else {}
+            model = cfg.provider.model if name == cfg.provider.type else str(entry.get("model") or "")
+            if name == "ollama":
+                note = "Local · " + str(entry.get("base_url") or "http://localhost:11434")
+            elif entry.get("base_url"):
+                note = "OpenAI-compatible · base_url"
+            elif entry.get("api_key_env"):
+                note = str(entry["api_key_env"])
+            else:
+                note = "configured"
+            out.append({"type": name, "model": model, "note": note,
+                        "current": name == cfg.provider.type})
+        return out
 
-    # ---- tests -----------------------------------------------------------
+    def set_provider(self, name: str) -> dict:
+        cfg = self._config()
+        names = [p["type"] for p in self._configured_providers(cfg)]
+        if name not in names:
+            return {"ok": False, "error": f"'{name}' is not configured in .argus/config.yaml"}
+        self._session["provider"] = name
+        return {"ok": True, **self.app_info()}
+
+    def set_environment(self, environment: str, capsule_provider: Optional[str] = None) -> dict:
+        if environment not in assistant.ENVIRONMENTS:
+            return {"ok": False, "error": f"unknown environment {environment!r}"}
+        if capsule_provider is not None and capsule_provider not in assistant.CAPSULE_PROVIDERS:
+            return {"ok": False, "error": f"unknown Capsule provider {capsule_provider!r}"}
+        self._session["environment"] = environment
+        if capsule_provider:
+            self._session["capsule_provider"] = capsule_provider
+        return {"ok": True, **self.app_info()}
+
+    def set_retain(self, on: bool) -> dict:
+        self._session["retain"] = bool(on)
+        return {"ok": True, **self.app_info()}
+
+    def set_memory(self, on: bool) -> dict:
+        self._session["memory"] = bool(on)
+        return {"ok": True, **self.app_info()}
+
+    def environment(self) -> dict:
+        cfg = self._config()
+        s = self._session_view(cfg)
+        cc = cfg.execution.capsule
+        if s["environment"] == "capsule":
+            rows = [
+                {"k": "environment", "v": "capsule · disposable VM"},
+                {"k": "provider", "v": {
+                    "auto": "auto · Hyper-V on Windows, libvirt/KVM on Linux",
+                    "hyperv": "Hyper-V · Windows guest",
+                    "libvirt": "libvirt/QEMU/KVM · Linux guest",
+                }.get(s["capsule_provider"], s["capsule_provider"])},
+                {"k": "image", "v": cc.image or "not configured"},
+                {"k": "guest control", "v": f"{cc.guest_transport} · session bearer rotation "
+                                           f"{'on' if cc.rotate_session_token else 'off'}"},
+                {"k": "network", "v": cc.network_mode},
+                {"k": "retain_on_failure", "v": "on · keeps a Failure Capsule" if s["retain"] else "off"},
+            ]
+            note = ("No silent fallback: if Capsule requirements aren't met, the run stops "
+                    "instead of running locally.")
+        else:
+            rows = [
+                {"k": "environment", "v": "local · shared, non-isolated"},
+                {"k": "Windows desktop input", "v": "semantic UI Automation (safe mode)"},
+                {"k": "legacy physical input", "v": "off · explicit opt-in only"},
+            ]
+            note = "Fine for development. Use a Capsule when a test is destructive or production-bound."
+        return {"label": self._env_label(s["environment"], s["capsule_provider"]),
+                "rows": rows, "note": note, **s}
+
+    # ---- chat ------------------------------------------------------------------
+
+    def interpret(self, text: str) -> dict:
+        """Turn a typed message into an intent for the UI to execute."""
+        text = (text or "").strip()
+        if not text:
+            return {"intent": "none", "args": {}}
+        tests = self.list_tests()
+        try:
+            parsed = assistant.parse_slash(text, tests, self._last_target)
+        except assistant.IntentError as exc:
+            return {"intent": "error", "args": {"text": str(exc)}}
+        if parsed is not None:
+            return parsed
+
+        cfg = self._config()
+        context = {
+            "tests": [{"file": t["file"], "name": t["name"], "adapter": t["adapter"]} for t in tests],
+            "last_target": self._last_target,
+            "providers": [p["type"] for p in self._configured_providers(cfg)],
+            "has_draft": self._draft is not None,
+            "has_failed_run": self._last_failed is not None,
+            "environment": self._session_view(cfg)["environment"],
+        }
+        tracker = TokenTracker()
+        try:
+            provider = cfg.make_provider(tracker)
+            return assistant.route_with_llm(provider, text, context)
+        except ProviderError as exc:
+            return {"intent": "error", "args": {"text": (
+                f"I couldn't reach {cfg.provider.type} to understand that ({exc}). "
+                "Slash commands work without a model — type /help.")}}
+        finally:
+            self._charge(tracker, cfg)
+
+    def help(self) -> dict:
+        return {"groups": assistant.HELP_GROUPS}
+
+    # ---- tests -----------------------------------------------------------------
 
     def list_tests(self) -> list:
-        cfg = load_config()
+        cfg = self._config()
+        last: Dict[str, str] = {}
+        for run in load_runs(cfg.project_dir, 100):
+            last.setdefault(run.get("test_file", ""), run.get("status", ""))
         out = []
         for path in discover_tests(cfg.project_dir):
-            entry = {"file": path.name, "name": path.stem, "steps": 0, "adapter": "?", "error": None}
+            entry = {"file": path.name, "name": path.stem, "steps": 0, "adapter": "?",
+                     "error": None, "last": last.get(path.name)}
             try:
                 spec = load_spec(path)
                 entry.update(name=spec.name, steps=len(spec.steps), adapter=spec.adapter)
@@ -66,171 +257,409 @@ class ArgusAPI:
             out.append(entry)
         return out
 
+    def _test_path(self, cfg: ArgusConfig, file_name: str) -> Optional[Path]:
+        for path in discover_tests(cfg.project_dir):
+            if path.name == file_name:
+                return path
+        return None
+
     def read_test(self, file_name: str) -> dict:
-        cfg = load_config()
-        path = cfg.argus_dir / file_name
-        if not path.is_file() or path.suffix not in (".yaml", ".yml"):
+        cfg = self._config()
+        path = self._test_path(cfg, file_name)
+        if path is None:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "content": path.read_text(encoding="utf-8")}
 
-    def recent_runs(self, limit: int = 20) -> list:
-        cfg = load_config()
-        return load_runs(cfg.project_dir, limit)
+    def dry_run(self, tests="all") -> dict:
+        cfg = self._config()
+        items = []
+        if tests == "draft":
+            if not self._draft:
+                return {"ok": False, "error": "There's no drafted test yet. Ask me to write one first."}
+            d = self._draft
+            items.append({"file": d["file"], "adapter": d["adapter"], "launch": d.get("launch", ""),
+                          "steps": d["steps"], "error": None})
+            return {"ok": True, "items": items}
+        paths = discover_tests(cfg.project_dir)
+        if tests != "all":
+            wanted = set(tests or [])
+            paths = [p for p in paths if p.name in wanted]
+        if not paths:
+            return {"ok": False, "error": "No tests found in .argus/ — try /init to create an example."}
+        for path in paths:
+            try:
+                spec = load_spec(path)
+            except SpecError as exc:
+                items.append({"file": path.name, "adapter": "?", "launch": "", "steps": [], "error": str(exc)})
+                continue
+            items.append({"file": path.name, "adapter": spec.adapter, "launch": spec.launch,
+                          "steps": assistant.describe_steps(spec.steps), "error": None})
+        return {"ok": True, "items": items}
 
-    # ---- run -----------------------------------------------------------------
-
-    def run_test(self, file_name: str) -> dict:
-        with self._lock:
-            if self._run_state["running"] or self._roam_state["running"]:
-                return {"ok": False, "error": "a session is already running"}
-            self._run_state = {"running": True, "steps": [], "result": None, "test": file_name}
-        threading.Thread(target=self._run_worker, args=(file_name,), daemon=True).start()
-        return {"ok": True}
-
-    def _run_worker(self, file_name: str) -> None:
-        from argus.adapters import AdapterError, create_adapter
-        from argus.engine.runner import run_test
-        import time as _time
-
-        cfg = load_config()
-        state = self._run_state
-        ks = cfg.make_knowledge_store()
-        self._active_ks = ks
+    def draft_test(self, description: str) -> dict:
+        cfg = self._config()
+        tracker = TokenTracker()
         try:
-            spec = load_spec(cfg.argus_dir / file_name)
-            provider = cfg.make_provider(self._tracker)
-            adapter = _ScreenshotCapturingAdapter(create_adapter(spec.adapter), self)
-            budget = cfg.make_budget(self._tracker)
-            stamp = _time.strftime("%Y%m%d-%H%M%S")
-            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in file_name)
-            shots_dir = cfg.argus_dir / "runs" / f"{stamp}-{safe}" / "shots"
+            provider = cfg.make_provider(tracker)
+            existing = [p.name for p in discover_tests(cfg.project_dir)]
+            draft = assistant.draft_spec(provider, description, existing)
+        except ProviderError as exc:
+            return {"ok": False, "error": f"The model couldn't draft a test: {exc}"}
+        finally:
+            self._charge(tracker, cfg)
+        draft["saved"] = False
+        if draft["ok"]:
+            self._draft = draft
+        return draft
+
+    def save_test(self) -> dict:
+        """Save the current draft as ``.argus/<file>``. Never overwrites an existing file."""
+        cfg = self._config()
+        draft = self._draft
+        if draft is None:
+            return {"ok": False, "error": "There's no drafted test to save."}
+        if draft.get("saved"):
+            return {"ok": True, "path": f".argus/{draft['file']}", "file": draft["file"]}
+        content, file_name = draft["yaml"], draft["file"]
+        name = Path(str(file_name or "")).name
+        if not name.endswith(".test.yaml") or name != file_name or name.startswith("."):
+            return {"ok": False, "error": "Test files must be named <name>.test.yaml."}
+        try:
+            parse_spec(content)
+        except SpecError as exc:
+            return {"ok": False, "error": f"The spec doesn't parse: {exc}"}
+        cfg.argus_dir.mkdir(parents=True, exist_ok=True)
+        dest = cfg.argus_dir / name
+        if dest.exists():
+            return {"ok": False, "error": f".argus/{name} already exists; I won't overwrite it."}
+        dest.write_text(content, encoding="utf-8")
+        draft["saved"] = True
+        return {"ok": True, "path": f".argus/{name}", "file": name}
+
+    def init_project(self) -> dict:
+        cfg = self._config()
+        notes = {"config.yaml": "provider, budgets, execution, knowledge",
+                 "notepad.test.yaml": "example desktop test",
+                 "runs": "run results + ATES evidence", "roam": "roam reports + regression stubs"}
+        existed = {name for name in notes if (cfg.argus_dir / name).exists()}
+        path = init_project(cfg.project_dir)
+        files = [
+            {"path": f".argus/{name}" + ("/" if (path / name).is_dir() else ""), "note": note,
+             "created": name not in existed}
+            for name, note in notes.items() if (path / name).exists()
+        ]
+        return {"ok": True, "path": str(path), "files": files}
+
+    # ---- jobs: run / roam ------------------------------------------------------
+
+    def _begin_job(self, job: dict) -> Optional[str]:
+        with self._lock:
+            if self._active_job and self._jobs[self._active_job]["running"]:
+                return "Argus is already running something. Stop it first, or wait for it to finish."
+            self._stop.clear()
+            self._jobs[job["id"]] = job
+            self._active_job = job["id"]
+            self._latest_screenshot = None
+            self._latest_screenshot_ts = 0.0
+        return None
+
+    def run_tests(self, tests="all", overrides: Optional[dict] = None) -> dict:
+        """Start running ``tests`` ("all" or a list of file names) in one background job."""
+        cfg = self._config()
+        overrides = overrides or {}
+        paths = discover_tests(cfg.project_dir)
+        if tests != "all":
+            order = list(tests or [])
+            by_name = {p.name: p for p in paths}
+            paths = [by_name[n] for n in order if n in by_name]
+        if not paths:
+            return {"ok": False, "error": "No tests to run. Try /init to create an example."}
+        s = self._session_view(cfg)
+        env = overrides.get("environment") or s["environment"]
+        cap = overrides.get("capsule_provider") or s["capsule_provider"]
+        retain = overrides.get("retain", s["retain"])
+        runs = []
+        for path in paths:
+            try:
+                spec = load_spec(path)
+                steps = [{"text": st.describe() if isinstance(st, AssertStep) else st.text,
+                          "kind": st.kind} for st in spec.steps]
+                runs.append({"file": path.name, "name": spec.name, "adapter": spec.adapter,
+                             "launch": spec.launch, "planned": steps, "steps": [],
+                             "status": "queued", "result": None, "key": None, "notes": []})
+            except SpecError as exc:
+                runs.append({"file": path.name, "name": path.stem, "adapter": "?", "launch": "",
+                             "planned": [], "steps": [], "status": "error", "result": None,
+                             "key": None, "notes": [f"spec error: {exc}"]})
+        job = {"id": uuid.uuid4().hex[:12], "kind": "run", "running": True, "runs": runs,
+               "env": env, "capsule_provider": cap, "retain": bool(retain),
+               "env_label": self._env_label(env, cap),
+               "provider": f"{cfg.provider.type}:{cfg.provider.model}",
+               "action": "Starting…", "started_at": time.time(), "current": 0}
+        err = self._begin_job(job)
+        if err:
+            return {"ok": False, "error": err}
+        threading.Thread(target=self._run_worker, args=(job,), daemon=True).start()
+        return {"ok": True, "job": self.job_status(job["id"])}
+
+    def _run_worker(self, job: dict) -> None:
+        try:
+            for index, run in enumerate(job["runs"]):
+                job["current"] = index
+                if run["status"] == "error":
+                    continue
+                if self._stop.is_set():
+                    run["status"] = "stopped"
+                    continue
+                self._execute_run(job, run)
+        finally:
+            job["ended_at"] = time.time()
+            job["running"] = False
+            job["action"] = "Finished"
+
+    def _execute_run(self, job: dict, run: dict) -> None:
+        from argus.adapters import AdapterError
+        from argus.engine.runner import run_test
+
+        cfg = self._config()
+        run["status"] = "running"
+        job["action"] = f"Launching {run['launch']}"
+        tracker = TokenTracker()
+        self._job_tracker = tracker
+        ks = None
+        adapter = None
+        try:
+            ks = cfg.make_knowledge_store()
+            self._active_ks = ks
+            path = self._test_path(cfg, run["file"])
+            if path is None:
+                raise SpecError(f"{run['file']} is no longer in .argus/")
+            spec = load_spec(path)
+            provider = cfg.make_provider(tracker)
+            capsule = ({"provider": job["capsule_provider"], "retain_on_failure": job["retain"]}
+                       if job["env"] == "capsule" else None)
+            adapter = _ScreenshotCapturingAdapter(
+                cfg.make_execution_environment(spec.adapter, job["env"], capsule), self
+            )
+            budget = _StoppableBudget(cfg.make_budget(tracker), self._stop)
+
+            def on_step(sr) -> None:
+                step = dict(vars(sr))
+                run["steps"].append(step)
+                job["action"] = (sr.actions[-1] if sr.actions else sr.text)
+
             result = run_test(
                 spec, provider, adapter, budget,
-                on_step=lambda sr: state["steps"].append(vars(sr)),
-                warn=lambda msg: state["steps"].append(
-                    {"kind": "warn", "text": msg, "status": "skipped",
-                     "index": -1, "duration_s": 0, "actions": [],
-                     "expected": None, "actual": None, "note": None}
-                ),
+                on_step=on_step,
+                warn=lambda msg: run["notes"].append(msg),
                 knowledge_store=ks,
-                shots_dir=shots_dir,
                 project_dir=cfg.project_dir,
             )
-            result.save(cfg.project_dir)
-            state["result"] = result.to_dict()
-        except (SpecError, AdapterError, ProviderError, OSError) as exc:
-            state["result"] = {"status": "error", "error": str(exc)}
+            try:
+                result.save(cfg.project_dir)
+            except OSError as exc:
+                run["notes"].append(f"could not save result: {exc}")
+            data = result.to_dict()
+            data["ates_run_id"] = getattr(result, "ates_run_id", None)
+            data["kind"] = "run"
+            key = data["ates_run_id"] or uuid.uuid4().hex
+            run["key"] = key
+            run["result"] = data
+            run["status"] = "stopped" if self._stop.is_set() and data["status"] != "pass" else data["status"]
+            run["notes"].extend(_run_notes(data))
+            with self._lock:
+                self._results[key] = data
+                self._last_finished = key
+                if data["status"] != "pass":
+                    self._last_failed = key
+        except (SpecError, AdapterError, ProviderError, OSError, ValueError) as exc:
+            run["status"] = "error"
+            run["notes"].append(str(exc))
+        except Exception as exc:  # e.g. a browser driver failing to start
+            run["status"] = "error"
+            run["notes"].append(f"{type(exc).__name__}: {exc}")
         finally:
             if ks is not None:
+                job["stats"] = self.live_stats()
                 ks.close()
             self._active_ks = None
-            self._tracker.persist(cfg.project_dir)
-            state["running"] = False
+            self._job_tracker = None
+            self._charge(tracker, cfg)
 
-    def run_status(self) -> dict:
-        state = dict(self._run_state)
-        state["tokens"] = self._tracker.snapshot()
-        return state
+    def start_roam(self, target: str, adapter: Optional[str] = None,
+                   minutes: Optional[float] = None, memory: Optional[bool] = None,
+                   overrides: Optional[dict] = None) -> dict:
+        target = (target or "").strip()
+        if not target:
+            return {"ok": False, "error": "Tell Argus what to roam, e.g. notepad.exe or http://localhost:3000"}
+        adapter = adapter or assistant.adapter_for(target)
+        if adapter not in assistant.ADAPTERS:
+            return {"ok": False, "error": f"unknown adapter {adapter!r}"}
+        cfg = self._config()
+        s = self._session_view(cfg)
+        overrides = overrides or {}
+        env = overrides.get("environment") or s["environment"]
+        cap = overrides.get("capsule_provider") or s["capsule_provider"]
+        memory = s["memory"] if memory is None else bool(memory)
+        minutes = minutes or cfg.time_minutes or 10
+        job = {"id": uuid.uuid4().hex[:12], "kind": "roam", "running": True, "target": target,
+               "adapter": adapter, "minutes": float(minutes), "memory": memory,
+               "env": env, "capsule_provider": cap, "env_label": self._env_label(env, cap),
+               "provider": f"{cfg.provider.type}:{cfg.provider.model}",
+               "log": [], "findings": [], "report": None, "regressions": [], "status": "running",
+               "action": f"Launching {target}", "started_at": time.time(), "key": None,
+               "stopped_reason": ""}
+        err = self._begin_job(job)
+        if err:
+            return {"ok": False, "error": err}
+        self._last_target = target
+        threading.Thread(target=self._roam_worker, args=(job,), daemon=True).start()
+        return {"ok": True, "job": self.job_status(job["id"])}
 
-    # ---- roam --------------------------------------------------------------------
-
-    def start_roam(self, target: str, minutes: float, max_tokens) -> dict:
-        with self._lock:
-            if self._run_state["running"] or self._roam_state["running"]:
-                return {"ok": False, "error": "a session is already running"}
-            if not target.strip():
-                return {"ok": False, "error": "enter a command to launch, e.g. notepad.exe"}
-            self._roam_state = {"running": True, "log": [], "report": None, "findings": 0}
-            self._roam_stop = False
-        threading.Thread(
-            target=self._roam_worker, args=(target, minutes, max_tokens), daemon=True
-        ).start()
-        return {"ok": True}
-
-    def _roam_worker(self, target: str, minutes: float, max_tokens) -> None:
-        from argus.adapters import AdapterError, create_adapter
+    def _roam_worker(self, job: dict) -> None:
+        from argus.adapters import AdapterError
         from argus.engine.roam import roam
 
-        cfg = load_config()
-        state = self._roam_state
-        ks = cfg.make_knowledge_store()
-        self._active_ks = ks
+        cfg = self._config()
+        tracker = TokenTracker()
+        self._job_tracker = tracker
+        ks = None
         try:
-            provider = cfg.make_provider(self._tracker)
-            adapter = _ScreenshotCapturingAdapter(create_adapter("desktop-gui"), self)
-            budget = cfg.make_budget(
-                self._tracker,
-                time_minutes=minutes or None,
-                max_tokens=int(max_tokens) if max_tokens else None,
+            ks = cfg.make_knowledge_store()
+            self._active_ks = ks
+            provider = cfg.make_provider(tracker)
+            capsule = {"provider": job["capsule_provider"]} if job["env"] == "capsule" else None
+            adapter = _ScreenshotCapturingAdapter(
+                cfg.make_execution_environment(job["adapter"], job["env"], capsule), self
             )
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            session_dir = cfg.argus_dir / "roam" / stamp
+            budget = _StoppableBudget(
+                cfg.make_budget(tracker, time_minutes=job["minutes"]), self._stop
+            )
+            session_dir = cfg.argus_dir / "roam" / time.strftime("%Y%m%d-%H%M%S")
+            memory_dir = cfg.argus_dir / "roam" / "memory" if job["memory"] else None
+
+            def on_event(line: str) -> None:
+                log = job["log"]
+                log.append(line)
+                if len(log) > _MAX_LOG_LINES:
+                    del log[: len(log) - _MAX_LOG_LINES]
+                job["action"] = line
+
             session = roam(
-                target=target,
-                provider=provider,
-                adapter=adapter,
-                budget=budget,
-                session_dir=session_dir,
-                on_event=lambda line: state["log"].append(line),
-                stop_flag=lambda: self._roam_stop,
-                knowledge_store=ks,
+                target=job["target"], provider=provider, adapter=adapter, budget=budget,
+                session_dir=session_dir, on_event=on_event, stop_flag=self._stop.is_set,
+                memory_dir=memory_dir, knowledge_store=ks, project_dir=cfg.project_dir,
             )
-            state["findings"] = len(session.findings)
-            state["report"] = str(session_dir / "report.md")
-        except (AdapterError, ProviderError, OSError) as exc:
-            state["log"].append(f"error: {exc}")
+            job["findings"] = [
+                {"title": f.title, "severity": f.severity, "expected": f.expected,
+                 "actual": f.actual, "detail": f.detail}
+                for f in session.findings
+            ]
+            job["report"] = _rel(cfg, session_dir / "report.md")
+            job["regressions"] = [_rel(cfg, p) for p in sorted(session_dir.glob("regression-*.test.yaml"))]
+            job["stopped_reason"] = session.stopped_reason or ""
+            status = str(getattr(session, "execution_status", "") or "")
+            job["status"] = "stopped" if self._stop.is_set() else ("error" if status == "error" else "done")
+            data = {"kind": "roam", "target": job["target"], "status": job["status"],
+                    "ates_run_id": getattr(session, "ates_run_id", None),
+                    "findings": job["findings"], "report": job["report"],
+                    "tokens": session.tokens, "stopped_reason": job["stopped_reason"]}
+            key = data["ates_run_id"] or uuid.uuid4().hex
+            job["key"] = key
+            with self._lock:
+                self._results[key] = data
+                self._last_finished = key
+        except (AdapterError, ProviderError, OSError, ValueError) as exc:
+            job["log"].append(f"error: {exc}")
+            job["status"] = "error"
+            job["stopped_reason"] = str(exc)
+        except Exception as exc:  # keep the UI honest instead of a silently dead thread
+            job["log"].append(f"error: {type(exc).__name__}: {exc}")
+            job["status"] = "error"
+            job["stopped_reason"] = f"{type(exc).__name__}: {exc}"
         finally:
             if ks is not None:
+                job["stats"] = self.live_stats()
                 ks.close()
             self._active_ks = None
-            self._tracker.persist(cfg.project_dir)
-            state["running"] = False
+            self._job_tracker = None
+            self._charge(tracker, cfg)
+            job["ended_at"] = time.time()
+            job["running"] = False
+            job["action"] = "Session finished" if job["status"] == "done" else job["status"].capitalize()
 
-    def stop_roam(self) -> dict:
-        self._roam_stop = True
+    def regression_stub(self, job_id: str, index: int = 0) -> dict:
+        """Load a roam finding's regression stub as a draft the user can save."""
+        cfg = self._config()
+        job = self._jobs.get(job_id)
+        if not job or job.get("kind") != "roam" or not job.get("regressions"):
+            return {"ok": False, "error": "That roam didn't produce regression stubs."}
+        index = max(0, min(int(index), len(job["regressions"]) - 1))
+        path = (cfg.project_dir / job["regressions"][index]).resolve()
+        if not path.is_relative_to((cfg.argus_dir / "roam").resolve()) or not path.is_file():
+            return {"ok": False, "error": "The regression stub is no longer on disk."}
+        existing = [p.name for p in discover_tests(cfg.project_dir)]
+        draft = assistant.check_draft(path.read_text(encoding="utf-8"), existing)
+        draft["file"] = assistant.unique_file_name(path.name, existing)
+        draft["saved"] = False
+        draft["from_finding"] = True
+        if draft.get("ok"):
+            self._draft = draft
+        return draft
+
+    def stop(self) -> dict:
+        """Stop the active run or roam at the next step boundary, and any watch."""
+        self._stop.set()
+        if self._watch:
+            self._watch["running"] = False
         return {"ok": True}
 
-    def roam_status(self) -> dict:
-        state = dict(self._roam_state)
-        state["tokens"] = self._tracker.snapshot()
-        return state
+    def job_status(self, job_id: str) -> dict:
+        job = self._jobs.get(job_id)
+        if job is None:
+            return {"ok": False, "error": "unknown job"}
+        snap = _copy(job)
+        snap["ok"] = True
+        snap["tokens"] = self._usage_now()["total_tokens"]
+        return snap
+
+    def live(self) -> dict:
+        """What the live-view panel shows: the active (or last) job."""
+        job = self._jobs.get(self._active_job) if self._active_job else None
+        if job is None:
+            return {"has": False}
+        out = {"has": True, "id": job["id"], "kind": job["kind"], "running": job["running"],
+               "action": job.get("action", ""), "env_label": job["env_label"],
+               "adapter": job.get("adapter") or "", "tokens": self._usage_now()["total_tokens"],
+               "screenshot_ts": self._latest_screenshot_ts}
+        if job["kind"] == "run":
+            run = job["runs"][min(job["current"], len(job["runs"]) - 1)]
+            total = max(1, len(run["planned"]))
+            out.update(title=run["file"], status=run["status"], adapter=run["adapter"],
+                       progress=round(100 * min(len(run["steps"]), total) / total))
+        else:
+            elapsed = time.time() - job["started_at"]
+            out.update(title=job["target"], status=job["status"],
+                       progress=round(min(100, 100 * elapsed / (job["minutes"] * 60)))
+                       if job["running"] else 100)
+        stats = self.live_stats() if job["running"] else (job.get("stats") or {})
+        out.update(states=stats.get("states"), transitions=stats.get("transitions"),
+                   bugs=stats.get("bugs"))
+        return out
 
     # ---- live preview -------------------------------------------------------
 
-    def capture_live(self) -> dict:
-        """Return the latest captured screenshot as a base64 PNG."""
+    def capture_live(self, since: float = 0.0) -> dict:
+        """Return the latest screenshot as base64 PNG, only if newer than ``since``."""
         png = self._latest_screenshot
-        if png is None:
-            return {"b64": None, "ts": 0}
-        return {
-            "b64": base64.b64encode(png).decode("ascii"),
-            "ts": time.time(),
-        }
+        ts = self._latest_screenshot_ts
+        if png is None or ts <= float(since or 0):
+            return {"b64": None, "ts": ts}
+        return {"b64": base64.b64encode(png).decode("ascii"), "ts": ts}
 
-    # ---- knowledge ----------------------------------------------------------
-
-    def knowledge_stats(self, target: str) -> dict:
-        try:
-            cfg = load_config()
-            ks = cfg.make_knowledge_store()
-            if ks is None:
-                return {"states": 0, "transitions": 0, "bugs": 0, "sessions": 0}
-            stats = ks.get_stats(target)
-            ks.close()
-            return stats.get(target, {"states": 0, "transitions": 0, "bugs": 0, "sessions": 0})
-        except Exception as exc:
-            return {"error": str(exc), "states": 0, "transitions": 0, "bugs": 0, "sessions": 0}
-
-    def knowledge_clear(self, target: str) -> dict:
-        try:
-            cfg = load_config()
-            ks = cfg.make_knowledge_store()
-            if ks is not None:
-                ks.clear_target(target)
-                ks.close()
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+    def _set_screenshot(self, png: bytes) -> None:
+        self._latest_screenshot = png
+        self._latest_screenshot_ts = time.time()
 
     def live_stats(self) -> dict:
         """Return live knowledge counts from the active session."""
@@ -249,21 +678,247 @@ class ArgusAPI:
         except Exception:
             return {"active": True}
 
-    # ---- providers / tokens ---------------------------------------------------------
+    # ---- watch ------------------------------------------------------------------
+
+    def watch_start(self) -> dict:
+        cfg = self._config()
+        if self._watch and self._watch["running"]:
+            return {"ok": True, "watch": _copy(self._watch)}
+        self._stop.clear()
+        self._watch = {"id": uuid.uuid4().hex[:12], "running": True,
+                       "pattern": ".argus/*.test.yaml", "events": [], "started_at": time.time()}
+        threading.Thread(target=self._watch_worker, args=(self._watch, cfg.project_dir),
+                         daemon=True).start()
+        return {"ok": True, "watch": _copy(self._watch)}
+
+    def watch_stop(self) -> dict:
+        if self._watch:
+            self._watch["running"] = False
+        return {"ok": True}
+
+    def watch_status(self) -> dict:
+        return _copy(self._watch) if self._watch else {"running": False, "events": []}
+
+    def _watch_worker(self, watch: dict, project_dir: Path, poll: float = 1.0) -> None:
+        seen = _mtimes(project_dir)
+        while watch["running"]:
+            time.sleep(poll)
+            current = _mtimes(project_dir)
+            changed = [name for name, m in current.items() if seen.get(name) != m]
+            seen = current
+            for name in changed:
+                if not watch["running"]:
+                    break
+                event = {"at": time.strftime("%H:%M:%S"), "file": name, "status": "running", "summary": "re-running…"}
+                watch["events"].append(event)
+                started = self.run_tests([name])
+                if not started.get("ok"):
+                    event.update(status="skipped", summary=started.get("error", "busy"))
+                    continue
+                job = self._jobs[started["job"]["id"]]
+                while job["running"]:
+                    time.sleep(0.3)
+                run = job["runs"][0]
+                result = run.get("result") or {}
+                event["status"] = run["status"]
+                steps = result.get("steps", [])
+                passed = sum(1 for s in steps if s.get("status") == "pass")
+                event["summary"] = (f"{passed}/{len(steps)} steps passed" if steps
+                                    else (run["notes"][-1] if run["notes"] else run["status"]))
+
+    # ---- knowledge --------------------------------------------------------------
+
+    def knowledge(self, target: str = "") -> dict:
+        cfg = self._config()
+        kc = cfg.knowledge
+        backend = f"{kc.type} graph · {kc.vector_backend} vectors · {kc.embedding_model}"
+        try:
+            ks = cfg.make_knowledge_store()
+        except Exception as exc:  # optional extras may be missing
+            return {"ok": False, "error": f"Knowledge store unavailable: {exc}"}
+        if ks is None:
+            return {"ok": False, "error": "The knowledge store is disabled or its extras aren't installed "
+                                          "(pip install \"argus-app-testing[knowledge]\")."}
+        try:
+            stats = ks.get_stats(None)
+        finally:
+            ks.close()
+        targets = sorted(stats)
+        target = (target or "").strip()
+        chosen = _pick_target(target, targets) or target or self._last_target or (targets[0] if targets else "")
+        if not chosen:
+            return {"ok": False, "error": "Argus hasn't learned anything yet. Roam an app to build its state graph."}
+        s = stats.get(chosen, {})
+        return {"ok": True, "target": chosen, "targets": targets, "backend": backend,
+                "states": s.get("states", 0), "transitions": s.get("transitions", 0),
+                "bugs": s.get("bugs", s.get("bug_nodes", 0)), "sessions": s.get("sessions", 0)}
+
+    def knowledge_reset(self, target: str) -> dict:
+        try:
+            cfg = self._config()
+            ks = cfg.make_knowledge_store()
+            if ks is not None:
+                ks.clear_target(target)
+                ks.close()
+            return {"ok": True, "target": target}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def knowledge_export(self, target: str) -> dict:
+        from argus.knowledge.fingerprint import target_key
+
+        cfg = self._config()
+        key = target_key(target)
+        graph = cfg.argus_dir / "knowledge" / f"{key}.graph.json"
+        if not graph.is_file():
+            return {"ok": False, "error": f"No graph for '{target}' yet."}
+        dest_dir = cfg.argus_dir / "exports"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{key}.graph.json"
+        shutil.copy2(graph, dest)
+        return {"ok": True, "path": _rel(cfg, dest), "target": target}
+
+    # ---- evidence / explain -----------------------------------------------------
+
+    def evidence(self, key: Optional[str] = None) -> dict:
+        from argus.ates import FinalizationError, RunId, verify_finalized_run
+        from argus.ates.store import _run_directory_key
+
+        key = key or self._last_finished
+        data = self._results.get(key) if key else None
+        if not data:
+            return {"ok": False, "error": "No finished run in this conversation yet. Every run writes "
+                                          "canonical ATES evidence; run a test and I can show it."}
+        run_id = data.get("ates_run_id")
+        title = data.get("test_file") or data.get("target") or "run"
+        if not run_id:
+            return {"ok": False, "error": f"{title} finished without an ATES run id, so there's no evidence to verify."}
+        cfg = self._config()
+        run_dir = cfg.argus_dir / "runs" / _run_directory_key(RunId(run_id))
+        out = {"ok": True, "title": title, "run_id": run_id, "path": _rel(cfg, run_dir) + "/",
+               "verified": False, "rows": []}
+        try:
+            fin = verify_finalized_run(run_dir)
+        except (FinalizationError, OSError, ValueError) as exc:
+            out.update(state="invalid", headline="Evidence did not verify", detail=str(exc))
+            return out
+        manifest = json.loads(Path(fin.evidence_manifest_path).read_text(encoding="utf-8"))
+        ev = manifest.get("evidence", {})
+        artifacts = manifest.get("artifacts", [])
+        out.update(
+            verified=True, state=fin.trust_state.value,
+            headline="Manifest verified · regenerated from canonical evidence",
+            rows=[
+                {"k": "effective status", "v": fin.outcome.effective_status.value},
+                {"k": "ordered events", "v": str(ev.get("event_count", "?"))},
+                {"k": "artifacts", "v": str(len(artifacts))},
+                {"k": "evidence digest", "v": _short_digest(ev.get("sha256", ""))},
+                {"k": "trust state", "v": fin.trust_state.value.replace("_", " ")},
+                {"k": "report", "v": "derived from evidence, not the source of truth"},
+            ],
+            note=("Hashes detect corruption. Tamper-evidence needs an independent trust binding "
+                  "such as a signature or immutable storage."),
+        )
+        return out
+
+    def explain(self, key: Optional[str] = None) -> dict:
+        key = key or self._last_failed
+        data = self._results.get(key) if key else None
+        if not data or data.get("kind") != "run":
+            return {"ok": False, "error": "Nothing has failed in this conversation yet. Run a test and I "
+                                          "can explain any failure step by step."}
+        cfg = self._config()
+        tracker = TokenTracker()
+        try:
+            provider = cfg.make_provider(tracker)
+            text = assistant.explain_failure(provider, data)
+        except ProviderError as exc:
+            return {"ok": False, "error": f"The model couldn't explain it: {exc}"}
+        finally:
+            self._charge(tracker, cfg)
+        return {"ok": True, "text": text, "test": data.get("test_file")}
+
+    # ---- providers / tokens / history -------------------------------------------
 
     def check_provider(self) -> dict:
-        cfg = load_config()
+        cfg = self._config()
+        tracker = TokenTracker()
         try:
-            provider = cfg.make_provider(self._tracker)
+            provider = cfg.make_provider(tracker)
+            status = provider.check_connection()
         except ProviderError as exc:
-            return {"ok": False, "detail": str(exc)}
-        return provider.check_connection()
+            status = {"ok": False, "detail": str(exc)}
+        finally:
+            self._charge(tracker, cfg)
+        status["providers"] = self._configured_providers(cfg)
+        status["provider"] = cfg.provider.type
+        status["model"] = cfg.provider.model
+        return status
+
+    def _charge(self, tracker: TokenTracker, cfg: ArgusConfig) -> None:
+        """Add one tracker's usage to this session and persist it exactly once."""
+        snap = tracker.snapshot()
+        if not snap["calls"]:
+            return
+        with self._lock:
+            for k in self._usage:
+                self._usage[k] += snap.get(k, 0)
+        if cfg.argus_dir.is_dir():
+            try:
+                tracker.persist(cfg.project_dir)
+            except OSError:
+                pass
+
+    def _usage_now(self) -> dict:
+        with self._lock:
+            out = dict(self._usage)
+        live = self._job_tracker
+        if live is not None:
+            snap = live.snapshot()
+            for k in out:
+                out[k] += snap.get(k, 0)
+        return out
 
     def token_usage(self) -> dict:
-        cfg = load_config()
+        cfg = self._config()
         persisted = TokenTracker.load_persisted(cfg.project_dir)
-        session = self._tracker.snapshot()
-        return {"session": session, "project": persisted}
+        return {"session": self._usage_now(), "project": persisted,
+                "provider": cfg.provider.type, "max_tokens": cfg.max_tokens}
+
+    def recent_runs(self, limit: int = 20) -> list:
+        cfg = self._config()
+        rows = []
+        for r in load_runs(cfg.project_dir, limit):
+            steps = r.get("steps", [])
+            rows.append({
+                "test": r.get("test_file", "?"), "status": r.get("status", "?"),
+                "steps": f"{sum(1 for s in steps if s.get('status') == 'pass')}/{len(steps)}",
+                "duration": round(float(r.get("duration_s") or 0), 1),
+                "tokens": (r.get("tokens") or {}).get("total_tokens", 0),
+                "provider": r.get("provider", ""), "started_at": r.get("started_at"),
+            })
+        return rows
+
+    # ---- conversations -----------------------------------------------------------
+
+    def load_conversations(self) -> list:
+        path = self._config().argus_dir / "gui" / "conversations.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        return data if isinstance(data, list) else []
+
+    def save_conversations(self, conversations: list) -> dict:
+        cfg = self._config()
+        if not cfg.argus_dir.is_dir():
+            return {"ok": False, "error": "no .argus directory"}
+        path = cfg.argus_dir / "gui" / "conversations.json"
+        path.parent.mkdir(exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(list(conversations or [])[:30]), encoding="utf-8")
+        tmp.replace(path)
+        return {"ok": True}
 
 
 class _ScreenshotCapturingAdapter:
@@ -279,7 +934,7 @@ class _ScreenshotCapturingAdapter:
     def observe(self, include_screenshot: bool = True):
         obs = self._inner.observe(include_screenshot=include_screenshot)
         if obs.screenshot_png:
-            self._api._latest_screenshot = obs.screenshot_png
+            self._api._set_screenshot(obs.screenshot_png)
         return obs
 
     def launch(self, target: str):
@@ -292,6 +947,65 @@ class _ScreenshotCapturingAdapter:
         return self._inner.close()
 
 
+def _copy(value):
+    return json.loads(json.dumps(value, default=str))
+
+
+def _rel(cfg: ArgusConfig, path: Path) -> str:
+    try:
+        return Path(path).resolve().relative_to(cfg.project_dir.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _short_digest(digest: str) -> str:
+    d = digest.split(":", 1)[-1]
+    return f"sha256 · {d[:4]}…{d[-4:]}" if len(d) > 8 else (digest or "?")
+
+
+def _pick_target(query: str, targets: List[str]) -> Optional[str]:
+    if not query:
+        return None
+    q = query.lower().replace("https://", "").replace("http://", "")
+    for t in targets:
+        if t.lower() == query.lower():
+            return t
+    for t in targets:
+        tl = t.lower()
+        if q in tl or tl in q:
+            return t
+    return None
+
+
+def _run_notes(data: dict) -> List[str]:
+    notes = []
+    env = data.get("environment_type") or "local"
+    notes.append(f"Environment {env}" + (" · isolated" if data.get("isolated") else " · shared host"))
+    if data.get("artifacts"):
+        notes.append(f"Collected {len(data['artifacts'])} artifact(s) · SHA-256 hashed, bounded")
+    fc = data.get("failure_capsule")
+    if fc:
+        notes.append(f"Failure Capsule kept: {fc.get('failure_id', fc.get('vm_name', 'retained'))} "
+                     "(disk + config only, no live credentials)")
+    if data.get("failure_capsule_error"):
+        notes.append("Failure Capsule retention failed; the Capsule was preserved for recovery")
+    if data.get("transfer_error"):
+        notes.append(f"Transfer error: {data['transfer_error']}")
+    if data.get("error"):
+        notes.append(data["error"])
+    return notes
+
+
+def _mtimes(project_dir: Path) -> Dict[str, float]:
+    out = {}
+    for path in discover_tests(project_dir):
+        try:
+            out[path.name] = path.stat().st_mtime
+        except OSError:
+            continue
+    return out
+
+
 def run_gui() -> None:
     import webview
 
@@ -300,9 +1014,9 @@ def run_gui() -> None:
         "Argus",
         url=str(WEB_DIR / "index.html"),
         js_api=api,
-        width=1280,
-        height=820,
-        min_size=(960, 640),
-        background_color="#080b12",
+        width=1440,
+        height=900,
+        min_size=(1024, 680),
+        background_color="#FAF9F5",
     )
     webview.start()
