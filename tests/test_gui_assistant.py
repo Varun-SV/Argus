@@ -126,6 +126,52 @@ def test_llm_roam_target_rejects_incidental_substrings():
     assert explicit["intent"] == "roam" and explicit["args"]["target"] == "sh"
 
 
+def test_llm_roam_target_must_preserve_full_command_and_url():
+    shortened_cli = validate_intent(
+        {"intent": "roam", "args": {"target": "python cleanup.py", "adapter": "cli"}},
+        "roam python cleanup.py --dry-run",
+        CONTEXT,
+    )
+    assert shortened_cli["intent"] == "chat"
+
+    full_cli = validate_intent(
+        {"intent": "roam", "args": {"target": "python cleanup.py --dry-run", "adapter": "cli"}},
+        "roam python cleanup.py --dry-run",
+        CONTEXT,
+    )
+    assert full_cli["intent"] == "roam"
+
+    shortened_url = validate_intent(
+        {"intent": "roam", "args": {"target": "https://host/path", "adapter": "browser"}},
+        "roam https://host/path?safe=true",
+        CONTEXT,
+    )
+    assert shortened_url["intent"] == "chat"
+
+    full_url = validate_intent(
+        {"intent": "roam", "args": {"target": "https://host/path?safe=true", "adapter": "browser"}},
+        "roam https://host/path?safe=true",
+        CONTEXT,
+    )
+    assert full_url["intent"] == "roam"
+
+
+def test_last_roam_target_requires_an_explicit_reference():
+    unrelated = validate_intent(
+        {"intent": "roam", "args": {"target": "notepad.exe"}},
+        "what can Argus do?",
+        CONTEXT,
+    )
+    assert unrelated["intent"] == "chat"
+
+    again = validate_intent(
+        {"intent": "roam", "args": {"target": "notepad.exe"}},
+        "roam it again",
+        CONTEXT,
+    )
+    assert again["intent"] == "roam"
+
+
 def test_llm_provider_switch_must_be_configured():
     assert validate_intent({"intent": "switch_provider", "args": {"provider": "openai"}}, "use openai", CONTEXT)["intent"] == "chat"
     assert validate_intent({"intent": "switch_provider", "args": {"provider": "anthropic"}}, "use anthropic", CONTEXT) == {
