@@ -881,6 +881,13 @@ class ArgusAPI:
 
         key = key or self._last_finished
         data = self._results.get(key) if key else None
+        if not data and key:
+            # A card restored from an earlier session carries its ATES run id; the evidence
+            # is still on disk even though this process has no in-memory result for it.
+            try:
+                data = {"ates_run_id": str(RunId(key)), "test_file": key}
+            except (TypeError, ValueError):
+                data = None
         if not data:
             return {"ok": False, "error": "No finished run in this conversation yet. Every run writes "
                                           "canonical ATES evidence; run a test and I can show it."}
@@ -890,6 +897,8 @@ class ArgusAPI:
             return {"ok": False, "error": f"{title} finished without an ATES run id, so there's no evidence to verify."}
         cfg = self._config()
         run_dir = cfg.argus_dir / "runs" / _run_directory_key(RunId(run_id))
+        if not run_dir.is_dir():
+            return {"ok": False, "error": f"No ATES evidence found for {run_id} under {_rel(cfg, run_dir.parent)}/."}
         out = {"ok": True, "title": title, "run_id": run_id, "path": _rel(cfg, run_dir) + "/",
                "verified": False, "rows": []}
         try:

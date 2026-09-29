@@ -505,3 +505,20 @@ def test_explain_reports_which_run_it_explained(project, fake_llm):
     fake_llm[:] = ["Old failure."]
     old = api.explain("history:20000101-000000-old.test.yaml.json")
     assert old["ok"] and old["evidence_key"] is None  # can't verify evidence for persisted history
+
+
+def test_evidence_for_a_card_restored_after_restart(project, fake_llm):
+    (project / ".argus" / "cli.test.yaml").write_text(CLI_SPEC, encoding="utf-8")
+    first = ArgusAPI()
+    job = _wait(first, first.run_tests(["cli.test.yaml"])["job"]["id"])
+    key = job["runs"][0]["key"]
+    assert key.startswith("RUN-")
+
+    restarted = ArgusAPI()  # a new process: the card's key comes from conversations.json
+    evidence = restarted.evidence(key)
+    assert evidence["ok"] and evidence["verified"], evidence
+    assert evidence["run_id"] == key
+
+    missing = restarted.evidence("RUN-doesnotexist")
+    assert missing["ok"] is False and "No ATES evidence found" in missing["error"]
+    assert restarted.evidence("../../etc")["ok"] is False  # not a RunId, never a path

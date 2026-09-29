@@ -72,6 +72,7 @@ const state = {
   pollTimer: null,
   saveTimer: null,
   watchOn: false,
+  watchSettled: null,
 };
 const nodeCache = new Map();
 
@@ -272,6 +273,7 @@ async function execute(res, conv = state.conv) {
         const r = await api().watch_start();
         if (!r.ok) return sayError(r.error);
         state.watchOn = true;
+        state.watchSettled = 0;
         push({ role: "argus", kind: "watch", watch: r.watch });
         setFollowups([{ label: "Stop watching", intent: I("watch", { action: "stop" }) }]);
         poll();
@@ -297,7 +299,9 @@ async function startRun(tests, overrides, conv = state.conv) {
   const r = await api().run_tests(tests, overrides || {});
   if (!r.ok) return sayError(r.error);
   const job = r.job;
-  job.runs.forEach((run, idx) => push({ role: "argus", kind: "run", job: job.id, idx, snap: run, meta: runMeta(job) }));
+  const cards = job.runs.map((run, idx) => push({ role: "argus", kind: "run", job: job.id, idx, snap: run, meta: runMeta(job) }));
+  // A quick run can finish before run_tests returns; polling never sees it change, so finish it now.
+  if (!job.running) return onFinished(cards.length ? [[conv, cards[cards.length - 1]]] : []);
   setFollowups([{ label: "Stop", intent: I("stop") }]);
   poll();
 }
@@ -309,7 +313,8 @@ async function startRoam(a, conv = state.conv) {
   const r = await api().start_roam(a.target, a.adapter || null, a.minutes || null,
     typeof a.memory === "boolean" ? a.memory : null, overrides);
   if (!r.ok) return sayError(r.error);
-  push({ role: "argus", kind: "roam", job: r.job.id, snap: r.job });
+  const card = push({ role: "argus", kind: "roam", job: r.job.id, snap: r.job });
+  if (!r.job.running) return onFinished([[conv, card]]);
   setFollowups([{ label: "Stop", intent: I("stop") }]);
   refreshInfo();
   poll();
@@ -424,6 +429,13 @@ async function tick() {
   if (state.watchOn || state.conv.msgs.some((m) => m.kind === "watch" && m.watch.running)) {
     const w = await api().watch_status();
     state.watchOn = !!w.running;
+    // Watched re-runs have no run card, so refresh the sidebar's test list and status
+    // dots whenever another watched re-run finishes.
+    const settled = (w.events || []).filter((e) => !["running", "waiting"].includes(e.status)).length;
+    if (settled !== state.watchSettled) {
+      if (state.watchSettled !== null) refreshTests();
+      state.watchSettled = settled;
+    }
     for (const m of state.conv.msgs) {
       if (m.kind === "watch" && m.watch.id === w.id && JSON.stringify(w) !== JSON.stringify(m.watch)) update(m, { watch: w });
     }

@@ -147,6 +147,8 @@ def test_check_draft_accepts_valid_spec_and_names_file():
     ("name: x\ntarget: {adapter: browser}\nsteps: ['a']\n", "target"),
     ("name: x\ntarget: {adapter: robot, launch: y}\nsteps: ['a']\n", "unknown adapter"),
     ("name: x\ntarget: {adapter: cli, launch: y}\nsteps: ['a']\nstaging: []\n", "staging"),
+    ("name: x\ntarget: {adapter: cli, launch: y}\nretries: once\nsteps: ['a']\n", "invalid spec"),
+    ("name: x\ntarget: {adapter: cli, launch: y}\nsteps: 5\n", "invalid spec"),
 ])
 def test_check_draft_rejects_bad_specs(yaml_text, needle):
     draft = check_draft(yaml_text)
@@ -202,3 +204,12 @@ def test_exact_test_stem_wins_over_substring_matches():
     assert assistant.resolve_tests("checkout", tests) == ["checkout.test.yaml"]
     assert parse_slash("/run checkout", tests)["args"]["tests"] == ["checkout.test.yaml"]
     assert assistant.resolve_tests("check", tests) == ["checkout.test.yaml", "checkout-refund.test.yaml"]
+
+
+def test_slash_roam_keeps_windows_backslashes():
+    got = parse_slash(r"/roam C:\Tools\app.exe --minutes 3", TESTS)
+    assert got["args"]["target"] == r"C:\Tools\app.exe"
+    assert got["args"]["adapter"] == "desktop-gui" and got["args"]["minutes"] == 3.0
+    spaced = parse_slash(r'/roam "C:\Program Files\App\app.exe" --no-memory', TESTS)
+    assert spaced["args"]["target"] == r'"C:\Program Files\App\app.exe"'
+    assert spaced["args"]["memory"] is False

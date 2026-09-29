@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 from typing import Iterable, List, Mapping, Optional, Sequence
 
 import yaml
@@ -201,23 +200,32 @@ def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "")
     raise IntentError(f"Unknown command {head}. Type /help to see what Argus can do.")
 
 
+# A token is a quoted run or any run of non-space characters. Backslashes are kept as
+# typed, so Windows paths such as C:\Tools\app.exe survive (POSIX shlex would eat them).
+_ROAM_TOKEN = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+
+
+def _unquote(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return token
+
+
 def _parse_roam_args(rest: str, last_target: str) -> dict:
-    try:
-        parts = shlex.split(rest, posix=True)
-    except ValueError as exc:
-        raise IntentError(f"Could not read the roam command: {exc}") from exc
+    parts = _ROAM_TOKEN.findall(rest)
     # Argus's own options are --minutes/-m N, --adapter X and --[no-]memory; every other
-    # token belongs to the target command, e.g. `/roam python tool.py --check`.
+    # token belongs to the target command, e.g. `/roam python tool.py --check`, and is
+    # kept verbatim (quotes included) for the adapter to split.
     words, adapter, minutes, memory = [], None, None, None
     i = 0
     while i < len(parts):
         p = parts[i]
         if p in ("--minutes", "-m") and i + 1 < len(parts):
-            minutes = _minutes(parts[i + 1])
+            minutes = _minutes(_unquote(parts[i + 1]))
             i += 2
             continue
         if p == "--adapter" and i + 1 < len(parts):
-            adapter = parts[i + 1]
+            adapter = _unquote(parts[i + 1])
             i += 2
             continue
         if p in ("--no-memory", "--memory"):
@@ -225,7 +233,11 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
         else:
             words.append(p)
         i += 1
-    target = (words[0] if len(words) == 1 else shlex.join(words)) if words else last_target
+    if len(words) == 1 and not re.search(r"\s", _unquote(words[0])):
+        target = _unquote(words[0])  # "http://localhost:3000" -> http://localhost:3000
+    else:
+        # A quoted path with spaces keeps its quotes, as it would in a spec's launch string.
+        target = " ".join(words) if words else last_target
     if not target:
         raise IntentError('Tell Argus what to roam, e.g. /roam notepad.exe --minutes 5')
     adapter = adapter or adapter_for(target)
@@ -452,6 +464,10 @@ def check_draft(text: str, existing: Iterable[str] = ()) -> dict:
         spec = parse_spec(text)
     except SpecError as exc:
         out["error"] = str(exc)
+        return out
+    except (ValueError, TypeError, AttributeError, KeyError) as exc:
+        # parse_spec converts scalars directly, so e.g. `retries: once` raises ValueError.
+        out["error"] = f"invalid spec: {exc}"
         return out
     if spec.adapter not in ADAPTERS:
         out["error"] = f"unknown adapter {spec.adapter!r}"
