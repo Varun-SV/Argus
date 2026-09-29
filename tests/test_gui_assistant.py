@@ -141,6 +141,13 @@ def test_llm_roam_target_must_preserve_full_command_and_url():
     )
     assert full_cli["intent"] == "roam"
 
+    positional = validate_intent(
+        {"intent": "roam", "args": {"target": "python cleanup.py", "adapter": "cli"}},
+        "roam python cleanup.py input.txt",
+        CONTEXT,
+    )
+    assert positional["intent"] == "chat"
+
     shortened_url = validate_intent(
         {"intent": "roam", "args": {"target": "https://host/path", "adapter": "browser"}},
         "roam https://host/path?safe=true",
@@ -163,6 +170,13 @@ def test_last_roam_target_requires_an_explicit_reference():
         CONTEXT,
     )
     assert unrelated["intent"] == "chat"
+
+    question = validate_intent(
+        {"intent": "roam", "args": {"target": "notepad.exe"}},
+        "what does roam mean again?",
+        CONTEXT,
+    )
+    assert question["intent"] == "chat"
 
     again = validate_intent(
         {"intent": "roam", "args": {"target": "notepad.exe"}},
