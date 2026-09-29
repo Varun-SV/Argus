@@ -579,6 +579,41 @@ def test_watch_reports_deleted_specs(project, fake_llm):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_draft_save_and_history_reads_never_follow_symlinks(project, fake_llm, monkeypatch, tmp_path_factory):
+    import json as _json
+
+    outside = tmp_path_factory.mktemp("outside-history")
+    api = ArgusAPI()
+
+    # A repository-controlled history entry must never redirect an explanation read.
+    secret = outside / "secret.json"
+    secret.write_text(_json.dumps({
+        "test_file": "outside.test.yaml", "status": "fail",
+        "steps": [{"index": 1, "kind": "assert", "status": "fail", "actual": "secret"}],
+    }), encoding="utf-8")
+    history_name = "20990101-000000-outside.test.yaml.json"
+    (project / ".argus" / "runs" / history_name).symlink_to(secret)
+    assert all(row["id"] != "history:" + history_name for row in api.recent_runs())
+    assert api.explain("history:" + history_name)["ok"] is False
+
+    # Draft saving must attest .argus itself before creating a new test file.
+    fake_llm[:] = [GOOD_SPEC]
+    draft = api.draft_test("search works")
+    assert draft["ok"]
+    real_argus = project / ".argus"
+    saved_argus = project / ".argus-real"
+    real_argus.rename(saved_argus)
+    real_argus.symlink_to(outside, target_is_directory=True)
+    try:
+        out = api.save_test(draft["id"])
+        assert out["ok"] is False
+        assert not (outside / draft["file"]).exists()
+    finally:
+        real_argus.unlink()
+        saved_argus.rename(real_argus)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_conversation_and_export_writes_never_follow_symlinks(project, monkeypatch, tmp_path_factory):
     outside = tmp_path_factory.mktemp("outside")
     victim = outside / "victim.txt"
