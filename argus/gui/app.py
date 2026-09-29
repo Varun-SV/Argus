@@ -73,6 +73,8 @@ class ArgusAPI:
         self._usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
         self._job_tracker: Optional[TokenTracker] = None
         self._jobs: Dict[str, dict] = {}
+        self._job_specs: Dict[str, dict] = {}       # job id -> {run index: TestSpec} parsed at start
+        self._job_trackers: Dict[str, list] = {}    # job id -> TokenTrackers used by that job
         self._active_job: Optional[str] = None
         self._results: Dict[str, dict] = {}
         self._last_finished: Optional[str] = None
@@ -267,7 +269,7 @@ class ArgusAPI:
         except ProviderError as exc:
             return {"intent": "error", "args": {"text": (
                 f"I couldn't reach {cfg.provider.type} to understand that ({exc}). "
-                "Slash commands work without a model — type /help.")}}
+                "Slash commands skip this routing step — type /help.")}}
         finally:
             self._charge(tracker, cfg)
 
@@ -366,9 +368,11 @@ class ArgusAPI:
             return {"ok": False, "error": f"The spec doesn't parse: {exc}"}
         cfg.argus_dir.mkdir(parents=True, exist_ok=True)
         dest = cfg.argus_dir / name
-        if dest.exists():
+        try:
+            with open(dest, "x", encoding="utf-8") as fh:  # exclusive create: never overwrite
+                fh.write(content)
+        except FileExistsError:
             return {"ok": False, "error": f".argus/{name} already exists; I won't overwrite it."}
-        dest.write_text(content, encoding="utf-8")
         draft["saved"] = True
         return {"ok": True, "path": f".argus/{name}", "file": name}
 
@@ -414,9 +418,11 @@ class ArgusAPI:
         if err:
             return {"ok": False, "error": err}
         runs = []
+        specs = {}
         for path in paths:
             try:
                 spec = load_spec(path)
+                specs[len(runs)] = spec
                 steps = [{"text": st.describe() if isinstance(st, AssertStep) else st.text,
                           "kind": st.kind} for st in spec.steps]
                 runs.append({"file": path.name, "name": spec.name, "adapter": spec.adapter,
@@ -435,6 +441,7 @@ class ArgusAPI:
         err = self._begin_job(job)
         if err:
             return {"ok": False, "error": err}
+        self._job_specs[job["id"]] = specs
         threading.Thread(target=self._run_worker, args=(job,), daemon=True).start()
         return {"ok": True, "job": self.job_status(job["id"])}
 
@@ -447,13 +454,15 @@ class ArgusAPI:
                 if self._stop.is_set():
                     run["status"] = "stopped"
                     continue
-                self._execute_run(job, run)
+                self._execute_run(job, run, self._job_specs.get(job["id"], {}).get(index))
         finally:
+            self._job_specs.pop(job["id"], None)
             job["ended_at"] = time.time()
             job["running"] = False
             job["action"] = "Finished"
 
-    def _execute_run(self, job: dict, run: dict) -> None:
+    def _execute_run(self, job: dict, run: dict, spec) -> None:
+        """Run ``spec`` — parsed when the job was created, so edits made meanwhile don't apply."""
         from argus.adapters import AdapterError
         from argus.engine.runner import run_test
 
@@ -462,15 +471,14 @@ class ArgusAPI:
         job["action"] = f"Launching {run['launch']}"
         tracker = TokenTracker()
         self._job_tracker = tracker
+        self._job_trackers.setdefault(job["id"], []).append(tracker)
         ks = None
         adapter = None
         try:
             ks = cfg.make_knowledge_store()
             self._active_ks = ks
-            path = self._test_path(cfg, run["file"])
-            if path is None:
-                raise SpecError(f"{run['file']} is no longer in .argus/")
-            spec = load_spec(path)
+            if spec is None:
+                raise SpecError(f"{run['file']} could not be parsed when the run started")
             provider = cfg.make_provider(tracker)
             capsule = ({"provider": job["capsule_provider"], "retain_on_failure": job["retain"]}
                        if job["env"] == "capsule" else None)
@@ -561,6 +569,7 @@ class ArgusAPI:
         cfg = self._config(job["provider_type"])  # frozen when the job started
         tracker = TokenTracker()
         self._job_tracker = tracker
+        self._job_trackers.setdefault(job["id"], []).append(tracker)
         ks = None
         try:
             ks = cfg.make_knowledge_store()
@@ -660,8 +669,12 @@ class ArgusAPI:
             return {"ok": False, "error": "unknown job"}
         snap = _copy(job)
         snap["ok"] = True
-        snap["tokens"] = self._usage_now()["total_tokens"]
+        snap["tokens"] = self._job_tokens(job_id)
         return snap
+
+    def _job_tokens(self, job_id: str) -> int:
+        """Tokens used by this job's own model calls (not the whole session)."""
+        return sum(t.snapshot()["total_tokens"] for t in self._job_trackers.get(job_id, []))
 
     def live(self) -> dict:
         """What the live-view panel shows: the active (or last) job."""
@@ -670,7 +683,7 @@ class ArgusAPI:
             return {"has": False}
         out = {"has": True, "id": job["id"], "kind": job["kind"], "running": job["running"],
                "action": job.get("action", ""), "env_label": job["env_label"],
-               "adapter": job.get("adapter") or "", "tokens": self._usage_now()["total_tokens"],
+               "adapter": job.get("adapter") or "", "tokens": self._job_tokens(job["id"]),
                "screenshot_ts": self._latest_screenshot_ts}
         if job["kind"] == "run":
             run = job["runs"][min(job["current"], len(job["runs"]) - 1)]
@@ -779,7 +792,11 @@ class ArgusAPI:
             return {"ok": False, "error": "The knowledge store is disabled or its extras aren't installed "
                                           "(pip install \"argus-app-testing[knowledge]\")."}
         try:
-            targets = sorted(ks.get_stats(None))  # target_key of every stored graph
+            # List stored graphs from disk: get_stats(None) keys are Path.stem values
+            # ("notepad-exe.graph"), which don't round-trip through the store.
+            persist = Path(kc.persist_dir) if kc.persist_dir else cfg.argus_dir / "knowledge"
+            targets = sorted(path.name[: -len(".graph.json")]
+                             for path in persist.glob("*.graph.json"))
             target = (target or "").strip()
             if target and target_key(target) not in targets:
                 target = _pick_target(target, targets) or target

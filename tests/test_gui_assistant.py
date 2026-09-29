@@ -169,3 +169,10 @@ def test_explain_failure_sends_compact_result():
     assert "declined" in text
     sent = json.loads(provider.calls[0]["user"])
     assert "screenshot_path" not in sent["steps"][0]
+
+
+def test_llm_run_with_an_unknown_test_runs_nothing():
+    got = validate_intent({"intent": "run", "args": {"tests": ["checkout", "payment"]}},
+                          "run checkout and payment", CONTEXT)
+    assert got["intent"] == "chat"
+    assert "payment" in got["args"]["reply"]

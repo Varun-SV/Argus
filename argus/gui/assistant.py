@@ -4,8 +4,8 @@ The desktop app is a conversation: people type what they want and Argus
 answers with cards (runs, roams, specs, knowledge, …). This module turns a
 message into one *intent* the app can execute.
 
-* Slash commands (``/run checkout``) are parsed deterministically and cost no
-  tokens.
+* Slash commands (``/run checkout``) are parsed deterministically, with no
+  routing call to the model (the command itself may still use it, e.g. /write).
 * Free text is routed through the configured LLM provider, which may only
   pick from a fixed intent vocabulary. Its answer is validated before the app
   acts on it: tests must exist, a roam target must come from the user's own
@@ -319,15 +319,20 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         if wanted == "all" or (name == "dry_run" and wanted == "draft"):
             chosen = wanted
         else:
-            names = wanted if isinstance(wanted, list) else [wanted]
+            names = [str(n) for n in (wanted if isinstance(wanted, list) else [wanted])]
             known = {t["file"] for t in tests}
-            chosen = [str(n) for n in names if str(n) in known]
-            if not chosen:
-                for n in names:
-                    chosen.extend(resolve_tests(str(n), tests))
+            chosen, missing = [], []
+            for n in names:
+                matches = [n] if n in known else resolve_tests(n, tests)
+                if matches:
+                    chosen.extend(matches)
+                else:
+                    missing.append(n)
             chosen = list(dict.fromkeys(chosen))
-            if not chosen:
-                return intent("chat", reply="I couldn't find that test in .argus/. The Tests list in the sidebar shows what's there.")
+            if missing or not chosen:
+                return intent("chat", reply=(
+                    f"I couldn't find {', '.join(missing) or 'that test'} in .argus/, so I didn't "
+                    "run anything. The Tests list in the sidebar shows what's there."))
         out = intent(name, tests=chosen)
         if name == "run":
             out["args"].update(_env_args(args))

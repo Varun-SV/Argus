@@ -337,10 +337,16 @@ def test_knowledge_export_uses_configured_persist_dir(project):
 def test_knowledge_card_queries_the_chosen_target(project, monkeypatch):
     from argus.knowledge.fingerprint import target_key
 
+    graphs = project / ".argus" / "knowledge"
+    graphs.mkdir()
+    (graphs / "notepad-exe.graph.json").write_text("{}", encoding="utf-8")
+    asked = []
+
     class Store:
         def get_stats(self, target=None):
-            if target is None:
-                return {"notepad-exe": {"states": 0}}  # all-target view is keyed by target_key
+            asked.append(target)
+            if target is None:  # the real stores key this view by Path.stem
+                return {"notepad-exe.graph": {"states": 0}}
             if target_key(target) == "notepad-exe":
                 return {target: {"states": 7, "transitions": 9, "bugs": 2, "sessions": 3}}
             return {target: {}}
@@ -353,6 +359,9 @@ def test_knowledge_card_queries_the_chosen_target(project, monkeypatch):
     k = api.knowledge("notepad.exe")
     assert (k["target"], k["states"], k["transitions"], k["bugs"]) == ("notepad.exe", 7, 9, 2)
     assert api.knowledge("notepad")["states"] == 7  # partial names resolve to a stored graph
+    fresh = ArgusAPI().knowledge("")  # after a restart: no target, no last target
+    assert (fresh["target"], fresh["states"]) == ("notepad-exe", 7)
+    assert not any(t and t.endswith(".graph") for t in asked)
 
 
 def test_explain_uses_persisted_history(project, fake_llm):
@@ -399,3 +408,38 @@ def test_starting_watch_keeps_a_pending_stop(project):
     assert api.watch_start()["ok"]
     assert api._stop.is_set()
     api.watch_stop()
+
+
+def test_job_tokens_count_only_that_job(project, fake_llm):
+    fake_llm.append('{"intent": "tokens", "args": {}}')
+    (project / ".argus" / "cli.test.yaml").write_text(CLI_SPEC, encoding="utf-8")
+    api = ArgusAPI()
+    api.interpret("how many tokens?")  # an earlier model call in this session
+    assert api.token_usage()["session"]["total_tokens"] > 0
+    job = _wait(api, api.run_tests(["cli.test.yaml"])["job"]["id"])
+    assert job["tokens"] == 0  # the pure-assertion run used no model tokens
+    assert api.live()["tokens"] == 0
+
+
+def test_run_uses_the_spec_parsed_when_the_job_started(project, fake_llm, monkeypatch):
+    spec_file = project / ".argus" / "cli.test.yaml"
+    spec_file.write_text(CLI_SPEC, encoding="utf-8")
+    def edit_while_queued(self):  # runs at the start of each test's execution
+        spec_file.write_text(CLI_SPEC.replace("123", "never-printed"), encoding="utf-8")
+        return None
+
+    monkeypatch.setattr(ArgusConfig, "make_knowledge_store", edit_while_queued)
+    api = ArgusAPI()
+    run = _wait(api, api.run_tests(["cli.test.yaml"])["job"]["id"])["runs"][0]
+    assert run["status"] == "pass"
+    assert "123" in run["planned"][1]["text"]
+
+
+def test_save_never_replaces_an_existing_file(project, fake_llm):
+    fake_llm.append(GOOD_SPEC)
+    api = ArgusAPI()
+    draft = api.draft_test("search works")
+    dest = project / ".argus" / draft["file"]
+    dest.write_text("# written by someone else\n", encoding="utf-8")
+    assert "already exists" in api.save_test()["error"]
+    assert dest.read_text(encoding="utf-8") == "# written by someone else\n"
