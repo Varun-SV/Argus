@@ -332,6 +332,61 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
+_ROAM_VERB = re.compile(r"\b(?:roam|explore)\b", re.IGNORECASE)
+_DURATION_UNITS = {"s": 1 / 60, "m": 1.0, "h": 60.0}
+# Argus-owned modifiers a user may put after the target. They are stripped from the end of
+# the request (repeatedly, in any order) and their values are read from the user's own text.
+_ROAM_SUFFIXES = (
+    re.compile(r"\s+for\s+(?:(?P<n>\d+(?:\.\d+)?)\s*(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
+               r"|(?P<one>a\s+minute|an\s+hour))\s*[.!]?\s*$", re.IGNORECASE),
+    re.compile(r"\s+(?P<mem>with|without)\s+memory\s*[.!]?\s*$", re.IGNORECASE),
+    re.compile(r"\s+(?:(?P<local>locally)|in\s+(?:a\s+)?(?:(?P<cap>hyper-?v|libvirt)\s+)?capsule)"
+               r"\s*[.!]?\s*$", re.IGNORECASE),
+)
+
+
+def _roam_modifier(m: "re.Match") -> dict:
+    g = m.groupdict()
+    if g.get("n") or g.get("one"):
+        if g.get("one"):
+            minutes = 60.0 if "hour" in g["one"].lower() else 1.0
+        else:
+            minutes = float(g["n"]) * _DURATION_UNITS[g["unit"][0].lower()]
+        return {"minutes": _minutes(minutes)}
+    if g.get("mem"):
+        return {"memory": g["mem"].lower() == "with"}
+    if g.get("local"):
+        return {"environment": "local"}
+    cap = (g.get("cap") or "auto").lower().replace("-", "")
+    return {"environment": "capsule", "capsule_provider": cap}
+
+
+def split_roam_request(text: str) -> Optional[tuple]:
+    """Split a free-text roam request into (target text, modifiers) from the user's words.
+
+    The target is everything after the explicit roam/explore verb once the Argus-owned
+    modifiers (duration, memory, execution environment) are removed from the end. The
+    modifiers are returned as intent args, so the model can neither drop nor invent them.
+    Returns None when the message has no roam/explore verb.
+    """
+    match = _ROAM_VERB.search(text)
+    if not match:
+        return None
+    candidate = text[match.end():].strip()
+    modifiers: dict = {}
+    changed = True
+    while changed:
+        changed = False
+        for pattern in _ROAM_SUFFIXES:
+            m = pattern.search(candidate)
+            if m:
+                for key, value in _roam_modifier(m).items():
+                    modifiers.setdefault(key, value)  # the last occurrence in the text wins
+                candidate = candidate[:m.start()].rstrip()
+                changed = True
+    return _unquote(candidate), modifiers
+
+
 def _mentions_target(text: str, target: str, adapter: str) -> bool:
     """Verify that the routed target preserves the user's complete roam target.
 
@@ -341,29 +396,10 @@ def _mentions_target(text: str, target: str, adapter: str) -> bool:
     silently dropping command arguments, flags, or URL query strings.
     """
     del adapter  # kept in the signature so validation is explicit about the routed adapter
-    if not target:
+    request = split_roam_request(text)
+    if not target or request is None:
         return False
-    match = re.search(r"\b(?:roam|explore)\b", text, re.IGNORECASE)
-    if not match:
-        return False
-
-    candidate = text[match.end():].strip()
-    suffixes = (
-        r"\s+for\s+(?:\d+(?:\.\d+)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)|"
-        r"a\s+minute|an\s+hour)\s*[.!]?\s*$",
-        r"\s+(?:with|without)\s+memory\s*[.!]?\s*$",
-        r"\s+(?:locally|in\s+(?:a\s+)?capsule)\s*[.!]?\s*$",
-    )
-    changed = True
-    while changed:
-        changed = False
-        for pattern in suffixes:
-            stripped = re.sub(pattern, "", candidate, flags=re.IGNORECASE)
-            if stripped != candidate:
-                candidate = stripped.rstrip()
-                changed = True
-
-    candidate = _unquote(candidate)
+    candidate = request[0]
     wanted = target.casefold()
     if candidate.casefold() == wanted:
         return True
@@ -425,10 +461,15 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         reuses_previous = bool(last and target == last and _refers_to_last_target(text))
         if not target or not (explicitly_named or reuses_previous):
             return intent("chat", reply="Which app should I roam? Give me the command, file or URL, e.g. roam notepad.exe for 5 minutes.")
-        memory = args.get("memory")  # None: use the app's Memory toggle
+        # Duration, memory and environment come from the user's own words, never from the
+        # model: a dropped "in a capsule" must not turn into a local roam. Anything the user
+        # didn't say stays None, so the session's pickers and project defaults apply.
+        request = split_roam_request(text)
+        mods = request[1] if request else {}
         return intent(
-            "roam", target=target, adapter=adapter, minutes=_minutes(args.get("minutes")),
-            memory=memory if isinstance(memory, bool) else None,
+            "roam", target=target, adapter=adapter, minutes=mods.get("minutes"),
+            memory=mods.get("memory"),
+            **{k: mods[k] for k in ("environment", "capsule_provider") if k in mods},
         )
 
     if name == "write_test":

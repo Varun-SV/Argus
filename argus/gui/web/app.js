@@ -460,17 +460,21 @@ function onFinished(items) {
   }
 }
 
+// Only runs with an ATES run id have evidence; synthetic setup-error results do not.
+const hasEvidence = (snap) => !!(snap && snap.key && snap.result && snap.result.ates_run_id);
+
 function followupsAfter(conv, last) {
   const setFollowups = (l) => followupsIn(conv, l);
   if (last.kind === "run") {
     const runs = conv.msgs.filter((m) => m.kind === "run" && m.job === last.job);
     const failed = runs.find((m) => m.snap.status !== "pass");
     const explainable = failed && failed.snap.key && failed.snap.result;
-    const lastKey = runs.length ? runs[runs.length - 1].snap.key : null;
+    const lastRun = runs.length ? runs[runs.length - 1].snap : null;
+    const lastKey = hasEvidence(lastRun) ? lastRun.key : null;
     setFollowups(failed
       ? [explainable ? { label: `Why did ${failed.snap.file} fail?`, intent: I("explain", { key: failed.snap.key }) } : null,
          { label: "Re-run in a Capsule and keep the Failure Capsule", intent: I("run", { tests: [failed.snap.file], environment: "capsule", retain: true }) },
-         explainable ? { label: "Show ATES evidence", intent: I("evidence", { key: failed.snap.key }) } : null].filter(Boolean)
+         hasEvidence(failed.snap) ? { label: "Show ATES evidence", intent: I("evidence", { key: failed.snap.key }) } : null].filter(Boolean)
       : [lastKey ? { label: "Show ATES evidence", intent: I("evidence", { key: lastKey }) } : null,
          { label: "Run history", intent: I("report") },
          { label: "Run all tests", intent: I("run", { tests: "all" }) }].filter(Boolean));
@@ -710,7 +714,7 @@ function renderRun(m) {
       (r.notes || []).map((n) => h("div", { class: "line", text: n })),
       done ? h("div", { class: "actions", style: { marginTop: "6px" } },
         h("span", { class: "grow summary", text: r.result ? summary : "" }),
-        r.key ? h("button", { class: "btn hov", text: "Evidence", onClick: () => runChip("Show ATES evidence", I("evidence", { key: r.key })) }) : null,
+        hasEvidence(r) ? h("button", { class: "btn hov", text: "Evidence", onClick: () => runChip("Show ATES evidence", I("evidence", { key: r.key })) }) : null,
         h("button", { class: "btn dark", text: "Run again", onClick: () => runChip(`Re-run ${r.file}`, I("run", { tests: [r.file] })) })) : null));
 }
 

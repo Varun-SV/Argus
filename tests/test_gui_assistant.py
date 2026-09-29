@@ -200,10 +200,38 @@ def test_unknown_intent_and_non_json_become_chat():
 
 
 def test_llm_minutes_are_clamped():
-    got = validate_intent({"intent": "roam", "args": {"target": "a.exe", "minutes": 10_000}}, "roam a.exe", CONTEXT)
+    # The duration comes from the user's words and is clamped; a model-supplied value is ignored.
+    got = validate_intent({"intent": "roam", "args": {"target": "a.exe"}}, "roam a.exe for 10000 minutes", CONTEXT)
     assert got["args"]["minutes"] == 240.0
-    got = validate_intent({"intent": "roam", "args": {"target": "a.exe", "minutes": -3}}, "roam a.exe", CONTEXT)
+    got = validate_intent({"intent": "roam", "args": {"target": "a.exe", "minutes": 10_000}}, "roam a.exe", CONTEXT)
     assert got["args"]["minutes"] is None
+
+
+def test_roam_modifiers_come_from_the_user_not_the_model():
+    text = "roam notepad.exe in a capsule without memory for 1 minute"
+    dropped = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}}, text, CONTEXT)
+    assert dropped["intent"] == "roam"
+    assert dropped["args"]["environment"] == "capsule"
+    assert dropped["args"]["capsule_provider"] == "auto"
+    assert dropped["args"]["memory"] is False
+    assert dropped["args"]["minutes"] == 1.0
+
+    # Modifiers the user didn't state are not invented by the model either.
+    invented = validate_intent({"intent": "roam", "args": {
+        "target": "notepad.exe", "environment": "local", "memory": True, "minutes": 99}},
+        "roam notepad.exe", CONTEXT)
+    assert invented["args"]["minutes"] is None and invented["args"]["memory"] is None
+    assert "environment" not in invented["args"]
+
+    local = validate_intent({"intent": "roam", "args": {"target": "notepad.exe", "environment": "capsule"}},
+                            "roam notepad.exe for 30 seconds locally", CONTEXT)
+    assert local["args"]["environment"] == "local" and local["args"]["minutes"] == 0.5
+
+    again = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}},
+                            "roam it again in a hyper-v capsule for 2 hours", CONTEXT)
+    assert again["args"]["environment"] == "capsule"
+    assert again["args"]["capsule_provider"] == "hyperv"
+    assert again["args"]["minutes"] == 120.0
 
 
 GOOD_SPEC = """name: Search returns results

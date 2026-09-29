@@ -580,6 +580,16 @@ class ArgusAPI:
             self._last_finished = key
             self._last_failed = key
 
+    def _record_roam_error(self, job: dict, message: str) -> None:
+        """Make a failed roam the latest terminal result, so /evidence can't show an older job."""
+        data = {"kind": "roam", "target": job.get("target"), "status": "error", "error": message,
+                "ates_run_id": None, "findings": [], "report": None, "stopped_reason": message}
+        key = "error-" + uuid.uuid4().hex
+        job["key"] = key
+        with self._lock:
+            self._results[key] = data
+            self._last_finished = key
+
     def start_roam(self, target: str, adapter: Optional[str] = None,
                    minutes: Optional[float] = None, memory: Optional[bool] = None,
                    overrides: Optional[dict] = None) -> dict:
@@ -672,10 +682,12 @@ class ArgusAPI:
             job["log"].append(f"error: {exc}")
             job["status"] = "error"
             job["stopped_reason"] = str(exc)
+            self._record_roam_error(job, str(exc))
         except Exception as exc:  # keep the UI honest instead of a silently dead thread
             job["log"].append(f"error: {type(exc).__name__}: {exc}")
             job["status"] = "error"
             job["stopped_reason"] = f"{type(exc).__name__}: {exc}"
+            self._record_roam_error(job, job["stopped_reason"])
         finally:
             if ks is not None:
                 job["stats"] = self.live_stats(job["target"])
@@ -900,13 +912,20 @@ class ArgusAPI:
         cfg = self._config()
         key = target_key(target)
         kc = cfg.knowledge
-        persist = Path(kc.persist_dir) if kc.persist_dir else cfg.argus_dir / "knowledge"
-        graph = persist / f"{key}.graph.json"
-        if not graph.is_file():
-            return {"ok": False, "error": f"No graph for '{target}' yet."}
         try:
+            # The default store lives in the project, which may be untrusted: attest it.
+            persist = (Path(kc.persist_dir) if kc.persist_dir
+                       else _argus_subdir(cfg, "knowledge", create=False))
+            graph = persist / f"{key}.graph.json"
+            if graph.is_symlink():
+                return {"ok": False, "error": f"{_rel(cfg, graph)} is a symlink; Argus won't export it."}
+            if not graph.is_file():
+                return {"ok": False, "error": f"No graph for '{target}' yet."}
+            if not graph.resolve().is_relative_to(persist.resolve()):
+                return {"ok": False, "error": f"{_rel(cfg, graph)} escapes the knowledge directory."}
+            data = _read_nofollow(graph)
             dest = _argus_subdir(cfg, "exports") / f"{key}.graph.json"
-            _write_atomic(dest, graph.read_bytes())
+            _write_atomic(dest, data)
         except OSError as exc:
             return {"ok": False, "error": f"Could not export the graph: {exc}"}
         return {"ok": True, "path": _rel(cfg, dest), "target": target}
@@ -1267,6 +1286,14 @@ def _argus_subdir(cfg: ArgusConfig, name: str, create: bool = True) -> Path:
     except ValueError as exc:
         raise OSError(f".argus/{name} escapes the project: {sub}") from exc
     return resolved
+
+
+def _read_nofollow(path: Path) -> bytes:
+    """Read ``path`` without following a symlink planted in its place (O_NOFOLLOW)."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
 
 
 def _write_atomic(path: Path, data: bytes) -> None:

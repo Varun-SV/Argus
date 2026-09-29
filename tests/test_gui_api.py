@@ -670,3 +670,42 @@ def test_conversation_state_ignores_project_symlinks_and_exports_never_follow_th
     exports_link.symlink_to(outside, target_is_directory=True)
     assert api.knowledge_export("notepad.exe")["ok"] is False
     assert not (outside / "notepad-exe.graph.json").exists()
+
+
+def test_failed_roam_setup_is_the_latest_result_for_evidence(project, fake_llm, monkeypatch):
+    (project / ".argus" / "cli.test.yaml").write_text(CLI_SPEC, encoding="utf-8")
+    api = ArgusAPI()
+    older = _wait(api, api.run_tests(["cli.test.yaml"])["job"]["id"])
+    assert api.evidence()["run_id"] == older["runs"][0]["key"]  # the older run has evidence
+
+    def no_env(self, adapter_type, environment_type=None, capsule_overrides=None):
+        raise RuntimeError("adapter failed to start")
+
+    monkeypatch.setattr(ArgusConfig, "make_execution_environment", no_env)
+    job = _wait(api, api.start_roam("notepad.exe", minutes=0.1)["job"]["id"])
+    assert job["status"] == "error" and job["key"].startswith("error-")
+    ev = api.evidence()  # plain /evidence right after the failed roam
+    assert ev["ok"] is False
+    assert "notepad.exe" in ev["error"] and "without an ATES run id" in ev["error"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_knowledge_export_never_reads_a_symlinked_graph(project, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside")
+    secret = outside / "secret.txt"
+    secret.write_text("host secret", encoding="utf-8")
+    graphs = project / ".argus" / "knowledge"
+    graphs.mkdir()
+    (graphs / "notepad-exe.graph.json").symlink_to(secret)
+    api = ArgusAPI()
+    out = api.knowledge_export("notepad.exe")
+    assert out["ok"] is False and "symlink" in out["error"]
+    assert not (project / ".argus" / "exports" / "notepad-exe.graph.json").exists()
+
+    (graphs / "notepad-exe.graph.json").unlink()
+    graphs.rmdir()
+    graphs.symlink_to(outside, target_is_directory=True)  # the whole default store redirected
+    (outside / "notepad-exe.graph.json").write_text("{}", encoding="utf-8")
+    out = api.knowledge_export("notepad.exe")
+    assert out["ok"] is False
+    assert not (project / ".argus" / "exports" / "notepad-exe.graph.json").exists()
