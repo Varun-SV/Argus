@@ -377,7 +377,8 @@ def test_explain_uses_persisted_history(project, fake_llm):
     api = ArgusAPI()  # fresh process: nothing in memory
     row = api.recent_runs()[0]
     assert row["id"] == "history:20260101-000000-lint.test.yaml.json"
-    assert api.explain(row["id"]) == {"ok": True, "text": "Exit code 3.", "test": "lint.test.yaml"}
+    assert api.explain(row["id"]) == {"ok": True, "text": "Exit code 3.", "test": "lint.test.yaml",
+                                      "key": row["id"], "evidence_key": None}
     assert api.explain()["test"] == "lint.test.yaml"  # no key: newest failure on disk
     assert api.explain("history:../config.yaml")["ok"] is False
 
@@ -459,3 +460,48 @@ def test_draft_actions_use_the_draft_shown_on_the_card(project, fake_llm):
     assert not (project / ".argus" / second["file"]).exists()
     stale = ArgusAPI().save_test(first["id"])  # after a restart the draft is gone
     assert stale["ok"] is False and "earlier session" in stale["error"]
+
+
+def test_watch_retries_a_change_made_while_busy(project, fake_llm):
+    spec = project / ".argus" / "cli.test.yaml"
+    spec.write_text(CLI_SPEC, encoding="utf-8")
+    api = ArgusAPI()
+    api._jobs["busy"] = {"id": "busy", "running": True}  # a manual run holds the slot
+    api._active_job = "busy"
+    watch = {"id": "w", "running": True, "pattern": ".argus/*.test.yaml", "events": []}
+    worker = threading.Thread(target=api._watch_worker, args=(watch, project, 0.05), daemon=True)
+    worker.start()
+    time.sleep(0.2)
+    spec.write_text(CLI_SPEC + "\n# touched\n", encoding="utf-8")
+    deadline = time.time() + 10
+    while time.time() < deadline and not (watch["events"] and watch["events"][0]["status"] == "waiting"):
+        time.sleep(0.05)
+    assert watch["events"][0]["status"] == "waiting"
+    api._jobs["busy"]["running"] = False  # the manual run finishes
+    deadline = time.time() + 60
+    while time.time() < deadline and watch["events"][0]["status"] in ("waiting", "running"):
+        time.sleep(0.05)
+    watch["running"] = False
+    worker.join(timeout=5)
+    assert len(watch["events"]) == 1
+    assert watch["events"][0]["status"] == "pass"
+
+
+def test_explain_reports_which_run_it_explained(project, fake_llm):
+    import json as _json
+
+    (project / ".argus" / "lint.test.yaml").write_text(
+        CLI_SPEC.replace("123", "never-printed"), encoding="utf-8")
+    fake_llm.extend(["It failed."])
+    api = ArgusAPI()
+    job = _wait(api, api.run_tests(["lint.test.yaml"])["job"]["id"])
+    key = job["runs"][0]["key"]
+    out = api.explain()
+    assert (out["key"], out["evidence_key"]) == (key, key)  # evidence follow-up targets this run
+
+    runs = project / ".argus" / "runs"
+    (runs / "20000101-000000-old.test.yaml.json").write_text(_json.dumps({
+        "test_file": "old.test.yaml", "status": "fail", "steps": []}), encoding="utf-8")
+    fake_llm[:] = ["Old failure."]
+    old = api.explain("history:20000101-000000-old.test.yaml.json")
+    assert old["ok"] and old["evidence_key"] is None  # can't verify evidence for persisted history

@@ -774,20 +774,33 @@ class ArgusAPI:
 
     def _watch_worker(self, watch: dict, project_dir: Path, poll: float = 1.0) -> None:
         seen = _mtimes(project_dir)
+        pending: Dict[str, dict] = {}  # changed file -> its event, until it has been re-run
         while watch["running"]:
             time.sleep(poll)
             current = _mtimes(project_dir)
-            changed = [name for name, m in current.items() if seen.get(name) != m]
+            for name, m in current.items():
+                if seen.get(name) != m and name not in pending:
+                    event = {"at": time.strftime("%H:%M:%S"), "file": name,
+                             "status": "running", "summary": "re-running…"}
+                    watch["events"].append(event)
+                    pending[name] = event
             seen = current
-            for name in changed:
+            for name in list(pending):
                 if not watch["running"]:
                     break
-                event = {"at": time.strftime("%H:%M:%S"), "file": name, "status": "running", "summary": "re-running…"}
-                watch["events"].append(event)
+                event = pending[name]
                 started = self.run_tests([name])
                 if not started.get("ok"):
-                    event.update(status="skipped", summary=started.get("error", "busy"))
+                    active = self._jobs.get(self._active_job) if self._active_job else None
+                    if active and active["running"]:
+                        # Another run or roam holds the slot: keep the change, retry next poll.
+                        event.update(status="waiting", summary="waiting for the current job to finish")
+                        break
+                    del pending[name]  # e.g. the spec was deleted: nothing to retry
+                    event.update(status="skipped", summary=started.get("error", "not run"))
                     continue
+                del pending[name]
+                event.update(status="running", summary="re-running…")
                 job = self._jobs[started["job"]["id"]]
                 while job["running"]:
                     time.sleep(0.3)
@@ -915,6 +928,7 @@ class ArgusAPI:
                 for hid, run in self._history(20):
                     if run.get("status") != "pass":
                         data = dict(run, kind="run")
+                        key = "history:" + hid
                         break
         if not data or data.get("kind") != "run":
             return {"ok": False, "error": "Nothing has failed in this conversation yet. Run a test and I "
@@ -928,7 +942,11 @@ class ArgusAPI:
             return {"ok": False, "error": f"The model couldn't explain it: {exc}"}
         finally:
             self._charge(tracker, cfg)
-        return {"ok": True, "text": text, "test": data.get("test_file")}
+        # Evidence can only be verified for runs of this session (persisted results
+        # don't carry their ATES run id), so only offer it for those.
+        evidence_key = key if key in self._results and data.get("ates_run_id") else None
+        return {"ok": True, "text": text, "test": data.get("test_file"), "key": key,
+                "evidence_key": evidence_key}
 
     # ---- providers / tokens / history -------------------------------------------
 

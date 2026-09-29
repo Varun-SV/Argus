@@ -203,9 +203,10 @@ async function execute(res, conv = state.conv) {
         say(r.text);
         setFollowups([
           { label: "Re-run in a Capsule and keep the Failure Capsule", intent: I("run", { tests: [r.test], environment: "capsule", retain: true }) },
-          { label: "Show ATES evidence", intent: I("evidence") },
+          // Evidence of the run just explained; historical results can't be verified here.
+          r.evidence_key ? { label: "Show ATES evidence", intent: I("evidence", { key: r.evidence_key }) } : null,
           { label: "Run history", intent: I("report") },
-        ]);
+        ].filter(Boolean));
         return;
       }
       case "knowledge": return knowledge(a.action || "show", a.target || "", conv);
@@ -375,12 +376,16 @@ async function switchProvider(name, conv = state.conv) {
 }
 
 /* ------------------------------------------------------------ polling --- */
+// Jobs keep running when the user switches conversations, so polling covers
+// every conversation, not just the open one.
+function allConversations() {
+  return [...new Set([state.conv, ...state.conversations])];
+}
+const isActiveCard = (m) => (m.kind === "run" && (m.snap.status === "running" || m.snap.status === "queued")) ||
+  (m.kind === "roam" && m.snap.running);
 function activeJobIds() {
   const ids = new Set();
-  for (const m of state.conv.msgs) {
-    if ((m.kind === "run" && (m.snap.status === "running" || m.snap.status === "queued")) ||
-        (m.kind === "roam" && m.snap.running)) ids.add(m.job);
-  }
+  for (const c of allConversations()) for (const m of c.msgs) if (isActiveCard(m)) ids.add(m.job);
   return ids;
 }
 function watchRunning() {
@@ -393,24 +398,26 @@ function poll() {
 async function tick() {
   state.pollTimer = null;
   const ids = activeJobIds();
-  let finished = [];
+  const finished = [];  // [conv, msg]
   for (const id of ids) {
     let job;
     try { job = await api().job_status(id); } catch (e) { continue; }
     if (!job.ok) continue;
-    for (const m of state.conv.msgs) {
-      if (m.job !== id) continue;
-      if (m.kind === "run") {
-        const snap = job.runs[m.idx];
-        const was = m.snap.status;
-        if (JSON.stringify(snap) !== JSON.stringify(m.snap) || m.meta.running !== job.running) {
-          update(m, { snap, meta: runMeta(job) });
+    for (const c of allConversations()) {
+      for (const m of c.msgs) {
+        if (m.job !== id) continue;
+        if (m.kind === "run") {
+          const snap = job.runs[m.idx];
+          const was = m.snap.status;
+          if (JSON.stringify(snap) !== JSON.stringify(m.snap) || m.meta.running !== job.running) {
+            update(m, { snap, meta: runMeta(job) });
+          }
+          if ((was === "running" || was === "queued") && !["running", "queued"].includes(snap.status)) finished.push([c, m]);
+        } else if (m.kind === "roam") {
+          const was = m.snap.running;
+          if (JSON.stringify(job) !== JSON.stringify(m.snap)) update(m, { snap: job });
+          if (was && !job.running) finished.push([c, m]);
         }
-        if ((was === "running" || was === "queued") && !["running", "queued"].includes(snap.status)) finished.push(m);
-      } else if (m.kind === "roam") {
-        const was = m.snap.running;
-        if (JSON.stringify(job) !== JSON.stringify(m.snap)) update(m, { snap: job });
-        if (was && !job.running) finished.push(m);
       }
     }
   }
@@ -428,22 +435,33 @@ async function tick() {
   if (busy) state.pollTimer = setTimeout(tick, 700);
 }
 
-function onFinished(msgs) {
+function onFinished(items) {
   refreshTests();
   refreshInfo();
   scheduleSave();
-  if (activeJobIds().size) return;  // more tests still queued in this job
-  const last = msgs[msgs.length - 1];
+  // Follow-ups go to the conversation that owns each finished job, once the job is done.
+  const done = new Map();  // job id -> [conv, last finished msg]
+  for (const [c, m] of items) done.set(m.job, [c, m]);
+  const stillActive = activeJobIds();
+  for (const [jobId, [conv, last]] of done) {
+    if (!stillActive.has(jobId)) followupsAfter(conv, last);
+  }
+}
+
+function followupsAfter(conv, last) {
+  const setFollowups = (l) => followupsIn(conv, l);
   if (last.kind === "run") {
-    const runs = state.conv.msgs.filter((m) => m.kind === "run" && m.job === last.job);
+    const runs = conv.msgs.filter((m) => m.kind === "run" && m.job === last.job);
     const failed = runs.find((m) => m.snap.status !== "pass");
     const explainable = failed && failed.snap.key && failed.snap.result;
+    const lastKey = runs.length ? runs[runs.length - 1].snap.key : null;
     setFollowups(failed
       ? [explainable ? { label: `Why did ${failed.snap.file} fail?`, intent: I("explain", { key: failed.snap.key }) } : null,
          { label: "Re-run in a Capsule and keep the Failure Capsule", intent: I("run", { tests: [failed.snap.file], environment: "capsule", retain: true }) },
          explainable ? { label: "Show ATES evidence", intent: I("evidence", { key: failed.snap.key }) } : null].filter(Boolean)
-      : [{ label: "Show ATES evidence", intent: I("evidence") }, { label: "Run history", intent: I("report") },
-         { label: "Run all tests", intent: I("run", { tests: "all" }) }]);
+      : [lastKey ? { label: "Show ATES evidence", intent: I("evidence", { key: lastKey }) } : null,
+         { label: "Run history", intent: I("report") },
+         { label: "Run all tests", intent: I("run", { tests: "all" }) }].filter(Boolean));
   } else if (last.kind === "roam") {
     const s = last.snap;
     const list = [];
