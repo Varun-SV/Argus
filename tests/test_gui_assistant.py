@@ -103,6 +103,29 @@ def test_llm_roam_target_must_come_from_the_user():
     assert again["args"]["target"] == "notepad.exe"
 
 
+def test_llm_roam_target_rejects_incidental_substrings():
+    incidental = validate_intent(
+        {"intent": "roam", "args": {"target": "sh", "adapter": "cli"}},
+        "what should I test?",
+        CONTEXT,
+    )
+    assert incidental["intent"] == "chat"
+
+    path_fragment = validate_intent(
+        {"intent": "roam", "args": {"target": "sh", "adapter": "cli"}},
+        "roam /bin/sh for a minute",
+        CONTEXT,
+    )
+    assert path_fragment["intent"] == "chat"
+
+    explicit = validate_intent(
+        {"intent": "roam", "args": {"target": "sh", "adapter": "cli"}},
+        "roam sh for a minute",
+        CONTEXT,
+    )
+    assert explicit["intent"] == "roam" and explicit["args"]["target"] == "sh"
+
+
 def test_llm_provider_switch_must_be_configured():
     assert validate_intent({"intent": "switch_provider", "args": {"provider": "openai"}}, "use openai", CONTEXT)["intent"] == "chat"
     assert validate_intent({"intent": "switch_provider", "args": {"provider": "anthropic"}}, "use anthropic", CONTEXT) == {
