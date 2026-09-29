@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import threading
 import time
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from argus import __version__
-from argus.config import ArgusConfig, init_project, load_config
+from argus.config import ArgusConfig, _env_bool, init_project, load_config
 from argus.engine.results import load_runs
 from argus.engine.spec import AssertStep, SpecError, discover_tests, load_spec, parse_spec
 from argus.gui import assistant
@@ -32,6 +33,15 @@ WEB_DIR = Path(__file__).parent / "web"
 
 _MAX_LOG_LINES = 400
 _CAPSULE_LABELS = {"auto": "auto", "hyperv": "Hyper-V", "libvirt": "libvirt/KVM"}
+# Roam engine execution_status -> card status.
+_ROAM_STATUS = {"pass": "done", "fail": "fail", "error": "error", "cancelled": "stopped",
+                "outcome_unknown": "unknown"}
+
+
+def _forced_environment() -> Optional[str]:
+    """ARGUS_EXECUTION_ENVIRONMENT wins over any per-session choice (see make_execution_environment)."""
+    value = (os.environ.get("ARGUS_EXECUTION_ENVIRONMENT") or "").strip().lower()
+    return value or None
 
 
 class _StoppableBudget(Budget):
@@ -58,6 +68,7 @@ class ArgusAPI:
     def __init__(self, project_dir: Optional[Path] = None) -> None:
         self._project_dir = project_dir
         self._lock = threading.RLock()
+        self._persist_lock = threading.Lock()
         self._stop = threading.Event()
         self._usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
         self._job_tracker: Optional[TokenTracker] = None
@@ -82,17 +93,37 @@ class ArgusAPI:
 
     # ---- config / session ---------------------------------------------------
 
-    def _config(self) -> ArgusConfig:
-        return load_config(self._project_dir, provider=self._session["provider"])
+    def _config(self, provider: Optional[str] = None) -> ArgusConfig:
+        return load_config(self._project_dir, provider=provider or self._session["provider"])
 
     def _session_view(self, cfg: ArgusConfig) -> dict:
-        env = self._session["environment"] or cfg.execution.environment or "local"
-        cap = self._session["capsule_provider"] or cfg.execution.capsule.provider or "auto"
+        """The effective environment, resolved the same way make_execution_environment does."""
+        forced = _forced_environment()
+        env = forced or self._session["environment"] or cfg.execution.environment or "local"
+        cap = (self._session["capsule_provider"] or os.environ.get("ARGUS_CAPSULE_PROVIDER")
+               or cfg.execution.capsule.provider or "auto")
         retain = self._session["retain"]
         if retain is None:
-            retain = cfg.execution.capsule.retain_on_failure
+            try:
+                retain = _env_bool("ARGUS_CAPSULE_RETAIN_ON_FAILURE",
+                                   cfg.execution.capsule.retain_on_failure)
+            except ValueError:
+                retain = cfg.execution.capsule.retain_on_failure
         return {"environment": env, "capsule_provider": cap, "retain": bool(retain),
-                "memory": bool(self._session["memory"])}
+                "memory": bool(self._session["memory"]), "env_locked": forced is not None}
+
+    def _job_environment(self, cfg: ArgusConfig, overrides: dict):
+        """Return (env, capsule_provider, retain, error) for a new job."""
+        s = self._session_view(cfg)
+        env = overrides.get("environment") or s["environment"]
+        forced = _forced_environment()
+        if forced and env != forced:
+            return None, None, None, (
+                f"ARGUS_EXECUTION_ENVIRONMENT={forced} is set for this app, so Argus can't run "
+                f"this {env}. Unset it to choose the environment here.")
+        cap = overrides.get("capsule_provider") or s["capsule_provider"]
+        retain = overrides.get("retain", s["retain"])
+        return env, cap, bool(retain), None
 
     @staticmethod
     def _env_label(env: str, cap: str) -> str:
@@ -157,6 +188,11 @@ class ArgusAPI:
             return {"ok": False, "error": f"unknown environment {environment!r}"}
         if capsule_provider is not None and capsule_provider not in assistant.CAPSULE_PROVIDERS:
             return {"ok": False, "error": f"unknown Capsule provider {capsule_provider!r}"}
+        forced = _forced_environment()
+        if forced and environment != forced:
+            return {"ok": False, "error": (
+                f"ARGUS_EXECUTION_ENVIRONMENT={forced} is set for this app, so runs stay {forced}. "
+                "Unset it to choose the environment here.")}
         self._session["environment"] = environment
         if capsule_provider:
             self._session["capsule_provider"] = capsule_provider
@@ -374,10 +410,9 @@ class ArgusAPI:
             paths = [by_name[n] for n in order if n in by_name]
         if not paths:
             return {"ok": False, "error": "No tests to run. Try /init to create an example."}
-        s = self._session_view(cfg)
-        env = overrides.get("environment") or s["environment"]
-        cap = overrides.get("capsule_provider") or s["capsule_provider"]
-        retain = overrides.get("retain", s["retain"])
+        env, cap, retain, err = self._job_environment(cfg, overrides)
+        if err:
+            return {"ok": False, "error": err}
         runs = []
         for path in paths:
             try:
@@ -392,8 +427,9 @@ class ArgusAPI:
                              "planned": [], "steps": [], "status": "error", "result": None,
                              "key": None, "notes": [f"spec error: {exc}"]})
         job = {"id": uuid.uuid4().hex[:12], "kind": "run", "running": True, "runs": runs,
-               "env": env, "capsule_provider": cap, "retain": bool(retain),
+               "env": env, "capsule_provider": cap, "retain": retain,
                "env_label": self._env_label(env, cap),
+               "provider_type": cfg.provider.type,
                "provider": f"{cfg.provider.type}:{cfg.provider.model}",
                "action": "Starting…", "started_at": time.time(), "current": 0}
         err = self._begin_job(job)
@@ -421,7 +457,7 @@ class ArgusAPI:
         from argus.adapters import AdapterError
         from argus.engine.runner import run_test
 
-        cfg = self._config()
+        cfg = self._config(job["provider_type"])  # frozen when the job started
         run["status"] = "running"
         job["action"] = f"Launching {run['launch']}"
         tracker = TokenTracker()
@@ -480,7 +516,7 @@ class ArgusAPI:
             run["notes"].append(f"{type(exc).__name__}: {exc}")
         finally:
             if ks is not None:
-                job["stats"] = self.live_stats()
+                job["stats"] = self.live_stats(run["launch"])
                 ks.close()
             self._active_ks = None
             self._job_tracker = None
@@ -497,14 +533,16 @@ class ArgusAPI:
             return {"ok": False, "error": f"unknown adapter {adapter!r}"}
         cfg = self._config()
         s = self._session_view(cfg)
-        overrides = overrides or {}
-        env = overrides.get("environment") or s["environment"]
-        cap = overrides.get("capsule_provider") or s["capsule_provider"]
+        env, cap, retain, err = self._job_environment(cfg, overrides or {})
+        if err:
+            return {"ok": False, "error": err}
         memory = s["memory"] if memory is None else bool(memory)
         minutes = minutes or cfg.time_minutes or 10
         job = {"id": uuid.uuid4().hex[:12], "kind": "roam", "running": True, "target": target,
                "adapter": adapter, "minutes": float(minutes), "memory": memory,
-               "env": env, "capsule_provider": cap, "env_label": self._env_label(env, cap),
+               "env": env, "capsule_provider": cap, "retain": retain,
+               "env_label": self._env_label(env, cap),
+               "provider_type": cfg.provider.type,
                "provider": f"{cfg.provider.type}:{cfg.provider.model}",
                "log": [], "findings": [], "report": None, "regressions": [], "status": "running",
                "action": f"Launching {target}", "started_at": time.time(), "key": None,
@@ -520,7 +558,7 @@ class ArgusAPI:
         from argus.adapters import AdapterError
         from argus.engine.roam import roam
 
-        cfg = self._config()
+        cfg = self._config(job["provider_type"])  # frozen when the job started
         tracker = TokenTracker()
         self._job_tracker = tracker
         ks = None
@@ -528,7 +566,8 @@ class ArgusAPI:
             ks = cfg.make_knowledge_store()
             self._active_ks = ks
             provider = cfg.make_provider(tracker)
-            capsule = {"provider": job["capsule_provider"]} if job["env"] == "capsule" else None
+            capsule = ({"provider": job["capsule_provider"], "retain_on_failure": job["retain"]}
+                       if job["env"] == "capsule" else None)
             adapter = _ScreenshotCapturingAdapter(
                 cfg.make_execution_environment(job["adapter"], job["env"], capsule), self
             )
@@ -559,7 +598,8 @@ class ArgusAPI:
             job["regressions"] = [_rel(cfg, p) for p in sorted(session_dir.glob("regression-*.test.yaml"))]
             job["stopped_reason"] = session.stopped_reason or ""
             status = str(getattr(session, "execution_status", "") or "")
-            job["status"] = "stopped" if self._stop.is_set() else ("error" if status == "error" else "done")
+            job["status"] = ("stopped" if self._stop.is_set()
+                             else _ROAM_STATUS.get(status, "unknown") if status else "done")
             data = {"kind": "roam", "target": job["target"], "status": job["status"],
                     "ates_run_id": getattr(session, "ates_run_id", None),
                     "findings": job["findings"], "report": job["report"],
@@ -579,7 +619,7 @@ class ArgusAPI:
             job["stopped_reason"] = f"{type(exc).__name__}: {exc}"
         finally:
             if ks is not None:
-                job["stats"] = self.live_stats()
+                job["stats"] = self.live_stats(job["target"])
                 ks.close()
             self._active_ks = None
             self._job_tracker = None
@@ -637,12 +677,14 @@ class ArgusAPI:
             total = max(1, len(run["planned"]))
             out.update(title=run["file"], status=run["status"], adapter=run["adapter"],
                        progress=round(100 * min(len(run["steps"]), total) / total))
+            target = run["launch"]
         else:
+            target = job["target"]
             elapsed = time.time() - job["started_at"]
             out.update(title=job["target"], status=job["status"],
                        progress=round(min(100, 100 * elapsed / (job["minutes"] * 60)))
                        if job["running"] else 100)
-        stats = self.live_stats() if job["running"] else (job.get("stats") or {})
+        stats = self.live_stats(target) if job["running"] else (job.get("stats") or {})
         out.update(states=stats.get("states"), transitions=stats.get("transitions"),
                    bugs=stats.get("bugs"))
         return out
@@ -661,22 +703,17 @@ class ArgusAPI:
         self._latest_screenshot = png
         self._latest_screenshot_ts = time.time()
 
-    def live_stats(self) -> dict:
-        """Return live knowledge counts from the active session."""
+    def live_stats(self, target: str = "") -> dict:
+        """Return live knowledge counts for ``target`` from the active session's store."""
         ks = self._active_ks
-        if ks is None:
-            return {"active": False}
+        if ks is None or not target:
+            return {"active": ks is not None}
         try:
-            stats_map = ks.get_stats()
-            total = {"states": 0, "transitions": 0, "bugs": 0}
-            for v in stats_map.values():
-                total["states"] += v.get("states", 0)
-                total["transitions"] += v.get("transitions", 0)
-                total["bugs"] += v.get("bugs", v.get("bug_nodes", 0))
-            total["active"] = True
-            return total
+            s = ks.get_stats(target).get(target, {})
         except Exception:
             return {"active": True}
+        return {"active": True, "states": s.get("states", 0), "transitions": s.get("transitions", 0),
+                "bugs": s.get("bugs", s.get("bug_nodes", 0))}
 
     # ---- watch ------------------------------------------------------------------
 
@@ -684,7 +721,7 @@ class ArgusAPI:
         cfg = self._config()
         if self._watch and self._watch["running"]:
             return {"ok": True, "watch": _copy(self._watch)}
-        self._stop.clear()
+        # Don't clear self._stop here: a Stop the user just pressed must still reach an active job.
         self._watch = {"id": uuid.uuid4().hex[:12], "running": True,
                        "pattern": ".argus/*.test.yaml", "events": [], "started_at": time.time()}
         threading.Thread(target=self._watch_worker, args=(self._watch, cfg.project_dir),
@@ -729,6 +766,8 @@ class ArgusAPI:
     # ---- knowledge --------------------------------------------------------------
 
     def knowledge(self, target: str = "") -> dict:
+        from argus.knowledge.fingerprint import target_key
+
         cfg = self._config()
         kc = cfg.knowledge
         backend = f"{kc.type} graph · {kc.vector_backend} vectors · {kc.embedding_model}"
@@ -740,15 +779,16 @@ class ArgusAPI:
             return {"ok": False, "error": "The knowledge store is disabled or its extras aren't installed "
                                           "(pip install \"argus-app-testing[knowledge]\")."}
         try:
-            stats = ks.get_stats(None)
+            targets = sorted(ks.get_stats(None))  # target_key of every stored graph
+            target = (target or "").strip()
+            if target and target_key(target) not in targets:
+                target = _pick_target(target, targets) or target
+            chosen = target or self._last_target or (targets[0] if targets else "")
+            if not chosen:
+                return {"ok": False, "error": "Argus hasn't learned anything yet. Roam an app to build its state graph."}
+            s = ks.get_stats(chosen).get(chosen, {})
         finally:
             ks.close()
-        targets = sorted(stats)
-        target = (target or "").strip()
-        chosen = _pick_target(target, targets) or target or self._last_target or (targets[0] if targets else "")
-        if not chosen:
-            return {"ok": False, "error": "Argus hasn't learned anything yet. Roam an app to build its state graph."}
-        s = stats.get(chosen, {})
         return {"ok": True, "target": chosen, "targets": targets, "backend": backend,
                 "states": s.get("states", 0), "transitions": s.get("transitions", 0),
                 "bugs": s.get("bugs", s.get("bug_nodes", 0)), "sessions": s.get("sessions", 0)}
@@ -769,7 +809,9 @@ class ArgusAPI:
 
         cfg = self._config()
         key = target_key(target)
-        graph = cfg.argus_dir / "knowledge" / f"{key}.graph.json"
+        kc = cfg.knowledge
+        persist = Path(kc.persist_dir) if kc.persist_dir else cfg.argus_dir / "knowledge"
+        graph = persist / f"{key}.graph.json"
         if not graph.is_file():
             return {"ok": False, "error": f"No graph for '{target}' yet."}
         dest_dir = cfg.argus_dir / "exports"
@@ -822,8 +864,18 @@ class ArgusAPI:
         return out
 
     def explain(self, key: Optional[str] = None) -> dict:
-        key = key or self._last_failed
-        data = self._results.get(key) if key else None
+        """Explain a failed run: ``key`` is an in-session result key or a history id from recent_runs."""
+        data = None
+        if key and key.startswith("history:"):
+            data = self._history_result(key[len("history:"):])
+        else:
+            key = key or self._last_failed
+            data = self._results.get(key) if key else None
+            if data is None and not key:
+                for hid, run in self._history(20):
+                    if run.get("status") != "pass":
+                        data = dict(run, kind="run")
+                        break
         if not data or data.get("kind") != "run":
             return {"ok": False, "error": "Nothing has failed in this conversation yet. Run a test and I "
                                           "can explain any failure step by step."}
@@ -864,10 +916,12 @@ class ArgusAPI:
             for k in self._usage:
                 self._usage[k] += snap.get(k, 0)
         if cfg.argus_dir.is_dir():
-            try:
-                tracker.persist(cfg.project_dir)
-            except OSError:
-                pass
+            # persist() is a read-modify-write of usage.json; serialize it across threads.
+            with self._persist_lock:
+                try:
+                    tracker.persist(cfg.project_dir)
+                except OSError:
+                    pass
 
     def _usage_now(self) -> dict:
         with self._lock:
@@ -885,12 +939,36 @@ class ArgusAPI:
         return {"session": self._usage_now(), "project": persisted,
                 "provider": cfg.provider.type, "max_tokens": cfg.max_tokens}
 
+    def _history(self, limit: int):
+        """(id, result) pairs for persisted runs, newest first — the same files load_runs reads."""
+        runs_dir = self._config().argus_dir / "runs"
+        if not runs_dir.is_dir():
+            return []
+        out = []
+        for path in sorted(runs_dir.glob("*.json"), reverse=True)[:limit]:
+            try:
+                out.append((path.name, json.loads(path.read_text(encoding="utf-8"))))
+            except (json.JSONDecodeError, OSError):
+                continue
+        return out
+
+    def _history_result(self, history_id: str) -> Optional[dict]:
+        name = Path(history_id).name
+        if name != history_id or not name.endswith(".json") or name.startswith("."):
+            return None
+        path = self._config().argus_dir / "runs" / name
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return dict(data, kind="run") if isinstance(data, dict) else None
+
     def recent_runs(self, limit: int = 20) -> list:
-        cfg = self._config()
         rows = []
-        for r in load_runs(cfg.project_dir, limit):
+        for hid, r in self._history(limit):
             steps = r.get("steps", [])
             rows.append({
+                "id": "history:" + hid,
                 "test": r.get("test_file", "?"), "status": r.get("status", "?"),
                 "steps": f"{sum(1 for s in steps if s.get('status') == 'pass')}/{len(steps)}",
                 "duration": round(float(r.get("duration_s") or 0), 1),

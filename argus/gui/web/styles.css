@@ -120,7 +120,7 @@ a { color: var(--clay-deep); } a:hover { color: var(--clay-deeper); }
 .badge.running { color: var(--run); background: var(--run-bg); }
 .badge.pass, .badge.done { color: var(--pass); background: var(--pass-bg); }
 .badge.fail { color: var(--fail); background: var(--fail-bg); }
-.badge.error { color: var(--error); background: var(--fail-bg); }
+.badge.error, .badge.unknown { color: var(--error); background: var(--fail-bg); }
 .badge.stopped, .badge.queued, .badge.skipped { color: var(--ink-3); background: var(--muted-bg); }
 .progress { height: 2px; background: var(--oat); }
 .progress div { height: 2px; background: var(--clay); transition: width .4s; }

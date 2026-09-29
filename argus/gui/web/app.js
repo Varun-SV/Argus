@@ -58,7 +58,7 @@ const pad = (n) => (n < 10 ? "0" : "") + n;
 const mmss = (s) => pad(Math.floor(Math.max(0, s) / 60)) + ":" + pad(Math.floor(Math.max(0, s) % 60));
 const adapterShort = (a) => ({ "desktop-gui": "Desktop", browser: "Browser", cli: "CLI" }[a] || a || "—");
 const STATUS_LABEL = { queued: "Queued", running: "Running", pass: "Passed", fail: "Failed", error: "Error",
-  stopped: "Stopped", done: "Finished", skipped: "Skipped" };
+  stopped: "Stopped", done: "Finished", skipped: "Skipped", unknown: "Outcome unknown" };
 
 /* ------------------------------------------------------------- state --- */
 const state = {
@@ -185,7 +185,7 @@ async function execute(res) {
         return;
       }
       case "explain": {
-        const r = await withThinking(() => api().explain());
+        const r = await withThinking(() => api().explain(a.key || null));
         if (!r.ok) return sayError(r.error);
         say(r.text);
         setFollowups([
@@ -207,8 +207,9 @@ async function execute(res) {
         const rows = await api().recent_runs(8);
         if (!rows.length) return say("No runs yet. Run a test and its result shows up here.");
         push({ role: "argus", kind: "report", rows });
-        setFollowups(rows.some((r) => r.status !== "pass")
-          ? [{ label: "Why did it fail?", intent: I("explain") }, { label: "Token usage", intent: I("tokens") }]
+        const failedRow = rows.find((r) => r.status !== "pass");
+        setFollowups(failedRow
+          ? [{ label: `Why did ${failedRow.test} fail?`, intent: I("explain", { key: failedRow.id }) }, { label: "Token usage", intent: I("tokens") }]
           : [{ label: "Token usage", intent: I("tokens") }]);
         return;
       }

@@ -248,3 +248,154 @@ def test_unexpected_adapter_failure_marks_run_as_error(project, fake_llm, monkey
     assert run["status"] == "error"
     assert run["notes"] == ["RuntimeError: driver missing"]
     assert api.run_tests(["cli.test.yaml"])["ok"] is True  # the slot was released
+
+
+# ---- review regressions -------------------------------------------------------
+
+
+def test_forced_execution_environment_is_shown_and_enforced(project, monkeypatch):
+    monkeypatch.setenv("ARGUS_EXECUTION_ENVIRONMENT", "local")
+    api = ArgusAPI()
+    api._session["environment"] = "capsule"  # a stale session choice must not win
+    info = api.app_info()
+    assert info["environment"] == "local" and info["env_label"] == "Local"
+    assert "ARGUS_EXECUTION_ENVIRONMENT=local" in api.set_environment("capsule", "hyperv")["error"]
+    (project / ".argus" / "cli.test.yaml").write_text(CLI_SPEC, encoding="utf-8")
+    refused = api.run_tests(["cli.test.yaml"], {"environment": "capsule"})
+    assert refused["ok"] is False and "ARGUS_EXECUTION_ENVIRONMENT" in refused["error"]
+    assert api.start_roam("notepad.exe", overrides={"environment": "capsule"})["ok"] is False
+
+
+def test_run_job_keeps_the_provider_it_started_with(project, fake_llm, monkeypatch):
+    seen = []
+    original = ArgusConfig.make_provider
+
+    def recording(self, tracker=None):
+        seen.append(self.provider.type)
+        return original(self, tracker)
+
+    monkeypatch.setattr(ArgusConfig, "make_provider", recording)
+    (project / ".argus" / "cli.test.yaml").write_text(CLI_SPEC, encoding="utf-8")
+    api = ArgusAPI()
+    api.set_provider("openai")
+    job_id = api.run_tests(["cli.test.yaml"])["job"]["id"]
+    api.set_provider("anthropic")  # switching mid-job must not affect it
+    job = _wait(api, job_id)
+    assert job["provider_type"] == "openai"
+    assert seen and set(seen) == {"openai"}
+
+
+def test_capsule_roam_passes_failure_capsule_retention(project, monkeypatch):
+    captured = {}
+
+    def fake_env(self, adapter_type, environment_type=None, capsule_overrides=None):
+        captured.update(env=environment_type, overrides=dict(capsule_overrides or {}))
+        raise RuntimeError("no hypervisor here")
+
+    monkeypatch.setattr(ArgusConfig, "make_execution_environment", fake_env)
+    api = ArgusAPI()
+    api.set_environment("capsule", "libvirt")
+    api.set_retain(True)
+    job = _wait(api, api.start_roam("notepad.exe", minutes=0.1)["job"]["id"])
+    assert captured == {"env": "capsule", "overrides": {"provider": "libvirt", "retain_on_failure": True}}
+    assert job["status"] == "error"
+
+
+@pytest.mark.parametrize("engine_status,card_status", [
+    ("pass", "done"), ("fail", "fail"), ("error", "error"),
+    ("cancelled", "stopped"), ("outcome_unknown", "unknown"),
+])
+def test_roam_outcomes_are_not_collapsed_to_done(project, fake_llm, monkeypatch, tmp_path,
+                                                 engine_status, card_status):
+    from argus.engine.roam_impl import RoamSession
+
+    def fake_roam(**kwargs):
+        session = RoamSession(target=kwargs["target"], provider="fake")
+        session.execution_status = engine_status
+        return session
+
+    monkeypatch.setattr("argus.engine.roam.roam", fake_roam)
+    monkeypatch.setattr(ArgusConfig, "make_execution_environment",
+                        lambda self, a, e=None, c=None: object())
+    api = ArgusAPI()
+    job = _wait(api, api.start_roam("notepad.exe", minutes=0.1)["job"]["id"])
+    assert job["status"] == card_status
+
+
+def test_knowledge_export_uses_configured_persist_dir(project):
+    from argus.knowledge.fingerprint import target_key
+
+    store = project / "elsewhere"
+    store.mkdir()
+    (store / f"{target_key('notepad.exe')}.graph.json").write_text("{}", encoding="utf-8")
+    cfg = project / ".argus" / "config.yaml"
+    cfg.write_text(cfg.read_text() + f"\nknowledge:\n  persist_dir: {store.as_posix()}\n", encoding="utf-8")
+    out = ArgusAPI().knowledge_export("notepad.exe")
+    assert out["ok"], out
+
+
+def test_knowledge_card_queries_the_chosen_target(project, monkeypatch):
+    from argus.knowledge.fingerprint import target_key
+
+    class Store:
+        def get_stats(self, target=None):
+            if target is None:
+                return {"notepad-exe": {"states": 0}}  # all-target view is keyed by target_key
+            if target_key(target) == "notepad-exe":
+                return {target: {"states": 7, "transitions": 9, "bugs": 2, "sessions": 3}}
+            return {target: {}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ArgusConfig, "make_knowledge_store", lambda self: Store())
+    api = ArgusAPI()
+    k = api.knowledge("notepad.exe")
+    assert (k["target"], k["states"], k["transitions"], k["bugs"]) == ("notepad.exe", 7, 9, 2)
+    assert api.knowledge("notepad")["states"] == 7  # partial names resolve to a stored graph
+
+
+def test_explain_uses_persisted_history(project, fake_llm):
+    import json as _json
+
+    runs = project / ".argus" / "runs"
+    runs.mkdir(exist_ok=True)
+    (runs / "20260101-000000-lint.test.yaml.json").write_text(_json.dumps({
+        "test_file": "lint.test.yaml", "status": "fail", "steps": [
+            {"index": 0, "kind": "assert", "text": "exit_code_is: 0", "status": "fail",
+             "expected": "0", "actual": "3"}]}), encoding="utf-8")
+    fake_llm.extend(["Exit code 3.", "Exit code 3 again."])
+    api = ArgusAPI()  # fresh process: nothing in memory
+    row = api.recent_runs()[0]
+    assert row["id"] == "history:20260101-000000-lint.test.yaml.json"
+    assert api.explain(row["id"]) == {"ok": True, "text": "Exit code 3.", "test": "lint.test.yaml"}
+    assert api.explain()["test"] == "lint.test.yaml"  # no key: newest failure on disk
+    assert api.explain("history:../config.yaml")["ok"] is False
+
+
+def test_concurrent_charges_are_all_persisted(project):
+    from argus.tokens import TokenTracker, Usage
+
+    api = ArgusAPI()
+    cfg = api._config()
+
+    def charge():
+        t = TokenTracker()
+        t.add(Usage(prompt_tokens=10, completion_tokens=1))
+        api._charge(t, cfg)
+
+    threads = [threading.Thread(target=charge) for _ in range(25)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert api.token_usage()["project"]["calls"] == 25
+    assert api.token_usage()["session"]["calls"] == 25
+
+
+def test_starting_watch_keeps_a_pending_stop(project):
+    api = ArgusAPI()
+    api._stop.set()
+    assert api.watch_start()["ok"]
+    assert api._stop.is_set()
+    api.watch_stop()
