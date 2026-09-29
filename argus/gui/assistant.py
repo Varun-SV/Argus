@@ -332,6 +332,20 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
+def _mentions_target(text: str, target: str) -> bool:
+    """Return whether target is explicitly named in free text.
+
+    A model-selected roam target must be a delimited token/span from the user's
+    message, not an arbitrary substring (for example, sh inside should).
+    Path/URL punctuation counts as part of a token so a model also cannot shorten
+    /bin/sh to sh and pass the guard.
+    """
+    if not target:
+        return False
+    pattern = r"(?<![A-Za-z0-9_./:\\\\-])" + re.escape(target) + r"(?![A-Za-z0-9_./:\\\\-])"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
 def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     """Turn a model's routing answer into a safe intent, or a chat reply."""
     name = str(raw.get("intent", "")).strip()
@@ -370,7 +384,7 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     if name == "roam":
         target = str(args.get("target") or "").strip().strip("'\"")
         last = str(context.get("last_target") or "")
-        if not target or not (target.lower() in text.lower() or (last and target == last)):
+        if not target or not (_mentions_target(text, target) or (last and target == last)):
             return intent("chat", reply="Which app should I roam? Give me the command, file or URL, e.g. roam notepad.exe for 5 minutes.")
         adapter = args.get("adapter") if args.get("adapter") in ADAPTERS else adapter_for(target)
         memory = args.get("memory")  # None: use the app's Memory toggle
