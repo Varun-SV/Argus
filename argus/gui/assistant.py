@@ -385,6 +385,23 @@ _QUOTE_HINT = ('Put the command in quotes to separate it, e.g. roam "python tool
                "in a capsule for 5 minutes, or use /roam with --minutes and --memory/--no-memory "
                "and /env for the environment.")
 
+_CLI_COMMAND_HEAD = re.compile(
+    r"^(?:python(?:3)?|py|node|deno|bun|bash|sh|zsh|fish|pwsh|powershell|cmd|"
+    r"git|npm|npx|pnpm|yarn|pytest|cargo|go|java|dotnet)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_cli_target(target: str) -> bool:
+    """Conservatively identify multi-part command lines that need quoting."""
+    value = target.strip()
+    return (
+        adapter_for(value) == "cli"
+        or bool(_CLI_COMMAND_HEAD.search(value))
+        or bool(re.search(r"(?:^|\s)--?[A-Za-z0-9]", value))
+        or bool(re.search(r"(?:&&|\|\||[|<>])", value))
+    )
+
 
 def _merge(into: dict, found: dict) -> Optional[str]:
     for key, value in found.items():
@@ -452,34 +469,145 @@ def split_roam_request(text: str) -> Optional[RoamRequest]:
     target = _unquote(target)
     deictic = bool(_DEICTIC_TARGET.match(target))
     if not problem and not deictic:
-        if stripped and re.search(r"\s", target):
+        if stripped and re.search(r"\s", target) and _looks_like_cli_target(target):
             problem = (f'I wasn\'t sure whether "{stripped[-1]}" is part of the command '
                        f'"{target}". ' + _QUOTE_HINT)
-        elif re.search(r"\s", target) and any(p.search(target) for p in _ROAM_PHRASES):
+        elif (re.search(r"\s", target) and _looks_like_cli_target(target)
+              and any(p.search(target) for p in _ROAM_PHRASES)):
             problem = ("Part of that command reads like a run setting, so I didn't guess. " + _QUOTE_HINT)
     return RoamRequest(target, modifiers, problem)
 
 
 def run_settings_from_text(text: str) -> tuple:
-    """Execution settings a free-text run or environment request states in the user's words.
+    """Execution settings explicitly and positively requested in free text.
 
-    Returns (settings, problem). Only what the user actually wrote is returned, so the model
-    can neither override the session's pickers nor invent an environment or retention choice.
+    Negated/ambiguous environment wording is never inverted into an override. A
+    Local override is accepted only as an execution adverb ("run X locally" or
+    "locally, run X"), which avoids treating a test name containing "locally" as
+    an execution setting.
     """
     settings: dict = {}
     problem = None
-    for m in re.finditer(r"\b" + _ENVIRONMENT + r"\b", text, re.IGNORECASE):
-        problem = problem or _merge(settings, _roam_modifier(m))
+
+    negated_environment = re.search(
+        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,80}"
+        r"(?:locally|local\s+(?:host|machine)|in\s+(?:a\s+)?(?:hyper-?v\s+|libvirt\s+)?capsule)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if negated_environment:
+        return {}, (
+            "I won't infer an execution environment from a negated instruction. "
+            "Keep the session picker as-is, or choose one explicitly with /env."
+        )
+
+    local_positive = (
+        re.search(
+            r"\b(?:run|execute|test|check)\b[^.;!?]{0,120}\s+locally\s*[.!?]?\s*$",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"^\s*locally\s*[,;:]?\s*(?:please\s+)?(?:run|execute|test|check)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if local_positive:
+        settings["environment"] = "local"
+
+    # Capsule wording is sufficiently explicit to parse directly, but never after
+    # a negation (handled above).
+    for m in re.finditer(
+        r"\bin\s+(?:a\s+)?(?:(?P<cap>hyper-?v|libvirt)\s+)?capsule\b",
+        text,
+        re.IGNORECASE,
+    ):
+        found = {"environment": "capsule"}
+        if m.group("cap"):
+            found["capsule_provider"] = m.group("cap").lower().replace("-", "")
+        problem = problem or _merge(settings, found)
+
     if re.search(r"\b(?:don'?t|do\s+not|without)\s+(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?"
                  r"failure\s+capsule\b", text, re.IGNORECASE):
         settings["retain"] = False
     elif re.search(r"\b(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?failure\s+capsule\b", text, re.IGNORECASE):
         settings["retain"] = True
     if "retain" in settings and "environment" not in settings:
-        settings["environment"] = "capsule"  # a Failure Capsule only exists in a Capsule
+        settings["environment"] = "capsule"
     if problem:
         problem = "You asked for both Local and a Capsule, so I didn't run anything. Pick one, e.g. /env capsule."
     return settings, problem
+
+
+def _question_about_action(text: str) -> bool:
+    """Questions about a feature are not authorization to perform it."""
+    return bool(re.match(r"^\s*(?:what|which|why|how|when|where)\b", text, re.IGNORECASE)
+                or re.match(r"^\s*(?:do|should|would|could|can)\s+(?:i|we)\b", text, re.IGNORECASE))
+
+
+def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
+    """Return the test scope explicitly authorized by the user's own words."""
+    if _question_about_action(text):
+        return None, "I can describe the tests, but I won't execute them unless you explicitly ask me to run one."
+
+    executes = bool(
+        re.search(r"\b(?:run|execute|rerun|re-run)\b", text, re.IGNORECASE)
+        or re.search(
+            r"(?:^|\b(?:please|can\s+you|could\s+you|would\s+you|i\s+want\s+you\s+to)\s+)"
+            r"(?:test|check)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if not executes:
+        return None, "I won't execute tests unless you explicitly ask me to run, execute, test, or check them."
+
+    if re.search(r"\b(?:all\s+(?:the\s+)?tests?|every\s+test|everything|(?:whole|full)\s+suite)\b",
+                 text, re.IGNORECASE):
+        return "all", None
+
+    lowered = text.casefold()
+    chosen = []
+    for item in tests:
+        aliases = {
+            str(item.get("file") or "").casefold(),
+            _test_stem(str(item.get("file") or "")),
+            str(item.get("name") or "").casefold(),
+        }
+        aliases.discard("")
+        if any(re.search(r"(?<![\w-])" + re.escape(alias) + r"(?![\w-])", lowered)
+               for alias in sorted(aliases, key=len, reverse=True)):
+            chosen.append(str(item["file"]))
+    if not chosen:
+        return None, "Which test should I run? Name a test from the sidebar, or say 'run all tests'."
+    return list(dict.fromkeys(chosen)), None
+
+
+def _authorized_simple_action(text: str, action: str) -> bool:
+    if _question_about_action(text):
+        return False
+    patterns = {
+        "stop": r"\b(?:stop|cancel|abort)\b",
+        "save_test": r"\b(?:save|write)\b[^.!?]{0,80}\b(?:draft|test|spec|it)\b|^\s*(?:please\s+)?save\b",
+        "init": r"\b(?:init|initialize|initialise|setup|set\s+up|scaffold)\b[^.!?]{0,80}\b(?:argus|project|workspace)\b",
+        "write_test": r"\b(?:write|draft|create|make)\b[^.!?]{0,80}\b(?:test|spec)\b",
+    }
+    return bool(re.search(patterns[action], text, re.IGNORECASE))
+
+
+def _watch_action_from_text(text: str) -> Optional[str]:
+    if _question_about_action(text):
+        return None
+    if re.search(r"\b(?:stop|disable|turn\s+off)\b[^.!?]{0,40}\bwatch\b|"
+                 r"\bwatch\b[^.!?]{0,40}\b(?:stop|off)\b", text, re.IGNORECASE):
+        return "stop"
+    if re.search(r"\b(?:start|enable|turn\s+on)\b[^.!?]{0,40}\bwatch\b|"
+                 r"^\s*(?:please\s+)?watch\b|"
+                 r"\b(?:watch|monitor)\b[^.!?]{0,60}\b(?:tests?|files?|specs?|changes)\b",
+                 text, re.IGNORECASE):
+        return "start"
+    return None
 
 
 def _mentions_target(text: str, target: str, adapter: str) -> bool:
@@ -521,41 +649,53 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     if name not in INTENTS:
         return intent("chat", reply="I'm not sure what to do with that. Type /help to see what Argus can do.")
 
-    if name in ("help", "stop", "save_test", "explain", "evidence", "report", "tokens", "providers", "init"):
+    if name in ("help", "explain", "evidence", "report", "tokens", "providers"):
         return intent(name)
+
+    if name in ("stop", "save_test", "init"):
+        if _authorized_simple_action(text, name):
+            return intent(name)
+        return intent("chat", reply="I won't perform that action unless you explicitly ask for it.")
 
     if name in ("run", "dry_run"):
         wanted = args.get("tests", "all")
-        if wanted == "all" or (name == "dry_run" and wanted == "draft"):
-            chosen = wanted
-        else:
+        if wanted != "all" and not (name == "dry_run" and wanted == "draft"):
             names = [str(n) for n in (wanted if isinstance(wanted, list) else [wanted])]
             known = {t["file"] for t in tests}
-            chosen, missing = [], []
+            missing = []
             for n in names:
-                matches = [n] if n in known else resolve_tests(n, tests)
-                if matches:
-                    chosen.extend(matches)
-                else:
+                if n not in known and not resolve_tests(n, tests):
                     missing.append(n)
-            chosen = list(dict.fromkeys(chosen))
-            if missing or not chosen:
+            if missing:
                 return intent("chat", reply=(
-                    f"I couldn't find {', '.join(missing) or 'that test'} in .argus/, so I didn't "
-                    "run anything. The Tests list in the sidebar shows what's there."))
-        out = intent(name, tests=chosen)
+                    f"I couldn't find {', '.join(missing)} in .argus/, so I didn't run anything. "
+                    "The Tests list in the sidebar shows what's there."))
+
         if name == "run":
-            # Like roam: only settings the user stated, never ones the model supplies.
+            chosen, authorization_problem = _run_scope_from_text(text, tests)
+            if authorization_problem:
+                return intent("chat", reply=authorization_problem)
             settings, problem = run_settings_from_text(text)
             if problem:
                 return intent("chat", reply=problem)
+            out = intent("run", tests=chosen)
             out["args"].update(settings)
-        return out
+            return out
+
+        if wanted == "all" or wanted == "draft":
+            chosen = wanted
+        else:
+            names = [str(n) for n in (wanted if isinstance(wanted, list) else [wanted])]
+            chosen = []
+            for n in names:
+                chosen.extend([n] if n in {t["file"] for t in tests} else resolve_tests(n, tests))
+            chosen = list(dict.fromkeys(chosen))
+        return intent("dry_run", tests=chosen)
 
     if name == "roam":
         target = _unquote(str(args.get("target") or "").strip())
         last = str(context.get("last_target") or "")
-        adapter = args.get("adapter") if args.get("adapter") in ADAPTERS else adapter_for(target)
+        adapter = adapter_for(target)
         request = split_roam_request(text)
         if request is not None and request.problem:
             return intent("chat", reply=request.problem)
@@ -574,16 +714,34 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         )
 
     if name == "write_test":
+        if not _authorized_simple_action(text, "write_test"):
+            return intent("chat", reply="Tell me explicitly to write or draft a test, and what it should cover.")
         description = str(args.get("description") or text).strip()
         return intent("write_test", description=description[:2000])
 
     if name == "knowledge":
         action = args.get("action") if args.get("action") in KNOWLEDGE_ACTIONS else "show"
+        if action in ("reset", "export"):
+            verb = r"(?:reset|clear|forget)" if action == "reset" else r"export"
+            if _question_about_action(text) or not (
+                re.search(verb + r"\b[^.!?]{0,60}\bknowledge\b", text, re.IGNORECASE)
+                or re.search(r"\bknowledge\b[^.!?]{0,60}" + verb + r"\b", text, re.IGNORECASE)
+            ):
+                return intent("chat", reply=f"I won't {action} knowledge unless you explicitly ask me to.")
         return intent("knowledge", action=action, target=str(args.get("target") or "").strip())
 
     if name == "switch_provider":
         wanted = str(args.get("provider") or "").lower().strip()
         configured = [str(p).lower() for p in context.get("providers") or []]
+        named = next((p for p in configured if re.search(
+            r"(?<![\w-])" + re.escape(p) + r"(?![\w-])", text, re.IGNORECASE)), None)
+        authorized = bool(named and re.search(
+            r"\b(?:use|switch|change|select|choose)\b[^.!?]{0,80}\b(?:provider|model)?\b",
+            text,
+            re.IGNORECASE,
+        ))
+        if not authorized or named != wanted:
+            return intent("chat", reply="Name the configured provider you want me to switch to explicitly.")
         if wanted not in configured:
             return intent("chat", reply=f"'{wanted or '?'}' isn't configured in .argus/config.yaml. Configured: {', '.join(configured) or 'none'}.")
         return intent("switch_provider", provider=wanted)
@@ -606,7 +764,10 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         return intent("environment", **settings)
 
     if name == "watch":
-        return intent("watch", action="stop" if args.get("action") == "stop" else "start")
+        action = _watch_action_from_text(text)
+        if action is None:
+            return intent("chat", reply="Say 'start watch' to watch tests, or 'stop watch' to stop it.")
+        return intent("watch", action=action)
 
     return intent("chat", reply=_plain(str(args.get("reply") or "")) or "Type /help to see what Argus can do.")
 
