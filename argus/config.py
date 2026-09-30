@@ -316,8 +316,8 @@ class ArgusConfig:
         )
 
 
-def _resolve_api_key(entry: dict) -> str:
-    if os.environ.get("ARGUS_API_KEY"):
+def _resolve_api_key(entry: dict, allow_generic_env: bool = True) -> str:
+    if allow_generic_env and os.environ.get("ARGUS_API_KEY"):
         return os.environ["ARGUS_API_KEY"]
     if entry.get("api_key"):
         return str(entry["api_key"])
@@ -379,12 +379,22 @@ def load_config(
     if cfg_path.exists():
         raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
 
-    active = provider or os.environ.get("ARGUS_PROVIDER") or raw.get("provider") or "ollama"
+    env_provider = (os.environ.get("ARGUS_PROVIDER") or "").strip()
+    # ARGUS_PROVIDER is an explicit process-level pin and remains authoritative.
+    # A GUI session override may choose another configured provider only when no
+    # process pin exists. Session overrides must not inherit the generic ARGUS_*
+    # model/base-url/key values, which may belong to a different provider.
+    active = env_provider or provider or raw.get("provider") or "ollama"
+    session_override = provider is not None and not env_provider
+    allow_generic_env = not session_override
+
     providers = raw.get("providers") or {}
     entry = dict(providers.get(active) or {})
 
-    model = os.environ.get("ARGUS_MODEL") or entry.get("model") or _default_model(active)
-    base_url = os.environ.get("ARGUS_BASE_URL") or entry.get("base_url")
+    model = ((os.environ.get("ARGUS_MODEL") if allow_generic_env else None)
+             or entry.get("model") or _default_model(active))
+    base_url = ((os.environ.get("ARGUS_BASE_URL") if allow_generic_env else None)
+                or entry.get("base_url"))
 
     budgets = raw.get("budgets") or {}
     time_minutes = budgets.get("time_minutes", 10)
@@ -475,7 +485,7 @@ def load_config(
         provider=ProviderConfig(
             type=active,
             model=str(model),
-            api_key=_resolve_api_key(entry),
+            api_key=_resolve_api_key(entry, allow_generic_env=allow_generic_env),
             base_url=base_url,
         ),
         knowledge=knowledge,
