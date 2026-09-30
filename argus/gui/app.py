@@ -184,6 +184,11 @@ class ArgusAPI:
         names = [p["type"] for p in self._configured_providers(cfg)]
         if name not in names:
             return {"ok": False, "error": f"'{name}' is not configured in .argus/config.yaml"}
+        pinned = (os.environ.get("ARGUS_PROVIDER") or "").strip()
+        if pinned and name != pinned:
+            return {"ok": False, "error": (
+                f"ARGUS_PROVIDER={pinned} pins this app to {pinned}. "
+                "Unset it before switching providers in the GUI.")}
         self._session["provider"] = name
         return {"ok": True, **self.app_info()}
 
