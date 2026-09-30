@@ -91,6 +91,17 @@ def test_load_config_provider_override_leaves_file_alone(project):
     assert load_config(project).provider.type == "ollama"
 
 
+def test_gui_provider_switch_respects_argus_provider_pin(project, monkeypatch):
+    monkeypatch.setenv("ARGUS_PROVIDER", "openai")
+    monkeypatch.setenv("ARGUS_API_KEY", "openai-secret")
+    api = ArgusAPI()
+
+    refused = api.set_provider("anthropic")
+    assert refused["ok"] is False
+    assert "ARGUS_PROVIDER=openai" in refused["error"]
+    assert api.app_info()["provider"] == "openai"
+
+
 def test_capsule_overrides_are_allowlisted(project):
     cfg = load_config(project)
     with pytest.raises(ValueError):
