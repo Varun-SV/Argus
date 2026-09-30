@@ -371,7 +371,8 @@ def load_config(
 
     ``provider`` selects one of the configured ``providers:`` entries for this
     load only (the desktop app's per-session model picker); the file on disk
-    is never modified.
+    is never modified. ``ARGUS_PROVIDER`` is a process-level pin and takes
+    precedence over that session selection.
     """
     project_dir = (project_dir or Path.cwd()).resolve()
     cfg_path = project_dir / ".argus" / "config.yaml"
