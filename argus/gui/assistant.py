@@ -442,6 +442,9 @@ def split_roam_request(text: str) -> Optional[RoamRequest]:
     match = _ROAM_VERB.search(text)
     if not match:
         return None
+    if re.search(r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,40}\b(?:roam|explore)\b",
+                 text[:match.end()], re.IGNORECASE):
+        return RoamRequest("", {}, "I won't roam a target when the instruction is negated.")
     modifiers: dict = {}
     problem = None
 
@@ -491,7 +494,8 @@ def run_settings_from_text(text: str) -> tuple:
 
     negated_environment = re.search(
         r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,80}"
-        r"(?:locally|local\s+(?:host|machine)|in\s+(?:a\s+)?(?:hyper-?v\s+|libvirt\s+)?capsule)\b",
+        r"(?:locally|local(?![\w-])(?:\s+(?:host|machine))?|"
+        r"in\s+(?:a\s+)?(?:hyper-?v\s+|libvirt\s+)?capsule)\b",
         text,
         re.IGNORECASE,
     )
@@ -550,6 +554,12 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     """Return the test scope explicitly authorized by the user's own words."""
     if _question_about_action(text):
         return None, "I can describe the tests, but I won't execute them unless you explicitly ask me to run one."
+    if re.search(
+        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:run|execute|rerun|re-run|test|check)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None, "I won't execute a test when the instruction is negated."
 
     executes = bool(
         re.search(r"\b(?:run|execute|rerun|re-run)\b", text, re.IGNORECASE)
@@ -563,8 +573,12 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     if not executes:
         return None, "I won't execute tests unless you explicitly ask me to run, execute, test, or check them."
 
-    if re.search(r"\b(?:all\s+(?:the\s+)?tests?|every\s+test|everything|(?:whole|full)\s+suite)\b",
-                 text, re.IGNORECASE):
+    if re.search(
+        r"\b(?:all\s+(?:the\s+)?tests?|every\s+test|everything|(?:whole|full)\s+suite|"
+        r"(?:run|execute|rerun|re-run)\s+(?:them\s+)?all)\b",
+        text,
+        re.IGNORECASE,
+    ):
         return "all", None
 
     lowered = text.casefold()
@@ -586,6 +600,18 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
 
 def _authorized_simple_action(text: str, action: str) -> bool:
     if _question_about_action(text):
+        return False
+    action_words = {
+        "stop": r"stop|cancel|abort",
+        "save_test": r"save|write",
+        "init": r"init|initialize|initialise|setup|set\s+up|scaffold",
+        "write_test": r"write|draft|create|make",
+    }
+    if re.search(
+        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:" + action_words[action] + r")\b",
+        text,
+        re.IGNORECASE,
+    ):
         return False
     patterns = {
         "stop": r"\b(?:stop|cancel|abort)\b",
@@ -723,7 +749,12 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         action = args.get("action") if args.get("action") in KNOWLEDGE_ACTIONS else "show"
         if action in ("reset", "export"):
             verb = r"(?:reset|clear|forget)" if action == "reset" else r"export"
-            if _question_about_action(text) or not (
+            negated = re.search(
+                r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}" + verb + r"\b",
+                text,
+                re.IGNORECASE,
+            )
+            if _question_about_action(text) or negated or not (
                 re.search(verb + r"\b[^.!?]{0,60}\bknowledge\b", text, re.IGNORECASE)
                 or re.search(r"\bknowledge\b[^.!?]{0,60}" + verb + r"\b", text, re.IGNORECASE)
             ):
@@ -735,7 +766,12 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         configured = [str(p).lower() for p in context.get("providers") or []]
         named = next((p for p in configured if re.search(
             r"(?<![\w-])" + re.escape(p) + r"(?![\w-])", text, re.IGNORECASE)), None)
-        authorized = bool(named and re.search(
+        negated = re.search(
+            r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:use|switch|change|select|choose)\b",
+            text,
+            re.IGNORECASE,
+        )
+        authorized = bool(not negated and named and re.search(
             r"\b(?:use|switch|change|select|choose)\b[^.!?]{0,80}\b(?:provider|model)?\b",
             text,
             re.IGNORECASE,
