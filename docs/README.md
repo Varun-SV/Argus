@@ -72,6 +72,12 @@ Argus Fleet extends the existing Capsule boundary across physical machines. The 
 
 **Status: Fleet execution plane implemented. Fleet operations and the strictly read-only Observer are follow-on work.**
 
+### [Environment Matrix and adaptive VM test lab](environment-matrix.md)
+
+Environment Matrix is a **planned** layer that will expand one test plan across multiple immutable OS images and virtual hardware configurations, schedule disposable Capsules according to available local/Fleet capacity, and aggregate one canonical ATES Run per case.
+
+**Status: planning only. Implementation is intentionally blocked until the current PR #27 and PR #28 are merged.**
+
 ### [Release engineering](releasing.md)
 
 Argus CI now validates Windows, Linux, and macOS across x64/ARM64 where supported. Production releases build Windows portable/EXE/MSI packages, a macOS universal2 app/DMG, Linux AppImage/DEB/RPM/Arch packages, and Python distributions from the same tagged source.
