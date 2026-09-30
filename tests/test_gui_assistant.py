@@ -234,6 +234,69 @@ def test_roam_modifiers_come_from_the_user_not_the_model():
     assert again["args"]["minutes"] == 120.0
 
 
+def test_model_classification_is_not_execution_authorization():
+    # A router mistake must never turn a question into "run all".
+    got = validate_intent({"intent": "run", "args": {}}, "what tests are available?", CONTEXT)
+    assert got["intent"] == "chat"
+
+    # The user's scope wins over a model-invented broader scope.
+    got = validate_intent({"intent": "run", "args": {"tests": "all"}}, "please run checkout", CONTEXT)
+    assert got == {"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}
+
+    # Other mutating intents also require an explicit request.
+    assert validate_intent({"intent": "save_test"}, "what does saving do?", CONTEXT)["intent"] == "chat"
+    assert validate_intent({"intent": "init"}, "what is init?", CONTEXT)["intent"] == "chat"
+    assert validate_intent({"intent": "watch", "args": {"action": "start"}},
+                           "what is watch mode?", CONTEXT)["intent"] == "chat"
+    assert validate_intent({"intent": "watch", "args": {"action": "start"}},
+                           "start watch for test changes", CONTEXT)["args"]["action"] == "start"
+
+
+def test_negated_local_wording_never_creates_a_local_override():
+    got = validate_intent(
+        {"intent": "run", "args": {"tests": ["checkout"]}},
+        "don't run locally; run checkout",
+        CONTEXT,
+    )
+    assert got["intent"] == "chat"
+    assert got["args"].get("environment") != "local"
+
+    # A test name/description containing the word is not an environment setting.
+    settings, problem = assistant.run_settings_from_text("run the locally-cached checkout test")
+    assert settings == {} and problem is None
+
+
+def test_free_text_roam_adapter_comes_from_the_target_not_the_model():
+    got = validate_intent(
+        {"intent": "roam", "args": {"target": "https://host/app", "adapter": "cli"}},
+        "roam https://host/app",
+        CONTEXT,
+    )
+    assert got["intent"] == "roam"
+    assert got["args"]["adapter"] == "browser"
+
+
+def test_multi_word_desktop_targets_accept_natural_modifiers():
+    vscode = validate_intent(
+        {"intent": "roam", "args": {"target": "Visual Studio Code", "adapter": "cli"}},
+        "roam Visual Studio Code for 5 minutes",
+        CONTEXT,
+    )
+    assert vscode["intent"] == "roam"
+    assert vscode["args"]["target"] == "Visual Studio Code"
+    assert vscode["args"]["adapter"] == "desktop-gui"
+    assert vscode["args"]["minutes"] == 5.0
+
+    chrome = validate_intent(
+        {"intent": "roam", "args": {"target": "Google Chrome"}},
+        "explore Google Chrome without memory",
+        CONTEXT,
+    )
+    assert chrome["intent"] == "roam"
+    assert chrome["args"]["adapter"] == "desktop-gui"
+    assert chrome["args"]["memory"] is False
+
+
 GOOD_SPEC = """name: Search returns results
 target:
   adapter: browser
