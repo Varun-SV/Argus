@@ -252,6 +252,29 @@ def test_model_classification_is_not_execution_authorization():
                            "start watch for test changes", CONTEXT)["args"]["action"] == "start"
 
 
+def test_negated_mutating_requests_never_authorize_actions():
+    assert validate_intent(
+        {"intent": "run", "args": {"tests": ["checkout"]}}, "don't run checkout", CONTEXT
+    )["intent"] == "chat"
+    assert validate_intent(
+        {"intent": "roam", "args": {"target": "notepad.exe"}}, "don't roam notepad.exe", CONTEXT
+    )["intent"] == "chat"
+    assert validate_intent({"intent": "save_test"}, "don't save the draft", CONTEXT)["intent"] == "chat"
+    assert validate_intent(
+        {"intent": "knowledge", "args": {"action": "reset", "target": "notepad.exe"}},
+        "don't reset knowledge for notepad.exe",
+        CONTEXT,
+    )["intent"] == "chat"
+    assert validate_intent(
+        {"intent": "switch_provider", "args": {"provider": "anthropic"}},
+        "don't switch to anthropic",
+        CONTEXT,
+    )["intent"] == "chat"
+
+    all_tests = validate_intent({"intent": "run", "args": {}}, "run all", CONTEXT)
+    assert all_tests == {"intent": "run", "args": {"tests": "all"}}
+
+
 def test_negated_local_wording_never_creates_a_local_override():
     got = validate_intent(
         {"intent": "run", "args": {"tests": ["checkout"]}},
