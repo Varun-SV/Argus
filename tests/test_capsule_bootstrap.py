@@ -7,6 +7,7 @@ import pytest
 from argus.capsule.base import CapsuleError
 from argus.capsule.bootstrap import (
     create_bootstrap_attempt,
+    create_bootstrap_iso,
     load_bootstrap_manifest,
 )
 from argus.capsule.control import new_capsule_id
@@ -118,3 +119,25 @@ def test_secure_client_requires_one_tls_trust_model(tmp_path: Path) -> None:
             pinned_cert_sha256="not-a-digest",
             opener=lambda *args, **kwargs: None,
         )
+
+
+def test_bootstrap_attempt_can_be_rendered_as_removable_iso(
+    tmp_path: Path,
+) -> None:
+    attempt = create_bootstrap_attempt(
+        tmp_path / "attempts",
+        capsule_id=new_capsule_id(),
+        control_generation=1,
+        execution_mode="isolated",
+        runtime_identity=_RUNTIME_ID,
+    )
+    output = tmp_path / "bootstrap.iso"
+    try:
+        create_bootstrap_iso(attempt.root, output)
+        data = output.read_bytes()
+        assert data[16 * 2048 + 1:16 * 2048 + 6] == b"CD001"
+        assert b"ARGUS_BOOTSTRAP" in data
+        assert attempt.bootstrap_token.encode("utf-8") in data
+    finally:
+        output.unlink(missing_ok=True)
+        attempt.destroy()

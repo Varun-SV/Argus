@@ -20,6 +20,7 @@ from cryptography.x509.oid import NameOID
 from argus.capsule.base import CapsuleError
 from argus.capsule.control import CapsuleExecutionMode, validate_capsule_id
 from argus.capsule.files import validate_session_id
+from argus.capsule.iso9660 import write_root_iso
 
 
 BOOTSTRAP_SCHEMA_VERSION = "argus-bootstrap-v1"
@@ -293,3 +294,22 @@ def load_bootstrap_manifest(root: str | Path) -> CapsuleBootstrapManifest:
     if actual != manifest.tls_cert_sha256:
         raise CapsuleError("Capsule bootstrap certificate digest mismatch")
     return manifest
+
+
+def create_bootstrap_iso(
+    bootstrap_root: str | Path,
+    output: str | Path,
+) -> Path:
+    """Convert one verified attempt directory into removable control media."""
+    root = Path(bootstrap_root)
+    manifest = load_bootstrap_manifest(root)
+    return write_root_iso(
+        output,
+        volume_label="ARGUS_BOOTSTRAP",
+        files=(
+            ("BOOTSTRAP.JSON;1", root / "bootstrap.json"),
+            ("TOKEN.TXT;1", root / manifest.token_file),
+            ("CERT.PEM;1", root / manifest.tls_cert_file),
+            ("KEY.PEM;1", root / manifest.tls_key_file),
+        ),
+    )
