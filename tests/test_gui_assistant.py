@@ -190,6 +190,12 @@ def test_llm_provider_switch_must_be_configured():
     assert validate_intent({"intent": "switch_provider", "args": {"provider": "openai"}}, "use openai", CONTEXT)["intent"] == "chat"
     assert validate_intent({"intent": "switch_provider", "args": {"provider": "anthropic"}}, "use anthropic", CONTEXT) == {
         "intent": "switch_provider", "args": {"provider": "anthropic"}}
+    descriptive = validate_intent(
+        {"intent": "switch_provider", "args": {"provider": "anthropic"}},
+        "I use Anthropic for work; tell me what Argus supports",
+        CONTEXT,
+    )
+    assert descriptive["intent"] == "chat"
 
 
 def test_unknown_intent_and_non_json_become_chat():
@@ -318,6 +324,68 @@ def test_multi_word_desktop_targets_accept_natural_modifiers():
     assert chrome["intent"] == "roam"
     assert chrome["args"]["adapter"] == "desktop-gui"
     assert chrome["args"]["memory"] is False
+
+
+def test_explain_requires_explicit_failure_explanation_request():
+    informational = validate_intent({"intent": "explain"}, "what can Argus explain?", CONTEXT)
+    assert informational["intent"] == "chat"
+    unrelated = validate_intent({"intent": "explain"}, "show me the available tests", CONTEXT)
+    assert unrelated["intent"] == "chat"
+    explicit = validate_intent({"intent": "explain"}, "why did the last test fail?", CONTEXT)
+    assert explicit == {"intent": "explain", "args": {}}
+
+
+def test_environment_intent_requires_an_explicit_picker_change():
+    assert validate_intent(
+        {"intent": "environment", "args": {"environment": "local"}},
+        "what is local mode?",
+        CONTEXT,
+    )["intent"] == "chat"
+    assert validate_intent(
+        {"intent": "environment", "args": {"environment": "capsule"}},
+        "Capsule mode isolates tests",
+        CONTEXT,
+    )["intent"] == "chat"
+    assert validate_intent(
+        {"intent": "environment", "args": {"environment": "local"}},
+        "switch to local",
+        CONTEXT,
+    ) == {"intent": "environment", "args": {"environment": "local"}}
+    assert validate_intent(
+        {"intent": "environment", "args": {"environment": "local"}},
+        "use a libvirt capsule",
+        CONTEXT,
+    ) == {"intent": "environment", "args": {"environment": "capsule", "capsule_provider": "libvirt"}}
+
+
+def test_write_test_wording_cannot_save_an_existing_draft():
+    context = dict(CONTEXT, has_draft=True)
+    misclassified = validate_intent(
+        {"intent": "save_test"},
+        "write a test for login",
+        context,
+    )
+    assert misclassified["intent"] == "chat"
+    assert validate_intent({"intent": "save_test"}, "save that draft", context) == {
+        "intent": "save_test", "args": {}}
+    assert validate_intent({"intent": "save_test"}, "persist the current spec", context) == {
+        "intent": "save_test", "args": {}}
+
+
+def test_advisory_should_you_run_is_not_execution_authorization():
+    advisory = validate_intent(
+        {"intent": "run", "args": {"tests": ["checkout"]}},
+        "Should you run checkout?",
+        CONTEXT,
+    )
+    assert advisory["intent"] == "chat"
+
+    actual_request = validate_intent(
+        {"intent": "run", "args": {"tests": ["checkout"]}},
+        "Can you run checkout?",
+        CONTEXT,
+    )
+    assert actual_request == {"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}
 
 
 GOOD_SPEC = """name: Search returns results
