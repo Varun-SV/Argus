@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
 from enum import Enum
 import json
 import os
@@ -333,6 +334,18 @@ class CapsuleControlRegistry:
     def _lock_path(self, capsule_id: str) -> Path:
         return self.root / (validate_capsule_id(capsule_id) + ".lock")
 
+    def _operation_lock_path(self, capsule_id: str) -> Path:
+        return self.root / (validate_capsule_id(capsule_id) + ".operation.lock")
+
+    @contextmanager
+    def operation_lock(self, capsule_id: str) -> Iterator[None]:
+        with _file_lock(self._operation_lock_path(capsule_id)):
+            yield
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
     def _read_unlocked(self, capsule_id: str) -> CapsuleControlRecord:
         path = self._record_path(capsule_id)
         if path.is_symlink():
@@ -353,6 +366,12 @@ class CapsuleControlRegistry:
         with _file_lock(self._lock_path(record.capsule_id)):
             if path.exists() or path.is_symlink():
                 raise CapsuleError("Capsule control record already exists")
+            now = self._now()
+            record = replace(
+                record,
+                created_at=record.created_at or now,
+                updated_at=now,
+            )
             _atomic_json(path, record.to_dict())
 
     def load(self, capsule_id: str) -> CapsuleControlRecord:
@@ -373,6 +392,7 @@ class CapsuleControlRegistry:
                 current,
                 highest_reserved_generation=generation,
                 lifecycle_state=_state(lifecycle_state).value,
+                updated_at=self._now(),
             )
             _atomic_json(self._record_path(capsule_id), updated.to_dict())
             return updated, generation
@@ -399,6 +419,7 @@ class CapsuleControlRegistry:
                 last_committed_generation_known_by_host=generation,
                 lifecycle_state=_state(lifecycle_state).value,
                 effective_execution_mode=_mode(execution_mode).value,
+                updated_at=self._now(),
             )
             _atomic_json(self._record_path(capsule_id), updated.to_dict())
             return updated
@@ -414,6 +435,7 @@ class CapsuleControlRegistry:
             updated = replace(
                 current,
                 lifecycle_state=_state(lifecycle_state).value,
+                updated_at=self._now(),
             )
             _atomic_json(self._record_path(capsule_id), updated.to_dict())
             return updated
