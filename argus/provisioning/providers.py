@@ -24,6 +24,7 @@ from argus.capsule.base import CapsuleSettings
 from argus.capsule.hyperv import _ps_quote
 from argus.provisioning.baseline import validate_secure_capsule_baseline
 from argus.provisioning.build import ProvisioningCleanupError, publish_derived_image
+from argus.provisioning.build_payload import BuildPayload
 from argus.provisioning.model import EnvironmentDefinition, ProvisioningError
 from argus.provisioning.planner import (
     EnvironmentProvisioner,
@@ -33,7 +34,9 @@ from argus.provisioning.planner import (
     validate_provider_capabilities,
 )
 from argus.provisioning.windows_unattended import (
-    create_windows_11_answer_iso, windows_11_answer_xml,
+    create_windows_11_answer_iso,
+    create_windows_build_payload_iso,
+    windows_11_answer_xml,
 )
 from argus.provisioning.ubuntu_unattended import (
     UbuntuAutoinstallProfile, temporary_nocloud_seed_iso, validate_ubuntu_source_id,
@@ -112,7 +115,13 @@ class HyperVProvisioner(EnvironmentProvisioner):
             "$ErrorActionPreference='Stop'; " + script,
         ], timeout)
 
-    def _install(self, definition: EnvironmentDefinition, iso: Path, image: Path) -> None:
+    def _install(
+        self,
+        definition: EnvironmentDefinition,
+        iso: Path,
+        image: Path,
+        build_payload: BuildPayload,
+    ) -> None:
         if self._ps("(Get-VMSwitch -Name " + _ps_quote(self.switch_name) +
                     " -ErrorAction Stop).SwitchType.ToString()", 15).lower() != "internal":
             raise ProvisioningError("provisioning requires a Hyper-V Internal switch")
@@ -125,7 +134,15 @@ class HyperVProvisioner(EnvironmentProvisioner):
         owned = False
         vm_dir = image.parent / "vm"
         answer_iso = (
-            create_windows_11_answer_iso(definition, image.parent)
+            create_windows_11_answer_iso(
+                definition,
+                image.parent,
+                build_payload.runtime_manifest,
+            )
+            if definition.installation.unattended else None
+        )
+        build_payload_iso = (
+            create_windows_build_payload_iso(build_payload, image.parent)
             if definition.installation.unattended else None
         )
         try:
@@ -157,9 +174,17 @@ class HyperVProvisioner(EnvironmentProvisioner):
                 f"$installDrive=Get-VMDvdDrive -VMName {vm} | "
                 f"Where-Object {{ $_.Path -eq {_ps_quote(str(iso))} }}; "
                 "if (!$installDrive) { throw 'installer DVD is unavailable' }; "
-                + (f"Add-VMDvdDrive -VMName {vm} -Path {_ps_quote(str(answer_iso))}; "
-                   if answer_iso is not None else "") +
-                f"Set-VMFirmware -VMName {vm} -EnableSecureBoot {secure_boot} "
+                + (
+                    f"Add-VMDvdDrive -VMName {vm} -Path "
+                    f"{_ps_quote(str(answer_iso))}; "
+                    if answer_iso is not None else ""
+                )
+                + (
+                    f"Add-VMDvdDrive -VMName {vm} -Path "
+                    f"{_ps_quote(str(build_payload_iso))}; "
+                    if build_payload_iso is not None else ""
+                )
+                + f"Set-VMFirmware -VMName {vm} -EnableSecureBoot {secure_boot} "
                 "-FirstBootDevice $installDrive; "
             ) + tpm_setup + (
                 f"Add-VMNetworkAdapterExtendedAcl -VMName {vm} -Action Deny "
@@ -205,6 +230,8 @@ class HyperVProvisioner(EnvironmentProvisioner):
                     raise ProvisioningCleanupError("cannot clean up provisioning VM") from exc
         if answer_iso is not None:
             answer_iso.unlink()
+        if build_payload_iso is not None:
+            build_payload_iso.unlink()
         metadata = self._ps(
             f"$v=Get-VHD -Path {_ps_quote(str(image))} -ErrorAction Stop; "
             "\"$($v.VhdType):$($v.Size)\"", 30,
@@ -248,7 +275,11 @@ class HyperVProvisioner(EnvironmentProvisioner):
                     settings=self._baseline_settings,
                 )
         return publish_derived_image(
-            definition, plan, lambda iso, image, build_payload: self._install(definition, iso, image),
+            definition,
+            plan,
+            lambda iso, image, build_payload: self._install(
+                definition, iso, image, build_payload
+            ),
             validate_baseline=validate,
         )
 
@@ -340,10 +371,19 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         except OSError as exc:
             raise ProvisioningError("cannot grant QEMU access to private build resources") from exc
 
-    def _domain_xml(self, name: str, iso: Path, image: Path,
-                    definition: EnvironmentDefinition, fmt: str, *,
-                    kernel: Path | None = None, initrd: Path | None = None,
-                    seed: Path | None = None) -> str:
+    def _domain_xml(
+        self,
+        name: str,
+        iso: Path,
+        image: Path,
+        definition: EnvironmentDefinition,
+        fmt: str,
+        *,
+        kernel: Path | None = None,
+        initrd: Path | None = None,
+        seed: Path | None = None,
+        build_payload_iso: Path | None = None,
+    ) -> str:
         machine = definition.machine
         root = ET.Element("domain", {"type": "kvm"})
         ET.SubElement(root, "name").text = name
@@ -371,11 +411,21 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         ET.SubElement(cd, "target", {"dev": "hda", "bus": "ide"})
         ET.SubElement(cd, "readonly")
         if seed is not None:
-            answers = ET.SubElement(devices, "disk", {"type": "file", "device": "cdrom"})
+            answers = ET.SubElement(
+                devices, "disk", {"type": "file", "device": "cdrom"}
+            )
             ET.SubElement(answers, "driver", {"name": "qemu", "type": "raw"})
             ET.SubElement(answers, "source", {"file": str(seed)})
             ET.SubElement(answers, "target", {"dev": "hdb", "bus": "ide"})
             ET.SubElement(answers, "readonly")
+        if build_payload_iso is not None:
+            payload = ET.SubElement(
+                devices, "disk", {"type": "file", "device": "cdrom"}
+            )
+            ET.SubElement(payload, "driver", {"name": "qemu", "type": "raw"})
+            ET.SubElement(payload, "source", {"file": str(build_payload_iso)})
+            ET.SubElement(payload, "target", {"dev": "hdc", "bus": "ide"})
+            ET.SubElement(payload, "readonly")
         interface = ET.SubElement(devices, "interface", {"type": "network"})
         ET.SubElement(interface, "source", {"network": self.network_name})
         ET.SubElement(interface, "model", {"type": "virtio"})
@@ -385,9 +435,18 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         ET.SubElement(devices, "console", {"type": "pty"})
         return ET.tostring(root, encoding="unicode")
 
-    def _install(self, definition: EnvironmentDefinition, iso: Path,
-                 image: Path, fmt: str, *, kernel: Path | None = None,
-                 initrd: Path | None = None, seed: Path | None = None) -> None:
+    def _install(
+        self,
+        definition: EnvironmentDefinition,
+        iso: Path,
+        image: Path,
+        fmt: str,
+        *,
+        kernel: Path | None = None,
+        initrd: Path | None = None,
+        seed: Path | None = None,
+        build_payload_iso: Path | None = None,
+    ) -> None:
         self._network()
         name = "argus-provision-" + uuid4().hex[:20]
         if self._virsh("list", "--all", "--name").splitlines().count(name):
@@ -397,9 +456,20 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         if self._runner is None or self.qemu_group:
             self._grant_qemu_access(iso, image)
         xml = image.parent / "domain.xml"
-        xml.write_text(self._domain_xml(
-            name, iso, image, definition, fmt, kernel=kernel, initrd=initrd, seed=seed,
-        ), encoding="utf-8")
+        xml.write_text(
+            self._domain_xml(
+                name,
+                iso,
+                image,
+                definition,
+                fmt,
+                kernel=kernel,
+                initrd=initrd,
+                seed=seed,
+                build_payload_iso=build_payload_iso,
+            ),
+            encoding="utf-8",
+        )
         owned = False
         try:
             self._virsh("define", str(xml), timeout=60)
@@ -454,15 +524,44 @@ class LibvirtProvisioner(EnvironmentProvisioner):
             raise ProvisioningError("libvirt image format or virtual size is invalid")
 
     def _install_unattended(
-        self, definition: EnvironmentDefinition, iso: Path, image: Path,
-        fmt: str, profile: UbuntuAutoinstallProfile,
+        self,
+        definition: EnvironmentDefinition,
+        iso: Path,
+        image: Path,
+        fmt: str,
+        profile: UbuntuAutoinstallProfile,
+        build_payload: BuildPayload,
     ) -> None:
         runner = self._run if self._runner is not None else None
         validate_ubuntu_source_id(iso, profile, runner=runner)
         kernel = image.parent / "ubuntu-vmlinuz"
         initrd = image.parent / "ubuntu-initrd"
+        build_payload_iso = image.parent / "argus-build-payload.iso"
         preserve_boot = False
         try:
+            self._run(
+                (
+                    "xorriso",
+                    "-as",
+                    "mkisofs",
+                    "-quiet",
+                    "-V",
+                    "ARGUS_BUILD",
+                    "-o",
+                    str(build_payload_iso),
+                    str(build_payload.root),
+                ),
+                90,
+            )
+            payload_info = build_payload_iso.lstat()
+            if (
+                not stat.S_ISREG(payload_info.st_mode)
+                or payload_info.st_size == 0
+                or payload_info.st_nlink != 1
+            ):
+                raise ProvisioningError(
+                    "Ubuntu build payload ISO is missing or invalid"
+                )
             for source, destination in (
                 ("/casper/vmlinuz", kernel), ("/casper/initrd", initrd),
             ):
@@ -473,16 +572,27 @@ class LibvirtProvisioner(EnvironmentProvisioner):
                 info = destination.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_size == 0 or info.st_nlink != 1:
                     raise ProvisioningError("Ubuntu installer kernel or initrd is invalid")
-            gid = self._qemu_gid() if self._runner is None or self.qemu_group else None
+            gid = (
+                self._qemu_gid()
+                if self._runner is None or self.qemu_group
+                else None
+            )
             if gid is not None:
-                for path in (kernel, initrd):
+                for path in (kernel, initrd, build_payload_iso):
                     os.chown(path, -1, gid)
                     path.chmod(0o640)
             with temporary_nocloud_seed_iso(
                 profile, workspace=image.parent, qemu_gid=gid, runner=runner,
             ) as seed:
                 self._install(
-                    definition, iso, image, fmt, kernel=kernel, initrd=initrd, seed=seed,
+                    definition,
+                    iso,
+                    image,
+                    fmt,
+                    kernel=kernel,
+                    initrd=initrd,
+                    seed=seed,
+                    build_payload_iso=build_payload_iso,
                 )
         except ProvisioningCleanupError:
             preserve_boot = True
@@ -491,6 +601,7 @@ class LibvirtProvisioner(EnvironmentProvisioner):
             if not preserve_boot:
                 kernel.unlink(missing_ok=True)
                 initrd.unlink(missing_ok=True)
+                build_payload_iso.unlink(missing_ok=True)
 
     def provision(self, definition: EnvironmentDefinition,
                   plan: ProvisioningPlan) -> ProvisioningResult:
@@ -499,7 +610,7 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         validate_provider_capabilities(
             definition, self.capabilities(), output_format=plan.output_format
         )
-        profile = None
+        password_hash = None
         if definition.installation.unattended:
             ref = definition.installation.credential_ref
             if ref is None:
@@ -508,9 +619,6 @@ class LibvirtProvisioner(EnvironmentProvisioner):
                 password_hash = (self._secret_store or ArgusSecretStore()).get(ref)
             except SecretStoreError:
                 raise ProvisioningError("Ubuntu autoinstall credential cannot be resolved") from None
-            profile = UbuntuAutoinstallProfile(
-                definition=definition, password_hash=password_hash,
-            )
         else:
             _attended_only(definition)
         if platform.system().lower() != "linux" and self._runner is None:
@@ -534,9 +642,25 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         return publish_derived_image(
             definition, plan,
             lambda iso, image, build_payload: (
-                self._install_unattended(definition, iso, image, plan.output_format, profile)
-                if profile is not None else
-                self._install(definition, iso, image, plan.output_format)
+                self._install_unattended(
+                    definition,
+                    iso,
+                    image,
+                    plan.output_format,
+                    UbuntuAutoinstallProfile(
+                        definition=definition,
+                        password_hash=password_hash,
+                        runtime_manifest=build_payload.runtime_manifest,
+                    ),
+                    build_payload,
+                )
+                if password_hash is not None
+                else self._install(
+                    definition,
+                    iso,
+                    image,
+                    plan.output_format,
+                )
             ),
             validate_baseline=validate,
         )

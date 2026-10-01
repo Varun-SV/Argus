@@ -8,10 +8,17 @@ workspace and must be detached and removed before that workspace is published.
 from __future__ import annotations
 
 import os
+import stat
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Iterable
 
+from argus.provisioning.build_payload import BuildPayload
 from argus.provisioning.model import EnvironmentDefinition, ProvisioningError
+from argus.provisioning.runtime_bundle import (
+    GuestRuntimeBundleManifest,
+    verify_guest_runtime_bundle,
+)
 
 
 _UNATTEND = "urn:schemas-microsoft-com:unattend"
@@ -86,15 +93,33 @@ def _validate(definition: EnvironmentDefinition) -> str:
     return _EDITION_NAMES[installation.edition]
 
 
-def windows_11_answer_xml(definition: EnvironmentDefinition) -> bytes:
-    """Render Setup's UEFI/GPT install and audit-mode shutdown answer file.
+def _runtime_manifest(
+    definition: EnvironmentDefinition,
+    runtime_manifest: GuestRuntimeBundleManifest | None,
+) -> GuestRuntimeBundleManifest:
+    identity = definition.require_guest_runtime()
+    manifest = runtime_manifest
+    if manifest is None:
+        manifest = verify_guest_runtime_bundle(identity).manifest
+    manifest.validate_identity(identity)
+    if identity.target_os != "windows-11":
+        raise ProvisioningError(
+            "Windows build requires a Windows guest runtime bundle"
+        )
+    if not manifest.entrypoint.lower().endswith(".exe"):
+        raise ProvisioningError(
+            "Windows guest runtime entrypoint must be an executable"
+        )
+    return manifest
 
-    This profile installs Windows from a named image, keeps the VM offline,
-    creates no account or password, and shuts down before first audit logon.
-    The secure guest agent must be installed by a separate approved bootstrap
-    step before the required Capsule baseline can pass.
-    """
+
+def windows_11_answer_xml(
+    definition: EnvironmentDefinition,
+    runtime_manifest: GuestRuntimeBundleManifest | None = None,
+) -> bytes:
+    """Render unattended install, Audit-mode customization, and generalization."""
     image_name = _validate(definition)
+    runtime_manifest = _runtime_manifest(definition, runtime_manifest)
     root = ET.Element(f"{{{_UNATTEND}}}unattend")
 
     winpe = _settings(root, "windowsPE")
@@ -155,7 +180,30 @@ def windows_11_answer_xml(definition: EnvironmentDefinition) -> bytes:
     deployment = _component(oobe, "Microsoft-Windows-Deployment")
     reseal = _element(deployment, "Reseal")
     _element(reseal, "Mode", "Audit")
-    _element(reseal, "ForceShutdownNow", "true")
+    _element(reseal, "ForceShutdownNow", "false")
+
+    audit = _settings(root, "auditUser")
+    audit_deployment = _component(audit, "Microsoft-Windows-Deployment")
+    synchronous = _element(audit_deployment, "RunSynchronous")
+    install_runtime = _element(
+        synchronous, "RunSynchronousCommand", action=True
+    )
+    _element(install_runtime, "Order", "1")
+    _element(
+        install_runtime,
+        "Path",
+        (
+            "powershell.exe -NoProfile -NonInteractive "
+            "-ExecutionPolicy Bypass -Command "
+            "\"$v=(Get-Volume -FileSystemLabel 'ARGUS_BUILD' "
+            "-ErrorAction SilentlyContinue|Where-Object DriveLetter|"
+            "Select-Object -First 1).DriveLetter;"
+            "if(!$v){exit 41};& ($v+':\\INSTALL.PS1')\""
+        ),
+    )
+    generalize = _element(audit_deployment, "Generalize")
+    _element(generalize, "Mode", "OOBE")
+    _element(generalize, "ForceShutdownNow", "true")
 
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
@@ -227,7 +275,206 @@ def _single_file_iso(contents: bytes) -> bytes:
     )
 
 
-def create_windows_11_answer_iso(definition: EnvironmentDefinition, workspace: Path) -> Path:
+
+def _ps_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def windows_runtime_install_script(build_payload: BuildPayload) -> bytes:
+    """Create the secret-free Audit-mode installer for the verified runtime."""
+    identity = build_payload.runtime_identity
+    manifest = build_payload.runtime_manifest
+    manifest.validate_identity(identity)
+    if identity.target_os != "windows-11":
+        raise ProvisioningError("Windows build payload has the wrong target OS")
+    if not manifest.entrypoint.lower().endswith(".exe"):
+        raise ProvisioningError(
+            "Windows guest runtime entrypoint must be an executable"
+        )
+
+    entrypoint = manifest.entrypoint.replace("/", "\\")
+    checks = {
+        "format_version": manifest.format_version,
+        "runtime_version": manifest.runtime_version,
+        "target_os": manifest.target_os,
+        "target_architecture": manifest.target_architecture,
+        "bootstrap_schema_version": manifest.bootstrap_schema_version,
+        "bootstrap_service_policy_version": (
+            manifest.bootstrap_service_policy_version
+        ),
+        "installation_policy_version": manifest.installation_policy_version,
+        "content_sha256": manifest.content_sha256,
+        "entrypoint": manifest.entrypoint,
+    }
+    validation = []
+    for field, expected in checks.items():
+        validation.append(
+            "if([string]$m."
+            + field
+            + " -ne "
+            + _ps_literal(expected)
+            + "){throw 'Argus runtime manifest mismatch'}"
+        )
+
+    script = [
+        "$ErrorActionPreference='Stop'",
+        "$v=Get-Volume -FileSystemLabel 'ARGUS_BUILD' "
+        "-ErrorAction SilentlyContinue|Where-Object DriveLetter|"
+        "Select-Object -First 1",
+        "if($null -eq $v){throw 'Argus build media unavailable'}",
+        "$media=([string]$v.DriveLetter)+':\\'",
+        "$bundle=Join-Path $media 'ARGUSRUNTIME.ZIP'",
+        "$expected=" + _ps_literal(identity.runtime_bundle_sha256),
+        "if((Get-FileHash -LiteralPath $bundle -Algorithm SHA256).Hash."
+        "ToLowerInvariant() -ne $expected){throw 'Argus runtime digest mismatch'}",
+        "$root='C:\\ProgramData\\Argus'",
+        "$runtime=Join-Path $root 'Runtime'",
+        "if(Test-Path -LiteralPath $runtime){Remove-Item -LiteralPath "
+        "$runtime -Recurse -Force}",
+        "New-Item -ItemType Directory -Path $runtime -Force|Out-Null",
+        "Expand-Archive -LiteralPath $bundle -DestinationPath $runtime -Force",
+        "$m=Get-Content -LiteralPath (Join-Path $runtime "
+        "'argus-runtime-manifest.json') -Raw|ConvertFrom-Json",
+        *validation,
+        "$entry=Join-Path $runtime " + _ps_literal(entrypoint),
+        "if(!(Test-Path -LiteralPath $entry -PathType Leaf))"
+        "{throw 'Argus runtime entrypoint missing'}",
+        "if(Get-Service -Name 'ArgusBootstrap' -ErrorAction SilentlyContinue)"
+        "{throw 'Argus bootstrap service already exists'}",
+        "$binary='\"'+$entry+'\" --bootstrap-service'",
+        "New-Service -Name 'ArgusBootstrap' -BinaryPathName $binary "
+        "-StartupType Automatic -DisplayName 'Argus Capsule Bootstrap'|Out-Null",
+    ]
+    return ("\r\n".join(script) + "\r\n").encode("utf-8")
+
+
+def _write_root_files_iso(
+    output: Path,
+    *,
+    volume_label: bytes,
+    files: Iterable[tuple[bytes, Path | bytes]],
+) -> Path:
+    """Write a small ISO-9660 level-2 disc without external tooling."""
+    if len(volume_label) > 32:
+        raise ProvisioningError("ISO volume label is too long")
+    entries = []
+    next_extent = 24
+    for identifier, source in files:
+        if isinstance(source, Path):
+            info = source.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+                raise ProvisioningError(
+                    "Windows build payload source must be a nonempty regular file"
+                )
+            size = info.st_size
+        else:
+            size = len(source)
+        if size <= 0 or size > 0xFFFFFFFF:
+            raise ProvisioningError("Windows build payload member size is invalid")
+        sectors = (size + _SECTOR - 1) // _SECTOR
+        entries.append((identifier, source, size, next_extent, sectors))
+        next_extent += sectors
+
+    root_record = _directory_record(23, _SECTOR, b"\x00", directory=True)
+    directory_bytes = (
+        root_record
+        + _directory_record(23, _SECTOR, b"\x01", directory=True)
+        + b"".join(
+            _directory_record(extent, size, identifier, directory=False)
+            for identifier, _source, size, extent, _sectors in entries
+        )
+    )
+    if len(directory_bytes) > _SECTOR:
+        raise ProvisioningError("Windows build payload directory is too large")
+    root_directory = _sector(directory_bytes)
+    path_table_l = (
+        b"\x01\x00" + (23).to_bytes(4, "little") + b"\x01\x00\x00\x00"
+    )
+    path_table_m = (
+        b"\x01\x00" + (23).to_bytes(4, "big") + b"\x00\x01\x00\x00"
+    )
+
+    primary = bytearray(_SECTOR)
+    primary[:7] = b"\x01CD001\x01"
+    primary[8:40] = b"ARGUS".ljust(32, b" ")
+    primary[40:72] = volume_label.ljust(32, b" ")
+    primary[80:88] = _both_endian(next_extent, 4)
+    primary[120:124] = _both_endian(1, 2)
+    primary[124:128] = _both_endian(1, 2)
+    primary[128:132] = _both_endian(_SECTOR, 2)
+    primary[132:140] = _both_endian(len(path_table_l), 4)
+    primary[140:144] = (19).to_bytes(4, "little")
+    primary[148:152] = (21).to_bytes(4, "big")
+    primary[156:190] = root_record
+    primary[881] = 1
+
+    created = False
+    try:
+        with output.open("xb") as stream:
+            created = True
+            stream.write(b"\x00" * (16 * _SECTOR))
+            stream.write(primary)
+            stream.write(_sector(b"\xffCD001\x01"))
+            stream.write(bytes(_SECTOR))
+            stream.write(_sector(path_table_l))
+            stream.write(bytes(_SECTOR))
+            stream.write(_sector(path_table_m))
+            stream.write(bytes(_SECTOR))
+            stream.write(root_directory)
+            for _identifier, source, size, _extent, sectors in entries:
+                written = 0
+                if isinstance(source, Path):
+                    with source.open("rb") as src:
+                        while True:
+                            chunk = src.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            stream.write(chunk)
+                            written += len(chunk)
+                else:
+                    stream.write(source)
+                    written = len(source)
+                if written != size:
+                    raise ProvisioningError(
+                        "Windows build payload source changed while creating ISO"
+                    )
+                stream.write(b"\x00" * (sectors * _SECTOR - size))
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        if created:
+            output.unlink(missing_ok=True)
+        raise
+    return output
+
+
+def create_windows_build_payload_iso(
+    build_payload: BuildPayload,
+    workspace: Path,
+) -> Path:
+    """Create removable, read-only build media carrying the verified runtime."""
+    workspace = Path(workspace)
+    if not workspace.is_dir() or workspace.is_symlink():
+        raise ProvisioningError(
+            "Windows build payload workspace must be a private directory"
+        )
+    script = windows_runtime_install_script(build_payload)
+    output = workspace / "windows-build-payload.iso"
+    return _write_root_files_iso(
+        output,
+        volume_label=b"ARGUS_BUILD",
+        files=(
+            (b"ARGUSRUNTIME.ZIP;1", build_payload.runtime_bundle_path),
+            (b"ARGUSBUILD.JSON;1", build_payload.manifest_path),
+            (b"INSTALL.PS1;1", script),
+        ),
+    )
+
+def create_windows_11_answer_iso(
+    definition: EnvironmentDefinition,
+    workspace: Path,
+    runtime_manifest: GuestRuntimeBundleManifest | None = None,
+) -> Path:
     """Create private answer media for a second Hyper-V DVD attachment.
 
     The caller must detach the DVD and unlink this ISO in ``finally`` before
@@ -236,7 +483,9 @@ def create_windows_11_answer_iso(definition: EnvironmentDefinition, workspace: P
     workspace = Path(workspace)
     if not workspace.is_dir() or workspace.is_symlink():
         raise ProvisioningError("Windows 11 answer workspace must be a private directory")
-    data = _single_file_iso(windows_11_answer_xml(definition))
+    data = _single_file_iso(
+        windows_11_answer_xml(definition, runtime_manifest)
+    )
     answer_iso = workspace / "windows-answer.iso"
     created = False
     try:

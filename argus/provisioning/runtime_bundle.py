@@ -310,7 +310,10 @@ def create_guest_runtime_bundle(
                     name, date_time=(1980, 1, 1, 0, 0, 0)
                 )
                 zip_info.compress_type = zipfile.ZIP_DEFLATED
-                zip_info.external_attr = 0o100644 << 16
+                zip_info.external_attr = (
+                    (0o100755 if name == normalized_entrypoint else 0o100644)
+                    << 16
+                )
                 digest = sha256()
                 size = 0
                 with source.open("rb") as src, archive.open(

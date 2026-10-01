@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import base64
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -23,6 +25,7 @@ import yaml
 
 from argus.provisioning.model import EnvironmentDefinition, ProvisioningError
 from argus.provisioning.build import ProvisioningCleanupError
+from argus.provisioning.runtime_bundle import GuestRuntimeBundleManifest
 
 
 _RELEASE_RE = re.compile(r"^(\d{2})\.(04|10)(?:\.(\d+))?$")
@@ -63,6 +66,9 @@ class UbuntuAutoinstallProfile:
     definition: EnvironmentDefinition = field(repr=False)
     password_hash: str = field(repr=False)
     username: str = "argus"
+    runtime_manifest: GuestRuntimeBundleManifest | None = field(
+        default=None, repr=False
+    )
 
     def __post_init__(self) -> None:
         installation = self.definition.installation
@@ -124,6 +130,13 @@ class UbuntuAutoinstallProfile:
                 raise ProvisioningError("Ubuntu autoinstall package name is unsupported")
         _ubuntu_locale(installation.locale)
         _ubuntu_timezone(installation.timezone)
+        if self.runtime_manifest is not None:
+            identity = self.definition.require_guest_runtime()
+            self.runtime_manifest.validate_identity(identity)
+            if identity.target_os != "ubuntu":
+                raise ProvisioningError(
+                    "Ubuntu build requires an Ubuntu guest runtime bundle"
+                )
 
     @property
     def hostname(self) -> str:
@@ -140,6 +153,78 @@ class UbuntuAutoinstallProfile:
     def source_id(self) -> str:
         """Pin the OS payload; validate it against the staged ISO before boot."""
         return "ubuntu-desktop" if self.definition.installation.target_flavor == "desktop" else "ubuntu-server"
+
+    def runtime_late_commands(self) -> list[str]:
+        """Install the pinned runtime and generalize clone-sensitive state."""
+        if self.runtime_manifest is None:
+            return []
+        identity = self.definition.require_guest_runtime()
+        manifest = self.runtime_manifest
+        manifest.validate_identity(identity)
+        entrypoint = "/opt/argus/runtime/" + manifest.entrypoint
+        service = (
+            "[Unit]\n"
+            "Description=Argus Capsule Bootstrap\n"
+            "After=local-fs.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            "ExecStart=" + entrypoint + " --bootstrap-service\n"
+            "Restart=on-failure\n"
+            "RestartSec=5\n"
+            "NoNewPrivileges=true\n\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+        )
+        service_b64 = base64.b64encode(service.encode("utf-8")).decode("ascii")
+        bundle = "/mnt/argus-build/runtime-bundle.zip"
+        target_bundle = "/target/tmp/argus-runtime.zip"
+        target_entry = "/target" + entrypoint
+        return [
+            "mkdir -p /mnt/argus-build",
+            "mount -o ro /dev/disk/by-label/ARGUS_BUILD /mnt/argus-build",
+            (
+                "printf '%s  %s\\n' "
+                + shlex.quote(identity.runtime_bundle_sha256)
+                + " "
+                + shlex.quote(bundle)
+                + " | sha256sum -c -"
+            ),
+            "mkdir -p /target/opt/argus/runtime",
+            "cp " + shlex.quote(bundle) + " " + shlex.quote(target_bundle),
+            (
+                "curtin in-target --target=/target -- python3 -m zipfile -e "
+                "/tmp/argus-runtime.zip /opt/argus/runtime"
+            ),
+            "chmod 0755 " + shlex.quote(target_entry),
+            (
+                "printf '%s' "
+                + shlex.quote(service_b64)
+                + " | base64 -d > "
+                "/target/etc/systemd/system/argus-bootstrap.service"
+            ),
+            (
+                "curtin in-target --target=/target -- "
+                "systemctl enable argus-bootstrap.service"
+            ),
+            (
+                "curtin in-target --target=/target -- "
+                "passwd --lock " + shlex.quote(self.username)
+            ),
+            (
+                "curtin in-target --target=/target -- /bin/sh -c "
+                + shlex.quote(
+                    "gpasswd -d " + self.username
+                    + " sudo >/dev/null 2>&1 || true"
+                )
+            ),
+            "rm -rf /target/var/lib/cloud/instance "
+            "/target/var/lib/cloud/instances/* "
+            "/target/var/lib/cloud/seed/nocloud*",
+            "rm -f /target/etc/machine-id /target/var/lib/dbus/machine-id",
+            ": > /target/etc/machine-id",
+            "rm -f " + shlex.quote(target_bundle),
+            "umount /mnt/argus-build",
+        ]
 
     def autoinstall_config(self) -> dict[str, object]:
         """Return a fresh mapping suitable for the NoCloud user-data file."""
@@ -166,6 +251,9 @@ class UbuntuAutoinstallProfile:
         }
         if installation.packages:
             config["packages"] = list(installation.packages)
+        late_commands = self.runtime_late_commands()
+        if late_commands:
+            config["late-commands"] = late_commands
         return config
 
     def user_data(self) -> str:

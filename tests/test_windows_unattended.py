@@ -93,7 +93,22 @@ def test_answer_selects_edition_and_installs_to_uefi_disk(tmp_path: Path) -> Non
     shutdown = root.find("a:settings[@pass='oobeSystem']/a:component[@name='Microsoft-Windows-Deployment']/a:Reseal", _NS)
     assert shutdown is not None
     assert shutdown.findtext("a:Mode", namespaces=_NS) == "Audit"
-    assert shutdown.findtext("a:ForceShutdownNow", namespaces=_NS) == "true"
+    assert shutdown.findtext("a:ForceShutdownNow", namespaces=_NS) == "false"
+    audit = root.find(
+        "a:settings[@pass='auditUser']/a:component"
+        "[@name='Microsoft-Windows-Deployment']",
+        _NS,
+    )
+    assert audit is not None
+    command = audit.findtext(
+        "a:RunSynchronous/a:RunSynchronousCommand/a:Path",
+        namespaces=_NS,
+    )
+    assert command is not None and "ARGUS_BUILD" in command
+    generalize = audit.find("a:Generalize", _NS)
+    assert generalize is not None
+    assert generalize.findtext("a:Mode", namespaces=_NS) == "OOBE"
+    assert generalize.findtext("a:ForceShutdownNow", namespaces=_NS) == "true"
 
 
 def test_answer_iso_has_root_autounattend_xml(tmp_path: Path) -> None:
@@ -148,9 +163,15 @@ def test_hyperv_builder_attaches_and_discards_private_answer_media(
     )
     result = provider.provision(definition, plan)
     assert result.manifest.evidence_run_id is not None
-    assert any("Add-VMDvdDrive" in script and "windows-answer.iso" in script
-               and "-FirstBootDevice $installDrive" in script for script in scripts)
+    assert any(
+        "Add-VMDvdDrive" in script
+        and "windows-answer.iso" in script
+        and "windows-build-payload.iso" in script
+        and "-FirstBootDevice $installDrive" in script
+        for script in scripts
+    )
     assert not (plan.cache_dir / "windows-answer.iso").exists()
+    assert not (plan.cache_dir / "windows-build-payload.iso").exists()
 
 
 @pytest.mark.skipif(os.name != "nt" or not shutil.which("tar"),

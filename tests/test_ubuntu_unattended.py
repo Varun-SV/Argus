@@ -134,17 +134,27 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
     store.set(ref, _HASH)
     commands: list[tuple[str, ...]] = []
     domain_xml: list[str] = []
+    user_data_seen: list[str] = []
 
     def run(argv, _timeout):
         command = tuple(argv)
         commands.append(command)
         if command[0] == "xorriso":
-            destination = Path(command[-1])
-            if command[-2] == "/casper/install-sources.yaml":
-                destination.write_text("- id: ubuntu-desktop\n  variant: desktop\n")
+            if len(command) > 2 and command[1:3] == ("-as", "mkisofs"):
+                destination = Path(command[command.index("-o") + 1])
+                destination.write_bytes(b"ARGUS_BUILD synthetic ISO")
             else:
-                destination.write_bytes(b"verified boot input")
+                destination = Path(command[-1])
+                if command[-2] == "/casper/install-sources.yaml":
+                    destination.write_text(
+                        "- id: ubuntu-desktop\n  variant: desktop\n"
+                    )
+                else:
+                    destination.write_bytes(b"verified boot input")
         elif command[0] == "cloud-localds":
+            user_data_seen.append(
+                Path(command[4]).read_text(encoding="utf-8")
+            )
             Path(command[3]).write_bytes(b"private NoCloud fixture")
         elif command[:2] == ("qemu-img", "create"):
             Path(command[-2]).write_bytes(b"installed Ubuntu fixture")
@@ -172,10 +182,19 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
     assert domain_xml and "<kernel>" in domain_xml[0] and "<initrd>" in domain_xml[0]
     assert "<cmdline>autoinstall</cmdline>" in domain_xml[0]
     assert "seed.iso" in domain_xml[0]
+    assert "argus-build-payload.iso" in domain_xml[0]
+    assert user_data_seen
+    assert (
+        definition.require_guest_runtime().runtime_bundle_sha256
+        in user_data_seen[0]
+    )
+    assert "argus-bootstrap.service" in user_data_seen[0]
+    assert "/target/etc/machine-id" in user_data_seen[0]
     assert any(command[:2] == ("virsh", "-c") and "undefine" in command
                for command in commands)
     assert not list(plan.cache_dir.glob("argus-nocloud-*"))
     assert not (plan.cache_dir / "ubuntu-vmlinuz").exists()
+    assert not (plan.cache_dir / "argus-build-payload.iso").exists()
     assert _HASH.encode() not in (plan.cache_dir / "manifest.json").read_bytes()
 
 
