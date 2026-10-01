@@ -620,7 +620,7 @@ def _authorized_simple_action(text: str, action: str) -> bool:
         "stop": r"\b(?:stop|cancel|abort)\b",
         "save_test": (
             r"^\s*(?:please\s+)?(?:save|persist)\s*[.!]?\s*$|"
-            r"\b(?:save|persist)\b\s+(?:(?:this|that|the|current)\s+)?"
+            r"\b(?:save|persist)\b\s+(?:(?:this|that)\s+|(?:the\s+)?current\s+|the\s+)?"
             r"(?:draft|test|spec|it)\b"
         ),
         "init": r"\b(?:init|initialize|initialise|setup|set\s+up|scaffold)\b[^.!?]{0,80}\b(?:argus|project|workspace)\b",
