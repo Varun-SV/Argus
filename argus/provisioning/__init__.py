@@ -1,5 +1,9 @@
 """OS installation-media provisioning primitives for Argus."""
 
+from argus.provisioning.build import (
+    ProvisioningCleanupError,
+    ProvisioningCleanupState,
+)
 from argus.provisioning.build_payload import BuildPayload, create_build_payload
 from argus.provisioning.capsule_bridge import capsule_settings_from_derived_image
 from argus.provisioning.evidence import AtesProvisioningRecorder, verify_provisioning_evidence
@@ -50,6 +54,8 @@ __all__ = [
     "HyperVProvisioner",
     "LibvirtProvisioner",
     "MachineSpec",
+    "ProvisioningCleanupError",
+    "ProvisioningCleanupState",
     "ProvisioningError",
     "ProvisioningPlan",
     "ProvisioningProviderCapabilities",

@@ -20,6 +20,8 @@ from argus.provisioning import (
     InstallationMediaSource,
     InstallationSpec,
     MachineSpec,
+    ProvisioningCleanupError,
+    ProvisioningCleanupState,
     ProvisioningError,
     ProvisioningProviderCapabilities,
     build_provisioning_plan,
@@ -135,6 +137,16 @@ def _runtime_definition(tmp_path: Path, provider: str = "hyperv") -> Environment
         machine=machine,
         installation=InstallationSpec(unattended=False, update_policy="manual"),
     )
+
+
+def test_cleanup_outcomes_are_explicit_and_uncertainty_is_typed() -> None:
+    assert {state.value for state in ProvisioningCleanupState} == {
+        "NOTHING_CREATED",
+        "CONFIRMED",
+        "UNCERTAIN",
+    }
+    error = ProvisioningCleanupError("provider ownership uncertain")
+    assert error.cleanup_state is ProvisioningCleanupState.UNCERTAIN
 
 
 def test_guest_runtime_identity_changes_environment_identity(

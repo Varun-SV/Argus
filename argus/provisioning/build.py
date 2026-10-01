@@ -15,6 +15,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
+from enum import Enum
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Iterator
@@ -29,8 +30,18 @@ from argus.provisioning.model import DerivedImageManifest, EnvironmentDefinition
 from argus.provisioning.planner import ProvisioningPlan, ProvisioningResult
 
 
+class ProvisioningCleanupState(str, Enum):
+    """Security-relevant cleanup outcome for one provisioning attempt."""
+
+    NOTHING_CREATED = "NOTHING_CREATED"
+    CONFIRMED = "CONFIRMED"
+    UNCERTAIN = "UNCERTAIN"
+
+
 class ProvisioningCleanupError(ProvisioningError):
-    """A provider could not prove its temporary VM was removed."""
+    """A provider could not prove its temporary resources were removed."""
+
+    cleanup_state = ProvisioningCleanupState.UNCERTAIN
 
 
 def _evidence_root(plan: ProvisioningPlan) -> Path:
@@ -151,6 +162,8 @@ def publish_derived_image(
         workspace = Path(tempfile.mkdtemp(prefix=".building-", dir=plan.cache_dir.parent))
         preserve_workspace = False
         published_here = False
+        cleanup_state = ProvisioningCleanupState.NOTHING_CREATED
+        installation_attempted = False
         recorder: AtesProvisioningRecorder | None = None
         try:
             recorder = AtesProvisioningRecorder(_evidence_root(plan), definition, plan)
@@ -165,7 +178,20 @@ def publish_derived_image(
             recorder.begin_stage("provider_selected")
             recorder.complete_stage("provider_selected")
             recorder.begin_stage("installation")
-            install(staged_iso, image, build_payload)
+            installation_attempted = True
+            try:
+                install(staged_iso, image, build_payload)
+            except ProvisioningCleanupError:
+                cleanup_state = ProvisioningCleanupState.UNCERTAIN
+                raise
+            except BaseException:
+                # Provider callbacks must clean owned resources in finally.
+                # If cleanup cannot be proven, they raise
+                # ProvisioningCleanupError instead.
+                cleanup_state = ProvisioningCleanupState.CONFIRMED
+                raise
+            else:
+                cleanup_state = ProvisioningCleanupState.CONFIRMED
             if not image.is_file() or image.is_symlink():
                 raise ProvisioningError("installer did not produce a regular base image")
             recorder.complete_stage("installation")
@@ -217,6 +243,7 @@ def publish_derived_image(
             )
             return ProvisioningResult(plan, manifest)
         except ProvisioningCleanupError as exc:
+            cleanup_state = ProvisioningCleanupState.UNCERTAIN
             preserve_workspace = True
             if recorder is not None:
                 try:
@@ -227,6 +254,8 @@ def publish_derived_image(
                 f"provisioning VM cleanup is uncertain; private workspace retained at {workspace}"
             ) from exc
         except BaseException:
+            if not installation_attempted:
+                cleanup_state = ProvisioningCleanupState.NOTHING_CREATED
             if published_here:
                 _remove_private_dir(plan.cache_dir)
             if recorder is not None:
@@ -238,5 +267,9 @@ def publish_derived_image(
         finally:
             if recorder is not None:
                 recorder.close()
-            if not preserve_workspace and workspace.exists():
+            if (
+                cleanup_state is not ProvisioningCleanupState.UNCERTAIN
+                and not preserve_workspace
+                and workspace.exists()
+            ):
                 _remove_private_dir(workspace)
