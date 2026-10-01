@@ -16,11 +16,13 @@ import pytest
 
 from argus.provisioning.model import (
     EnvironmentDefinition,
+    GuestRuntimeIdentity,
     InstallationMediaSource,
     InstallationSpec,
     MachineSpec,
     ProvisioningError,
 )
+from argus.provisioning import create_guest_runtime_bundle
 from argus.provisioning.windows_unattended import (
     create_windows_11_answer_iso,
     windows_11_answer_xml,
@@ -31,6 +33,29 @@ from argus.provisioning.providers import HyperVProvisioner
 
 _NS = {"a": "urn:schemas-microsoft-com:unattend"}
 _SECTOR = 2048
+
+
+def _guest_runtime(tmp_path: Path) -> GuestRuntimeIdentity:
+    payload = tmp_path / "windows-runtime"
+    entrypoint = payload / "bin" / "argus-guest-agent.exe"
+    entrypoint.parent.mkdir(parents=True, exist_ok=True)
+    entrypoint.write_bytes(b"argus guest runtime")
+    bundle = tmp_path / "argus-runtime-windows.zip"
+    if not bundle.exists():
+        create_guest_runtime_bundle(
+            payload,
+            bundle,
+            runtime_version="0.1.0-dev.0",
+            target_os="windows-11",
+            target_architecture="x86_64",
+            entrypoint="bin/argus-guest-agent.exe",
+        )
+    return GuestRuntimeIdentity(
+        bundle_path=str(bundle),
+        runtime_bundle_sha256=sha256(bundle.read_bytes()).hexdigest(),
+        runtime_version="0.1.0-dev.0",
+        target_os="windows-11",
+    )
 
 
 def _definition(tmp_path: Path) -> EnvironmentDefinition:
@@ -50,6 +75,7 @@ def _definition(tmp_path: Path) -> EnvironmentDefinition:
             unattended=True, edition="professional", update_policy="frozen",
             target_os="windows-11", target_release="24H2",
         ),
+        guest_runtime=_guest_runtime(tmp_path),
     )
 
 

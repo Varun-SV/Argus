@@ -12,6 +12,7 @@ import yaml
 
 from argus.provisioning.model import (
     EnvironmentDefinition,
+    GuestRuntimeIdentity,
     InstallationMediaSource,
     InstallationSpec,
     MachineSpec,
@@ -22,12 +23,36 @@ from argus.provisioning.ubuntu_unattended import (
     temporary_nocloud_seed_iso,
     validate_ubuntu_source_id,
 )
+from argus.provisioning import create_guest_runtime_bundle
 from argus.provisioning.planner import build_provisioning_plan
 from argus.provisioning.providers import LibvirtProvisioner
 from argus.secrets import ArgusSecretStore
 
 
 _HASH = "$6$rounds=5000$somesalt$" + "a" * 86
+
+
+def _guest_runtime(tmp_path: Path) -> GuestRuntimeIdentity:
+    payload = tmp_path / "ubuntu-runtime"
+    entrypoint = payload / "bin" / "argus-guest-agent"
+    entrypoint.parent.mkdir(parents=True, exist_ok=True)
+    entrypoint.write_bytes(b"argus guest runtime")
+    bundle = tmp_path / "argus-runtime-ubuntu.zip"
+    if not bundle.exists():
+        create_guest_runtime_bundle(
+            payload,
+            bundle,
+            runtime_version="0.1.0-dev.0",
+            target_os="ubuntu",
+            target_architecture="x86_64",
+            entrypoint="bin/argus-guest-agent",
+        )
+    return GuestRuntimeIdentity(
+        bundle_path=str(bundle),
+        runtime_bundle_sha256=sha256(bundle.read_bytes()).hexdigest(),
+        runtime_version="0.1.0-dev.0",
+        target_os="ubuntu",
+    )
 
 
 def _definition() -> EnvironmentDefinition:
@@ -97,8 +122,13 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
     ref = "secret://argus/ubuntu/bootstrap"
     definition = replace(
         base,
-        source=replace(base.source, path=str(iso), sha256=sha256(iso.read_bytes()).hexdigest()),
+        source=replace(
+            base.source,
+            path=str(iso),
+            sha256=sha256(iso.read_bytes()).hexdigest(),
+        ),
         installation=replace(base.installation, credential_ref=ref),
+        guest_runtime=_guest_runtime(tmp_path),
     )
     store = ArgusSecretStore(tmp_path / "secrets")
     store.set(ref, _HASH)
