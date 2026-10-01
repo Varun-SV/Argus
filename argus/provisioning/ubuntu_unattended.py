@@ -168,7 +168,10 @@ class UbuntuAutoinstallProfile:
             "After=local-fs.target\n\n"
             "[Service]\n"
             "Type=simple\n"
-            "ExecStart=" + entrypoint + " --bootstrap-service\n"
+            "ExecStart=" + entrypoint
+            + " --bootstrap-service "
+            + "--runtime-identity-file /etc/argus/runtime-identity.json "
+            + "--control-state-file /var/lib/argus/control-state.json\n"
             "Restart=on-failure\n"
             "RestartSec=5\n"
             "NoNewPrivileges=true\n\n"
@@ -189,8 +192,13 @@ class UbuntuAutoinstallProfile:
                 + shlex.quote(bundle)
                 + " | sha256sum -c -"
             ),
-            "mkdir -p /target/opt/argus/runtime",
+            "mkdir -p /target/opt/argus/runtime /target/etc/argus "
+            "/target/var/lib/argus",
             "cp " + shlex.quote(bundle) + " " + shlex.quote(target_bundle),
+            "cp /mnt/argus-build/build-payload.json "
+            "/target/etc/argus/runtime-identity.json",
+            "chmod 0644 /target/etc/argus/runtime-identity.json",
+            "chmod 0700 /target/var/lib/argus",
             (
                 "curtin in-target --target=/target -- python3 -m zipfile -e "
                 "/tmp/argus-runtime.zip /opt/argus/runtime"

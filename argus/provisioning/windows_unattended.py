@@ -329,10 +329,13 @@ def windows_runtime_install_script(build_payload: BuildPayload) -> bytes:
         "ToLowerInvariant() -ne $expected){throw 'Argus runtime digest mismatch'}",
         "$root='C:\\ProgramData\\Argus'",
         "$runtime=Join-Path $root 'Runtime'",
+        "$runtimeIdentity=Join-Path $root 'runtime-identity.json'",
         "if(Test-Path -LiteralPath $runtime){Remove-Item -LiteralPath "
         "$runtime -Recurse -Force}",
         "New-Item -ItemType Directory -Path $runtime -Force|Out-Null",
         "Expand-Archive -LiteralPath $bundle -DestinationPath $runtime -Force",
+        "Copy-Item -LiteralPath (Join-Path $media 'ARGUSBUILD.JSON') "
+        "-Destination $runtimeIdentity -Force",
         "$m=Get-Content -LiteralPath (Join-Path $runtime "
         "'argus-runtime-manifest.json') -Raw|ConvertFrom-Json",
         *validation,
@@ -341,7 +344,9 @@ def windows_runtime_install_script(build_payload: BuildPayload) -> bytes:
         "{throw 'Argus runtime entrypoint missing'}",
         "if(Get-Service -Name 'ArgusBootstrap' -ErrorAction SilentlyContinue)"
         "{throw 'Argus bootstrap service already exists'}",
-        "$binary='\"'+$entry+'\" --bootstrap-service'",
+        "$binary='\"'+$entry+'\" --bootstrap-service "
+        "--runtime-identity-file \"'+$runtimeIdentity+'\" "
+        "--control-state-file \"'+(Join-Path $root 'control-state.json')+'\"'",
         "New-Service -Name 'ArgusBootstrap' -BinaryPathName $binary "
         "-StartupType Automatic -DisplayName 'Argus Capsule Bootstrap'|Out-Null",
     ]

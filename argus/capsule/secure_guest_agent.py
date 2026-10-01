@@ -29,6 +29,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from argus.adapters.base import AdapterError
+from argus.capsule.bootstrap_service import prepare_bootstrap_service
 from argus.capsule.control import GuestControlStateStore, validate_capsule_id
 from argus.capsule.files import validate_session_id
 from argus.capsule.guest_agent import (
@@ -137,6 +138,62 @@ def _assert_powershell_direct_disabled() -> None:
             "cannot attest Hyper-V PowerShell Direct service policy (vmicvmsession)"
         ) from exc
     _require_disabled_service_start("vmicvmsession", int(start_value))
+
+
+def _ensure_windows_target_user(
+    state_store: GuestControlStateStore,
+    *,
+    runner=None,
+) -> None:
+    """Create/finalize the non-admin target user on first Capsule bootstrap."""
+    if platform.system().lower() != "windows":
+        return
+    if state_store.load().capsule_id:
+        return
+    run = runner
+    if run is None:
+        def run(script: str) -> None:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=flags,
+                check=False,
+            )
+            if result.returncode:
+                raise AdapterError(
+                    "Windows target-user initialization failed"
+                )
+
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$name='argus-target';"
+        "$u=Get-LocalUser -Name $name -ErrorAction SilentlyContinue;"
+        "if(-not $u){"
+        "$plain=([guid]::NewGuid().ToString('N')+[guid]::NewGuid().ToString('N'));"
+        "$pw=ConvertTo-SecureString $plain -AsPlainText -Force;"
+        "New-LocalUser -Name $name -Password $pw -AccountNeverExpires "
+        "-PasswordNeverExpires -UserMayNotChangePassword|Out-Null;"
+        "};"
+        "Add-LocalGroupMember -Group 'Users' -Member $name "
+        "-ErrorAction SilentlyContinue;"
+        "Remove-LocalGroupMember -Group 'Administrators' -Member $name "
+        "-ErrorAction SilentlyContinue;"
+        "$admin=Get-LocalGroupMember -Group 'Administrators' "
+        "-ErrorAction Stop|Where-Object Name -Match ('\\\\'+$name+'$');"
+        "if($admin){throw 'Argus target user remains administrator'}"
+    )
+    run(script)
 
 
 class SecureGuestAgentServer(GuestAgentServer):
@@ -294,7 +351,30 @@ def main(argv=None) -> None:
     parser.add_argument("--tls-cert", default="")
     parser.add_argument("--tls-key", default="")
     parser.add_argument("--allow-insecure-http", action="store_true")
+    parser.add_argument("--bootstrap-service", action="store_true")
+    parser.add_argument("--bootstrap-root", default="")
+    parser.add_argument("--runtime-identity-file", default="")
+    parser.add_argument("--control-state-file", default="")
     args = parser.parse_args(argv)
+
+    prepared_bootstrap = None
+    if args.bootstrap_service:
+        try:
+            prepared_bootstrap = prepare_bootstrap_service(
+                bootstrap_root=args.bootstrap_root or None,
+                runtime_identity_file=args.runtime_identity_file or None,
+                control_state_file=args.control_state_file or None,
+            )
+            _ensure_windows_target_user(
+                prepared_bootstrap.control_state_store
+            )
+        except (CapsuleError, AdapterError) as exc:
+            parser.error(str(exc))
+        args.host = "0.0.0.0"
+        args.token_file = str(prepared_bootstrap.token_path)
+        args.token_env = ""
+        args.tls_cert = str(prepared_bootstrap.tls_cert_path)
+        args.tls_key = str(prepared_bootstrap.tls_key_path)
 
     if not (1 <= args.port <= 65535):
         parser.error("port must be between 1 and 65535")
@@ -328,7 +408,30 @@ def main(argv=None) -> None:
             "or explicitly opt into --allow-insecure-http for legacy development"
         )
 
-    server = SecureGuestAgentServer((args.host, args.port), token)
+    server = SecureGuestAgentServer(
+        (args.host, args.port),
+        token,
+        capsule_id=(
+            prepared_bootstrap.manifest.capsule_id
+            if prepared_bootstrap is not None else ""
+        ),
+        control_generation=(
+            prepared_bootstrap.manifest.control_generation
+            if prepared_bootstrap is not None else 0
+        ),
+        execution_mode=(
+            prepared_bootstrap.manifest.execution_mode
+            if prepared_bootstrap is not None else ""
+        ),
+        runtime_identity=(
+            prepared_bootstrap.manifest.runtime_identity
+            if prepared_bootstrap is not None else ""
+        ),
+        control_state_store=(
+            prepared_bootstrap.control_state_store
+            if prepared_bootstrap is not None else None
+        ),
+    )
     if has_cert:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         try:
@@ -338,6 +441,8 @@ def main(argv=None) -> None:
             server.server_close()
             parser.error(f"cannot initialize Capsule TLS identity: {exc}")
         server.socket = context.wrap_socket(server.socket, server_side=True)
+        if prepared_bootstrap is not None:
+            prepared_bootstrap.cleanup_public_staging()
 
     try:
         server.serve_forever(poll_interval=0.25)
@@ -348,6 +453,8 @@ def main(argv=None) -> None:
             server.state.close()
         finally:
             server.server_close()
+            if prepared_bootstrap is not None:
+                prepared_bootstrap.cleanup_all_staging()
 
 
 if __name__ == "__main__":

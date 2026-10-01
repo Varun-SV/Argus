@@ -72,6 +72,7 @@ def create_build_payload(
             "schema_version": BUILD_PAYLOAD_SCHEMA_VERSION,
             "environment_id": definition.environment_id,
             "guest_runtime": identity.identity_dict(),
+            "runtime_identity": identity.runtime_identity,
             "runtime_bundle_file": runtime_bundle.name,
             "runtime_content_sha256": verified.manifest.content_sha256,
         }

@@ -182,6 +182,10 @@ def test_build_payload_stages_exact_runtime_without_secrets(
     assert definition.environment_id in text
     assert "secret://" not in text
     assert "windows-lab" not in text
+    assert (
+        definition.require_guest_runtime().runtime_identity
+        in text
+    )
 
 
 def test_guest_runtime_bundle_tampering_fails_closed(
