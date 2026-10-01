@@ -190,6 +190,8 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
     )
     assert "argus-bootstrap.service" in user_data_seen[0]
     assert "/target/etc/machine-id" in user_data_seen[0]
+    assert "usermod --password '!'" in user_data_seen[0]
+    assert "passwd --lock" not in user_data_seen[0]
     assert any(command[:2] == ("virsh", "-c") and "undefine" in command
                for command in commands)
     assert not list(plan.cache_dir.glob("argus-nocloud-*"))

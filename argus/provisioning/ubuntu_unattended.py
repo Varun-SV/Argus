@@ -216,7 +216,7 @@ class UbuntuAutoinstallProfile:
             ),
             (
                 "curtin in-target --target=/target -- "
-                "passwd --lock " + shlex.quote(self.username)
+                "usermod --password '!' " + shlex.quote(self.username)
             ),
             (
                 "curtin in-target --target=/target -- /bin/sh -c "
