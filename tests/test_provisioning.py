@@ -989,12 +989,16 @@ def test_baseline_attests_target_release_edition_and_ubuntu_packages(tmp_path: P
         _attest_installed_profile(windows, {**health, "os_release": "23H2"}, object())
 
     ubuntu = _runtime_definition(tmp_path, "libvirt")
-    ubuntu = replace(ubuntu, installation=InstallationSpec(
-        unattended=True, target_os="ubuntu", target_release="24.04.1",
-        target_flavor="desktop", packages=("git",), update_policy="latest",
-        apt_mirror="http://mirror.internal/ubuntu",
-        credential_ref="secret://argus/ubuntu/bootstrap",
-    ))
+    ubuntu = replace(
+        ubuntu,
+        installation=InstallationSpec(
+            unattended=True, target_os="ubuntu", target_release="24.04.1",
+            target_flavor="desktop", packages=("git",), update_policy="latest",
+            apt_mirror="http://mirror.internal/ubuntu",
+            credential_ref="secret://argus/ubuntu/bootstrap",
+        ),
+        guest_runtime=_guest_runtime(tmp_path, "ubuntu"),
+    )
 
     class Guest:
         def installed_packages(self, names):
