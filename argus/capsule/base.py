@@ -145,6 +145,9 @@ class CapsuleRequest:
     session_id: str
     adapter_type: str
     settings: CapsuleSettings
+    capsule_id: str = ""
+    control_generation: int = 0
+    execution_mode: str = "isolated"
 
 
 @dataclass(frozen=True)
@@ -160,6 +163,11 @@ class CapsuleHandle:
     transport: str = "http"
     guest_os: str = "unknown"
     architecture: str = "unknown"
+    capsule_id: str = ""
+    control_generation: int = 0
+    execution_mode: str = "isolated"
+    provider_resource_identity: str = ""
+    mutable_disk_identity: str = ""
 
     @property
     def endpoint(self) -> str:
@@ -181,6 +189,11 @@ class FailureCapsule:
     reason: str
     retained_at: str
     vm_state: str
+    capsule_id: str = ""
+    failed_generation: int = 0
+    execution_mode: str = "isolated"
+    provider_resource_identity: str = ""
+    mutable_disk_identity: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
