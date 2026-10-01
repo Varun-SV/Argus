@@ -407,6 +407,54 @@ def test_static_token_is_rejected_for_provisioned_capsule(tmp_path: Path) -> Non
     assert provider.destroyed == 0
 
 
+def test_generation_secrets_never_enter_durable_capsule_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import argus.capsule.bootstrap as bootstrap_module
+    import argus.execution.secure_capsule as secure_module
+
+    bootstrap_sentinel = "ARGUS_BOOTSTRAP_SECRET_SENTINEL_" + "B" * 48
+    active_sentinel = "ARGUS_ACTIVE_SECRET_SENTINEL_" + "A" * 48
+
+    monkeypatch.setattr(
+        bootstrap_module.secrets,
+        "token_urlsafe",
+        lambda _size: bootstrap_sentinel,
+    )
+    monkeypatch.setattr(
+        secure_module.secrets,
+        "token_urlsafe",
+        lambda _size: active_sentinel,
+    )
+
+    env, _provider = _environment(tmp_path)
+    env.prepare()
+    env.record_failure("sentinel failure")
+    env.close()
+
+    failure_payload = repr(env.failure_capsule()).encode("utf-8")
+    assert bootstrap_sentinel.encode() not in failure_payload
+    assert active_sentinel.encode() not in failure_payload
+
+    control_root = env.settings.resolved_control_root
+    for artifact in control_root.rglob("*"):
+        if not artifact.is_file() or artifact.is_symlink():
+            continue
+        data = artifact.read_bytes()
+        assert bootstrap_sentinel.encode() not in data, artifact
+        assert active_sentinel.encode() not in data, artifact
+
+    # Successful establishment must also have deleted one-attempt media and
+    # host-side plaintext token/key staging.
+    assert not list(
+        (control_root / "bootstrap-attempts").glob("*")
+    )
+    assert not list(
+        (control_root / "bootstrap-media").glob("*.iso")
+    )
+
+
 def test_reconnect_refuses_lost_host_record(
     tmp_path: Path,
 ) -> None:

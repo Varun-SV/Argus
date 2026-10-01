@@ -197,7 +197,20 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
     assert not list(plan.cache_dir.glob("argus-nocloud-*"))
     assert not (plan.cache_dir / "ubuntu-vmlinuz").exists()
     assert not (plan.cache_dir / "argus-build-payload.iso").exists()
-    assert _HASH.encode() not in (plan.cache_dir / "manifest.json").read_bytes()
+    secret_sentinel = _HASH.encode()
+    assert secret_sentinel not in definition.canonical_bytes()
+    assert secret_sentinel not in (
+        plan.cache_dir / "manifest.json"
+    ).read_bytes()
+
+    # The build-time password hash is intentionally present only in ephemeral
+    # NoCloud input. After provider cleanup/publication it must not survive in
+    # the image cache, ATES evidence, secret-store persistence, or recovery
+    # artifacts under this test workspace.
+    for artifact in tmp_path.rglob("*"):
+        if not artifact.is_file() or artifact.is_symlink():
+            continue
+        assert secret_sentinel not in artifact.read_bytes(), artifact
 
 
 @pytest.mark.parametrize(
