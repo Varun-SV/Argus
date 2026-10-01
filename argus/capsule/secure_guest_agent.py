@@ -29,6 +29,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from argus.adapters.base import AdapterError
+from argus.capsule.base import CapsuleError
 from argus.capsule.bootstrap_service import prepare_bootstrap_service
 from argus.capsule.control import GuestControlStateStore, validate_capsule_id
 from argus.capsule.files import validate_session_id

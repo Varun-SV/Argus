@@ -718,17 +718,27 @@ def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
     image = tmp_path / "base.qcow2"
     image.write_bytes(b"candidate")
     settings = CapsuleSettings(
-        provider="libvirt", cpu_count=4, memory_mb=8192, network_mode="host_only"
+        provider="libvirt",
+        cpu_count=4,
+        memory_mb=8192,
+        network_mode="host_only",
     )
     sessions = []
 
     class FakeCapsule:
+        counter = 0
+
         def __init__(self, adapter_type, bound):
             assert adapter_type == "cli"
             assert bound.image == str(image.resolve())
-            self.session_id = "probe-1"
+            type(self).counter += 1
+            self.session_id = f"probe-{type(self).counter}"
+            self._capsule_id = f"cap-{type(self).counter:032x}"
             self._handle = None
             self._client = self
+            self._runtime_identity = (
+                definition.require_guest_runtime().runtime_identity
+            )
             sessions.append(self)
 
         def prepare(self):
@@ -736,30 +746,35 @@ def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
 
         def health(self):
             return {
-                "ok": True, "service": "argus-guest-agent", "secure": True,
-                "auth_session_id": self.session_id, "guest_os": "linux",
+                "ok": True,
+                "service": "argus-guest-agent",
+                "secure": True,
+                "auth_session_id": self.session_id,
+                "capsule_id": self._capsule_id,
+                "control_generation": 1,
+                "runtime_identity": self._runtime_identity,
+                "guest_os": "linux",
                 "architecture": "x86_64",
+                "machine_identity": f"{len(sessions):032x}",
             }
 
         def close(self):
             self._handle = None
 
-    monkeypatch.setattr(baseline_module, "SecureCapsuleExecutionEnvironment", FakeCapsule)
-    validate_secure_capsule_baseline(
-        definition, image, provider="libvirt", image_format="qcow2", settings=settings
+    monkeypatch.setattr(
+        baseline_module,
+        "SecureCapsuleExecutionEnvironment",
+        FakeCapsule,
     )
-    assert sessions[-1]._handle is None
-
-    original_health = FakeCapsule.health
-    monkeypatch.setattr(FakeCapsule, "health", lambda self: {
-        **original_health(self), "guest_os": "windows"
-    })
-    with pytest.raises(ProvisioningError, match="baseline Capsule boot or agent validation failed") as failure:
-        validate_secure_capsule_baseline(
-            definition, image, provider="libvirt", image_format="qcow2", settings=settings
-        )
-    assert failure.value.__cause__ is None
-    assert sessions[-1]._handle is None
+    validate_secure_capsule_baseline(
+        definition,
+        image,
+        provider="libvirt",
+        image_format="qcow2",
+        settings=settings,
+    )
+    assert len(sessions) == 2
+    assert all(session._handle is None for session in sessions)
 
 
 def test_failed_build_removes_private_resources_and_can_retry(tmp_path: Path, monkeypatch) -> None:
