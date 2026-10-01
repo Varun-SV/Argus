@@ -993,6 +993,9 @@ def test_baseline_attests_target_release_edition_and_ubuntu_packages(tmp_path: P
     health = {
         "os_id": "windows-11", "os_release": "24H2",
         "os_edition": "professional", "os_build": 26100,
+        "target_user": "argus-target",
+        "target_user_present": True,
+        "target_user_non_admin": True,
     }
     _attest_installed_profile(windows, health, object())
     with pytest.raises(ProvisioningError, match="Windows release or edition"):
@@ -1015,9 +1018,18 @@ def test_baseline_attests_target_release_edition_and_ubuntu_packages(tmp_path: P
             assert set(names) == {"git", "ubuntu-desktop"}
             return {"git": "1:2.43.0", "ubuntu-desktop": "1.539"}
 
-    _attest_installed_profile(ubuntu, {"os_id": "ubuntu", "os_release": "24.04"}, Guest())
+    ubuntu_health = {
+        "os_id": "ubuntu", "os_release": "24.04",
+        "target_user": "argus",
+        "target_user_present": True,
+        "target_user_non_admin": True,
+        "target_user_locked": True,
+    }
+    _attest_installed_profile(ubuntu, ubuntu_health, Guest())
     with pytest.raises(ProvisioningError, match="Ubuntu release"):
-        _attest_installed_profile(ubuntu, {"os_id": "ubuntu", "os_release": "22.04"}, Guest())
+        _attest_installed_profile(
+            ubuntu, {**ubuntu_health, "os_release": "22.04"}, Guest()
+        )
 
     class MissingGuest:
         def installed_packages(self, names):
@@ -1025,7 +1037,7 @@ def test_baseline_attests_target_release_edition_and_ubuntu_packages(tmp_path: P
 
     with pytest.raises(ProvisioningError, match="packages are missing"):
         _attest_installed_profile(
-            ubuntu, {"os_id": "ubuntu", "os_release": "24.04"}, MissingGuest(),
+            ubuntu, ubuntu_health, MissingGuest(),
         )
 
 

@@ -28,6 +28,12 @@ def _attest_installed_profile(definition: EnvironmentDefinition, health: dict, c
             or health.get("os_edition") != installation.edition
         ):
             raise ProvisioningError("installed Windows release or edition differs")
+        if (
+            health.get("target_user") != "argus-target"
+            or health.get("target_user_present") is not True
+            or health.get("target_user_non_admin") is not True
+        ):
+            raise ProvisioningError("Windows target-user policy is invalid")
         return
     if installation.target_os == "ubuntu":
         release = installation.target_release
@@ -42,6 +48,13 @@ def _attest_installed_profile(definition: EnvironmentDefinition, health: dict, c
         installed = client.installed_packages(required)
         if not all(isinstance(installed.get(name), str) and installed[name] for name in required):
             raise ProvisioningError("installed Ubuntu flavor or requested packages are missing")
+        if (
+            health.get("target_user") != "argus"
+            or health.get("target_user_present") is not True
+            or health.get("target_user_non_admin") is not True
+            or health.get("target_user_locked") is not True
+        ):
+            raise ProvisioningError("Ubuntu target-user policy is invalid")
 
 
 def validate_secure_capsule_baseline(
@@ -88,33 +101,59 @@ def validate_secure_capsule_baseline(
     if bound.guest_os not in {"auto", expected_os}:
         raise ProvisioningError("baseline guest OS contradicts provider contract")
 
-    environment = SecureCapsuleExecutionEnvironment("cli", bound)
-    failed = False
-    try:
-        environment.prepare()
-        client = environment._client
-        if client is None:
-            raise ProvisioningError("baseline Capsule has no secure guest client")
-        health = client.health()
-        if (
-            health.get("ok") is not True
-            or health.get("service") != "argus-guest-agent"
-            or health.get("secure") is not True
-            or health.get("auth_session_id") != environment.session_id
-            or health.get("guest_os") != expected_os
-            or health.get("architecture") != definition.machine.architecture
-        ):
-            raise ProvisioningError("baseline guest OS or secure agent identity is invalid")
-        _attest_installed_profile(definition, health, client)
-    except Exception:
-        failed = True
-    finally:
+    expected_runtime = definition.require_guest_runtime().runtime_identity
+
+    def boot_once() -> tuple[str, str]:
+        environment = SecureCapsuleExecutionEnvironment("cli", bound)
+        failed = False
+        capsule_id = ""
+        machine_identity = ""
         try:
-            environment.close()
+            environment.prepare()
+            client = environment._client
+            if client is None:
+                raise ProvisioningError("baseline Capsule has no secure guest client")
+            health = client.health()
+            capsule_id = str(health.get("capsule_id") or "")
+            machine_identity = str(health.get("machine_identity") or "")
+            if (
+                health.get("ok") is not True
+                or health.get("service") != "argus-guest-agent"
+                or health.get("secure") is not True
+                or health.get("auth_session_id") != environment.session_id
+                or capsule_id != environment._capsule_id
+                or int(health.get("control_generation") or 0) != 1
+                or health.get("runtime_identity") != expected_runtime
+                or health.get("guest_os") != expected_os
+                or health.get("architecture") != definition.machine.architecture
+                or not machine_identity
+            ):
+                raise ProvisioningError(
+                    "baseline guest OS, runtime, or generation identity is invalid"
+                )
+            _attest_installed_profile(definition, health, client)
         except Exception:
-            raise ProvisioningCleanupError("baseline Capsule teardown is uncertain") from None
-        if environment._handle is not None:
-            raise ProvisioningCleanupError("baseline Capsule teardown is uncertain")
-    if failed:
-        # Guest and hypervisor exceptions may contain operator-supplied input.
-        raise ProvisioningError("baseline Capsule boot or agent validation failed")
+            failed = True
+        finally:
+            try:
+                environment.close()
+            except Exception:
+                raise ProvisioningCleanupError(
+                    "baseline Capsule teardown is uncertain"
+                ) from None
+            if environment._handle is not None:
+                raise ProvisioningCleanupError(
+                    "baseline Capsule teardown is uncertain"
+                )
+        if failed:
+            raise ProvisioningError(
+                "baseline Capsule boot or agent validation failed"
+            )
+        return capsule_id, machine_identity
+
+    first_capsule, first_machine = boot_once()
+    second_capsule, second_machine = boot_once()
+    if first_capsule == second_capsule or first_machine == second_machine:
+        raise ProvisioningError(
+            "generalization validation did not produce fresh Capsule/OS identity"
+        )

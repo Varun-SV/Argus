@@ -77,6 +77,115 @@ def _release_identity() -> dict[str, str | int]:
     return {}
 
 
+
+def _machine_identity() -> str:
+    system = platform.system().lower()
+    if system == "windows":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Cryptography",
+            ) as key:
+                value = str(
+                    winreg.QueryValueEx(key, "MachineGuid")[0]
+                ).strip().lower()
+            if re.fullmatch(r"[0-9a-f-]{32,64}", value):
+                return value
+        except (OSError, TypeError, ValueError):
+            return ""
+        return ""
+    if system == "linux":
+        try:
+            value = Path("/etc/machine-id").read_text(
+                encoding="ascii"
+            ).strip().lower()
+        except (OSError, UnicodeError):
+            return ""
+        if re.fullmatch(r"[0-9a-f]{32}", value) and value != "0" * 32:
+            return value
+    return ""
+
+
+def _target_user_policy() -> dict[str, object]:
+    system = platform.system().lower()
+    if system == "windows":
+        script = (
+            "$ErrorActionPreference='Stop';$n='argus-target';"
+            "$u=Get-LocalUser -Name $n -ErrorAction SilentlyContinue;"
+            "if(-not $u){'missing';exit 0};"
+            "$a=Get-LocalGroupMember -Group 'Administrators' "
+            "-ErrorAction Stop|Where-Object Name -Match ('\\\\'+$n+'$');"
+            "if($a){'admin'}else{'nonadmin'}"
+        )
+        try:
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return {}
+        status = result.stdout.strip().splitlines()[-1:] or [""]
+        return {
+            "target_user": "argus-target",
+            "target_user_present": status[0] in {"nonadmin", "admin"},
+            "target_user_non_admin": status[0] == "nonadmin",
+            "target_user_locked": False,
+        }
+
+    if system == "linux":
+        try:
+            import pwd
+
+            account = pwd.getpwnam("argus")
+            groups = subprocess.run(
+                ["id", "-nG", "argus"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            ).stdout.split()
+            shadow = Path("/etc/shadow").read_text(
+                encoding="utf-8", errors="strict"
+            )
+            entry = next(
+                line for line in shadow.splitlines()
+                if line.startswith("argus:")
+            )
+            password_field = entry.split(":", 2)[1]
+            return {
+                "target_user": "argus",
+                "target_user_present": True,
+                "target_user_non_admin": (
+                    account.pw_uid != 0
+                    and "sudo" not in groups
+                    and "wheel" not in groups
+                ),
+                "target_user_locked": password_field.startswith(("!", "*")),
+            }
+        except (
+            KeyError,
+            OSError,
+            UnicodeError,
+            StopIteration,
+            subprocess.TimeoutExpired,
+        ):
+            return {}
+    return {}
+
 def _installed_deb_packages(names: list[str]) -> dict[str, str]:
     if platform.system().lower() != "linux":
         return {}
@@ -293,6 +402,8 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                     else "aarch64" if platform.machine().lower() in {"arm64", "aarch64"}
                     else "unknown"
                 ),
+                "machine_identity": _machine_identity(),
+                **_target_user_policy(),
                 **_release_identity(),
             },
         )
