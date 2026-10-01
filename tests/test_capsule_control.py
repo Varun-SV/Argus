@@ -15,6 +15,10 @@ from argus.capsule.control import (
     GuestControlStateStore,
     new_capsule_id,
 )
+from argus.capsule.provider_identity import (
+    mutable_disk_identity,
+    provider_uuid_identity,
+)
 
 
 def _record(capsule_id: str) -> CapsuleControlRecord:
@@ -161,3 +165,21 @@ def test_control_mode_and_generation_validation_fail_closed(tmp_path: Path) -> N
             generation,
             execution_mode="administrator",
         )
+
+
+def test_provider_resource_and_mutable_disk_identity_are_stable(
+    tmp_path: Path,
+) -> None:
+    disk = tmp_path / "session.qcow2"
+    disk.write_bytes(b"mutable")
+    first = mutable_disk_identity(disk)
+    disk.write_bytes(b"mutated state")
+    second = mutable_disk_identity(disk)
+    assert first == second
+    assert first.startswith("file-v1:")
+    assert (
+        provider_uuid_identity(
+            "libvirt", "12345678-1234-5678-1234-567812345678"
+        )
+        == "libvirt-uuid:12345678-1234-5678-1234-567812345678"
+    )

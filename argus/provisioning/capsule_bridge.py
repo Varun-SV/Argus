@@ -142,4 +142,29 @@ def capsule_settings_from_derived_image(
         expected_sha256=manifest.image_sha256,
     )
     base = _bind_machine_contract(definition, manifest, settings)
-    return replace(base, image=str(verified.path))
+    runtime = definition.require_guest_runtime()
+    if base.environment_id and base.environment_id != definition.environment_id:
+        raise ProvisioningError(
+            "Capsule settings environment_id contradicts the verified definition"
+        )
+    if (
+        base.base_image_sha256
+        and base.base_image_sha256 != manifest.image_sha256
+    ):
+        raise ProvisioningError(
+            "Capsule settings base_image_sha256 contradicts the verified image"
+        )
+    if (
+        base.guest_runtime_identity
+        and base.guest_runtime_identity != runtime.runtime_identity
+    ):
+        raise ProvisioningError(
+            "Capsule settings guest_runtime_identity contradicts the verified runtime"
+        )
+    return replace(
+        base,
+        image=str(verified.path),
+        environment_id=definition.environment_id,
+        base_image_sha256=manifest.image_sha256,
+        guest_runtime_identity=runtime.runtime_identity,
+    )

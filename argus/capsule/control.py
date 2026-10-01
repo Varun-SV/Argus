@@ -150,11 +150,6 @@ class CapsuleControlRecord:
             raise CapsuleError("Capsule control record must be an object")
         allowed = set(cls.__dataclass_fields__)
         unknown = sorted(set(raw) - allowed)
-        missing = sorted(
-            name
-            for name, field in cls.__dataclass_fields__.items()
-            if field.default is field.default_factory and name not in raw
-        )
         if unknown:
             raise CapsuleError(
                 "unknown Capsule control record field(s): " + ", ".join(unknown)

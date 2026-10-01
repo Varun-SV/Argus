@@ -89,6 +89,13 @@ class CapsuleSettings:
     allow_dhcp: bool = True
     disable_guest_file_copy: bool = True
 
+    # Verified provisioning commitments. Empty values preserve legacy manually
+    # prepared Capsule configurations; the provisioning bridge fills all three.
+    environment_id: str = ""
+    base_image_sha256: str = ""
+    guest_runtime_identity: str = ""
+    control_root: str = ""
+
     # PR7 libvirt/QEMU settings. ``qemu:///system`` is intentionally the only
     # production URI accepted by the first Linux provider because its network
     # isolation relies on libvirt's system networking/nwfilter boundary.
@@ -132,6 +139,12 @@ class CapsuleSettings:
         if self.vm_root:
             return Path(self.vm_root).expanduser().resolve()
         return (Path.home() / ".argus" / "capsules").resolve()
+
+    @property
+    def resolved_control_root(self) -> Path:
+        if self.control_root:
+            return Path(self.control_root).expanduser().resolve()
+        return (Path.home() / ".argus" / "capsule-control").resolve()
 
     @property
     def resolved_guest_ca_cert(self) -> Optional[Path]:

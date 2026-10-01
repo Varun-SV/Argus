@@ -437,6 +437,12 @@ def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path) ->
     assert settings.secure_boot is False
     assert settings.guest_port == 9443
     assert settings.image == str(image.resolve())
+    assert settings.environment_id == definition.environment_id
+    assert settings.base_image_sha256 == manifest.image_sha256
+    assert (
+        settings.guest_runtime_identity
+        == definition.require_guest_runtime().runtime_identity
+    )
 
 
 def test_derived_manifest_rejects_wrong_definition(tmp_path: Path) -> None:

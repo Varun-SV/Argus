@@ -194,6 +194,21 @@ class GuestRuntimeIdentity:
             "runtime_installation_policy_version": self.runtime_installation_policy_version,
         }
 
+    @property
+    def identity_sha256(self) -> str:
+        payload = json.dumps(
+            self.identity_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        return sha256(payload).hexdigest()
+
+    @property
+    def runtime_identity(self) -> str:
+        return f"runtime-sha256-{self.identity_sha256}"
+
 
 @dataclass(frozen=True)
 class MachineSpec:
