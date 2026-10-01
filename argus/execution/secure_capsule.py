@@ -706,6 +706,11 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 handle.capsule_id,
                 CapsuleLifecycleState.RECONNECTING.value,
             )
+            # A retained Capsule is normally powered off already. Calling stop
+            # again is intentional: concurrent reconnect requests serialize on
+            # the operation lock, and a later request must fence the generation
+            # that an earlier request may just have activated.
+            self.provider.stop_existing(handle)
             handle, client = self._establish_generation_locked(
                 registry,
                 handle,

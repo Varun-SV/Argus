@@ -285,3 +285,37 @@ def test_static_token_is_rejected_for_provisioned_capsule(tmp_path: Path) -> Non
     with pytest.raises(ExecutionEnvironmentError, match="static guest_token"):
         env.prepare()
     assert provider.destroyed == 0
+
+
+def test_reconnect_refuses_lost_host_record(
+    tmp_path: Path,
+) -> None:
+    env, provider = _environment(tmp_path)
+    env.prepare()
+    capsule_id = env._capsule_id
+    env.record_failure("application assertion")
+    env.close()
+    record_path = (
+        env.settings.resolved_control_root / f"{capsule_id}.json"
+    )
+    record_path.unlink()
+    with pytest.raises(Exception, match="control record is missing"):
+        env.reconnect_failure()
+    assert provider.destroyed == 0
+
+
+def test_reconnect_refuses_provider_identity_substitution(
+    tmp_path: Path,
+) -> None:
+    env, provider = _environment(tmp_path)
+    env.prepare()
+    env.record_failure("application assertion")
+    env.close()
+    provider.resource_id = (
+        "hyperv-uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    )
+    with pytest.raises(
+        ExecutionEnvironmentError,
+        match="ownership no longer matches",
+    ):
+        env.reconnect_failure()

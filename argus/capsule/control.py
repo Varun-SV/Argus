@@ -448,9 +448,31 @@ class GuestControlStateStore:
         self.path = Path(path).expanduser().resolve()
         _ensure_private_dir(self.path.parent)
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        self.marker_path = self.path.with_suffix(
+            self.path.suffix + ".initialized"
+        )
+
+    def _marker_capsule_id(self) -> str:
+        if not self.marker_path.exists():
+            return ""
+        if self.marker_path.is_symlink():
+            raise CapsuleError("guest initialization marker cannot be a symlink")
+        try:
+            raw = json.loads(self.marker_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise CapsuleError("guest initialization marker is corrupt") from exc
+        marker_id = validate_capsule_id(str(raw.get("capsule_id") or ""))
+        if raw.get("schema_version") != _GUEST_STATE_VERSION:
+            raise CapsuleError("guest initialization marker version is invalid")
+        return marker_id
 
     def _read_unlocked(self) -> GuestControlState:
+        marker_id = self._marker_capsule_id()
         if not self.path.exists():
+            if marker_id:
+                raise CapsuleError(
+                    "initialized guest control state is missing; recovery is required"
+                )
             return GuestControlState()
         if self.path.is_symlink():
             raise CapsuleError("guest control-state file cannot be a symlink")
@@ -458,7 +480,21 @@ class GuestControlStateStore:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise CapsuleError("guest control state is unreadable or corrupt") from exc
-        return GuestControlState.from_mapping(raw)
+        state = GuestControlState.from_mapping(raw)
+        if state.capsule_id:
+            if not marker_id:
+                raise CapsuleError(
+                    "initialized guest control marker is missing; recovery is required"
+                )
+            if marker_id != state.capsule_id:
+                raise CapsuleError(
+                    "guest control marker contradicts persisted Capsule identity"
+                )
+        elif marker_id:
+            raise CapsuleError(
+                "guest control state unexpectedly reset after initialization"
+            )
+        return state
 
     def load(self) -> GuestControlState:
         with _file_lock(self.lock_path):
@@ -483,6 +519,20 @@ class GuestControlStateStore:
                 raise CapsuleError("bootstrap Capsule ID contradicts initialized guest state")
             if generation <= current.highest_committed_generation:
                 raise CapsuleError("stale guest control generation was rejected")
+            if not current.capsule_id:
+                _atomic_json(
+                    self.marker_path,
+                    {
+                        "schema_version": _GUEST_STATE_VERSION,
+                        "capsule_id": capsule_id,
+                    },
+                )
+            else:
+                marker_id = self._marker_capsule_id()
+                if marker_id != capsule_id:
+                    raise CapsuleError(
+                        "guest control marker contradicts bootstrap Capsule identity"
+                    )
             updated = GuestControlState(
                 capsule_id=capsule_id,
                 highest_committed_generation=generation,

@@ -183,3 +183,40 @@ def test_provider_resource_and_mutable_disk_identity_are_stable(
         )
         == "libvirt-uuid:12345678-1234-5678-1234-567812345678"
     )
+
+
+def test_guest_state_loss_after_initialization_fails_closed(
+    tmp_path: Path,
+) -> None:
+    store = GuestControlStateStore(tmp_path / "guest" / "control.json")
+    capsule_id = new_capsule_id()
+    store.commit_generation(
+        capsule_id=capsule_id,
+        generation=1,
+        session_id="session-one",
+        execution_mode="isolated",
+    )
+    store.path.unlink()
+    with pytest.raises(CapsuleError, match="recovery is required"):
+        store.load()
+
+
+def test_guest_marker_identity_mismatch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    store = GuestControlStateStore(tmp_path / "guest" / "control.json")
+    capsule_id = new_capsule_id()
+    store.commit_generation(
+        capsule_id=capsule_id,
+        generation=1,
+        session_id="session-one",
+        execution_mode="isolated",
+    )
+    marker = store.marker_path
+    marker.write_text(
+        '{"schema_version":"argus-guest-control-v1",'
+        '"capsule_id":"' + new_capsule_id() + '"}',
+        encoding="utf-8",
+    )
+    with pytest.raises(CapsuleError, match="contradicts"):
+        store.load()
