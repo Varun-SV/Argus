@@ -161,6 +161,8 @@ argus report                             # run history
 argus gui                                # native desktop app
 ```
 
+The desktop app (`pip install "argus-app-testing[gui]"`, then `argus gui`) is a conversation with Argus: ask in your own words ("run checkout in a Capsule", "roam http://localhost:3000 for 5 minutes", "write a test for the login page") or use slash commands such as `/run`, `/roam`, `/write`, `/evidence` and `/help`. Slash commands skip the model-based intent routing that free text goes through (free text is routed through your configured provider and validated before anything runs). Commands that need a model still use it: `/write` and `/explain` call your provider, and `/run` and `/roam` use it for their natural-language steps. Run settings in free text (Local or a Capsule, memory, duration) are read from your own words, never chosen by the model; to roam a command that has its own arguments, quote it: `roam "python tool.py --flag" in a Capsule for 5 minutes`.
+
 ---
 
 ## Adapters versus execution environments

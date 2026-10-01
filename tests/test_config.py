@@ -58,3 +58,27 @@ def test_paid_provider_budget_keeps_tokens(tmp_path, monkeypatch):
     cfg = load_config(tmp_path)
     budget = cfg.make_budget(TokenTracker(), time_minutes=5, max_tokens=1000)
     assert budget.max_tokens == 1000
+
+
+def test_session_provider_override_never_reuses_generic_credentials(tmp_path, monkeypatch):
+    init_project(tmp_path)
+    monkeypatch.setenv("ARGUS_PROVIDER", "openai")
+    monkeypatch.setenv("ARGUS_MODEL", "gpt-env-model")
+    monkeypatch.setenv("ARGUS_BASE_URL", "https://openai.example/v1")
+    monkeypatch.setenv("ARGUS_API_KEY", "openai-secret")
+
+    # The process-level provider pin wins over a GUI/session override.
+    pinned = load_config(tmp_path, provider="anthropic")
+    assert pinned.provider.type == "openai"
+    assert pinned.provider.model == "gpt-env-model"
+    assert pinned.provider.base_url == "https://openai.example/v1"
+    assert pinned.provider.api_key == "openai-secret"
+
+    # Without the provider pin, an explicit session override uses that provider's
+    # own configured settings and does not inherit generic credentials/model/url.
+    monkeypatch.delenv("ARGUS_PROVIDER")
+    switched = load_config(tmp_path, provider="anthropic")
+    assert switched.provider.type == "anthropic"
+    assert switched.provider.model == "claude-sonnet-4-6"
+    assert switched.provider.base_url is None
+    assert switched.provider.api_key != "openai-secret"
