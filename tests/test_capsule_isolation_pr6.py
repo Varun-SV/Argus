@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -124,57 +123,22 @@ def test_rotated_bearer_replaces_bootstrap_and_binds_file_session():
         thread.join(timeout=2)
 
 
-def test_rotation_waits_for_inflight_privileged_request() -> None:
+def test_bootstrap_bearer_is_establishment_only() -> None:
     server, thread, endpoint = _start_secure_loopback_server()
-    entered = threading.Event()
-    release = threading.Event()
-    rotate_done = threading.Event()
-    original_begin = server.state.begin_files
-
-    def blocking_begin(session_id):
-        entered.set()
-        if not release.wait(timeout=2):
-            raise RuntimeError("test did not release privileged request")
-        return original_begin(session_id)
-
-    server.state.begin_files = blocking_begin
     bootstrap = SecureGuestAgentClient(
         endpoint,
         "bootstrap-secret",
         allow_insecure_http=True,
         timeout_seconds=2,
     )
-    request_error = []
-    rotate_error = []
-
-    def run_request():
-        try:
-            bootstrap.begin_files("pre-rotation")
-        except Exception as exc:
-            request_error.append(exc)
-
-    def run_rotate():
-        try:
-            bootstrap.rotate_session_token("post-rotation", "n" * 48)
-        except Exception as exc:
-            rotate_error.append(exc)
-        finally:
-            rotate_done.set()
-
-    request_thread = threading.Thread(target=run_request)
-    rotate_thread = threading.Thread(target=run_rotate)
     try:
-        request_thread.start()
-        assert entered.wait(timeout=2)
-        rotate_thread.start()
-        time.sleep(0.05)
-        assert not rotate_done.is_set()
-        release.set()
-        request_thread.join(timeout=2)
-        rotate_thread.join(timeout=2)
-        assert not request_error
-        assert not rotate_error
-        assert rotate_done.is_set()
+        assert bootstrap.health()["auth_session_id"] == ""
+        with pytest.raises(CapsuleGuestError, match="401"):
+            bootstrap.begin_files("before-rotation")
+
+        bootstrap.rotate_session_token("active-session", "n" * 48)
+        started = bootstrap.begin_files("active-session")
+        assert started["session_id"] == "active-session"
 
         old = SecureGuestAgentClient(
             endpoint,
@@ -184,12 +148,11 @@ def test_rotation_waits_for_inflight_privileged_request() -> None:
         )
         with pytest.raises(CapsuleGuestError, match="401"):
             old.health()
-        assert bootstrap.health()["auth_session_id"] == "post-rotation"
     finally:
-        release.set()
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
 
 
 def test_rotation_recovers_when_success_response_is_lost():

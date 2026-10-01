@@ -451,6 +451,18 @@ class SecureGuestAgentHandler(GuestAgentHandler):
             if self.command == "POST" and parsed.path == "/v1/auth/rotate":
                 self._rotate_auth()
                 return
+
+            # The bootstrap bearer is establishment-only. Until rotation
+            # commits an active session identity, it cannot authorize file,
+            # action, process, or provisioning control even though it is the
+            # current TLS-channel bearer.
+            if not self.server.auth_session_id:
+                self._send(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"ok": False, "error": "active session not established"},
+                )
+                return
+
             if self.command == "POST" and parsed.path == "/v1/files/begin":
                 self._begin_bound_files()
                 return
