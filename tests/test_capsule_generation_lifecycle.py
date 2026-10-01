@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -44,6 +47,10 @@ class LifecycleProvider(CapsuleProvider):
         self.stops = 0
         self.destroyed = 0
         self.quarantined = 0
+        self.block_reconnect_attach = False
+        self.first_reconnect_attached = threading.Event()
+        self.release_first_reconnect = threading.Event()
+        self.reconnect_attach_entries: list[int] = []
 
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
         raise AssertionError("provisioned Capsules must not use legacy create()")
@@ -70,6 +77,15 @@ class LifecycleProvider(CapsuleProvider):
     def attach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
         assert media.is_file()
         self.attached.append(Path(media))
+        if handle.control_generation >= 2:
+            self.reconnect_attach_entries.append(handle.control_generation)
+            if (
+                self.block_reconnect_attach
+                and len(self.reconnect_attach_entries) == 1
+            ):
+                self.first_reconnect_attached.set()
+                if not self.release_first_reconnect.wait(timeout=3):
+                    raise RuntimeError("concurrent reconnect test release timed out")
 
     def detach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
         self.detached.append(Path(media))
@@ -295,6 +311,74 @@ def test_failure_reconnect_preserves_capsule_and_advances_generation(
     assert env._handle.control_generation == 2
     assert env._handle.execution_mode == "shared_user"
     env.close()
+
+
+def test_concurrent_reconnects_serialize_provider_control_and_fence(
+    tmp_path: Path,
+) -> None:
+    env, provider = _environment(tmp_path)
+    env.prepare()
+    capsule_id = env._capsule_id
+    failure_generation = env._handle.control_generation
+    env.record_failure("application assertion")
+    env.close()
+    retained = env._retained_failure
+    assert retained is not None
+    assert retained.failed_generation == failure_generation
+
+    registry = CapsuleControlRegistry(env.settings.resolved_control_root)
+
+    def reconnect_environment():
+        candidate = SecureCapsuleExecutionEnvironment(
+            "cli",
+            env.settings,
+            provider=provider,
+            client_factory=LifecycleClient,
+        )
+        candidate._retained_failure = retained
+        candidate._control_registry = registry
+        candidate._capsule_id = capsule_id
+        return candidate
+
+    first = reconnect_environment()
+    second = reconnect_environment()
+    provider.block_reconnect_attach = True
+
+    errors = []
+
+    def run(candidate):
+        try:
+            candidate.reconnect_failure()
+        except Exception as exc:
+            errors.append(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(run, first)
+        assert provider.first_reconnect_attached.wait(timeout=2)
+        future_b = pool.submit(run, second)
+
+        # B has started, but the per-Capsule operation lock must keep it out of
+        # provider bootstrap control while A is paused inside that transaction.
+        time.sleep(0.1)
+        assert provider.reconnect_attach_entries == [2]
+
+        provider.release_first_reconnect.set()
+        future_a.result(timeout=3)
+        future_b.result(timeout=3)
+
+    assert not errors
+    assert provider.reconnect_attach_entries == [2, 3]
+    assert [request.control_generation for request in provider.starts] == [1, 2, 3]
+    assert provider.starts[1].session_id != provider.starts[2].session_id
+    record = registry.load(capsule_id)
+    assert record.highest_reserved_generation == 3
+    assert record.last_committed_generation_known_by_host == 3
+    assert record.lifecycle_state == CapsuleLifecycleState.ACTIVE.value
+
+    # The later reconnect is authoritative. Whichever object owns generation 3
+    # may clean up the fake provider state; generation 2 is deliberately stale.
+    winner = first if first._handle.control_generation == 3 else second
+    winner.close()
 
 
 def test_llm_cannot_expand_execution_mode_policy(tmp_path: Path) -> None:
