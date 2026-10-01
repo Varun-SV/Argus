@@ -619,8 +619,9 @@ def _authorized_simple_action(text: str, action: str) -> bool:
     patterns = {
         "stop": r"\b(?:stop|cancel|abort)\b",
         "save_test": (
-            r"\b(?:save|persist)\b(?:\s+(?:this|that|the|current))?"
-            r"(?:\s+(?:draft|test|spec|it))?\b"
+            r"^\s*(?:please\s+)?(?:save|persist)\s*[.!]?\s*$|"
+            r"\b(?:save|persist)\b\s+(?:(?:this|that|the|current)\s+)?"
+            r"(?:draft|test|spec|it)\b"
         ),
         "init": r"\b(?:init|initialize|initialise|setup|set\s+up|scaffold)\b[^.!?]{0,80}\b(?:argus|project|workspace)\b",
         "write_test": r"\b(?:write|draft|create|make)\b[^.!?]{0,80}\b(?:test|spec)\b",
@@ -630,7 +631,12 @@ def _authorized_simple_action(text: str, action: str) -> bool:
 
 def _authorized_explain(text: str) -> bool:
     """Authorize disclosure of prior failure details only for an explicit explanation request."""
-    if _question_about_action(text):
+    # "Why did the last test fail?" is itself the explicit disclosure request.
+    # Feature/advice questions such as "what can Argus explain?" or "should you
+    # explain this?" are not.
+    if re.match(r"^\s*(?:what|which|how|when|where)\b", text, re.IGNORECASE):
+        return False
+    if re.match(r"^\s*should\s+(?:you|argus|i|we)\b", text, re.IGNORECASE):
         return False
     if re.search(
         r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:explain|why|failure|failed|error)\b",
@@ -661,8 +667,8 @@ def _environment_change_from_text(text: str) -> tuple:
         r"(?:switch|change|set|select|choose)\b[^.!?]{0,80}"
         r"(?:\bto\b|\bas\b|\benvironment\b|\bmode\b)[^.!?]{0,40}"
         r"\b(?P<choice>local|capsule|hyper-?v|libvirt)\b"
-        r"|^\s*(?:please\s+)?use\s+(?P<use_choice>local|capsule|hyper-?v|libvirt)"
-        r"(?:\s+(?:mode|environment|for\s+argus))?\s*[.!]?\s*$",
+        r"|^\s*(?:please\s+)?use\s+(?:a\s+)?(?P<use_choice>local|capsule|hyper-?v|libvirt)"
+        r"(?:\s+capsule)?(?:\s+(?:mode|environment|for\s+argus))?\s*[.!]?\s*$",
         text,
         re.IGNORECASE,
     )
