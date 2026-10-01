@@ -113,6 +113,89 @@ class InstallationMediaSource:
 
 
 @dataclass(frozen=True)
+class GuestRuntimeIdentity:
+    """Content identity plus host-local locator for the offline Argus guest runtime.
+
+    bundle_path is deliberately excluded from identity_dict. The bundle digest
+    and versioned runtime/bootstrap policies are the reusable environment
+    identity; moving the same approved bundle on the host must not invalidate a
+    golden image definition.
+    """
+
+    bundle_path: str
+    runtime_bundle_sha256: str
+    runtime_version: str
+    target_os: str
+    target_architecture: str = "x86_64"
+    bundle_format_version: str = "argus-guest-runtime-bundle-v1"
+    bootstrap_schema_version: str = "argus-bootstrap-v1"
+    bootstrap_service_policy_version: str = "argus-bootstrap-service-v1"
+    runtime_installation_policy_version: str = "argus-runtime-install-v1"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "bundle_path", _text(self.bundle_path, "guest_runtime.bundle_path")
+        )
+        object.__setattr__(
+            self,
+            "runtime_bundle_sha256",
+            _digest(
+                self.runtime_bundle_sha256,
+                "guest_runtime.runtime_bundle_sha256",
+            ),
+        )
+        for field_name in (
+            "runtime_version",
+            "bundle_format_version",
+            "bootstrap_schema_version",
+            "bootstrap_service_policy_version",
+            "runtime_installation_policy_version",
+        ):
+            value = _text(getattr(self, field_name), f"guest_runtime.{field_name}")
+            if not _NAME_RE.fullmatch(value):
+                raise ProvisioningError(
+                    f"guest_runtime.{field_name} must be a portable version identifier"
+                )
+            object.__setattr__(self, field_name, value)
+        if self.bundle_format_version != "argus-guest-runtime-bundle-v1":
+            raise ProvisioningError(
+                "guest_runtime.bundle_format_version must be "
+                "'argus-guest-runtime-bundle-v1'"
+            )
+        object.__setattr__(
+            self,
+            "target_os",
+            _enum(
+                self.target_os,
+                "guest_runtime.target_os",
+                {"ubuntu", "windows-11"},
+            ),
+        )
+        object.__setattr__(
+            self,
+            "target_architecture",
+            _enum(
+                self.target_architecture,
+                "guest_runtime.target_architecture",
+                _ALLOWED_ARCH,
+            ),
+        )
+
+    def identity_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "guest_runtime",
+            "runtime_bundle_sha256": self.runtime_bundle_sha256,
+            "runtime_version": self.runtime_version,
+            "bundle_format_version": self.bundle_format_version,
+            "target_os": self.target_os,
+            "target_architecture": self.target_architecture,
+            "bootstrap_schema_version": self.bootstrap_schema_version,
+            "bootstrap_service_policy_version": self.bootstrap_service_policy_version,
+            "runtime_installation_policy_version": self.runtime_installation_policy_version,
+        }
+
+
+@dataclass(frozen=True)
 class MachineSpec:
     """Requested virtual hardware/firmware contract for a provisioned OS."""
 
@@ -264,6 +347,7 @@ class EnvironmentDefinition:
     source: InstallationMediaSource
     machine: MachineSpec = MachineSpec()
     installation: InstallationSpec = InstallationSpec()
+    guest_runtime: Optional[GuestRuntimeIdentity] = None
     schema_version: str = "argus-environment-v1"
 
     def __post_init__(self) -> None:
@@ -277,18 +361,40 @@ class EnvironmentDefinition:
             raise ProvisioningError(
                 "source.architecture must match machine.architecture"
             )
+        if self.guest_runtime is not None:
+            if self.guest_runtime.target_architecture != self.machine.architecture:
+                raise ProvisioningError(
+                    "guest_runtime.target_architecture must match machine.architecture"
+                )
+            if (
+                self.installation.target_os is not None
+                and self.guest_runtime.target_os != self.installation.target_os
+            ):
+                raise ProvisioningError(
+                    "guest_runtime.target_os must match installation.target_os"
+                )
         if self.schema_version != "argus-environment-v1":
             raise ProvisioningError(
                 "schema_version must be 'argus-environment-v1'"
             )
 
     def identity_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "source": self.source.identity_dict(),
             "machine": asdict(self.machine),
             "installation": self.installation.identity_dict(),
         }
+        if self.guest_runtime is not None:
+            payload["guest_runtime"] = self.guest_runtime.identity_dict()
+        return payload
+
+    def require_guest_runtime(self) -> GuestRuntimeIdentity:
+        if self.guest_runtime is None:
+            raise ProvisioningError(
+                "publishable ISO-backed environments require guest_runtime identity"
+            )
+        return self.guest_runtime
 
     def canonical_bytes(self) -> bytes:
         return json.dumps(

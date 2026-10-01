@@ -21,6 +21,7 @@ from typing import Callable, Iterator
 
 from argus.ates import RunId
 from argus.ates.store import _run_directory_key
+from argus.provisioning.build_payload import BuildPayload, create_build_payload
 from argus.provisioning.evidence import AtesProvisioningRecorder, verify_provisioning_evidence
 from argus.provisioning.integrity import verify_regular_file
 from argus.provisioning.media import verify_installation_media
@@ -118,13 +119,13 @@ def _copy_verified_media(definition: EnvironmentDefinition, destination: Path) -
 def publish_derived_image(
     definition: EnvironmentDefinition,
     plan: ProvisioningPlan,
-    install: Callable[[Path, Path], None],
+    install: Callable[[Path, Path, BuildPayload], None],
     *,
     validate_baseline: Callable[[Path], None] | None = None,
 ) -> ProvisioningResult:
     """Stage media, build privately, then publish image and manifest together.
 
-    ``install(iso, image)`` must return only after the installer VM has shut
+    ``install(iso, image, build_payload)`` must return only after the installer VM has shut
     down and all provider-owned mutable resources have been destroyed. It must
     clean those resources in a ``finally`` block even on cancellation.
     The baseline check must boot a disposable child of the candidate image and
@@ -157,11 +158,14 @@ def publish_derived_image(
             image = workspace / plan.image_path.name
             recorder.begin_stage("media_verified")
             _copy_verified_media(definition, staged_iso)
+            build_payload = create_build_payload(
+                definition, workspace / "build-payload"
+            )
             recorder.complete_stage("media_verified")
             recorder.begin_stage("provider_selected")
             recorder.complete_stage("provider_selected")
             recorder.begin_stage("installation")
-            install(staged_iso, image)
+            install(staged_iso, image, build_payload)
             if not image.is_file() or image.is_symlink():
                 raise ProvisioningError("installer did not produce a regular base image")
             recorder.complete_stage("installation")
@@ -190,6 +194,7 @@ def publish_derived_image(
                 evidence_run_id=str(recorder.run_id),
             )
             staged_iso.unlink()
+            _remove_private_dir(build_payload.root)
             with (workspace / "manifest.json").open("x", encoding="utf-8") as handle:
                 json.dump(asdict(manifest), handle, sort_keys=True, separators=(",", ":"))
                 handle.flush()

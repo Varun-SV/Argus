@@ -9,6 +9,7 @@ import yaml
 
 from argus.provisioning.model import (
     EnvironmentDefinition,
+    GuestRuntimeIdentity,
     InstallationMediaSource,
     InstallationSpec,
     MachineSpec,
@@ -47,7 +48,7 @@ def environment_definition_from_mapping(value: Mapping[str, Any]) -> Environment
     root = _strict_mapping(
         value,
         "environment",
-        {"schema_version", "name", "source", "machine", "installation"},
+        {"schema_version", "name", "source", "machine", "installation", "guest_runtime"},
         required={"name", "source"},
     )
 
@@ -76,6 +77,31 @@ def environment_definition_from_mapping(value: Mapping[str, Any]) -> Environment
             "network_mode",
         },
     )
+    guest_runtime = None
+    if "guest_runtime" in root:
+        runtime = _strict_mapping(
+            root["guest_runtime"],
+            "guest_runtime",
+            {
+                "bundle_path",
+                "runtime_bundle_sha256",
+                "runtime_version",
+                "target_os",
+                "target_architecture",
+                "bundle_format_version",
+                "bootstrap_schema_version",
+                "bootstrap_service_policy_version",
+                "runtime_installation_policy_version",
+            },
+            required={
+                "bundle_path",
+                "runtime_bundle_sha256",
+                "runtime_version",
+                "target_os",
+            },
+        )
+        guest_runtime = GuestRuntimeIdentity(**runtime)
+
     installation = _strict_mapping(
         root.get("installation", {}),
         "installation",
@@ -100,6 +126,7 @@ def environment_definition_from_mapping(value: Mapping[str, Any]) -> Environment
         source=InstallationMediaSource(**source),
         machine=MachineSpec(**machine),
         installation=InstallationSpec(**installation),
+        guest_runtime=guest_runtime,
     )
 
 

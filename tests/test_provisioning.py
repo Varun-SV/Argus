@@ -16,6 +16,7 @@ from argus.capsule.hyperv import HyperVProvider
 from argus.provisioning import (
     DerivedImageManifest,
     EnvironmentDefinition,
+    GuestRuntimeIdentity,
     InstallationMediaSource,
     InstallationSpec,
     MachineSpec,
@@ -23,8 +24,11 @@ from argus.provisioning import (
     ProvisioningProviderCapabilities,
     build_provisioning_plan,
     capsule_settings_from_derived_image,
+    create_build_payload,
+    create_guest_runtime_bundle,
     derived_image_advertisement,
     environment_definition_from_mapping,
+    verify_guest_runtime_bundle,
     verify_installation_media,
 )
 from argus.provisioning.build import publish_derived_image
@@ -35,6 +39,35 @@ from argus.provisioning.providers import HyperVProvisioner, LibvirtProvisioner
 
 def _digest(data: bytes) -> str:
     return sha256(data).hexdigest()
+
+
+def _guest_runtime(
+    tmp_path: Path,
+    target_os: str = "windows-11",
+) -> GuestRuntimeIdentity:
+    payload = tmp_path / f"runtime-{target_os}"
+    entrypoint = payload / "bin" / "argus-guest-agent.py"
+    entrypoint.parent.mkdir(parents=True, exist_ok=True)
+    entrypoint.write_text(
+        "print('argus guest runtime')\n",
+        encoding="utf-8",
+    )
+    bundle = tmp_path / f"argus-runtime-{target_os}.zip"
+    if not bundle.exists():
+        create_guest_runtime_bundle(
+            payload,
+            bundle,
+            runtime_version="0.1.0-dev.0",
+            target_os=target_os,
+            target_architecture="x86_64",
+            entrypoint="bin/argus-guest-agent.py",
+        )
+    return GuestRuntimeIdentity(
+        bundle_path=str(bundle),
+        runtime_bundle_sha256=_digest(bundle.read_bytes()),
+        runtime_version="0.1.0-dev.0",
+        target_os=target_os,
+    )
 
 
 def _definition(tmp_path: Path, **overrides) -> EnvironmentDefinition:
@@ -66,6 +99,7 @@ def _definition(tmp_path: Path, **overrides) -> EnvironmentDefinition:
             update_policy="frozen",
             credential_ref="secret://argus/windows-lab",
         ),
+        "guest_runtime": _guest_runtime(tmp_path),
     }
     values.update(overrides)
     return EnvironmentDefinition(**values)
@@ -101,6 +135,67 @@ def _runtime_definition(tmp_path: Path, provider: str = "hyperv") -> Environment
         machine=machine,
         installation=InstallationSpec(unattended=False, update_policy="manual"),
     )
+
+
+def test_guest_runtime_identity_changes_environment_identity(
+    tmp_path: Path,
+) -> None:
+    first = _definition(tmp_path)
+    assert first.guest_runtime is not None
+    second = replace(
+        first,
+        guest_runtime=replace(
+            first.guest_runtime,
+            runtime_version="0.1.1",
+        ),
+    )
+    assert first.environment_id != second.environment_id
+
+
+def test_guest_runtime_bundle_verifies_payload_and_manifest(
+    tmp_path: Path,
+) -> None:
+    definition = _definition(tmp_path)
+    runtime = definition.require_guest_runtime()
+    verified = verify_guest_runtime_bundle(
+        runtime,
+        allowed_roots=(tmp_path,),
+    )
+    assert verified.file.sha256 == runtime.runtime_bundle_sha256
+    assert verified.manifest.runtime_version == runtime.runtime_version
+    assert verified.manifest.entrypoint == "bin/argus-guest-agent.py"
+    assert "bin/argus-guest-agent.py" in verified.payload_files
+
+
+def test_build_payload_stages_exact_runtime_without_secrets(
+    tmp_path: Path,
+) -> None:
+    definition = _definition(tmp_path)
+    payload = create_build_payload(
+        definition,
+        tmp_path / "build-payload",
+    )
+    assert payload.runtime_bundle_path.read_bytes() == Path(
+        definition.require_guest_runtime().bundle_path
+    ).read_bytes()
+    text = payload.manifest_path.read_text(encoding="utf-8")
+    assert definition.environment_id in text
+    assert "secret://" not in text
+    assert "windows-lab" not in text
+
+
+def test_guest_runtime_bundle_tampering_fails_closed(
+    tmp_path: Path,
+) -> None:
+    definition = _definition(tmp_path)
+    runtime = definition.require_guest_runtime()
+    bundle = Path(runtime.bundle_path)
+    bundle.write_bytes(bundle.read_bytes() + b"tamper")
+    with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
+        verify_guest_runtime_bundle(
+            runtime,
+            allowed_roots=(tmp_path,),
+        )
 
 
 def test_environment_identity_uses_content_not_source_path_or_secret_ref(tmp_path: Path) -> None:
@@ -548,7 +643,7 @@ def test_build_publishes_once_and_rejects_corrupt_cache(tmp_path: Path, monkeypa
     )
     calls = []
 
-    def install(iso: Path, image: Path) -> None:
+    def install(iso: Path, image: Path, payload) -> None:
         assert iso.read_bytes() == b"installation-media"
         calls.append(iso)
         image.write_bytes(b"installed-os")
@@ -577,7 +672,7 @@ def test_publication_requires_booted_baseline_and_rejects_pre_baseline_cache(
         definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
     )
 
-    def install(iso: Path, image: Path) -> None:
+    def install(iso: Path, image: Path, payload) -> None:
         image.write_bytes(b"blank, structurally valid disk")
 
     def reject_baseline(image: Path) -> None:
@@ -665,7 +760,7 @@ def test_failed_build_removes_private_resources_and_can_retry(tmp_path: Path, mo
         definition, provider.capabilities(), output_format="qcow2", cache_root=tmp_path / "cache"
     )
 
-    def fail(iso: Path, image: Path) -> None:
+    def fail(iso: Path, image: Path, payload) -> None:
         image.write_bytes(b"partial")
         raise ProvisioningError("installer failed")
 
@@ -674,7 +769,7 @@ def test_failed_build_removes_private_resources_and_can_retry(tmp_path: Path, mo
     assert not plan.cache_dir.exists()
     assert not list(plan.cache_dir.parent.glob(".building-*"))
     assert publish_derived_image(
-        definition, plan, lambda iso, image: image.write_bytes(b"retry image"),
+        definition, plan, lambda iso, image, payload: image.write_bytes(b"retry image"),
         validate_baseline=lambda image: None,
     ).manifest.image_sha256 == _digest(b"retry image")
 
@@ -691,7 +786,7 @@ def test_concurrent_same_key_builds_publish_one_image(tmp_path: Path, monkeypatc
     release = threading.Event()
     calls = []
 
-    def install(iso: Path, image: Path) -> None:
+    def install(iso: Path, image: Path, payload) -> None:
         calls.append(image)
         entered.set()
         assert release.wait(5)
@@ -731,7 +826,7 @@ def test_media_swap_before_staging_does_not_publish(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(build_module, "verify_installation_media", swap_after_check)
     with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
         publish_derived_image(
-            definition, plan, lambda iso, image: image.write_bytes(b"should not run"),
+            definition, plan, lambda iso, image, payload: image.write_bytes(b"should not run"),
             validate_baseline=lambda image: None,
         )
     assert not plan.cache_dir.exists()
@@ -928,7 +1023,7 @@ def test_fleet_advertisement_uses_verified_image_digest_not_alias(tmp_path: Path
         definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
     )
     result = publish_derived_image(
-        definition, plan, lambda iso, image: image.write_bytes(b"guest os"),
+        definition, plan, lambda iso, image, payload: image.write_bytes(b"guest os"),
         validate_baseline=lambda image: None,
     )
     first = derived_image_advertisement(

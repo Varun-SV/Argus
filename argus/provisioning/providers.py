@@ -248,7 +248,7 @@ class HyperVProvisioner(EnvironmentProvisioner):
                     settings=self._baseline_settings,
                 )
         return publish_derived_image(
-            definition, plan, lambda iso, image: self._install(definition, iso, image),
+            definition, plan, lambda iso, image, build_payload: self._install(definition, iso, image),
             validate_baseline=validate,
         )
 
@@ -533,7 +533,7 @@ class LibvirtProvisioner(EnvironmentProvisioner):
                 )
         return publish_derived_image(
             definition, plan,
-            lambda iso, image: (
+            lambda iso, image, build_payload: (
                 self._install_unattended(definition, iso, image, plan.output_format, profile)
                 if profile is not None else
                 self._install(definition, iso, image, plan.output_format)
