@@ -545,9 +545,12 @@ def run_settings_from_text(text: str) -> tuple:
 
 
 def _question_about_action(text: str) -> bool:
-    """Questions about a feature are not authorization to perform it."""
-    return bool(re.match(r"^\s*(?:what|which|why|how|when|where)\b", text, re.IGNORECASE)
-                or re.match(r"^\s*(?:do|should|would|could|can)\s+(?:i|we)\b", text, re.IGNORECASE))
+    """Questions/advice prompts are not authorization to perform an action."""
+    return bool(
+        re.match(r"^\s*(?:what|which|why|how|when|where)\b", text, re.IGNORECASE)
+        or re.match(r"^\s*(?:do|should|would|could|can)\s+(?:i|we)\b", text, re.IGNORECASE)
+        or re.match(r"^\s*should\s+(?:you|argus)\b", text, re.IGNORECASE)
+    )
 
 
 def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
@@ -603,7 +606,7 @@ def _authorized_simple_action(text: str, action: str) -> bool:
         return False
     action_words = {
         "stop": r"stop|cancel|abort",
-        "save_test": r"save|write",
+        "save_test": r"save|persist",
         "init": r"init|initialize|initialise|setup|set\s+up|scaffold",
         "write_test": r"write|draft|create|make",
     }
@@ -615,11 +618,86 @@ def _authorized_simple_action(text: str, action: str) -> bool:
         return False
     patterns = {
         "stop": r"\b(?:stop|cancel|abort)\b",
-        "save_test": r"\b(?:save|write)\b[^.!?]{0,80}\b(?:draft|test|spec|it)\b|^\s*(?:please\s+)?save\b",
+        "save_test": (
+            r"\b(?:save|persist)\b(?:\s+(?:this|that|the|current))?"
+            r"(?:\s+(?:draft|test|spec|it))?\b"
+        ),
         "init": r"\b(?:init|initialize|initialise|setup|set\s+up|scaffold)\b[^.!?]{0,80}\b(?:argus|project|workspace)\b",
         "write_test": r"\b(?:write|draft|create|make)\b[^.!?]{0,80}\b(?:test|spec)\b",
     }
     return bool(re.search(patterns[action], text, re.IGNORECASE))
+
+
+def _authorized_explain(text: str) -> bool:
+    """Authorize disclosure of prior failure details only for an explicit explanation request."""
+    if _question_about_action(text):
+        return False
+    if re.search(
+        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:explain|why|failure|failed|error)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    return bool(
+        re.search(r"\b(?:explain|analy[sz]e)\b[^.!?]{0,100}\b(?:failure|failed|error|why)\b", text, re.IGNORECASE)
+        or re.search(r"\bwhy\b[^.!?]{0,100}\b(?:fail(?:ed|ure)?|error(?:ed)?)\b", text, re.IGNORECASE)
+        or re.search(r"\b(?:why|explain)\s+(?:did\s+)?(?:it|that|the\s+test|the\s+run)\s+fail\b", text, re.IGNORECASE)
+    )
+
+
+def _environment_change_from_text(text: str) -> tuple:
+    """Return an explicitly requested session-environment change, or (None, problem)."""
+    if _question_about_action(text):
+        return None, None
+    if re.search(
+        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:switch|change|set|use|select|choose)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None, None
+
+    change = re.search(
+        r"(?:^|[.!?;]\s*|\bplease\s+)"
+        r"(?:switch|change|set|select|choose)\b[^.!?]{0,80}"
+        r"(?:\bto\b|\bas\b|\benvironment\b|\bmode\b)[^.!?]{0,40}"
+        r"\b(?P<choice>local|capsule|hyper-?v|libvirt)\b"
+        r"|^\s*(?:please\s+)?use\s+(?P<use_choice>local|capsule|hyper-?v|libvirt)"
+        r"(?:\s+(?:mode|environment|for\s+argus))?\s*[.!]?\s*$",
+        text,
+        re.IGNORECASE,
+    )
+    if not change:
+        return None, None
+
+    choice = (change.group("choice") or change.group("use_choice")).lower().replace("-", "")
+    if choice == "local":
+        return {"environment": "local"}, None
+    provider = choice if choice in ("hyperv", "libvirt") else "auto"
+    return {"environment": "capsule", "capsule_provider": provider}, None
+
+
+def _provider_change_from_text(text: str, configured: Sequence[str]) -> Optional[str]:
+    """Return the explicitly requested provider; descriptive mentions do not switch."""
+    if _question_about_action(text):
+        return None
+    if re.search(
+        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:use|switch|change|select|choose)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None
+
+    for provider in configured:
+        p = re.escape(provider)
+        patterns = (
+            rf"^\s*(?:please\s+)?(?:switch|change)\s+(?:the\s+)?(?:provider|model)?\s*to\s+{p}\b",
+            rf"^\s*(?:please\s+)?(?:select|choose)\s+{p}(?:\s+(?:as\s+)?(?:the\s+)?(?:provider|model))?\b",
+            rf"^\s*(?:please\s+)?use\s+{p}(?:\s+(?:for\s+argus|as\s+(?:the\s+)?(?:provider|model)))?\s*[.!]?\s*$",
+            rf"\b(?:switch|change)\s+(?:argus\s+)?(?:provider|model)\s+to\s+{p}\b",
+        )
+        if any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns):
+            return provider
+    return None
 
 
 def _watch_action_from_text(text: str) -> Optional[str]:
@@ -675,8 +753,13 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     if name not in INTENTS:
         return intent("chat", reply="I'm not sure what to do with that. Type /help to see what Argus can do.")
 
-    if name in ("help", "explain", "evidence", "report", "tokens", "providers"):
+    if name in ("help", "evidence", "report", "tokens", "providers"):
         return intent(name)
+
+    if name == "explain":
+        if _authorized_explain(text):
+            return intent("explain")
+        return intent("chat", reply="Ask me explicitly to explain a failure, e.g. 'why did the last test fail?'.")
 
     if name in ("stop", "save_test", "init"):
         if _authorized_simple_action(text, name):
@@ -764,39 +847,20 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     if name == "switch_provider":
         wanted = str(args.get("provider") or "").lower().strip()
         configured = [str(p).lower() for p in context.get("providers") or []]
-        named = next((p for p in configured if re.search(
-            r"(?<![\w-])" + re.escape(p) + r"(?![\w-])", text, re.IGNORECASE)), None)
-        negated = re.search(
-            r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:use|switch|change|select|choose)\b",
-            text,
-            re.IGNORECASE,
-        )
-        authorized = bool(not negated and named and re.search(
-            r"\b(?:use|switch|change|select|choose)\b[^.!?]{0,80}\b(?:provider|model)?\b",
-            text,
-            re.IGNORECASE,
-        ))
-        if not authorized or named != wanted:
-            return intent("chat", reply="Name the configured provider you want me to switch to explicitly.")
+        requested = _provider_change_from_text(text, configured)
+        if requested is None or requested != wanted:
+            return intent("chat", reply="Ask me explicitly to switch Argus to a configured provider.")
         if wanted not in configured:
             return intent("chat", reply=f"'{wanted or '?'}' isn't configured in .argus/config.yaml. Configured: {', '.join(configured) or 'none'}.")
         return intent("switch_provider", provider=wanted)
 
     if name == "environment":
-        settings, problem = run_settings_from_text(text)
-        if not problem and "environment" not in settings:
-            # "switch to local" / "use a hyper-v capsule": read the choice from the user's words.
-            words = {w.lower().replace("-", "") for w in re.findall(
-                r"\b(?:local|capsule|hyper-?v|libvirt)\b", text, re.IGNORECASE)}
-            if words == {"local"}:
-                settings["environment"] = "local"
-            elif words and "local" not in words:
-                cap = next((w for w in ("hyperv", "libvirt") if w in words), "auto")
-                settings.update(environment="capsule", capsule_provider=cap)
-        if problem or "environment" not in settings:
-            return intent("chat", reply=problem or "Local or a Capsule? Try /env local, /env capsule, /env hyperv or /env libvirt.")
-        if settings["environment"] == "capsule":
-            settings.setdefault("capsule_provider", "auto")  # as /env capsule does
+        settings, problem = _environment_change_from_text(text)
+        if problem or not settings:
+            return intent(
+                "chat",
+                reply=problem or "Ask me explicitly to switch the session environment, e.g. 'switch to local' or 'use a libvirt capsule'.",
+            )
         return intent("environment", **settings)
 
     if name == "watch":
