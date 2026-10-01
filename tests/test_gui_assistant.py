@@ -333,6 +333,8 @@ def test_explain_requires_explicit_failure_explanation_request():
     assert unrelated["intent"] == "chat"
     explicit = validate_intent({"intent": "explain"}, "why did the last test fail?", CONTEXT)
     assert explicit == {"intent": "explain", "args": {}}
+    advisory = validate_intent({"intent": "explain"}, "should you explain the last failure?", CONTEXT)
+    assert advisory["intent"] == "chat"
 
 
 def test_environment_intent_requires_an_explicit_picker_change():
@@ -370,6 +372,7 @@ def test_write_test_wording_cannot_save_an_existing_draft():
         "intent": "save_test", "args": {}}
     assert validate_intent({"intent": "save_test"}, "persist the current spec", context) == {
         "intent": "save_test", "args": {}}
+    assert validate_intent({"intent": "save_test"}, "save money", context)["intent"] == "chat"
 
 
 def test_advisory_should_you_run_is_not_execution_authorization():
