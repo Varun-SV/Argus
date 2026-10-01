@@ -172,8 +172,10 @@ class UbuntuAutoinstallProfile:
             + " --bootstrap-service "
             + "--runtime-identity-file /etc/argus/runtime-identity.json "
             + "--control-state-file /var/lib/argus/control-state.json\n"
-            "Restart=on-failure\n"
-            "RestartSec=5\n"
+            # Bootstrap token/TLS key are one-attempt material. If the agent
+            # exits after establishment, local restart must not try to reuse
+            # the same generation; the host must establish a new generation.
+            "Restart=no\n"
             "NoNewPrivileges=true\n\n"
             "[Install]\n"
             "WantedBy=multi-user.target\n"

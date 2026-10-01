@@ -189,6 +189,8 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
         in user_data_seen[0]
     )
     assert "argus-bootstrap.service" in user_data_seen[0]
+    assert "Restart=no" in user_data_seen[0]
+    assert "Restart=on-failure" not in user_data_seen[0]
     assert "/target/etc/machine-id" in user_data_seen[0]
     assert "usermod --password '!'" in user_data_seen[0]
     assert "passwd --lock" not in user_data_seen[0]

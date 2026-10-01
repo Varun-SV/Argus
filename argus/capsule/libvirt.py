@@ -1117,10 +1117,13 @@ class LibvirtProvider(CapsuleProvider):
             provider_resource_identity=handle.provider_resource_identity,
             mutable_disk_identity=handle.mutable_disk_identity,
         )
-        (root / "failure-capsule.json").write_text(
-            json.dumps(failure.to_dict(), indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        manifest = root / "failure-capsule.json"
+        with manifest.open("x", encoding="utf-8") as stream:
+            json.dump(failure.to_dict(), stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        manifest.chmod(0o444)
         return failure
 
     def destroy(self, handle: CapsuleHandle) -> None:
