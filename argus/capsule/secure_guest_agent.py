@@ -22,12 +22,14 @@ import platform
 import re
 import ssl
 import subprocess
+import threading
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 from argus.adapters.base import AdapterError
+from argus.capsule.control import GuestControlStateStore, validate_capsule_id
 from argus.capsule.files import validate_session_id
 from argus.capsule.guest_agent import (
     GuestAgentHandler,
@@ -138,17 +140,42 @@ def _assert_powershell_direct_disabled() -> None:
 
 
 class SecureGuestAgentServer(GuestAgentServer):
-    def __init__(self, address, token: str, state=None):
+    def __init__(
+        self,
+        address,
+        token: str,
+        state=None,
+        *,
+        capsule_id: str = "",
+        control_generation: int = 0,
+        execution_mode: str = "",
+        runtime_identity: str = "",
+        control_state_store: GuestControlStateStore | None = None,
+    ):
         self.token = token
         self.state = state or GuestAgentState()
         self.auth_session_id = ""
+        self.capsule_id = capsule_id
+        self.control_generation = int(control_generation or 0)
+        self.execution_mode = execution_mode
+        self.runtime_identity = runtime_identity
+        self.control_state_store = control_state_store
+        self.auth_lock = threading.RLock()
         ThreadingHTTPServer.__init__(self, address, SecureGuestAgentHandler)
 
 
 class SecureGuestAgentHandler(GuestAgentHandler):
     server: SecureGuestAgentServer
 
+    def _authorized(self) -> bool:
+        with self.server.auth_lock:
+            return super()._authorized()
+
     def _rotate_auth(self) -> None:
+        with self.server.auth_lock:
+            self._rotate_auth_locked()
+
+    def _rotate_auth_locked(self) -> None:
         if not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
             return
@@ -161,6 +188,28 @@ class SecureGuestAgentHandler(GuestAgentHandler):
             raise AdapterError("guest auth is already bound to another Capsule session")
         if self.server.auth_session_id == session_id:
             raise AdapterError("guest auth has already been rotated for this Capsule session")
+
+        if self.server.control_state_store is not None:
+            capsule_id = validate_capsule_id(str(body.get("capsule_id") or ""))
+            try:
+                generation = int(body.get("control_generation"))
+            except (TypeError, ValueError) as exc:
+                raise AdapterError("Capsule control generation is invalid") from exc
+            execution_mode = str(body.get("execution_mode") or "")
+            if (
+                capsule_id != self.server.capsule_id
+                or generation != self.server.control_generation
+                or execution_mode != self.server.execution_mode
+            ):
+                raise AdapterError(
+                    "auth rotation does not match the bootstrapped Capsule generation"
+                )
+            self.server.control_state_store.commit_generation(
+                capsule_id=capsule_id,
+                generation=generation,
+                session_id=session_id,
+                execution_mode=execution_mode,
+            )
 
         self.server.token = token
         self.server.auth_session_id = session_id
@@ -177,6 +226,10 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                 "service": "argus-guest-agent",
                 "secure": True,
                 "auth_session_id": self.server.auth_session_id,
+                "capsule_id": self.server.capsule_id,
+                "control_generation": self.server.control_generation,
+                "execution_mode": self.server.execution_mode,
+                "runtime_identity": self.server.runtime_identity,
                 "guest_os": platform.system().lower(),
                 "architecture": (
                     "x86_64" if platform.machine().lower() in {"amd64", "x86_64"}
