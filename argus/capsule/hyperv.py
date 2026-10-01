@@ -309,7 +309,7 @@ class HyperVProvider(CapsuleProvider):
         ).strip().splitlines()[-1]
         retained_at = datetime.now(timezone.utc).isoformat()
         failure = FailureCapsule(
-            failure_id=handle.session_id,
+            failure_id=handle.capsule_id or handle.session_id,
             session_id=handle.session_id,
             provider=self.provider_name,
             vm_name=handle.vm_name,
@@ -317,6 +317,11 @@ class HyperVProvider(CapsuleProvider):
             reason=(reason or "test failure")[:2000],
             retained_at=retained_at,
             vm_state=vm_state or "Off",
+            capsule_id=handle.capsule_id,
+            failed_generation=handle.control_generation,
+            execution_mode=handle.execution_mode,
+            provider_resource_identity=handle.provider_resource_identity,
+            mutable_disk_identity=handle.mutable_disk_identity,
         )
         manifest = root / "failure-capsule.json"
         manifest.write_text(
