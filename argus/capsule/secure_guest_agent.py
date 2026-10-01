@@ -433,6 +433,15 @@ class SecureGuestAgentHandler(GuestAgentHandler):
         self._send(HTTPStatus.OK, {"ok": True, **data})
 
     def _dispatch(self) -> None:
+        # The authority lock covers the complete privileged request, not merely
+        # the bearer comparison. A generation rotation therefore happens
+        # strictly before or after every authenticated operation. An older
+        # bearer can never authenticate under N and continue mutating state
+        # while N+1 becomes active.
+        with self.server.auth_lock:
+            self._dispatch_locked()
+
+    def _dispatch_locked(self) -> None:
         parsed = urlparse(self.path)
         try:
             if self.command == "GET" and parsed.path == "/v1/health":

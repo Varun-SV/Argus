@@ -121,6 +121,8 @@ class LifecycleProvider(CapsuleProvider):
 
 class LifecycleClient:
     fail_first_generation = False
+    lose_after_guest_commit = False
+    guest_highwater = 0
     created = []
 
     def __init__(self, endpoint, token, **kwargs):
@@ -133,6 +135,8 @@ class LifecycleClient:
     def wait_until_ready(self, timeout_seconds):
         provider = _CURRENT_PROVIDER[0]
         self.request = provider.starts[-1]
+        if self.request.control_generation <= LifecycleClient.guest_highwater:
+            raise RuntimeError("stale generation reached guest")
         if (
             LifecycleClient.fail_first_generation
             and self.request.control_generation == 1
@@ -153,6 +157,15 @@ class LifecycleClient:
         assert kwargs["capsule_id"] == self.request.capsule_id
         assert kwargs["control_generation"] == self.request.control_generation
         assert kwargs["execution_mode"] == self.request.execution_mode
+        generation = self.request.control_generation
+        LifecycleClient.guest_highwater = generation
+        if (
+            LifecycleClient.lose_after_guest_commit
+            and generation == 1
+        ):
+            raise RuntimeError(
+                "guest committed generation 1 but host lost acknowledgement"
+            )
         self.token = token
 
     def close_session(self):
@@ -182,6 +195,8 @@ def _environment(tmp_path: Path, **overrides):
     _CURRENT_PROVIDER[0] = provider
     LifecycleClient.created.clear()
     LifecycleClient.fail_first_generation = False
+    LifecycleClient.lose_after_guest_commit = False
+    LifecycleClient.guest_highwater = 0
     env = SecureCapsuleExecutionEnvironment(
         "cli",
         _settings(tmp_path, **overrides),
@@ -230,6 +245,27 @@ def test_uncertain_first_generation_is_abandoned_not_reused(
     assert record.highest_reserved_generation == 2
     assert record.last_committed_generation_known_by_host == 2
     assert provider.stops >= 1
+    env.close()
+
+
+def test_guest_commit_with_lost_host_ack_advances_to_fresh_generation(
+    tmp_path: Path,
+) -> None:
+    env, provider = _environment(tmp_path)
+    LifecycleClient.lose_after_guest_commit = True
+
+    env.prepare()
+
+    assert [r.control_generation for r in provider.starts] == [1, 2]
+    assert LifecycleClient.guest_highwater == 2
+    record = CapsuleControlRegistry(
+        env.settings.resolved_control_root
+    ).load(env._capsule_id)
+    assert record.highest_reserved_generation == 2
+    assert record.last_committed_generation_known_by_host == 2
+    assert provider.stops >= 1
+    assert len(provider.attached) == 2
+    assert len(provider.detached) == 2
     env.close()
 
 
