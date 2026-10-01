@@ -662,24 +662,43 @@ def _environment_change_from_text(text: str) -> tuple:
     ):
         return None, None
 
-    change = re.search(
-        r"(?:^|[.!?;]\s*|\bplease\s+)"
-        r"(?:switch|change|set|select|choose)\b[^.!?]{0,80}"
-        r"(?:\bto\b|\bas\b|\benvironment\b|\bmode\b)[^.!?]{0,40}"
-        r"\b(?P<choice>local|capsule|hyper-?v|libvirt)\b"
-        r"|^\s*(?:please\s+)?use\s+(?:a\s+)?(?P<use_choice>local|capsule|hyper-?v|libvirt)"
-        r"(?:\s+capsule)?(?:\s+(?:mode|environment|for\s+argus))?\s*[.!]?\s*$",
-        text,
-        re.IGNORECASE,
+    # First establish that the user actually requested a picker change. Provider
+    # resolution happens afterwards so "libvirt capsule" cannot collapse to the
+    # less-specific plain "capsule" token.
+    change_requested = bool(
+        re.search(
+            r"(?:^|[.!?;]\s*|\bplease\s+)"
+            r"(?:switch|change|set|select|choose)\b[^.!?]{0,100}"
+            r"\b(?:local|capsule|hyper-?v|libvirt)\b",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"^\s*(?:please\s+)?use\s+(?:a\s+)?"
+            r"(?:local|capsule|hyper-?v|libvirt)\b"
+            r"(?:\s+capsule)?(?:\s+(?:mode|environment|for\s+argus))?\s*[.!]?\s*$",
+            text,
+            re.IGNORECASE,
+        )
     )
-    if not change:
+    if not change_requested:
         return None, None
 
-    choice = (change.group("choice") or change.group("use_choice")).lower().replace("-", "")
-    if choice == "local":
+    words = {
+        w.lower().replace("-", "")
+        for w in re.findall(r"\b(?:local|capsule|hyper-?v|libvirt)\b", text, re.IGNORECASE)
+    }
+    if "local" in words and ({"capsule", "hyperv", "libvirt"} & words):
+        return None, "You named both Local and a Capsule. Pick one environment."
+    if "libvirt" in words:
+        return {"environment": "capsule", "capsule_provider": "libvirt"}, None
+    if "hyperv" in words:
+        return {"environment": "capsule", "capsule_provider": "hyperv"}, None
+    if "capsule" in words:
+        return {"environment": "capsule", "capsule_provider": "auto"}, None
+    if "local" in words:
         return {"environment": "local"}, None
-    provider = choice if choice in ("hyperv", "libvirt") else "auto"
-    return {"environment": "capsule", "capsule_provider": provider}, None
+    return None, None
 
 
 def _provider_change_from_text(text: str, configured: Sequence[str]) -> Optional[str]:
