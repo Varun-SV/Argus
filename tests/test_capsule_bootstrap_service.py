@@ -66,8 +66,25 @@ def _runtime_identity(path: Path, value: str = _RUNTIME_ID) -> Path:
     return path
 
 
+@pytest.fixture
+def mounted_directory_media(monkeypatch):
+    """Model provider-mounted media for staging tests on every host OS.
+
+    Native fixed-disk/ACL intake is tested separately. A fixture directory is
+    not a Windows bootstrap volume and must never be accepted in production.
+    """
+    from argus.capsule import bootstrap_service
+
+    @contextmanager
+    def source(root, **_kwargs):
+        yield Path(root)
+
+    monkeypatch.setattr(bootstrap_service, "_bootstrap_source_root", source)
+
+
 def test_bootstrap_service_stages_media_and_rejects_replay(
     tmp_path: Path,
+    mounted_directory_media,
 ) -> None:
     attempt = create_bootstrap_attempt(
         tmp_path / "attempts",
@@ -109,6 +126,7 @@ def test_bootstrap_service_stages_media_and_rejects_replay(
 
 def test_bootstrap_service_rejects_runtime_identity_mismatch(
     tmp_path: Path,
+    mounted_directory_media,
 ) -> None:
     attempt = create_bootstrap_attempt(
         tmp_path / "attempts",
