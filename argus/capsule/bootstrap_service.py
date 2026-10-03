@@ -141,6 +141,18 @@ def _copy_regular(source: Path, destination: Path) -> None:
         destination.chmod(0o600)
 
 
+def _validate_linux_bootstrap_device(device: Path) -> None:
+    try:
+        info = device.stat()
+    except OSError:
+        raise CapsuleError("Capsule bootstrap block device is unavailable") from None
+    # Named-user ACL grants require an effective ACL mask, reflected in stat's
+    # group bits. Requiring 0600 therefore also rejects an effective uaccess ACL.
+    if (not stat.S_ISBLK(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o600):
+        raise CapsuleError("Capsule bootstrap block device must be root-only")
+
+
 def _stage_from_root(source_root: Path, staging_parent: Path) -> Path:
     manifest = load_bootstrap_manifest(source_root)
     ensure_private_directory(staging_parent)
@@ -171,9 +183,11 @@ def _stage_from_root(source_root: Path, staging_parent: Path) -> Path:
 
 def _windows_bootstrap_root() -> Path:
     kernel32 = ctypes.windll.kernel32
+    candidates = []
     for code in range(ord("D"), ord("Z") + 1):
         root = f"{chr(code)}:\\"
         volume_name = ctypes.create_unicode_buffer(261)
+        filesystem = ctypes.create_unicode_buffer(261)
         ok = kernel32.GetVolumeInformationW(
             ctypes.c_wchar_p(root),
             volume_name,
@@ -181,12 +195,36 @@ def _windows_bootstrap_root() -> Path:
             None,
             None,
             None,
-            None,
-            0,
+            filesystem,
+            len(filesystem),
         )
         if ok and volume_name.value == _BOOTSTRAP_LABEL:
-            return Path(root)
+            _validate_windows_bootstrap_root(Path(root))
+            candidates.append(Path(root))
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        raise CapsuleError("ARGUS_BOOTSTRAP media identity is ambiguous")
     raise CapsuleError("ARGUS_BOOTSTRAP media was not found")
+
+
+def _validate_windows_bootstrap_root(root: Path) -> None:
+    # Explicit service roots obey the same contract as auto-discovered media.
+    if str(root) != root.anchor:
+        raise CapsuleError("Windows bootstrap root must be an entire fixed NTFS volume")
+    kernel32 = ctypes.windll.kernel32
+    label = ctypes.create_unicode_buffer(261)
+    filesystem = ctypes.create_unicode_buffer(261)
+    ok = kernel32.GetVolumeInformationW(
+        ctypes.c_wchar_p(str(root)), label, len(label), None, None, None,
+        filesystem, len(filesystem),
+    )
+    if (not ok or label.value != _BOOTSTRAP_LABEL or filesystem.value != "NTFS"
+            or kernel32.GetDriveTypeW(ctypes.c_wchar_p(str(root))) != 3):
+        raise CapsuleError("Windows bootstrap requires a fixed NTFS disk")
+    from argus.capsule.windows_bootstrap import validate_windows_bootstrap_acl
+
+    validate_windows_bootstrap_acl(root)
 
 
 @contextmanager
@@ -200,6 +238,8 @@ def _bootstrap_source_root(
         root = Path(configured).expanduser()
         if not root.is_dir() or root.is_symlink():
             raise CapsuleError("configured Capsule bootstrap root is invalid")
+        if platform.system().lower() == "windows":
+            _validate_windows_bootstrap_root(root.resolve())
         yield root.resolve()
         return
 
@@ -210,6 +250,7 @@ def _bootstrap_source_root(
     device = Path("/dev/disk/by-label") / _BOOTSTRAP_LABEL
     if not device.exists():
         raise CapsuleError("ARGUS_BOOTSTRAP block device was not found")
+    _validate_linux_bootstrap_device(device)
     mount_parent = Path("/run/argus")
     mount_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     mountpoint = mount_parent / f"bootstrap-media-{uuid4().hex}"
@@ -248,10 +289,11 @@ def prepare_bootstrap_service(
     installed_runtime = _installed_runtime_identity(runtime_file)
     destination_parent = Path(staging_parent or _default_staging_parent())
 
-    with _bootstrap_source_root(bootstrap_root, runner=runner) as source_root:
-        staging = _stage_from_root(source_root, destination_parent)
-
+    staging = None
     try:
+        with _bootstrap_source_root(bootstrap_root, runner=runner) as source_root:
+            staging = _stage_from_root(source_root, destination_parent)
+
         manifest = load_bootstrap_manifest(staging)
         if manifest.runtime_identity != installed_runtime:
             raise CapsuleError(
@@ -280,5 +322,6 @@ def prepare_bootstrap_service(
             control_state_store=state_store,
         )
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
         raise

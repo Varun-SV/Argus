@@ -34,6 +34,19 @@ class IsolatedHyperVProvider(HyperVProvider):
     authority, not to make broadly connected Capsule networking convenient.
     """
 
+    bootstrap_media_suffix = ".vhdx"
+
+    def create_bootstrap_media(self, source: Path, output: Path) -> Path:
+        from argus.capsule.windows_bootstrap import create_windows_bootstrap_disk
+
+        self._ensure_host()
+        return create_windows_bootstrap_disk(source, output, self._run_ps)
+
+    def destroy_bootstrap_media(self, media: Path) -> None:
+        from argus.capsule.windows_bootstrap import destroy_windows_bootstrap_disk
+
+        destroy_windows_bootstrap_disk(media, self._run_ps)
+
     def _validate_isolation_settings(self, request: CapsuleRequest) -> tuple[str, tuple[str, ...]]:
         settings = request.settings
         if not settings.disable_guest_file_copy:
@@ -497,8 +510,8 @@ class IsolatedHyperVProvider(HyperVProvider):
 
     def attach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
         media = Path(media).resolve()
-        if not media.is_file():
-            raise CapsuleError("Capsule bootstrap ISO is missing")
+        if not media.is_file() or media.suffix.lower() != ".vhdx":
+            raise CapsuleError("protected Capsule bootstrap VHDX is missing")
         state = self._run_ps(
             f"(Get-VM -Name {_ps_quote(handle.vm_name)} -ErrorAction Stop).State.ToString()",
             15,
@@ -506,23 +519,28 @@ class IsolatedHyperVProvider(HyperVProvider):
         if state != "off":
             raise CapsuleError("Hyper-V bootstrap media must be attached while VM is off")
         self._run_ps(
-            f"Add-VMDvdDrive -VMName {_ps_quote(handle.vm_name)} "
-            f"-Path {_ps_quote(str(media))} -ErrorAction Stop | Out-Null; "
-            f"$d=Get-VMDvdDrive -VMName {_ps_quote(handle.vm_name)} "
+            "$ErrorActionPreference='Stop'; "
+            f"if ((Get-VHD -Path {_ps_quote(str(media))} -ErrorAction Stop).Attached) "
+            "{ throw 'bootstrap disk is already attached' }; "
+            f"Add-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
+            f"-ControllerType SCSI -Path {_ps_quote(str(media))} -ErrorAction Stop | Out-Null; "
+            f"$d=Get-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
             f"| Where-Object {{ $_.Path -eq {_ps_quote(str(media))} }}; "
-            "if (@($d).Count -ne 1) { throw 'bootstrap DVD attachment failed' }",
+            "if (@($d).Count -ne 1 -or $d.ControllerType -ne 'SCSI') "
+            "{ throw 'bootstrap disk attachment failed' }",
             30,
         )
 
     def detach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
         media = Path(media).resolve()
         self._run_ps(
-            f"$d=Get-VMDvdDrive -VMName {_ps_quote(handle.vm_name)} "
+            "$ErrorActionPreference='Stop'; "
+            f"$d=Get-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
             f"| Where-Object {{ $_.Path -eq {_ps_quote(str(media))} }}; "
-            "if ($d) { $d | Remove-VMDvdDrive -ErrorAction Stop }; "
-            f"$left=Get-VMDvdDrive -VMName {_ps_quote(handle.vm_name)} "
+            "if ($d) { $d | Remove-VMHardDiskDrive -ErrorAction Stop }; "
+            f"$left=Get-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
             f"| Where-Object {{ $_.Path -eq {_ps_quote(str(media))} }}; "
-            "if ($left) { throw 'bootstrap DVD remains attached' }",
+            "if ($left) { throw 'bootstrap disk remains attached' }",
             30,
         )
 

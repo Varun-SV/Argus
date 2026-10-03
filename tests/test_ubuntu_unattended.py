@@ -218,6 +218,12 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
     service = base64.b64decode(shlex.split(service_command)[2]).decode()
     assert "Restart=no" in service
     assert "Restart=on-failure" not in service
+    optical_command = next(command for command in config["late-commands"]
+                           if "72-argus-optical.rules" in command)
+    optical_policy = base64.b64decode(shlex.split(optical_command)[2]).decode()
+    assert 'SUBSYSTEM=="block", ENV{ID_CDROM}=="1", TAG-="uaccess"' in optical_policy
+    assert 'SUBSYSTEM=="scsi_generic"' in optical_policy
+    assert optical_policy.count('OWNER:="root", GROUP:="root", MODE:="0600"') == 2
     assert "/target/etc/machine-id" in user_data_seen[0]
     assert "usermod --password '!'" in user_data_seen[0]
     assert "passwd --lock" not in user_data_seen[0]

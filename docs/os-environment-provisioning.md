@@ -7,13 +7,16 @@ are Hyper-V on Windows and system libvirt/QEMU on Linux, both for x86_64 guests.
 
 > **Windows is currently blocked from production publication and Capsule
 > startup.** Capsule bootstrap media carries a fresh generation bearer and TLS
-> key. The Windows provider currently cannot protect that media from a
-> non-admin target user while it is attached, so its
+> key. A native NTFS VHDX delivery path now replaces the readable bootstrap DVD.
+> Its volume root and payload have protected ACLs granting only SYSTEM and
+> administrators access, and the guest rejects optical/removable media, broad
+> ACLs, and ambiguous media. This boundary has not yet passed the required
+> native retained-startup attack test, so the Windows provider's
 > `protected_bootstrap_media` capability remains false. Provisioned Windows
 > Capsule preparation fails closed before exposing the media, and the Windows
 > image build cannot pass its real secure baseline. Do not treat the Windows
 > runtime image path as complete or reconnectable. The gate can change only
-> after native protected delivery is implemented and verified, including the
+> after native protected delivery is verified, including the
 > retained-startup attack test described below.
 
 An environment definition pins the source ISO, virtual hardware, installation
@@ -43,6 +46,12 @@ JSON containing its SHA-256, target OS/architecture, runtime version, and
 bootstrap policy versions. Copy the digest and bundle path into the matching
 environment definition. Runtime bundles are platform-specific; do not reuse a
 Windows bundle for Ubuntu or vice versa.
+
+The current bootstrap-service and runtime-installation policies are v2. Rebuild
+older bundles and environments; an explicitly pinned v1 policy is rejected,
+including when selecting a previously published image. This prevents an older
+Ubuntu image without optical-device isolation from being reused under the new
+control contract.
 
 ## Define and build an environment
 
@@ -113,12 +122,15 @@ result = provider.provision(definition, plan)
 
 `HyperVProvisioner` accepts an optional `baseline_settings` argument for a real
 secure baseline Capsule, but Windows publication remains blocked until the
-protected-media path is implemented and natively verified.
+protected-media path is natively verified.
 `LibvirtProvisioner(network_name=..., qemu_group=...)` has the corresponding API
 and accepts `baseline_settings`. Libvirt advertises `protected_bootstrap_media=True` after
 the Ubuntu seed removes supplementary target groups and installs a polkit rule
 denying udisks2 actions to the `argus` user; native startup-attack acceptance is
-still required. The providers need the matching host, hypervisor tools, private
+still required. A udev rule also removes optical and SCSI-passthrough `uaccess`
+tags before logind grants desktop access and fixes their ownership/mode to
+root-only. Guest intake rejects exposed block devices before mounting them.
+The providers need the matching host, hypervisor tools, private
 host-only network, and licensed ISO. Libvirt also requires an active non-forwarding system network, local
 `virsh`/`qemu-img`, a QEMU group shared with Argus, and a cache root whose
 ancestors that group can traverse. Provider capability checks fail closed on
@@ -227,11 +239,36 @@ published; teardown uncertainty blocks publication.
 Static checks and mocked provider tests do not establish live host acceptance.
 Release acceptance requires successful installation, generalization, baseline,
 and reuse on supported live Hyper-V/Windows and libvirt/QEMU/Ubuntu hosts; a
-Windows run remains blocked until protected delivery is implemented. On both
+Windows run remains blocked until protected delivery is natively verified. On both
 providers, perform a retained-startup attack test: while bootstrap media is
 still attached during startup, execute as the target user and verify it cannot
 read the fresh bearer or TLS private key before the host detaches the media.
+For Ubuntu, inspect udev tags and effective ACLs after first boot and after media
+reattachment: optical `/dev/sr*` and matching SCSI passthrough `/dev/sg*` nodes
+must remain root:root with mode 0600 and no active-user read grant. Verify the
+root bootstrap service still consumes the media successfully.
 Also require Windows foreground-input comparison and CI coverage for the
 supported build/runtime paths. Record host/provider, media and runtime digests,
 and evidence with each live acceptance run. Operating-system media, licensing,
 activation, and network availability remain the operator's responsibility.
+
+### Native Windows media boundary check
+
+On a dedicated elevated Windows host with Hyper-V and the Windows dependencies,
+the opt-in test below creates and host-mounts a temporary NTFS VHDX. It checks
+privileged access, impersonates an existing dedicated non-admin test account,
+and requires file reads/writes and raw volume/disk reads to be denied. It does
+not create accounts, persist their passwords, or enable production control.
+Supply the account in `ARGUS_BOOTSTRAP_TEST_USER` and its password securely in
+`ARGUS_BOOTSTRAP_TEST_PASSWORD`; neither is passed to PowerShell. Set
+`ARGUS_NATIVE_BOOTSTRAP_TEST=1`, then run:
+
+```powershell
+python -m pytest -q tests/test_windows_bootstrap_media.py -k native_ntfs
+```
+
+A passing host-media test is only one gate. Still verify consumption by the
+guest's SYSTEM bootstrap service and denial to retained `argus-target` startup
+code on the same Hyper-V VM during both initial boot and reconnect, including
+fresh credentials, generation fencing, and confirmed disk detachment. Windows
+production capability remains disabled until that full native acceptance passes.

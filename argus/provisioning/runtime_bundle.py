@@ -18,7 +18,10 @@ from uuid import uuid4
 import zipfile
 
 from argus.provisioning.integrity import VerifiedFile, verify_regular_file
-from argus.provisioning.model import GuestRuntimeIdentity, ProvisioningError
+from argus.provisioning.model import (
+    BOOTSTRAP_SERVICE_POLICY_VERSION, RUNTIME_INSTALLATION_POLICY_VERSION,
+    GuestRuntimeIdentity, ProvisioningError,
+)
 
 
 BUNDLE_MANIFEST_NAME = "argus-runtime-manifest.json"
@@ -118,6 +121,9 @@ class GuestRuntimeBundleManifest:
         return manifest
 
     def validate_identity(self, identity: GuestRuntimeIdentity) -> None:
+        if (self.bootstrap_service_policy_version != BOOTSTRAP_SERVICE_POLICY_VERSION
+                or self.installation_policy_version != RUNTIME_INSTALLATION_POLICY_VERSION):
+            raise ProvisioningError("guest runtime bundle uses an unsupported security policy; rebuild it")
         expected = {
             "format_version": identity.bundle_format_version,
             "runtime_version": identity.runtime_version,
@@ -255,8 +261,8 @@ def create_guest_runtime_bundle(
     target_architecture: str,
     entrypoint: str,
     bootstrap_schema_version: str = "argus-bootstrap-v1",
-    bootstrap_service_policy_version: str = "argus-bootstrap-service-v1",
-    installation_policy_version: str = "argus-runtime-install-v1",
+    bootstrap_service_policy_version: str = BOOTSTRAP_SERVICE_POLICY_VERSION,
+    installation_policy_version: str = RUNTIME_INSTALLATION_POLICY_VERSION,
 ) -> GuestRuntimeBundleBuildResult:
     """Create a deterministic-format offline bundle from a trusted payload tree."""
     root = Path(payload_root).expanduser().resolve()

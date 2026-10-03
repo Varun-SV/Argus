@@ -23,7 +23,6 @@ from argus.capsule.base import (
 from argus.capsule.bootstrap import (
     CapsuleBootstrapAttempt,
     create_bootstrap_attempt,
-    create_bootstrap_iso,
 )
 from argus.capsule.control import (
     CapsuleControlRecord,
@@ -284,7 +283,7 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         if not self.provider.capabilities().protected_bootstrap_media:
             raise ExecutionEnvironmentError(
                 "provider cannot protect secret-bearing bootstrap media from the target user; "
-                "ISO-provisioned control is disabled until a protected delivery path is implemented"
+                "ISO-provisioned control is disabled until a protected delivery path is implemented and verified"
             )
         if self.settings.guest_token or self.settings.guest_ca_cert:
             raise ExecutionEnvironmentError(
@@ -341,12 +340,12 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         )
         return client
 
-    @staticmethod
     def _destroy_bootstrap_material(
+        self,
         attempt: CapsuleBootstrapAttempt | None,
         media: Path,
     ) -> None:
-        media.unlink(missing_ok=True)
+        self.provider.destroy_bootstrap_media(media)
         if attempt is not None and attempt.root.exists():
             attempt.destroy()
 
@@ -373,7 +372,8 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             )
             media_dir = self.settings.resolved_control_root / "bootstrap-media"
             media = media_dir / (
-                f"{handle.capsule_id}-g{generation}-{uuid.uuid4().hex}.iso"
+                f"{handle.capsule_id}-g{generation}-{uuid.uuid4().hex}"
+                + self.provider.bootstrap_media_suffix
             )
             attempt = None
             attached = False
@@ -406,7 +406,7 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 # An exception before a provider call still abandons N and
                 # destroys every unattached secret-bearing file.
                 ensure_private_directory(media_dir)
-                create_bootstrap_iso(attempt.root, media)
+                self.provider.create_bootstrap_media(attempt.root, media)
                 attached = True  # A failed reply may hide a completed attach.
                 self.provider.attach_bootstrap(current, media)
                 started = True  # A failed reply may hide a completed start.

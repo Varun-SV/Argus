@@ -276,9 +276,7 @@ def test_uncertain_first_generation_is_abandoned_not_reused(
 
 def test_failed_media_rendering_destroys_secrets_and_abandons_generation(tmp_path, monkeypatch):
     env, provider = _environment(tmp_path)
-    from argus.execution import secure_capsule
-
-    original = secure_capsule.create_bootstrap_iso
+    original = provider.create_bootstrap_media
     calls = []
 
     def fail_once(root, media):
@@ -288,7 +286,7 @@ def test_failed_media_rendering_destroys_secrets_and_abandons_generation(tmp_pat
             raise OSError("simulated-rendering-failure")
         return original(root, media)
 
-    monkeypatch.setattr(secure_capsule, "create_bootstrap_iso", fail_once)
+    monkeypatch.setattr(provider, "create_bootstrap_media", fail_once)
     env.prepare()
     assert [request.control_generation for request in provider.starts] == [2]
     assert not list((env.settings.resolved_control_root / "bootstrap-attempts").iterdir())

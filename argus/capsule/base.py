@@ -286,6 +286,18 @@ class CapsuleProvider(ABC):
             f"Capsule provider {self.provider_name!r} does not support bootstrap media"
         )
 
+    bootstrap_media_suffix: str = ".iso"
+
+    def create_bootstrap_media(self, source: Path, output: Path) -> Path:
+        """Render provider-specific, one-attempt media without booting a VM."""
+        from argus.capsule.bootstrap import create_bootstrap_iso
+
+        return create_bootstrap_iso(source, output)
+
+    def destroy_bootstrap_media(self, media: Path) -> None:
+        """Called only after confirmed VM detachment; verify host mounts too."""
+        media.unlink(missing_ok=True)
+
     def detach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
         raise CapsuleError(
             f"Capsule provider {self.provider_name!r} does not support bootstrap media"

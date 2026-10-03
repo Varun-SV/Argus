@@ -180,6 +180,32 @@ def test_guest_runtime_bundle_verifies_payload_and_manifest(
     assert "bin/argus-guest-agent.py" in verified.payload_files
 
 
+@pytest.mark.parametrize("field,old_policy", [
+    ("bootstrap_service_policy_version", "argus-bootstrap-service-v1"),
+    ("runtime_installation_policy_version", "argus-runtime-install-v1"),
+])
+def test_obsolete_media_policy_cannot_reuse_environment_or_bundle(tmp_path, field, old_policy):
+    definition = _definition(tmp_path)
+    runtime = definition.require_guest_runtime()
+    old_runtime = replace(runtime, **{field: old_policy})
+    old_definition = replace(definition, guest_runtime=old_runtime)
+    assert old_definition.environment_id != definition.environment_id
+    with pytest.raises(ProvisioningError, match="unsupported runtime security policy"):
+        old_definition.require_guest_runtime()
+    # An old manifest agreeing with an old identity is still not supported.
+    from argus.provisioning.runtime_bundle import GuestRuntimeBundleManifest
+    manifest = GuestRuntimeBundleManifest(
+        format_version=runtime.bundle_format_version, runtime_version=runtime.runtime_version,
+        target_os=runtime.target_os, target_architecture=runtime.target_architecture,
+        bootstrap_schema_version=runtime.bootstrap_schema_version,
+        bootstrap_service_policy_version=old_runtime.bootstrap_service_policy_version,
+        installation_policy_version=old_runtime.runtime_installation_policy_version,
+        entrypoint="bin/argus-guest-agent.py", content_sha256="a" * 64,
+    )
+    with pytest.raises(ProvisioningError, match="unsupported security policy"):
+        manifest.validate_identity(old_runtime)
+
+
 def test_build_payload_stages_exact_runtime_without_secrets(
     tmp_path: Path,
 ) -> None:

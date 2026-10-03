@@ -239,6 +239,18 @@ class UbuntuAutoinstallProfile:
             # Drop device groups and prevent the desktop broker from remounting
             # the root-only optical media for a persistent target application.
             "curtin in-target --target=/target -- usermod -G users " + shlex.quote(self.username),
+            # logind otherwise grants active desktop users raw optical access
+            # via 70-uaccess.rules, independently of groups and polkit. Remove
+            # that tag before 73-seat-late runs its ACL builtin. Protect both
+            # the optical block node and its SCSI command passthrough node.
+            "mkdir -p /target/etc/udev/rules.d",
+            "printf '%s' " + shlex.quote(base64.b64encode((
+                'SUBSYSTEM=="block", ENV{ID_CDROM}=="1", TAG-="uaccess", '
+                'OWNER:="root", GROUP:="root", MODE:="0600"\n'
+                'SUBSYSTEM=="scsi_generic", SUBSYSTEMS=="scsi", ATTRS{type}=="4|5", '
+                'TAG-="uaccess", OWNER:="root", GROUP:="root", MODE:="0600"\n'
+            ).encode()).decode())
+            + " | base64 -d > /target/etc/udev/rules.d/72-argus-optical.rules",
             "mkdir -p /target/etc/polkit-1/rules.d",
             "printf '%s' " + shlex.quote(base64.b64encode((
                 "polkit.addRule(function(action, subject) {\n"

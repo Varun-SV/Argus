@@ -16,6 +16,8 @@ _ALLOWED_FIRMWARE = {"bios", "uefi"}
 _ALLOWED_DISK_BUS = {"ide", "sata", "scsi", "virtio", "nvme"}
 _ALLOWED_NETWORK = {"isolated", "host_only"}
 _ALLOWED_IMAGE_FORMAT = {"vhdx", "qcow2", "raw"}
+BOOTSTRAP_SERVICE_POLICY_VERSION = "argus-bootstrap-service-v2"
+RUNTIME_INSTALLATION_POLICY_VERSION = "argus-runtime-install-v2"
 
 
 class ProvisioningError(ValueError):
@@ -129,8 +131,8 @@ class GuestRuntimeIdentity:
     target_architecture: str = "x86_64"
     bundle_format_version: str = "argus-guest-runtime-bundle-v1"
     bootstrap_schema_version: str = "argus-bootstrap-v1"
-    bootstrap_service_policy_version: str = "argus-bootstrap-service-v1"
-    runtime_installation_policy_version: str = "argus-runtime-install-v1"
+    bootstrap_service_policy_version: str = BOOTSTRAP_SERVICE_POLICY_VERSION
+    runtime_installation_policy_version: str = RUNTIME_INSTALLATION_POLICY_VERSION
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -412,6 +414,9 @@ class EnvironmentDefinition:
             raise ProvisioningError(
                 "publishable ISO-backed environments require guest_runtime identity"
             )
+        if (self.guest_runtime.bootstrap_service_policy_version != BOOTSTRAP_SERVICE_POLICY_VERSION
+                or self.guest_runtime.runtime_installation_policy_version != RUNTIME_INSTALLATION_POLICY_VERSION):
+            raise ProvisioningError("environment uses an unsupported runtime security policy; rebuild it")
         return self.guest_runtime
 
     def canonical_bytes(self) -> bytes:
