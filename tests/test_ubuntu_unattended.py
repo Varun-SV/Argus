@@ -2,10 +2,13 @@
 
 from dataclasses import replace
 from hashlib import sha256
+import base64
 import os
 from pathlib import Path
 import platform
 import stat
+import shutil
+import subprocess
 
 import pytest
 import yaml
@@ -30,6 +33,20 @@ from argus.secrets import ArgusSecretStore
 
 
 _HASH = "$6$rounds=5000$somesalt$" + "a" * 86
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="requires systemd unit parser")
+def test_systemd_parses_runtime_executable_with_spaces_and_expansion_characters(tmp_path):
+    from argus.provisioning.ubuntu_unattended import _systemd_argument
+
+    executable = tmp_path / "guest runtime%literal$dollar"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    unit = tmp_path / "argus-bootstrap.service"
+    unit.write_text("[Service]\nType=simple\nExecStart=" + _systemd_argument(str(executable))
+                    + " --bootstrap-service\n")
+    result = subprocess.run(["systemd-analyze", "verify", str(unit)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def _guest_runtime(tmp_path: Path) -> GuestRuntimeIdentity:
@@ -189,8 +206,18 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
         in user_data_seen[0]
     )
     assert "argus-bootstrap.service" in user_data_seen[0]
-    assert "Restart=no" in user_data_seen[0]
-    assert "Restart=on-failure" not in user_data_seen[0]
+    config = yaml.safe_load(user_data_seen[0])["autoinstall"]
+    assert config["identity"]["password"] == "!"
+    assert _HASH not in user_data_seen[0]
+    service_command = next(
+        command for command in config["late-commands"]
+        if "base64 -d" in command and "argus-bootstrap.service" in command
+    )
+    import shlex
+
+    service = base64.b64decode(shlex.split(service_command)[2]).decode()
+    assert "Restart=no" in service
+    assert "Restart=on-failure" not in service
     assert "/target/etc/machine-id" in user_data_seen[0]
     assert "usermod --password '!'" in user_data_seen[0]
     assert "passwd --lock" not in user_data_seen[0]

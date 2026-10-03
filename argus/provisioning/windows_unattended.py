@@ -7,6 +7,7 @@ workspace and must be detached and removed before that workspace is published.
 
 from __future__ import annotations
 
+import base64
 import os
 import stat
 import xml.etree.ElementTree as ET
@@ -201,10 +202,6 @@ def windows_11_answer_xml(
             "if(!$v){exit 41};& ($v+':\\INSTALL.PS1')\""
         ),
     )
-    generalize = _element(audit_deployment, "Generalize")
-    _element(generalize, "Mode", "OOBE")
-    _element(generalize, "ForceShutdownNow", "true")
-
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
@@ -280,6 +277,30 @@ def _ps_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def windows_specialize_answer_xml(entrypoint: str) -> bytes:
+    """Secret-free first-Capsule policy; no target account exists at build time."""
+    root = ET.Element(f"{{{_UNATTEND}}}unattend")
+    specialize = _settings(root, "specialize")
+    deployment = _component(specialize, "Microsoft-Windows-Deployment")
+    synchronous = _element(deployment, "RunSynchronous")
+    command = _element(synchronous, "RunSynchronousCommand", action=True)
+    _element(command, "Order", "1")
+    _element(command, "Path", '"C:\\ProgramData\\Argus\\Runtime\\'
+             + entrypoint.replace("/", "\\") + '" --initialize-target-user')
+    shell = _component(_settings(root, "oobeSystem"), "Microsoft-Windows-Shell-Setup")
+    oobe = _element(shell, "OOBE")
+    for name in ("HideEULAPage", "HideOEMRegistrationScreen", "HideOnlineAccountScreens",
+                 "HideWirelessSetupInOOBE"):
+        _element(oobe, name, "true")
+    _element(oobe, "ProtectYourPC", "3")
+    logon = _element(shell, "AutoLogon")
+    _element(logon, "Enabled", "true")
+    _element(logon, "Username", "argus-target")
+    _element(logon, "LogonCount", "999")
+    # Password is created during specialize and stored as a Windows LSA secret.
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
 def windows_runtime_install_script(build_payload: BuildPayload) -> bytes:
     """Create the secret-free Audit-mode installer for the verified runtime."""
     identity = build_payload.runtime_identity
@@ -333,6 +354,9 @@ def windows_runtime_install_script(build_payload: BuildPayload) -> bytes:
         "if(Test-Path -LiteralPath $runtime){Remove-Item -LiteralPath "
         "$runtime -Recurse -Force}",
         "New-Item -ItemType Directory -Path $runtime -Force|Out-Null",
+        "$acl=New-Object System.Security.AccessControl.DirectorySecurity",
+        "$acl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')",
+        "Set-Acl -LiteralPath $root -AclObject $acl",
         "Expand-Archive -LiteralPath $bundle -DestinationPath $runtime -Force",
         "Copy-Item -LiteralPath (Join-Path $media 'ARGUSBUILD.JSON') "
         "-Destination $runtimeIdentity -Force",
@@ -342,6 +366,14 @@ def windows_runtime_install_script(build_payload: BuildPayload) -> bytes:
         "$entry=Join-Path $runtime " + _ps_literal(entrypoint),
         "if(!(Test-Path -LiteralPath $entry -PathType Leaf))"
         "{throw 'Argus runtime entrypoint missing'}",
+        "$runtimeAcl=New-Object System.Security.AccessControl.DirectorySecurity",
+        "$runtimeAcl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;SY)"
+        "(A;OICI;FA;;;BA)(A;OICI;GRGX;;;AU)')",
+        "Set-Acl -LiteralPath $runtime -AclObject $runtimeAcl",
+        "Stop-Service -Name vmicvmsession -Force -ErrorAction SilentlyContinue",
+        "Set-Service -Name vmicvmsession -StartupType Disabled",
+        "New-NetFirewallRule -DisplayName 'Argus Capsule HTTPS' -Direction Inbound "
+        "-Action Allow -Protocol TCP -LocalPort 8765 -Program $entry|Out-Null",
         "if(Get-Service -Name 'ArgusBootstrap' -ErrorAction SilentlyContinue)"
         "{throw 'Argus bootstrap service already exists'}",
         "$binary='\"'+$entry+'\" --bootstrap-service "
@@ -349,6 +381,17 @@ def windows_runtime_install_script(build_payload: BuildPayload) -> bytes:
         "--control-state-file \"'+(Join-Path $root 'control-state.json')+'\"'",
         "New-Service -Name 'ArgusBootstrap' -BinaryPathName $binary "
         "-StartupType Automatic -DisplayName 'Argus Capsule Bootstrap'|Out-Null",
+        "$specialize=Join-Path $root 'capsule-specialize.xml'",
+        "[System.IO.File]::WriteAllBytes($specialize,[Convert]::FromBase64String("
+        + _ps_literal(base64.b64encode(
+            windows_specialize_answer_xml(manifest.entrypoint)
+        ).decode('ascii')) + "))",
+        # A separate answer file avoids mixing Audit reseal with the final
+        # specialization/generalization policy. Installation failure must not
+        # be hidden by a successful VM shutdown.
+        "& ($env:WINDIR+'\\System32\\Sysprep\\Sysprep.exe') "
+        "/generalize /oobe /shutdown ('/unattend:'+$specialize)",
+        "if($LASTEXITCODE -ne 0){throw 'Windows native generalization failed'}",
     ]
     return ("\r\n".join(script) + "\r\n").encode("utf-8")
 

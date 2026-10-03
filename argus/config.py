@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 import yaml
 
@@ -18,6 +18,7 @@ from argus.providers import LLMProvider, create_provider
 from argus.tokens import Budget, TokenTracker
 
 CAPSULE_GUEST_TOKEN_ENV = "ARGUS_CAPSULE_GUEST_TOKEN"
+SESSION_CAPSULE_OVERRIDES = frozenset({"provider", "retain_on_failure"})
 
 DEFAULT_CONFIG = """\
 # Argus configuration
@@ -119,6 +120,16 @@ class KnowledgeConfig:
 
 @dataclass
 class CapsuleConfig:
+    environment_definition: str = ""
+    image_cache_root: str = ""
+    provisioning_evidence_root: str = ""
+    image_format: str = ""
+    control_root: str = ""
+    default_execution_mode: str = "isolated"
+    allowed_execution_modes: tuple[str, ...] = ("isolated",)
+    allow_llm_mode_change: bool = False
+    failure_allow_reconnect: bool = True
+    failure_allow_llm_reconnect: bool = False
     provider: str = "hyperv"
     guest_os: str = "auto"
     image: str = ""
@@ -182,13 +193,13 @@ class ArgusConfig:
         self,
         adapter_type: str,
         environment_type: Optional[str] = None,
+        capsule_overrides: Optional[Mapping[str, object]] = None,
     ):
         """Build the configured local or Capsule execution environment.
 
-        The reusable bootstrap credential comes from the configured Argus
-        secret reference or the legacy dedicated host variable. Project
-        configuration cannot select an arbitrary host environment variable.
-        PR6 rotates the credential after HTTPS authentication.
+        A provisioned environment verifies cached image bytes and ATES evidence
+        before binding Capsule settings. Static credentials are only read for
+        the legacy image path. Model requests cannot expand host mode policy.
         """
         from argus.execution import create_execution_environment
 
@@ -207,13 +218,21 @@ class ArgusConfig:
                 "execution.capsule.guest_token_env cannot select a host secret; "
                 f"Capsule credentials are read only from {CAPSULE_GUEST_TOKEN_ENV}"
             )
-        if cc.guest_token_ref:
+        if cc.environment_definition:
+            guest_token = ""
+        elif cc.guest_token_ref:
             from argus.secrets import ArgusSecretStore
 
             guest_token = ArgusSecretStore().get(cc.guest_token_ref)
         else:
             guest_token = os.environ.get(CAPSULE_GUEST_TOKEN_ENV, "")
         capsule_config = {
+            "control_root": cc.control_root,
+            "default_execution_mode": cc.default_execution_mode,
+            "allowed_execution_modes": cc.allowed_execution_modes,
+            "allow_llm_mode_change": cc.allow_llm_mode_change,
+            "failure_allow_reconnect": cc.failure_allow_reconnect,
+            "failure_allow_llm_reconnect": cc.failure_allow_llm_reconnect,
             "provider": os.environ.get("ARGUS_CAPSULE_PROVIDER") or cc.provider,
             "guest_os": os.environ.get("ARGUS_CAPSULE_GUEST_OS") or cc.guest_os,
             "image": os.environ.get("ARGUS_CAPSULE_IMAGE") or cc.image,
@@ -271,6 +290,57 @@ class ArgusConfig:
                 os.environ.get("ARGUS_CAPSULE_LIBVIRT_MACHINE") or cc.libvirt_machine
             ),
         }
+        for key, value in (capsule_overrides or {}).items():
+            if key not in SESSION_CAPSULE_OVERRIDES:
+                raise ValueError(f"Capsule setting {key!r} cannot be overridden per session")
+            if key == "retain_on_failure":
+                value = _strict_bool(value, "retain_on_failure")
+            else:
+                value = str(value).lower().strip()
+                if value not in {"hyperv", "libvirt", "auto"}:
+                    raise ValueError("Capsule provider must be hyperv, libvirt or auto")
+            capsule_config[key] = value
+        if cc.environment_definition:
+            from dataclasses import asdict
+            from argus.capsule.base import CapsuleSettings
+            from argus.provisioning.build import load_published_derived_image
+            from argus.provisioning.capsule_bridge import capsule_settings_from_derived_image
+            from argus.provisioning.planner import build_provisioning_plan
+            from argus.provisioning.providers import HyperVProvisioner, LibvirtProvisioner
+            from argus.provisioning.spec import load_environment_definition
+
+            if not cc.image_cache_root:
+                raise ValueError("provisioned Capsule requires image_cache_root")
+            if capsule_config["image"]:
+                raise ValueError("provisioned Capsule selects its image from the verified cache")
+            def project_path(value):
+                path = Path(value).expanduser()
+                return path if path.is_absolute() else self.project_dir / path
+
+            definition = load_environment_definition(project_path(cc.environment_definition))
+            if str(capsule_config["provider"]).lower() == "auto":
+                import platform
+
+                capsule_config["provider"] = {"windows": "hyperv", "linux": "libvirt"}.get(
+                    platform.system().lower(), "unsupported")
+            provider = {"hyperv": HyperVProvisioner, "libvirt": LibvirtProvisioner}.get(
+                str(capsule_config["provider"]).lower())
+            if provider is None:
+                raise ValueError("unsupported provisioned Capsule provider")
+            image_format = cc.image_format or ("vhdx" if provider is HyperVProvisioner else "qcow2")
+            provisioner = (provider(switch_name=str(capsule_config["switch_name"]))
+                           if provider is HyperVProvisioner else provider(network_name="argus-build"))
+            plan = build_provisioning_plan(
+                definition, provisioner.capabilities(), output_format=image_format,
+                cache_root=project_path(cc.image_cache_root),
+                evidence_root=(project_path(cc.provisioning_evidence_root)
+                               if cc.provisioning_evidence_root else None),
+            )
+            published = load_published_derived_image(definition, plan)
+            capsule_config = asdict(capsule_settings_from_derived_image(
+                definition, published.manifest, plan.image_path,
+                settings=CapsuleSettings(**capsule_config),
+            ))
         return create_execution_environment(
             adapter_type,
             environment_type="capsule",
@@ -397,10 +467,28 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
     raw_allowlist = capsule_raw.get("egress_allowlist") or []
     if not isinstance(raw_allowlist, list):
         raise ValueError("execution.capsule.egress_allowlist must be a list of CIDRs")
+    raw_modes = capsule_raw.get("allowed_execution_modes", ["isolated"])
+    if not isinstance(raw_modes, list) or not raw_modes or any(
+        mode not in {"isolated", "shared_user"} for mode in raw_modes
+    ):
+        raise ValueError("execution.capsule.allowed_execution_modes must list supported modes")
 
     execution = ExecutionConfig(
         environment=str(execution_raw.get("environment") or "local"),
         capsule=CapsuleConfig(
+            environment_definition=str(capsule_raw.get("environment_definition") or ""),
+            image_cache_root=str(capsule_raw.get("image_cache_root") or ""),
+            provisioning_evidence_root=str(capsule_raw.get("provisioning_evidence_root") or ""),
+            image_format=str(capsule_raw.get("image_format") or ""),
+            control_root=str(capsule_raw.get("control_root") or ""),
+            default_execution_mode=str(capsule_raw.get("default_execution_mode") or "isolated"),
+            allowed_execution_modes=tuple(raw_modes),
+            allow_llm_mode_change=_strict_bool(capsule_raw.get("allow_llm_mode_change", False),
+                                             "execution.capsule.allow_llm_mode_change"),
+            failure_allow_reconnect=_strict_bool(capsule_raw.get("failure_allow_reconnect", True),
+                                                "execution.capsule.failure_allow_reconnect"),
+            failure_allow_llm_reconnect=_strict_bool(capsule_raw.get("failure_allow_llm_reconnect", False),
+                                                    "execution.capsule.failure_allow_llm_reconnect"),
             provider=str(capsule_raw.get("provider") or "hyperv"),
             guest_os=str(capsule_raw.get("guest_os") or "auto"),
             image=str(capsule_raw.get("image") or ""),

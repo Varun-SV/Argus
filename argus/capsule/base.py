@@ -44,6 +44,7 @@ class CapsuleProviderCapabilities:
     explicit_transfers: bool
     failure_retention: bool
     egress_allowlist: bool = False
+    protected_bootstrap_media: bool = False
 
     def supports_guest_os(self, value: str) -> bool:
         wanted = str(value or "auto").strip().lower()
@@ -221,6 +222,31 @@ class FailureCapsule:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def persist(self, path: Path) -> None:
+        """Atomically update the retained reference after a later failure.
+
+        The same Capsule can fail more than once after reconnect. Its latest
+        metadata must advance without overwriting another Capsule's ownership.
+        """
+        import json
+        from argus.capsule.control import _atomic_json
+
+        if path.exists() or path.is_symlink():
+            try:
+                if path.is_symlink():
+                    raise ValueError()
+                previous = FailureCapsule(**json.loads(path.read_text(encoding="utf-8")))
+                if (not self.capsule_id or previous.capsule_id != self.capsule_id
+                        or previous.provider_resource_identity != self.provider_resource_identity
+                        or previous.mutable_disk_identity != self.mutable_disk_identity
+                        or previous.failed_generation >= self.failed_generation):
+                    raise ValueError()
+            except (OSError, ValueError, TypeError):
+                raise CapsuleError("retained Capsule metadata ownership or generation conflicts") from None
+            path.chmod(0o600)
+        _atomic_json(path, self.to_dict())
+        path.chmod(0o444)
 
 
 class CapsuleProvider(ABC):

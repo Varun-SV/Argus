@@ -1,282 +1,237 @@
 # OS environment provisioning
 
-Argus provisioning turns user-supplied installation media into reproducible immutable
-base images that feed the existing ExecutionEnvironment -> Capsule -> Adapter runtime.
+Argus builds immutable OS images from operator-supplied installation media, then
+runs the existing Capsule runtime from those images. Provisioning is a host-side
+build step; it does not create a second VM execution path. The current providers
+are Hyper-V on Windows and system libvirt/QEMU on Linux, both for x86_64 guests.
 
-This is intentionally not a second VM execution stack. Provisioning owns the build-time
-installation of an operating system. Capsules still own disposable test execution.
+> **Windows is currently blocked from production publication and Capsule
+> startup.** Capsule bootstrap media carries a fresh generation bearer and TLS
+> key. The Windows provider currently cannot protect that media from a
+> non-admin target user while it is attached, so its
+> `protected_bootstrap_media` capability remains false. Provisioned Windows
+> Capsule preparation fails closed before exposing the media, and the Windows
+> image build cannot pass its real secure baseline. Do not treat the Windows
+> runtime image path as complete or reconnectable. The gate can change only
+> after native protected delivery is implemented and verified, including the
+> retained-startup attack test described below.
 
-**Draft status:** The unattended profiles and their static checks are implemented,
-but no live Windows 11 or Ubuntu install has passed the required secure Capsule
-baseline. The providers do not yet inject a guest-agent bundle or per-session
-bootstrap token and TLS private key into the disposable guest. Publication must
-continue to fail until those pieces and live host tests are complete. Reusable
-guest secrets must not be placed in a base image to make the baseline pass.
+An environment definition pins the source ISO, virtual hardware, installation
+policy, and offline Argus guest runtime. Its content identity includes the ISO
+digest, runtime bundle digest and policy versions, and image-construction policy.
+Local file paths and secret references are locators and are excluded from that
+identity. The derived-image manifest separately binds the environment and
+definition digests, provider, image format and digest, and successful ATES
+provisioning evidence. Before reuse, Argus verifies the manifest, image bytes,
+and evidence. A stale or invalid cache entry is rejected, not silently reused.
 
-## Identity model
+## Build the offline guest runtime
 
-An environment identity is derived from:
+Build on a native Windows or Linux x86_64 host with the target platform's
+approved Python dependencies and PyInstaller already installed. The script
+does not install dependencies or download browser engines. Linux builds should
+use a distribution ABI compatible with the target Ubuntu guest. The output path
+must not already exist.
 
-- installation-media SHA-256 and architecture;
-- virtual hardware and firmware requirements;
-- non-secret installation inputs.
+```sh
+python -m scripts.build_guest_runtime dist/argus-guest-win.zip --runtime-version 0.1.0
+```
 
-The host-local ISO path is only a locator and does not affect identity. Secret references
-are also excluded from the content identity so secret-store rotation does not silently
-create a different OS definition.
+Run the same command on Linux to build the Ubuntu runtime. The script freezes
+the guest driver and installed Argus adapters into an offline bundle and prints
+JSON containing its SHA-256, target OS/architecture, runtime version, and
+bootstrap policy versions. Copy the digest and bundle path into the matching
+environment definition. Runtime bundles are platform-specific; do not reuse a
+Windows bundle for Ubuntu or vice versa.
 
-A derived image has a separate manifest binding:
+## Define and build an environment
 
-- environment ID;
-- complete definition SHA-256;
-- source-media SHA-256;
-- provisioning provider;
-- output image format;
-- final image SHA-256;
-- architecture;
-- creation timestamp;
-- the finalized ATES provisioning run ID.
+This Windows definition documents the intended contract and offline runtime
+bundle inputs. It is not currently publishable or usable for Capsule startup
+because of the bootstrap-media block above. Use an ISO digest computed from the
+exact licensed media you supply.
 
-The v2 derived-image manifest requires a successful disposable secure Capsule
-boot before publication. Older v1 cache entries fail validation; an operator
-must quarantine an old entry and rebuild it rather than treating a format-valid
-disk as a proven OS image.
+```yaml
+schema_version: argus-environment-v1
+name: win11-lab
+source:
+  kind: installation_media
+  media_type: iso
+  path: C:/isos/Win11_English_x64.iso
+  sha256: <64-character-iso-sha256>
+  architecture: x86_64
+machine:
+  architecture: x86_64
+  cpu_count: 4
+  memory_mb: 8192
+  firmware: uefi
+  secure_boot: true
+  tpm_version: "2.0"
+  disk_size_gib: 64
+  disk_bus: scsi
+  network_mode: host_only
+installation:
+  unattended: true
+  edition: professional
+  update_policy: manual
+  target_os: windows-11
+  target_release: 24H2
+guest_runtime:
+  bundle_path: dist/argus-guest-win.zip
+  runtime_bundle_sha256: <digest-from-build-script>
+  runtime_version: 0.1.0
+  target_os: windows-11
+  target_architecture: x86_64
+```
 
-Before a derived image is reused by a builder, Argus verifies the manifest binding,
-final image bytes, and the passed ATES run. A caller that imports a manifest directly
-must also use the same ATES verification path before trusting its provenance.
-
-## Example definition
-
-    schema_version: argus-environment-v1
-    name: win11-lab-clean
-
-    source:
-      kind: installation_media
-      media_type: iso
-      path: D:/isos/Win11_English_x64.iso
-      sha256: <64-character sha256>
-      architecture: x86_64
-
-    machine:
-      architecture: x86_64
-      cpu_count: 8
-      memory_mb: 16384
-      firmware: uefi
-      secure_boot: true
-      tpm_version: "2.0"
-      disk_size_gib: 128
-      disk_bus: scsi
-      network_mode: host_only
-
-    installation:
-      unattended: false
-      locale: en-US
-      timezone: UTC
-      packages: []
-      update_policy: manual
-
-## Media ownership and licensing
-
-Argus does not fetch, redistribute, or provide proprietary operating-system media.
-Installation media is supplied by the operator and is addressed by its expected digest.
-Operators remain responsible for media licensing and OS activation requirements.
-
-An ISO filename alone is never trusted as identity.
-
-## Security boundary
-
-The provider re-verifies the operator-supplied ISO, copies it into a private build
-directory, hashes that copy against the expected SHA-256, then attaches only the
-staged path. The verifier does not claim that a pathname remains pinned after its
-verified handle is closed.
-
-Provider selection is fail-closed. A provider must explicitly advertise support for the
-requested architecture, media type, output format, firmware, disk bus, network mode,
-Secure Boot and TPM version. Argus must not silently downgrade those requirements.
-
-Only isolated and host-only provisioning networks are admitted by the v1 model. Broader
-network access needs an explicit later policy rather than becoming an implicit installer
-escape path.
-
-## Provisioning flow
-
-    Environment YAML
-          |
-          v
-    strict EnvironmentDefinition
-          |
-          +--> verify user ISO digest
-          |
-          v
-    provider capability gate
-          |
-          v
-    deterministic ProvisioningPlan
-          |
-          v
-    provider installs OS
-          |
-          v
-    disposable secure Capsule baseline boot
-          |
-          v
-    immutable derived image + manifest
-          |
-          v
-    verify manifest and final image digest
-          |
-          v
-    existing CapsuleSettings.image
-          |
-          v
-    ExecutionEnvironment -> Capsule -> Adapter
-
-## Hyper-V and libvirt providers
-
-The provider-neutral contract is separated from the Hyper-V and libvirt builders.
-Both create a temporary installer VM from the verified ISO, wait for an orderly
-guest shutdown, destroy the installer VM, then boot a disposable Capsule child
-from the candidate disk. The baseline requires a pinned HTTPS secure guest
-agent that reports the expected OS family and architecture after per-session
-bearer rotation. When a target OS profile is present, the baseline also checks
-its reported release and Windows edition or Ubuntu flavor and package set.
-Only then does the builder hash and publish the image and manifest in one cache
-directory.
-A per-key kernel lock serializes cooperating builders. Existing published images
-are verified and reused, never overwritten. Failure and ordinary interruption remove temporary files and VM
-resources. If VM cleanup cannot be confirmed, the private workspace is retained
-for operator recovery rather than deleting a disk still attached to a VM. An
-abrupt host crash can also require operator cleanup of an orphan VM.
-
-The initial supported build and Capsule contracts are deliberately narrow:
-
-| Provider | Host | Architecture | Firmware | Disk bus | Output | Network |
-| --- | --- | --- | --- | --- | --- | --- |
-| Hyper-V | Windows | x86_64 | UEFI, optional Secure Boot and TPM 2.0 | SCSI | VHDX | host_only |
-| libvirt/QEMU | Linux | x86_64 | BIOS | virtio | qcow2/raw | host_only |
-
-Hyper-V applies the requested Secure Boot mode and TPM 2.0 to both the installer
-VM and disposable Capsule. Its output is a disk image; vTPM state is not a
-portable part of the VHDX, so a guest that seals its disk to the installer
-VM's TPM (for example, with BitLocker) needs additional recovery handling and
-must not be assumed bootable in a fresh Capsule. Libvirt currently rejects
-Secure Boot and TPM requests. Unsupported disk buses, firmware, architectures,
-and `isolated` networking likewise fail instead of changing the machine
-contract. Hyper-V needs an Internal switch. Libvirt needs an active,
-non-forwarding local system network and local `virsh`/`qemu-img` access. It
-also requires an explicit QEMU group shared with the Argus process and a cache
-root whose ancestors the group can traverse. The private build directory and
-its ISO/image grant only that group the needed read/write access; the
-installer console uses VNC bound to localhost. For an attended build, use `unattended: false`,
-`update_policy: manual`, and no edition, package list, or credential reference.
-Nondefault locale/timezone are rejected because the generic provider cannot
-apply them. An operator must install/configure the secure Argus guest agent,
-its dedicated TLS certificate and bootstrap bearer, and the required guest
-service policy before shutting down the installer. Installation/licensing and
-release/package verification remain the operator's responsibility.
-
-For example, from Python after loading an attended definition:
+Load definitions with `load_environment_definition(path)`. The following
+shows the provider and plan API shape for a Windows build; with the current
+provider security capability, its real Capsule baseline will fail closed and
+no image will be published:
 
 ```python
-import os
 from argus.capsule.base import CapsuleSettings
-from argus.provisioning import HyperVProvisioner, build_provisioning_plan
+from argus.provisioning import (
+    HyperVProvisioner, build_provisioning_plan, load_environment_definition,
+)
 
+definition = load_environment_definition("environments/win11.yaml")
 baseline = CapsuleSettings(
     provider="hyperv", guest_os="windows", switch_name="Argus-Internal",
-    cpu_count=definition.machine.cpu_count, memory_mb=definition.machine.memory_mb,
-    network_mode="host_only", guest_transport="https",
-    guest_ca_cert="C:/Argus/certs/guest-ca.pem",
-    guest_token=os.environ["ARGUS_CAPSULE_GUEST_TOKEN"],
+    guest_transport="https", network_mode="host_only",
 )
 provider = HyperVProvisioner(
-    switch_name="Argus-Internal", on_started=print, baseline_settings=baseline
+    switch_name="Argus-Internal", baseline_settings=baseline,
 )
 plan = build_provisioning_plan(
-    definition, provider.capabilities(), output_format="vhdx", cache_root="./images"
+    definition, provider.capabilities(), output_format="vhdx",
+    cache_root="images", evidence_root="provisioning-evidence",
 )
+# Currently fails at the real secure Capsule baseline; no image is published.
 result = provider.provision(definition, plan)
 ```
 
-The `on_started` hook receives only the temporary VM name. Finish installation
-and shut the guest down; the provider removes the temporary VM and performs the
-baseline Capsule boot. For Linux, use
-`LibvirtProvisioner(network_name="argus-local", qemu_group="libvirt-qemu",
-baseline_settings=...)` and a qcow2/raw plan. The group name varies by host.
-Use `capsule_settings_from_derived_image` to verify and bind the published image
-to `CapsuleSettings`, then configure the normal secure guest transport. Fleet
-can call `derived_image_advertisement` to advertise its verified SHA-256;
-aliases remain labels and never become execution identity.
+`HyperVProvisioner` accepts an optional `baseline_settings` argument for a real
+secure baseline Capsule, but Windows publication remains blocked until the
+protected-media path is implemented and natively verified.
+`LibvirtProvisioner(network_name=..., qemu_group=...)` has the corresponding API
+and accepts `baseline_settings`. Libvirt advertises `protected_bootstrap_media=True` after
+the Ubuntu seed removes supplementary target groups and installs a polkit rule
+denying udisks2 actions to the `argus` user; native startup-attack acceptance is
+still required. The providers need the matching host, hypervisor tools, private
+host-only network, and licensed ISO. Libvirt also requires an active non-forwarding system network, local
+`virsh`/`qemu-img`, a QEMU group shared with Argus, and a cache root whose
+ancestors that group can traverse. Provider capability checks fail closed on
+unsupported firmware, disk bus, network, security, or image format.
 
-### Narrow unattended profiles
+Attended installation remains available for definitions with
+`unattended: false`, manual updates, and no packages or credential reference.
+Unattended Windows supports Windows 11 23H2/24H2 Professional, Education, or
+Enterprise, UEFI, and the provider's supported secure boot/TPM contract. The
+Ubuntu profile selects a pinned server or desktop source, requires a specific
+release/flavor, `update_policy: latest`, and an explicit host-reachable apt
+mirror. The publishable Ubuntu runtime-backed profile creates a locked target account
+and writes a locked password (`!`) in the production seed; it does not require
+or embed a reusable account password/hash in the seed or base image.
+Compatibility answer-only generation can still use `installation.credential_ref`
+with a SHA-512 crypt value. The seed and temporary installer resources are
+removed after installation.
 
-The Windows 11 Hyper-V profile creates a private `Autounattend.xml` disc alongside
-the verified installer ISO. It selects a named Professional, Education, or Enterprise
-image, partitions the target disk for UEFI, and shuts down in Audit mode. It accepts
-23H2 or 24H2, `en-US`, `UTC`, `update_policy: manual`, and no package or credential
-reference. It does not install the Argus guest agent or create a non-admin test
-account. A stock Windows ISO alone therefore cannot pass the mandatory secure
-Capsule baseline. An approved offline agent/runtime/TLS bundle and session
-bootstrap are still required, along with validation of the intended account and
-service policy.
+The unattended installers prepare the OS-specific runtime and generalization
+steps. Windows stages the runtime under ProgramData, configures the bootstrap
+service and first-Capsule specialization, and invokes Sysprep. These steps do
+not make Windows publication or startup production-ready: the provider still
+fails the protected-bootstrap-media capability gate. Ubuntu installs a systemd
+bootstrap service, locks the target account, strips supplementary target-user
+groups, denies that user udisks2 actions with a polkit rule, and removes
+clone-specific machine/cloud-init state. Ubuntu Desktop also configures its
+target desktop session for the baseline. Runtime bundle verification,
+installation, generalization, baseline, or cleanup failure blocks publication.
+If provider cleanup cannot be confirmed, Argus retains the private workspace
+for recovery rather than publishing an uncertain image.
 
-The Ubuntu libvirt profile uses the verified ISO's `casper/install-sources.yaml` to
-pin a full desktop or server source. It boots the installer kernel with a private
-NoCloud seed disc and the `autoinstall` argument. The seed contains a SHA-512 crypt
-password hash resolved at build time from `installation.credential_ref`; the secret
-reference is excluded from environment identity. The seed is removed after the
-installer VM is destroyed. Ubuntu requires `update_policy: latest`, a specific
-`target_release` and `target_flavor`, and an explicit `apt_mirror` reachable from
-the host-only network. The installer does not bootstrap the Argus guest agent.
-Its required baseline therefore also needs approved agent installation and
-session bootstrap. The baseline checks the reported Ubuntu release,
-desktop/server metapackage, and each requested package.
+## Use a published image from config
 
-Both unattended profiles remain subject to a successful live install and secure
-Capsule boot on suitable hosts. Static answer generation and mocked provider tests
-alone do not establish a usable base image.
+Provisioning and runtime image selection are separate steps. The following
+config asks Argus to load a previously published image from its verified cache;
+it does not start an installation build. The environment definition, image cache,
+and evidence paths are resolved from the project directory. `control_root` is
+resolved from the process working directory, so use an absolute path when
+Argus may be started from different directories.
 
-### Per-user secret store
+```yaml
+execution:
+  environment: capsule
+  capsule:
+    provider: libvirt
+    environment_definition: environments/ubuntu.yaml
+    image_cache_root: images
+    provisioning_evidence_root: provisioning-evidence
+    image_format: qcow2
+    control_root: .argus/capsule-control
+    default_execution_mode: isolated
+    allowed_execution_modes: [isolated, shared_user]
+    allow_llm_mode_change: false
+    failure_allow_reconnect: true
+    failure_allow_llm_reconnect: false
+    retain_on_failure: true
+```
 
-`argus secrets set secret://argus/ubuntu/install` prompts without echo and replaces
-an existing value. `argus secrets list` displays references only, and
-`argus secrets remove secret://argus/ubuntu/install` deletes one. `set --stdin` and
-`set --file PATH` support non-interactive input; avoid exposing values in shell
-arguments or recorded terminal history. The Ubuntu value must already be a
-SHA-512 crypt password hash, not a plaintext password. Configure the guest agent
-bootstrap token with another reference and set `execution.capsule.guest_token_ref`
-to it. The token is resolved into host Capsule settings when they are created.
-Per-session delivery to the guest remains to be implemented. The secure client
-rotates the bootstrap bearer after authenticating with the guest agent.
+Argus loads the definition, recreates the deterministic plan, verifies the
+published image and its ATES evidence, then binds the verified image, runtime,
+and machine contract into `CapsuleSettings`. A missing cache entry or invalid
+evidence is an error; run the build API first. In provisioned mode the image is
+selected by the definition/cache and cannot be replaced with a per-session
+image. `capsule_overrides` in `ArgusConfig.make_execution_environment` permits
+only `provider` and `retain_on_failure`; a provider override still has to match
+the verified image contract. Keep the host's allowed execution modes and
+failure policy authoritative.
 
-Windows stores encrypted values with user-scoped DPAPI under `%APPDATA%/Argus/Secrets`.
-Linux uses `$XDG_DATA_HOME/argus/secrets` or `~/.local/share/argus/secrets`; macOS
-uses `~/Library/Application Support/Argus/Secrets`. The latter two encrypt the
-database with a local key readable only by the same OS account. This protects a
-copied database, while host account permissions protect the key. Do not copy the
-key and database together to a less trusted machine.
+This runtime example is for a Linux/libvirt definition and cache. A Windows
+definition can be parsed and its runtime bundle verified, but the current
+Hyper-V provider's false protected-media capability prevents secure Capsule
+preparation and therefore prevents both real baseline publication and normal
+Windows provisioned execution.
 
-## ATES provisioning evidence
+Provisioned Capsules use pinned HTTPS bootstrap and per-generation credentials;
+they do not read the legacy static guest token or CA settings. The host
+`control_root` stores durable Capsule ownership and generation state and should
+be writable only by the Argus account. If a retained Failure Capsule must be
+reconnected after an Argus process restart, create an idle provisioned
+controller and call `restore_failure(metadata_path)` with its retained
+`failure-capsule.json`. The durable control registry, provider resource, disk,
+environment, and image identities must still agree; metadata alone never
+grants ownership.
 
-`AtesProvisioningRecorder` uses the normal ATES event store, run identity, step-attempt
-lifecycle, finalization transaction, manifest verification, and derived reports. Its
-`PROVISIONING` run source records the requested machine contract, definition/media
-digests, provider, architecture, and image format. Fixed ordered stages record media
-verification, provider selection, installation start/completion, secure Capsule baseline,
-image hashing, and publication. The final image SHA-256 is a validated safe digest in
-an ATES observation. On failure, the recorder emits an `error` outcome without copying
-hypervisor output or exception text; uncertain cleanup leaves the run incomplete.
-ISO locators, operator names, credential references, and guest secrets never enter the
-canonical event stream. The derived-image manifest binds the finalized ATES run
-identity; cache reuse verifies both the image bytes and that run. Release, edition,
-and package checks occur in the secure Capsule baseline before the image is published.
+`reconnect_failure(execution_mode=..., requested_by_llm=...)` reconnects the
+same retained VM and disk with a new generation and fresh session/TLS/bearer
+material only when the selected provider advertises protected bootstrap media.
+`transition_execution_mode(execution_mode, requested_by_llm=...)` has the same
+provider requirement. Both operations stop the VM before establishing a new
+generation, so the old authority is fenced. Neither operation makes the current
+Windows provider usable: its capability gate prevents bootstrap preparation.
+Linux worker cleanup signals the process group; a daemon that escapes that
+group may survive the signal, so provider VM power-off/destroy is the final
+fence on reconnect and mode change.
 
-## Fleet direction
+## Baseline and acceptance status
 
-Fleet should advertise immutable derived-image identities, not mutable filenames. A node
-that already has the exact image can launch it immediately. A node that lacks it can
-provision or receive the approved derived image according to later Fleet policy.
+Before publication, ATES boots two separate disposable child Capsules from the
+candidate image and validates the runtime identity, OS release/edition or
+flavor, requested packages, generation, and fresh TLS/session/bearer digests.
+It also invokes `whoami` on Windows or `id -un` on Ubuntu and checks that the
+worker is a non-administrator/non-root user. Ubuntu Desktop additionally must
+report desktop readiness. The two children are torn down before the image is
+published; teardown uncertainty blocks publication.
 
-This makes OS/image matrices reproducible while keeping the existing placement, fencing,
-Capsule and ATES trust boundaries intact.
+Static checks and mocked provider tests do not establish live host acceptance.
+Release acceptance requires successful installation, generalization, baseline,
+and reuse on supported live Hyper-V/Windows and libvirt/QEMU/Ubuntu hosts; a
+Windows run remains blocked until protected delivery is implemented. On both
+providers, perform a retained-startup attack test: while bootstrap media is
+still attached during startup, execute as the target user and verify it cannot
+read the fresh bearer or TLS private key before the host detaches the media.
+Also require Windows foreground-input comparison and CI coverage for the
+supported build/runtime paths. Record host/provider, media and runtime digests,
+and evidence with each live acceptance run. Operating-system media, licensing,
+activation, and network availability remain the operator's responsibility.

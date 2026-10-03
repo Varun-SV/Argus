@@ -135,6 +135,7 @@ def _runtime_definition(tmp_path: Path, provider: str = "hyperv") -> Environment
     return replace(
         original,
         machine=machine,
+        guest_runtime=_guest_runtime(tmp_path, "windows-11" if provider == "hyperv" else "ubuntu"),
         installation=InstallationSpec(unattended=False, update_policy="manual"),
     )
 
@@ -721,12 +722,16 @@ def test_publication_requires_booted_baseline_and_rejects_pre_baseline_cache(
         )
 
 
+@pytest.mark.parametrize("fault", [None, "admin", "same-tls", "same-token", "desktop"])
 def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault,
 ) -> None:
     import argus.provisioning.baseline as baseline_module
 
     definition = _runtime_definition(tmp_path, "libvirt")
+    if fault == "desktop":
+        definition = replace(definition, installation=replace(
+            definition.installation, target_os="ubuntu", target_release="24.04", target_flavor="desktop"))
     image = tmp_path / "base.qcow2"
     image.write_bytes(b"candidate")
     settings = CapsuleSettings(
@@ -748,6 +753,8 @@ def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
             self._capsule_id = f"cap-{type(self).counter:032x}"
             self._handle = None
             self._client = self
+            self.pinned_cert_sha256 = f"{1 if fault == 'same-tls' else type(self).counter:064x}"
+            self.token = f"fresh-bearer-{1 if fault == 'same-token' else type(self).counter}"
             self._runtime_identity = (
                 definition.require_guest_runtime().runtime_identity
             )
@@ -768,24 +775,38 @@ def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
                 "guest_os": "linux",
                 "architecture": "x86_64",
                 "machine_identity": f"{len(sessions):032x}",
+                "os_id": "ubuntu", "os_release": "24.04",
+                "target_user": "argus", "target_user_present": True,
+                "target_user_non_admin": True, "target_user_locked": True,
             }
 
         def close(self):
             self._handle = None
+
+        def installed_packages(self, packages):
+            return {name: "1" for name in packages}
+
+        def launch(self, target):
+            assert target == "/usr/bin/id -un"
+
+        def observe(self, include_screenshot):
+            from argus.adapters.base import Observation
+
+            return Observation(window_title="", stdout="root\n" if fault == "admin" else "argus\n", exit_code=0)
 
     monkeypatch.setattr(
         baseline_module,
         "SecureCapsuleExecutionEnvironment",
         FakeCapsule,
     )
-    validate_secure_capsule_baseline(
-        definition,
-        image,
-        provider="libvirt",
-        image_format="qcow2",
-        settings=settings,
-    )
-    assert len(sessions) == 2
+    def validate():
+        validate_secure_capsule_baseline(definition, image, provider="libvirt", image_format="qcow2", settings=settings)
+    if fault:
+        with pytest.raises(ProvisioningError):
+            validate()
+    else:
+        validate()
+        assert len(sessions) == 2
     assert all(session._handle is None for session in sessions)
 
 
@@ -1094,3 +1115,35 @@ def test_fleet_advertisement_uses_verified_image_digest_not_alias(tmp_path: Path
         derived_image_advertisement(
             definition, result.manifest, plan.image_path, alias="latest", guest_os="linux"
         )
+
+
+def test_config_selects_only_an_ates_verified_published_image(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    import yaml
+    from argus.config import CapsuleConfig, ExecutionConfig, load_config
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    spec = tmp_path / "environment.yaml"
+    spec.write_text(yaml.safe_dump(asdict(definition)))
+    cache = tmp_path / "cache"
+    plan = build_provisioning_plan(definition, LibvirtProvisioner(network_name="build").capabilities(),
+                                  output_format="qcow2", cache_root=cache, evidence_root=tmp_path)
+    publish_derived_image(definition, plan, lambda iso, image, payload: image.write_bytes(b"guest"),
+                          validate_baseline=lambda image: None)
+    cfg = load_config(tmp_path)
+    cfg.execution = ExecutionConfig("capsule", CapsuleConfig(provider="libvirt", cpu_count=4,
+        memory_mb=8192, environment_definition=str(spec), image_cache_root=str(cache),
+        provisioning_evidence_root=str(tmp_path), guest_token_ref="secret://missing-legacy-secret"))
+    env = cfg.make_execution_environment("cli", capsule_overrides={"retain_on_failure": True, "provider": "auto"})
+    assert env.settings.environment_id == definition.environment_id
+    assert env.settings.guest_runtime_identity == definition.require_guest_runtime().runtime_identity
+    assert env.settings.image == str(plan.image_path.resolve())
+    assert env.settings.guest_token == ""
+    assert env.settings.retain_on_failure is True
+    with pytest.raises(ValueError, match="cannot be overridden"):
+        cfg.make_execution_environment("cli", capsule_overrides={"allowed_execution_modes": ["shared_user"]})
+    plan.image_path.chmod(0o644)
+    plan.image_path.write_bytes(b"tampered")
+    with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
+        cfg.make_execution_environment("cli")

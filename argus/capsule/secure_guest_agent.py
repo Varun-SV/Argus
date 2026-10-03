@@ -8,10 +8,10 @@ properties around it:
 * the reusable bootstrap bearer can be rotated exactly once to a random
   session-specific bearer over the authenticated TLS channel.
 
-Runtime bootstrap material is consumed from the per-session disk and is never
-written back while the application-under-test may have controlled the guest.
-Secure Failure Capsules are therefore forensic disk/configuration evidence;
-restarting them through the old control identity is intentionally unsupported.
+Production bootstrap material is consumed from protected per-generation media.
+TLS and control state remain in SYSTEM/root; adapters run in a non-admin worker.
+Reconnect establishes higher-generation authority rather than reusing an old
+control identity. Legacy static-token images retain their original protocol.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from argus.capsule.base import CapsuleError
 from argus.capsule.bootstrap_service import prepare_bootstrap_service
 from argus.capsule.control import GuestControlStateStore, validate_capsule_id
 from argus.capsule.files import validate_session_id
+from argus.capsule.target_worker import TargetWorkerAdapter
 from argus.capsule.guest_agent import (
     GuestAgentHandler,
     GuestAgentServer,
@@ -116,7 +117,8 @@ def _target_user_policy() -> dict[str, object]:
             "$ErrorActionPreference='Stop';$n='argus-target';"
             "$u=Get-LocalUser -Name $n -ErrorAction SilentlyContinue;"
             "if(-not $u){'missing';exit 0};"
-            "$a=Get-LocalGroupMember -Group 'Administrators' "
+            "$g=Get-LocalGroup -SID 'S-1-5-32-544';"
+            "$a=Get-LocalGroupMember -Group $g.Name "
             "-ErrorAction Stop|Where-Object Name -Match ('\\\\'+$n+'$');"
             "if($a){'admin'}else{'nonadmin'}"
         )
@@ -172,8 +174,7 @@ def _target_user_policy() -> dict[str, object]:
                 "target_user_present": True,
                 "target_user_non_admin": (
                     account.pw_uid != 0
-                    and "sudo" not in groups
-                    and "wheel" not in groups
+                    and not set(groups).intersection({"sudo", "wheel", "root", "docker", "lxd", "incus", "libvirt"})
                 ),
                 "target_user_locked": password_field.startswith(("!", "*")),
             }
@@ -186,6 +187,29 @@ def _target_user_policy() -> dict[str, object]:
         ):
             return {}
     return {}
+
+
+def _target_desktop_ready() -> bool:
+    """Probe the target user's real desktop without acquiring control secrets."""
+    if platform.system().lower() != "linux":
+        return False  # Windows readiness is proven by the WTS-backed worker launch.
+    try:
+        import pwd
+
+        account = pwd.getpwnam("argus")
+        cookie = Path(f"/run/user/{account.pw_uid}/gdm/Xauthority")
+        if not cookie.is_file():
+            cookie = Path(account.pw_dir) / ".Xauthority"
+        if cookie.stat().st_uid != account.pw_uid:
+            return False
+        result = subprocess.run(
+            ["/usr/bin/xdpyinfo"], capture_output=True, timeout=5, check=False,
+            env={"PATH": "/usr/bin:/bin", "DISPLAY": ":0", "XAUTHORITY": str(cookie)},
+            user=account.pw_uid, group=account.pw_gid, extra_groups=(),
+        )
+        return result.returncode == 0
+    except (KeyError, OSError, subprocess.TimeoutExpired):
+        return False
 
 def _installed_deb_packages(names: list[str]) -> dict[str, str]:
     if platform.system().lower() != "linux":
@@ -250,62 +274,6 @@ def _assert_powershell_direct_disabled() -> None:
     _require_disabled_service_start("vmicvmsession", int(start_value))
 
 
-def _ensure_windows_target_user(
-    state_store: GuestControlStateStore,
-    *,
-    runner=None,
-) -> None:
-    """Create/finalize the non-admin target user on first Capsule bootstrap."""
-    if platform.system().lower() != "windows":
-        return
-    if state_store.load().capsule_id:
-        return
-    run = runner
-    if run is None:
-        def run(script: str) -> None:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            result = subprocess.run(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    script,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=flags,
-                check=False,
-            )
-            if result.returncode:
-                raise AdapterError(
-                    "Windows target-user initialization failed"
-                )
-
-    script = (
-        "$ErrorActionPreference='Stop';"
-        "$name='argus-target';"
-        "$u=Get-LocalUser -Name $name -ErrorAction SilentlyContinue;"
-        "if(-not $u){"
-        "$plain=([guid]::NewGuid().ToString('N')+[guid]::NewGuid().ToString('N'));"
-        "$pw=ConvertTo-SecureString $plain -AsPlainText -Force;"
-        "New-LocalUser -Name $name -Password $pw -AccountNeverExpires "
-        "-PasswordNeverExpires -UserMayNotChangePassword|Out-Null;"
-        "};"
-        "Add-LocalGroupMember -Group 'Users' -Member $name "
-        "-ErrorAction SilentlyContinue;"
-        "Remove-LocalGroupMember -Group 'Administrators' -Member $name "
-        "-ErrorAction SilentlyContinue;"
-        "$admin=Get-LocalGroupMember -Group 'Administrators' "
-        "-ErrorAction Stop|Where-Object Name -Match ('\\\\'+$name+'$');"
-        "if($admin){throw 'Argus target user remains administrator'}"
-    )
-    run(script)
-
-
 class SecureGuestAgentServer(GuestAgentServer):
     def __init__(
         self,
@@ -317,11 +285,18 @@ class SecureGuestAgentServer(GuestAgentServer):
         control_generation: int = 0,
         execution_mode: str = "",
         runtime_identity: str = "",
+        bootstrap_session_id: str = "",
         control_state_store: GuestControlStateStore | None = None,
     ):
         self.token = token
-        self.state = state or GuestAgentState()
+        self.state = state or GuestAgentState(
+            adapter_factory=(
+                (lambda kind: TargetWorkerAdapter(kind, execution_mode))
+                if capsule_id else None
+            )
+        )
         self.auth_session_id = ""
+        self.bootstrap_session_id = bootstrap_session_id
         self.capsule_id = capsule_id
         self.control_generation = int(control_generation or 0)
         self.execution_mode = execution_mode
@@ -367,6 +342,8 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                 capsule_id != self.server.capsule_id
                 or generation != self.server.control_generation
                 or execution_mode != self.server.execution_mode
+                or (self.server.bootstrap_session_id
+                    and session_id != self.server.bootstrap_session_id)
             ):
                 raise AdapterError(
                     "auth rotation does not match the bootstrapped Capsule generation"
@@ -404,6 +381,7 @@ class SecureGuestAgentHandler(GuestAgentHandler):
                     else "unknown"
                 ),
                 "machine_identity": _machine_identity(),
+                "target_desktop_ready": _target_desktop_ready(),
                 **_target_user_policy(),
                 **_release_identity(),
             },
@@ -475,7 +453,7 @@ class SecureGuestAgentHandler(GuestAgentHandler):
         super()._dispatch()
 
 
-def main(argv=None) -> None:
+def main(argv=None, *, stop_event=None) -> None:
     parser = argparse.ArgumentParser(description="Secure Argus Capsule guest agent")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -498,9 +476,13 @@ def main(argv=None) -> None:
                 runtime_identity_file=args.runtime_identity_file or None,
                 control_state_file=args.control_state_file or None,
             )
-            _ensure_windows_target_user(
-                prepared_bootstrap.control_state_store
-            )
+            if platform.system().lower() == "windows":
+                from argus.capsule.windows_target import initialize_target_user
+
+                initialize_target_user(
+                    prepared_bootstrap.manifest.capsule_id,
+                    prepared_bootstrap.control_state_store.path.parent,
+                )
         except (CapsuleError, AdapterError) as exc:
             parser.error(str(exc))
         args.host = "0.0.0.0"
@@ -560,6 +542,10 @@ def main(argv=None) -> None:
             prepared_bootstrap.manifest.runtime_identity
             if prepared_bootstrap is not None else ""
         ),
+        bootstrap_session_id=(
+            prepared_bootstrap.manifest.session_id
+            if prepared_bootstrap is not None else ""
+        ),
         control_state_store=(
             prepared_bootstrap.control_state_store
             if prepared_bootstrap is not None else None
@@ -578,6 +564,12 @@ def main(argv=None) -> None:
             prepared_bootstrap.cleanup_public_staging()
 
     try:
+        if stop_event is not None:
+            def stop_on_event():
+                stop_event.wait()
+                server.shutdown()
+
+            threading.Thread(target=stop_on_event, daemon=True).start()
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass

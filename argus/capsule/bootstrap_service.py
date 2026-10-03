@@ -21,6 +21,7 @@ from argus.capsule.bootstrap import (
     load_bootstrap_manifest,
 )
 from argus.capsule.control import GuestControlStateStore
+from argus.capsule.permissions import ensure_private_directory
 
 
 _BOOTSTRAP_LABEL = "ARGUS_BOOTSTRAP"
@@ -142,13 +143,12 @@ def _copy_regular(source: Path, destination: Path) -> None:
 
 def _stage_from_root(source_root: Path, staging_parent: Path) -> Path:
     manifest = load_bootstrap_manifest(source_root)
-    staging_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if os.name == "posix":
-        staging_parent.chmod(0o700)
+    ensure_private_directory(staging_parent)
     staging = staging_parent / (
         f"{manifest.capsule_id}-g{manifest.control_generation}-{uuid4().hex}"
     )
     staging.mkdir(mode=0o700)
+    ensure_private_directory(staging)
     try:
         members = (
             ("bootstrap.json", "bootstrap.json"),

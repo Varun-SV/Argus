@@ -21,6 +21,7 @@ from argus.capsule.base import CapsuleError
 from argus.capsule.control import CapsuleExecutionMode, validate_capsule_id
 from argus.capsule.files import validate_session_id
 from argus.capsule.iso9660 import write_root_iso
+from argus.capsule.permissions import ensure_private_directory
 
 
 BOOTSTRAP_SCHEMA_VERSION = "argus-bootstrap-v1"
@@ -218,12 +219,11 @@ def create_bootstrap_attempt(
     parent_path = Path(parent).expanduser().resolve()
     if parent_path.exists() and (parent_path.is_symlink() or not parent_path.is_dir()):
         raise CapsuleError("Capsule bootstrap parent must be a directory")
-    parent_path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if os.name == "posix":
-        parent_path.chmod(0o700)
+    ensure_private_directory(parent_path)
 
     root = parent_path / f"{capsule_id}-g{control_generation}-{uuid4().hex}"
     root.mkdir(mode=0o700)
+    ensure_private_directory(root)
     token_path = root / "bootstrap.token"
     cert_path = root / "tls-cert.pem"
     key_path = root / "tls-key.pem"

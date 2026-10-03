@@ -103,7 +103,7 @@ def validate_secure_capsule_baseline(
 
     expected_runtime = definition.require_guest_runtime().runtime_identity
 
-    def boot_once() -> tuple[str, str]:
+    def boot_once() -> tuple[str, str, str, str, str]:
         environment = SecureCapsuleExecutionEnvironment("cli", bound)
         failed = False
         capsule_id = ""
@@ -132,6 +132,21 @@ def validate_secure_capsule_baseline(
                     "baseline guest OS, runtime, or generation identity is invalid"
                 )
             _attest_installed_profile(definition, health, client)
+            # Account existence alone cannot prove that the protected agent can
+            # create a non-admin worker in the installed target-user context.
+            environment.launch("whoami" if expected_os == "windows" else "/usr/bin/id -un")
+            observation = environment.observe(include_screenshot=False)
+            expected_user = "argus-target" if expected_os == "windows" else "argus"
+            actual_user = observation.stdout.strip().lower().split("\\")[-1]
+            if observation.exit_code != 0 or actual_user != expected_user:
+                raise ProvisioningError("baseline target worker did not run as the non-admin user")
+            if (expected_os == "linux" and definition.installation.target_flavor == "desktop"
+                    and health.get("target_desktop_ready") is not True):
+                raise ProvisioningError("baseline target-user desktop is unavailable")
+            pin = client.pinned_cert_sha256
+            bearer_digest = sha256(client.token.encode()).hexdigest()
+            if len(pin) != 64 or not client.token:
+                raise ProvisioningError("baseline lacks a generation-specific TLS or auth identity")
         except Exception:
             failed = True
         finally:
@@ -149,11 +164,11 @@ def validate_secure_capsule_baseline(
             raise ProvisioningError(
                 "baseline Capsule boot or agent validation failed"
             )
-        return capsule_id, machine_identity
+        return capsule_id, machine_identity, environment.session_id, pin, bearer_digest
 
-    first_capsule, first_machine = boot_once()
-    second_capsule, second_machine = boot_once()
-    if first_capsule == second_capsule or first_machine == second_machine:
+    first = boot_once()
+    second = boot_once()
+    if any(left == right for left, right in zip(first, second)):
         raise ProvisioningError(
-            "generalization validation did not produce fresh Capsule/OS identity"
+            "generalization validation did not produce fresh Capsule, OS, session, TLS and auth identities"
         )

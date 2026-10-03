@@ -1,6 +1,7 @@
 """OS installation-media provisioning primitives for Argus."""
 
 from argus.provisioning.build import (
+    load_published_derived_image,
     ProvisioningCleanupError,
     ProvisioningCleanupState,
 )
@@ -41,6 +42,7 @@ from argus.provisioning.spec import (
 )
 
 __all__ = [
+    "load_published_derived_image",
     "AtesProvisioningRecorder",
     "BuildPayload",
     "DerivedImageManifest",

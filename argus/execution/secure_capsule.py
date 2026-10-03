@@ -6,6 +6,7 @@ import secrets
 import sys
 import uuid
 from dataclasses import replace
+import json
 from pathlib import Path
 from typing import Callable, Mapping, Optional
 
@@ -17,6 +18,7 @@ from argus.capsule.base import (
     CapsuleProviderCapabilities,
     CapsuleRequest,
     CapsuleSettings,
+    FailureCapsule,
 )
 from argus.capsule.bootstrap import (
     CapsuleBootstrapAttempt,
@@ -30,6 +32,7 @@ from argus.capsule.control import (
     CapsuleLifecycleState,
     new_capsule_id,
 )
+from argus.capsule.permissions import ensure_private_directory
 from argus.capsule.guest import GuestAdapterProxy
 from argus.capsule.secure_client import SecureGuestAgentClient
 from argus.execution.base import ExecutionEnvironmentError
@@ -278,6 +281,11 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         )
 
     def _validate_provisioned_security(self) -> None:
+        if not self.provider.capabilities().protected_bootstrap_media:
+            raise ExecutionEnvironmentError(
+                "provider cannot protect secret-bearing bootstrap media from the target user; "
+                "ISO-provisioned control is disabled until a protected delivery path is implemented"
+            )
         if self.settings.guest_token or self.settings.guest_ca_cert:
             raise ExecutionEnvironmentError(
                 "ISO-provisioned Capsules cannot use static guest_token or guest_ca_cert"
@@ -335,11 +343,12 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
 
     @staticmethod
     def _destroy_bootstrap_material(
-        attempt: CapsuleBootstrapAttempt,
+        attempt: CapsuleBootstrapAttempt | None,
         media: Path,
     ) -> None:
         media.unlink(missing_ok=True)
-        attempt.destroy()
+        if attempt is not None and attempt.root.exists():
+            attempt.destroy()
 
     def _establish_generation_locked(
         self,
@@ -362,20 +371,11 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 if index == 0 and preferred_session_id
                 else uuid.uuid4().hex
             )
-            attempt = create_bootstrap_attempt(
-                self.settings.resolved_control_root / "bootstrap-attempts",
-                capsule_id=handle.capsule_id,
-                control_generation=generation,
-                execution_mode=execution_mode,
-                runtime_identity=self.settings.guest_runtime_identity,
-                session_id=session_id,
-            )
             media_dir = self.settings.resolved_control_root / "bootstrap-media"
-            media_dir.mkdir(parents=True, exist_ok=True)
             media = media_dir / (
                 f"{handle.capsule_id}-g{generation}-{uuid.uuid4().hex}.iso"
             )
-            create_bootstrap_iso(attempt.root, media)
+            attempt = None
             attached = False
             started = False
             current = replace(
@@ -394,10 +394,23 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 execution_mode=execution_mode,
             )
             try:
+                attempt = create_bootstrap_attempt(
+                    self.settings.resolved_control_root / "bootstrap-attempts",
+                    capsule_id=handle.capsule_id,
+                    control_generation=generation,
+                    execution_mode=execution_mode,
+                    runtime_identity=self.settings.guest_runtime_identity,
+                    session_id=session_id,
+                )
+                # Rendering and attachment both belong to the transaction.
+                # An exception before a provider call still abandons N and
+                # destroys every unattached secret-bearing file.
+                ensure_private_directory(media_dir)
+                create_bootstrap_iso(attempt.root, media)
+                attached = True  # A failed reply may hide a completed attach.
                 self.provider.attach_bootstrap(current, media)
-                attached = True
+                started = True  # A failed reply may hide a completed start.
                 current = self.provider.start_existing(current, request)
-                started = True
                 client = self._new_generation_client(current, attempt)
                 registry.commit_generation(
                     current.capsule_id,
@@ -418,7 +431,16 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                     raise ExecutionEnvironmentError(
                         "Capsule generation committed but bootstrap detachment is uncertain"
                     ) from detach_exc
-                self._destroy_bootstrap_material(attempt, media)
+                try:
+                    self._destroy_bootstrap_material(attempt, media)
+                except Exception:
+                    registry.transition(
+                        current.capsule_id,
+                        CapsuleLifecycleState.RECOVERY_REQUIRED.value,
+                    )
+                    raise ExecutionEnvironmentError(
+                        "failed Capsule generation has uncertain material cleanup"
+                    ) from None
                 return current, client
             except Exception as exc:
                 last_error = exc
@@ -444,7 +466,16 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                         raise ExecutionEnvironmentError(
                             "failed Capsule generation has uncertain bootstrap detachment"
                         ) from detach_exc
-                self._destroy_bootstrap_material(attempt, media)
+                try:
+                    self._destroy_bootstrap_material(attempt, media)
+                except Exception:
+                    registry.transition(
+                        current.capsule_id,
+                        CapsuleLifecycleState.RECOVERY_REQUIRED.value,
+                    )
+                    raise ExecutionEnvironmentError(
+                        "failed Capsule generation has uncertain material cleanup"
+                    ) from None
                 if index + 1 < attempts:
                     continue
                 registry.transition(
@@ -453,7 +484,9 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 )
                 break
         assert last_error is not None
-        raise last_error
+        raise ExecutionEnvironmentError(
+            "Capsule generation establishment failed; recovery is required"
+        ) from None
 
     def _prepare_provisioned(self) -> None:
         self._validate_provisioned_security()
@@ -532,9 +565,8 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                                 CapsuleLifecycleState.RECOVERY_REQUIRED.value,
                             )
                         raise ExecutionEnvironmentError(
-                            "provisioned Capsule preparation failed and destroy is uncertain: "
-                            f"prepare={prepare_exc}; cleanup={cleanup_exc}"
-                        ) from prepare_exc
+                            "provisioned Capsule preparation failed and destroy is uncertain"
+                        ) from None
                 if record_created:
                     registry.transition(
                         capsule_id,
@@ -643,6 +675,11 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         handle: CapsuleHandle,
     ) -> None:
         record = registry.load(handle.capsule_id)
+        if (record.environment_id != self.settings.environment_id
+                or record.base_image_sha256 != self.settings.base_image_sha256):
+            raise ExecutionEnvironmentError(
+                "retained Capsule belongs to a different environment or base image"
+            )
         resource_id, disk_id = self.provider.inspect_ownership(handle)
         if (
             resource_id != record.provider_resource_identity
@@ -657,6 +694,35 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 "retained Capsule ownership no longer matches the durable host record"
             )
 
+    def restore_failure(self, metadata_path: str | Path) -> None:
+        """Load an operator-selected retained reference after a host restart.
+
+        Metadata is only a locator: durable host records and provider/disk
+        identities still decide ownership. Lost registry state is never adopted.
+        """
+        if not self._is_provisioned() or self._handle is not None:
+            raise ExecutionEnvironmentError("restore requires an idle provisioned Capsule controller")
+        path = Path(metadata_path)
+        try:
+            if path.is_symlink() or path.stat().st_size > 16384:
+                raise ValueError()
+            failure = FailureCapsule(**json.loads(path.read_text(encoding="utf-8")))
+            registry = CapsuleControlRegistry(self.settings.resolved_control_root)
+            record = registry.load(failure.capsule_id)
+            if (failure.provider != record.provider
+                    or failure.provider_resource_identity != record.provider_resource_identity
+                    or failure.mutable_disk_identity != record.mutable_disk_identity
+                    or failure.failed_generation != record.last_committed_generation_known_by_host
+                    or record.lifecycle_state != CapsuleLifecycleState.QUARANTINED.value
+                    or record.environment_id != self.settings.environment_id
+                    or record.base_image_sha256 != self.settings.base_image_sha256
+                    or path.resolve().parent != Path(failure.root_dir).resolve()):
+                raise ValueError()
+        except (OSError, ValueError, TypeError, CapsuleError):
+            raise ExecutionEnvironmentError("retained Capsule reference or durable ownership is invalid") from None
+        self._retained_failure = failure
+        self._control_registry = registry
+
     def reconnect_failure(
         self,
         *,
@@ -667,6 +733,7 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             raise ExecutionEnvironmentError(
                 "legacy static-token Failure Capsules do not support secure reconnect"
             )
+        self._validate_provisioned_security()
         if not self.settings.failure_allow_reconnect:
             raise ExecutionEnvironmentError(
                 "Failure Capsule reconnect is disabled by user policy"
@@ -731,6 +798,9 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             self._session_token_rotated = True
             self._retained_failure = None
             self._retention_error = None
+            self._failure_reason = ""
+            self._workspace_ready = False
+            self._staged_targets.clear()
 
     def transition_execution_mode(
         self,
@@ -742,6 +812,7 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             raise ExecutionEnvironmentError(
                 "execution-mode transitions require an active provisioned Capsule"
             )
+        self._validate_provisioned_security()
         mode = self._mode_request(
             execution_mode,
             requested_by_llm=requested_by_llm,
@@ -754,14 +825,18 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             )
         handle = self._handle
         with registry.operation_lock(handle.capsule_id):
+            self._verify_current_controller(registry, handle)
             record = registry.load(handle.capsule_id)
+            if record.lifecycle_state != CapsuleLifecycleState.ACTIVE.value:
+                raise ExecutionEnvironmentError("mode transition requires an active Capsule generation")
             if mode == record.effective_execution_mode:
                 return
-            self._verify_retained_ownership(registry, handle)
             self.provider.stop_existing(handle)
             self._adapter = None
             self._client = None
             self._prepared = False
+            self._workspace_ready = False
+            self._staged_targets.clear()
             handle, client = self._establish_generation_locked(
                 registry,
                 handle,
@@ -797,26 +872,18 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             )
         handle = self._handle
         with registry.operation_lock(handle.capsule_id):
-            registry.transition(
-                handle.capsule_id,
-                CapsuleLifecycleState.QUARANTINING.value,
-            )
-            try:
-                self.provider.quarantine(handle)
-                retained = self.provider.retain_failure(
-                    handle,
-                    self._failure_reason,
-                )
-                registry.transition(
-                    handle.capsule_id,
-                    CapsuleLifecycleState.QUARANTINED.value,
-                )
-            except Exception:
-                registry.transition(
-                    handle.capsule_id,
-                    CapsuleLifecycleState.RECOVERY_REQUIRED.value,
-                )
-                raise
+            return self._retain_failure_locked(registry, handle)
+
+    def _retain_failure_locked(self, registry, handle) -> bool:
+        self._verify_current_controller(registry, handle)
+        registry.transition(handle.capsule_id, CapsuleLifecycleState.QUARANTINING.value)
+        try:
+            self.provider.quarantine(handle)
+            retained = self.provider.retain_failure(handle, self._failure_reason)
+            registry.transition(handle.capsule_id, CapsuleLifecycleState.QUARANTINED.value)
+        except Exception:
+            registry.transition(handle.capsule_id, CapsuleLifecycleState.RECOVERY_REQUIRED.value)
+            raise CapsuleError("Failure Capsule quarantine or retention is uncertain") from None
         self._retained_failure = retained
         self._retention_error = None
         self._adapter = None
@@ -828,26 +895,51 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         self._session_token_rotated = False
         return True
 
+    def _verify_current_controller(self, registry, handle) -> None:
+        self._verify_retained_ownership(registry, handle)
+        record = registry.load(handle.capsule_id)
+        if handle.control_generation != record.last_committed_generation_known_by_host:
+            raise CapsuleError("stale Capsule controller cannot tear down a newer generation")
+
+    def launch(self, target: str) -> None:
+        if self._is_provisioned():
+            self.prepare_transfers()
+        super().launch(target)
+
     def close(self) -> None:
-        capsule_id = (
-            self._handle.capsule_id
-            if self._handle is not None
-            else ""
-        )
-        try:
-            super().close()
-        finally:
-            if self._handle is None:
-                self._session_token_rotated = False
-                if (
-                    capsule_id
-                    and self._control_registry is not None
-                    and self._retained_failure is None
-                ):
-                    try:
-                        self._control_registry.transition(
-                            capsule_id,
-                            CapsuleLifecycleState.DESTROYED.value,
-                        )
-                    except Exception:
-                        pass
+        if not self._is_provisioned():
+            return super().close()
+        handle = self._handle
+        if handle is None:
+            return
+        registry = self._control_registry
+        if registry is None:
+            raise CapsuleError("Capsule control registry is unavailable for teardown")
+        with registry.operation_lock(handle.capsule_id):
+            self._verify_current_controller(registry, handle)
+            if self.settings.retain_on_failure and self._failure_reason:
+                self._retain_failure_locked(registry, handle)
+                return
+            if self._adapter is not None:
+                try:
+                    self._adapter.close()
+                except Exception:
+                    if self.settings.retain_on_failure:
+                        self.record_failure("guest session close failed")
+                        self._retain_failure_locked(registry, handle)
+                        raise CapsuleError("guest session close failed; Capsule quarantined") from None
+                    # Provider destruction below fences even daemonized descendants.
+            registry.transition(handle.capsule_id, CapsuleLifecycleState.DESTROYING.value)
+            try:
+                self.provider.destroy(handle)
+            except Exception:
+                registry.transition(handle.capsule_id, CapsuleLifecycleState.RECOVERY_REQUIRED.value)
+                raise CapsuleError("Capsule destruction is uncertain; recovery is required") from None
+            registry.transition(handle.capsule_id, CapsuleLifecycleState.DESTROYED.value)
+            self._handle = None
+            self._adapter = None
+            self._client = None
+            self._prepared = False
+            self._workspace_ready = False
+            self._staged_targets.clear()
+            self._session_token_rotated = False

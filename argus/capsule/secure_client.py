@@ -130,6 +130,7 @@ class SecureGuestAgentClient(GuestAgentClient):
             opener=opener,
         )
         self.transport_secure = scheme == "https"
+        self.pinned_cert_sha256 = str(pinned_cert_sha256 or "").strip().lower()
 
     def rotate_session_token(
         self,
@@ -142,9 +143,9 @@ class SecureGuestAgentClient(GuestAgentClient):
     ) -> None:
         """Replace the bootstrap bearer with a session-only bearer.
 
-        If the guest commits the rotation but the response is lost, probe with
-        the proposed token before declaring failure. This prevents a transient
-        transport error from permanently desynchronizing host and guest auth.
+        Legacy sessions may probe with the proposed token after a lost reply.
+        Generation-bound sessions must abandon the attempt instead: the host
+        owns recovery by reserving a strictly higher generation.
         """
         session_id = validate_session_id(session_id)
         token = str(new_token or "").strip()
@@ -164,6 +165,13 @@ class SecureGuestAgentClient(GuestAgentClient):
                 )
             self._request("POST", "/v1/auth/rotate", payload)
         except Exception as rotate_exc:
+            if capsule_id:
+                # Neither the old bootstrap bearer nor the proposed active
+                # bearer is usable by this abandoned production client.
+                self.token = ""
+                raise CapsuleGuestError(
+                    "Capsule auth acknowledgement is uncertain; a new generation is required"
+                ) from None
             self.token = token
             try:
                 health = self.health()

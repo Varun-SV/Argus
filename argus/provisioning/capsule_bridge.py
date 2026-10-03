@@ -22,6 +22,9 @@ def _bind_machine_contract(
     """Bind runtime-equivalent Capsule settings to the immutable machine contract."""
 
     machine = definition.machine
+    expected_os = {"hyperv": "windows-11", "libvirt": "ubuntu"}.get(manifest.provider)
+    if definition.require_guest_runtime().target_os != expected_os:
+        raise ProvisioningError("guest runtime OS contradicts derived image provider contract")
     # Capsule providers currently express only these hardware contracts. In
     # particular, a verified image must not lose its Secure Boot/TPM or disk
     # bus requirements when a disposable session is created.

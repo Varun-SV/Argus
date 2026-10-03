@@ -28,6 +28,7 @@ from argus.provisioning.integrity import verify_regular_file
 from argus.provisioning.media import verify_installation_media
 from argus.provisioning.model import DerivedImageManifest, EnvironmentDefinition, ProvisioningError
 from argus.provisioning.planner import ProvisioningPlan, ProvisioningResult
+from argus.capsule.permissions import ensure_private_directory
 
 
 class ProvisioningCleanupState(str, Enum):
@@ -115,6 +116,16 @@ def _published(definition: EnvironmentDefinition, plan: ProvisioningPlan) -> Pro
     return ProvisioningResult(plan, manifest)
 
 
+def load_published_derived_image(
+    definition: EnvironmentDefinition, plan: ProvisioningPlan,
+) -> ProvisioningResult:
+    """Verify the published manifest, image bytes and canonical ATES proof."""
+    if plan.environment_id != definition.environment_id:
+        raise ProvisioningError("published image plan belongs to another environment")
+    with _build_lock(plan.cache_dir.parent / ("." + plan.output_format + ".lock")):
+        return _published(definition, plan)
+
+
 def _copy_verified_media(definition: EnvironmentDefinition, destination: Path) -> None:
     # First check the configured locator, then hash the exact bytes copied into
     # our private work directory. The hypervisor sees only the staged pathname.
@@ -166,6 +177,7 @@ def publish_derived_image(
         installation_attempted = False
         recorder: AtesProvisioningRecorder | None = None
         try:
+            ensure_private_directory(workspace)
             recorder = AtesProvisioningRecorder(_evidence_root(plan), definition, plan)
             staged_iso = workspace / "installation.iso"
             image = workspace / plan.image_path.name

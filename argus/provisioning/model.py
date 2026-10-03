@@ -396,6 +396,9 @@ class EnvironmentDefinition:
     def identity_dict(self) -> dict[str, Any]:
         payload = {
             "schema_version": self.schema_version,
+            # Host-generated install/service/sanitization policy changes the
+            # reusable image just as surely as a different runtime bundle.
+            "image_construction_policy": "argus-image-construction-v2",
             "source": self.source.identity_dict(),
             "machine": asdict(self.machine),
             "installation": self.installation.identity_dict(),

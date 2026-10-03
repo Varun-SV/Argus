@@ -27,6 +27,7 @@ _CURRENT_PROVIDER = [None]
 class LifecycleProvider(CapsuleProvider):
     provider_name = "hyperv"
     provider_capabilities = CapsuleProviderCapabilities(
+        protected_bootstrap_media=True,
         provider="hyperv",
         host_platforms=("windows", "linux", "macos"),
         guest_os=("windows",),
@@ -248,6 +249,15 @@ def test_provisioned_prepare_uses_reserved_generation_and_pinned_tls(
     assert provider.destroyed == 1
 
 
+def test_unprotected_bootstrap_media_is_rejected_before_provider_allocation(tmp_path):
+    env, provider = _environment(tmp_path)
+    provider.provider_capabilities = replace(provider.provider_capabilities, protected_bootstrap_media=False)
+    with pytest.raises(ExecutionEnvironmentError, match="protect secret-bearing bootstrap media"):
+        env.prepare()
+    assert not provider.root.exists()
+    assert not provider.attached
+
+
 def test_uncertain_first_generation_is_abandoned_not_reused(
     tmp_path: Path,
 ) -> None:
@@ -261,6 +271,48 @@ def test_uncertain_first_generation_is_abandoned_not_reused(
     assert record.highest_reserved_generation == 2
     assert record.last_committed_generation_known_by_host == 2
     assert provider.stops >= 1
+    env.close()
+
+
+def test_failed_media_rendering_destroys_secrets_and_abandons_generation(tmp_path, monkeypatch):
+    env, provider = _environment(tmp_path)
+    from argus.execution import secure_capsule
+
+    original = secure_capsule.create_bootstrap_iso
+    calls = []
+
+    def fail_once(root, media):
+        calls.append(root)
+        if len(calls) == 1:
+            media.write_bytes(b"partial-secret-bearing-medium")
+            raise OSError("simulated-rendering-failure")
+        return original(root, media)
+
+    monkeypatch.setattr(secure_capsule, "create_bootstrap_iso", fail_once)
+    env.prepare()
+    assert [request.control_generation for request in provider.starts] == [2]
+    assert not list((env.settings.resolved_control_root / "bootstrap-attempts").iterdir())
+    assert not list((env.settings.resolved_control_root / "bootstrap-media").iterdir())
+    assert not calls[0].exists()
+    env.close()
+
+
+def test_start_reply_failure_stops_the_same_capsule_before_retry(tmp_path, monkeypatch):
+    env, provider = _environment(tmp_path)
+    original = provider.start_existing
+    calls = []
+
+    def start_then_lose_reply(handle, request):
+        current = original(handle, request)
+        calls.append(request.control_generation)
+        if len(calls) == 1:
+            raise OSError("lost-provider-start-reply")
+        return current
+
+    monkeypatch.setattr(provider, "start_existing", start_then_lose_reply)
+    env.prepare()
+    assert calls == [1, 2]
+    assert provider.stops == 1
     env.close()
 
 
@@ -378,7 +430,43 @@ def test_concurrent_reconnects_serialize_provider_control_and_fence(
     # The later reconnect is authoritative. Whichever object owns generation 3
     # may clean up the fake provider state; generation 2 is deliberately stale.
     winner = first if first._handle.control_generation == 3 else second
+    loser = second if winner is first else first
+    stops = provider.stops
+    with pytest.raises(Exception, match="stale Capsule controller"):
+        loser.transition_execution_mode("isolated")
+    assert provider.stops == stops
+    with pytest.raises(Exception, match="stale Capsule controller"):
+        loser.close()
+    assert provider.destroyed == 0
     winner.close()
+
+
+def test_host_restart_restores_quarantined_reference_without_adopting_lost_state(tmp_path):
+    import json
+
+    env, provider = _environment(tmp_path)
+    env.prepare()
+    env.record_failure("assertion")
+    env.close()
+    retained = env._retained_failure
+    metadata = Path(retained.root_dir) / "failure-capsule.json"
+    retained.persist(metadata)
+    fresh = SecureCapsuleExecutionEnvironment("cli", env.settings, provider=provider,
+                                              client_factory=LifecycleClient)
+    fresh.restore_failure(metadata)
+    fresh.reconnect_failure()
+    assert fresh._handle.control_generation == 2
+    assert fresh._handle.capsule_id == retained.capsule_id
+    fresh.record_failure("second assertion")
+    fresh.close()
+    second = fresh._retained_failure
+    second.persist(metadata)
+    assert json.loads(metadata.read_text())["failed_generation"] == 2
+    with pytest.raises(Exception, match="generation conflicts"):
+        retained.persist(metadata)
+    (env.settings.resolved_control_root / (retained.capsule_id + ".json")).unlink()
+    with pytest.raises(ExecutionEnvironmentError, match="durable ownership is invalid"):
+        fresh.restore_failure(metadata)
 
 
 def test_llm_cannot_expand_execution_mode_policy(tmp_path: Path) -> None:

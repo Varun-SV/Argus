@@ -53,6 +53,27 @@ def test_secure_client_allows_explicit_legacy_http():
     assert client.transport_secure is False
 
 
+def test_generation_lost_ack_discards_both_tokens_without_same_generation_probe():
+    client = SecureGuestAgentClient(
+        "http://127.0.0.1:8765", "bootstrap-sentinel", allow_insecure_http=True,
+    )
+    calls = []
+
+    def lost_reply(method, path, payload=None):
+        calls.append((method, path))
+        raise OSError("active-secret-sentinel")
+
+    client._request = lost_reply
+    with pytest.raises(CapsuleGuestError, match="new generation") as error:
+        client.rotate_session_token(
+            "generation-session", "active-secret-sentinel" * 3,
+            capsule_id="cap-" + "a" * 32, control_generation=1, execution_mode="isolated",
+        )
+    assert calls == [("POST", "/v1/auth/rotate")]
+    assert client.token == ""
+    assert "sentinel" not in str(error.value)
+
+
 def test_tls_private_key_is_consumed_from_session_disk(tmp_path):
     key = tmp_path / "guest-key.pem"
     key.write_text("private-key-material", encoding="utf-8")
@@ -120,6 +141,28 @@ def test_rotated_bearer_replaces_bootstrap_and_binds_file_session():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_generation_rotation_rejects_session_outside_bootstrap_manifest(tmp_path):
+    from argus.capsule.control import GuestControlStateStore
+
+    server, thread, endpoint = _start_secure_loopback_server()
+    server.capsule_id = "cap-" + "c" * 32
+    server.control_generation = 1
+    server.execution_mode = "isolated"
+    server.bootstrap_session_id = "approved-session"
+    server.control_state_store = GuestControlStateStore(tmp_path / "guest-state.json")
+    client = SecureGuestAgentClient(endpoint, "bootstrap-secret", allow_insecure_http=True)
+    try:
+        with pytest.raises(CapsuleGuestError):
+            client.rotate_session_token("wrong-session", "x" * 48, capsule_id=server.capsule_id,
+                                        control_generation=1, execution_mode="isolated")
+        assert server.auth_session_id == ""
+        assert server.control_state_store.load().highest_committed_generation == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
         thread.join(timeout=2)
 
 
@@ -138,7 +181,8 @@ def test_bootstrap_bearer_is_establishment_only() -> None:
 
         bootstrap.rotate_session_token("active-session", "n" * 48)
         started = bootstrap.begin_files("active-session")
-        assert started["session_id"] == "active-session"
+        assert started["workspace"]
+        assert server.state.workspace_session_id == "active-session"
 
         old = SecureGuestAgentClient(
             endpoint,

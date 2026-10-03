@@ -39,6 +39,15 @@ _SHA512_CRYPT_RE = re.compile(
 )
 
 
+def _systemd_argument(value: str) -> str:
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ProvisioningError("guest runtime entrypoint contains control characters")
+    # The executable argument expands specifiers, but does not substitute
+    # environment variables. Doubling '$' would change the executable pathname.
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return '"' + escaped.replace("%", "%%") + '"'
+
+
 def _ubuntu_locale(locale: str) -> str:
     if not _LOCALE_RE.fullmatch(locale):
         raise ProvisioningError("Ubuntu autoinstall requires a supported locale identifier")
@@ -95,7 +104,7 @@ class UbuntuAutoinstallProfile:
             raise ProvisioningError("Ubuntu autoinstall requires host_only networking")
         if not installation.unattended:
             raise ProvisioningError("Ubuntu autoinstall requires unattended=true")
-        if installation.credential_ref is None:
+        if self.runtime_manifest is None and installation.credential_ref is None:
             raise ProvisioningError("Ubuntu autoinstall requires an approved credential_ref")
         if installation.edition is not None:
             raise ProvisioningError("Ubuntu autoinstall cannot guarantee edition selection")
@@ -123,7 +132,7 @@ class UbuntuAutoinstallProfile:
             raise ProvisioningError("Ubuntu apt mirror URI is invalid or contains credentials")
         if not _USERNAME_RE.fullmatch(self.username):
             raise ProvisioningError("Ubuntu autoinstall username is invalid")
-        if not _SHA512_CRYPT_RE.fullmatch(self.password_hash):
+        if self.runtime_manifest is None and not _SHA512_CRYPT_RE.fullmatch(self.password_hash):
             raise ProvisioningError("Ubuntu autoinstall requires a SHA-512 crypt password hash")
         for package in installation.packages:
             if not _PACKAGE_RE.fullmatch(package):
@@ -168,7 +177,7 @@ class UbuntuAutoinstallProfile:
             "After=local-fs.target\n\n"
             "[Service]\n"
             "Type=simple\n"
-            "ExecStart=" + entrypoint
+            "ExecStart=" + _systemd_argument(entrypoint)
             + " --bootstrap-service "
             + "--runtime-identity-file /etc/argus/runtime-identity.json "
             + "--control-state-file /var/lib/argus/control-state.json\n"
@@ -184,7 +193,7 @@ class UbuntuAutoinstallProfile:
         bundle = "/mnt/argus-build/runtime-bundle.zip"
         target_bundle = "/target/tmp/argus-runtime.zip"
         target_entry = "/target" + entrypoint
-        return [
+        commands = [
             "mkdir -p /mnt/argus-build",
             "mount -o ro /dev/disk/by-label/ARGUS_BUILD /mnt/argus-build",
             (
@@ -227,6 +236,18 @@ class UbuntuAutoinstallProfile:
                     + " sudo >/dev/null 2>&1 || true"
                 )
             ),
+            # Drop device groups and prevent the desktop broker from remounting
+            # the root-only optical media for a persistent target application.
+            "curtin in-target --target=/target -- usermod -G users " + shlex.quote(self.username),
+            "mkdir -p /target/etc/polkit-1/rules.d",
+            "printf '%s' " + shlex.quote(base64.b64encode((
+                "polkit.addRule(function(action, subject) {\n"
+                "  if (subject.user == '" + self.username + "' &&\n"
+                "      action.id.indexOf('org.freedesktop.udisks2.') === 0) {\n"
+                "    return polkit.Result.NO;\n"
+                "  }\n"
+                "});\n"
+            ).encode()).decode()) + " | base64 -d > /target/etc/polkit-1/rules.d/10-argus-media.rules",
             "rm -rf /target/var/lib/cloud/instance "
             "/target/var/lib/cloud/instances/* "
             "/target/var/lib/cloud/seed/nocloud*",
@@ -235,6 +256,17 @@ class UbuntuAutoinstallProfile:
             "rm -f " + shlex.quote(target_bundle),
             "umount /mnt/argus-build",
         ]
+        if self.definition.installation.target_flavor == "desktop":
+            # Ubuntu Desktop requires a real X11 target session. The account's
+            # password remains locked; GDM owns console login, not Argus auth.
+            desktop_policy = (
+                "[daemon]\nWaylandEnable=false\nAutomaticLoginEnable=true\n"
+                "AutomaticLogin=" + self.username + "\n"
+            )
+            encoded = base64.b64encode(desktop_policy.encode()).decode("ascii")
+            commands.insert(-1, "printf '%s' " + shlex.quote(encoded)
+                            + " | base64 -d > /target/etc/gdm3/custom.conf")
+        return commands
 
     def autoinstall_config(self) -> dict[str, object]:
         """Return a fresh mapping suitable for the NoCloud user-data file."""
@@ -244,7 +276,11 @@ class UbuntuAutoinstallProfile:
             "identity": {
                 "hostname": self.hostname,
                 "username": self.username,
-                "password": self.password_hash,
+                # Production images have no password credential to scrub from
+                # Subiquity's repeatable answer file or installer diagnostics.
+                # Compatibility answer-only profiles retain the old input;
+                # publishable builds always supply a runtime manifest.
+                "password": "!" if self.runtime_manifest is not None else self.password_hash,
             },
             "locale": _ubuntu_locale(installation.locale),
             "timezone": _ubuntu_timezone(installation.timezone),

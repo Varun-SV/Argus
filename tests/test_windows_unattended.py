@@ -105,10 +105,9 @@ def test_answer_selects_edition_and_installs_to_uefi_disk(tmp_path: Path) -> Non
         namespaces=_NS,
     )
     assert command is not None and "ARGUS_BUILD" in command
-    generalize = audit.find("a:Generalize", _NS)
-    assert generalize is not None
-    assert generalize.findtext("a:Mode", namespaces=_NS) == "OOBE"
-    assert generalize.findtext("a:ForceShutdownNow", namespaces=_NS) == "true"
+    # The Audit installer invokes native Sysprep with a separate, secret-free
+    # Capsule specialization answer file; it must not mix Generalize/Reseal.
+    assert audit.find("a:Generalize", _NS) is None
 
 
 def test_answer_iso_has_root_autounattend_xml(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from argus.capsule.base import CapsuleError
 from argus.capsule.files import validate_session_id
+from argus.capsule.permissions import ensure_private_directory
 
 
 _CAPSULE_ID_RE = re.compile(r"^cap-[0-9a-f]{32}$")
@@ -233,13 +234,7 @@ def _process_lock(path: Path) -> threading.Lock:
 
 
 def _ensure_private_dir(path: Path) -> None:
-    if path.exists():
-        if path.is_symlink() or not path.is_dir():
-            raise CapsuleError(f"Capsule control root is not a directory: {path}")
-    else:
-        path.mkdir(parents=True, mode=0o700)
-    if os.name == "posix":
-        path.chmod(0o700)
+    ensure_private_directory(path)
 
 
 def _atomic_json(path: Path, data: dict) -> None:

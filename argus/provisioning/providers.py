@@ -41,7 +41,7 @@ from argus.provisioning.windows_unattended import (
 from argus.provisioning.ubuntu_unattended import (
     UbuntuAutoinstallProfile, temporary_nocloud_seed_iso, validate_ubuntu_source_id,
 )
-from argus.secrets import ArgusSecretStore, SecretStoreError
+from argus.secrets import ArgusSecretStore
 
 
 def _attended_only(definition: EnvironmentDefinition) -> None:
@@ -612,13 +612,9 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         )
         password_hash = None
         if definition.installation.unattended:
-            ref = definition.installation.credential_ref
-            if ref is None:
-                raise ProvisioningError("Ubuntu autoinstall requires a credential reference")
-            try:
-                password_hash = (self._secret_store or ArgusSecretStore()).get(ref)
-            except SecretStoreError:
-                raise ProvisioningError("Ubuntu autoinstall credential cannot be resolved") from None
+            # Production runtime profiles have a locked non-admin target user.
+            # No reusable password is needed by Subiquity or the final image.
+            password_hash = "!"
         else:
             _attended_only(definition)
         if platform.system().lower() != "linux" and self._runner is None:
