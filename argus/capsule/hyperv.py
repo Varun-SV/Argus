@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
-import json
+import os
 import shutil
 import subprocess
 import sys
@@ -123,6 +123,10 @@ class HyperVProvider(CapsuleProvider):
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
         self._ensure_host()
         settings = request.settings
+        if settings.secure_boot is not None or settings.tpm_version:
+            raise CapsuleError(
+                "provisioned firmware/TPM contracts require SecureCapsuleExecutionEnvironment"
+            )
         if settings.provider.lower() != "hyperv":
             raise CapsuleError(f"HyperVProvider cannot handle provider {settings.provider!r}")
         if not settings.guest_token:
@@ -305,7 +309,7 @@ class HyperVProvider(CapsuleProvider):
         ).strip().splitlines()[-1]
         retained_at = datetime.now(timezone.utc).isoformat()
         failure = FailureCapsule(
-            failure_id=handle.session_id,
+            failure_id=handle.capsule_id or handle.session_id,
             session_id=handle.session_id,
             provider=self.provider_name,
             vm_name=handle.vm_name,
@@ -313,12 +317,14 @@ class HyperVProvider(CapsuleProvider):
             reason=(reason or "test failure")[:2000],
             retained_at=retained_at,
             vm_state=vm_state or "Off",
+            capsule_id=handle.capsule_id,
+            failed_generation=handle.control_generation,
+            execution_mode=handle.execution_mode,
+            provider_resource_identity=handle.provider_resource_identity,
+            mutable_disk_identity=handle.mutable_disk_identity,
         )
         manifest = root / "failure-capsule.json"
-        manifest.write_text(
-            json.dumps(failure.to_dict(), indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        failure.persist(manifest)
         return failure
 
     def _remove_vm(self, vm_name: str) -> None:

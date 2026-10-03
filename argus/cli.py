@@ -16,6 +16,7 @@ from argus.config import init_project, load_config
 from argus.engine.results import RunResult, StepResult, load_runs
 from argus.engine.spec import SpecError, discover_tests, load_spec
 from argus.providers.base import ProviderError
+from argus.secrets import ArgusSecretStore, SecretStoreError
 from argus.tokens import TokenTracker
 
 console = Console(highlight=False)
@@ -41,6 +42,58 @@ def init() -> None:
     console.print("  edit [cyan].argus/config.yaml[/cyan] to pick your provider/model")
     console.print("  example test: [cyan].argus/notepad.test.yaml[/cyan]")
     console.print("  then: [bold]argus run[/bold]")
+
+
+@main.group("secrets")
+def secrets_group() -> None:
+    """Manage per-user Argus secrets without putting values in command arguments."""
+
+
+@secrets_group.command("set")
+@click.argument("ref")
+@click.option("--stdin", "from_stdin", is_flag=True,
+              help="Read the value from standard input instead of a hidden prompt.")
+@click.option("--file", "value_file", type=click.Path(exists=True, dir_okay=False,
+              path_type=Path), help="Read the value from a local file.")
+def secrets_set(ref: str, from_stdin: bool, value_file: Optional[Path]) -> None:
+    """Create or replace SECRET://ARGUS/NAME for the current user."""
+    if from_stdin and value_file is not None:
+        raise click.UsageError("choose either --stdin or --file")
+    try:
+        if from_stdin:
+            value = sys.stdin.read()
+        elif value_file is not None:
+            value = value_file.read_text(encoding="utf-8")
+        else:
+            value = click.prompt("Secret value", hide_input=True, confirmation_prompt=True)
+        ArgusSecretStore().set(ref, value)
+    except (OSError, UnicodeError, SecretStoreError) as exc:
+        raise click.ClickException(str(exc)) from None
+    console.print("Secret saved.")
+
+
+@secrets_group.command("list")
+def secrets_list() -> None:
+    """List stored references, never their values."""
+    try:
+        refs = ArgusSecretStore().list_refs()
+    except SecretStoreError as exc:
+        raise click.ClickException(str(exc)) from None
+    for ref in refs:
+        console.print(ref)
+
+
+@secrets_group.command("remove")
+@click.argument("ref")
+def secrets_remove(ref: str) -> None:
+    """Remove one stored reference."""
+    if not click.confirm(f"Remove {ref}?", default=False):
+        return
+    try:
+        removed = ArgusSecretStore().delete(ref)
+    except SecretStoreError as exc:
+        raise click.ClickException(str(exc)) from None
+    console.print("Secret removed." if removed else "Secret reference was not found.")
 
 
 # ----------------------------------------------------------------- run ----

@@ -21,6 +21,10 @@ ATES_VERSION = "0.1"
 STATUS_POLICY_VERSION = "ates-status-v1"
 SUPPORTED_STATUS_POLICY_VERSIONS = frozenset({STATUS_POLICY_VERSION})
 RUN_OUTCOME_REFINALIZATION_SCOPE = "run_outcome.refinalize"
+PROVISIONING_STAGES = (
+    "media_verified", "provider_selected", "installation",
+    "baseline_validated", "image_hashed", "publication",
+)
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _WINDOWS_RESERVED_BASENAMES = frozenset(
     {
@@ -36,6 +40,7 @@ _WINDOWS_INVALID_COMPONENT_CHARS = frozenset('<>"|?*')
 class ExecutionKind(str, Enum):
     SCRIPTED = "scripted"
     ROAM = "roam"
+    PROVISIONING = "provisioning"
 
 
 class RunStatus(str, Enum):
@@ -484,7 +489,65 @@ class RoamSource:
             _require_nonempty(self.policy_ref, "policy_ref")
 
 
-RunSource = Union[ScriptedSource, RoamSource]
+@dataclass(frozen=True)
+class ProvisioningSource:
+    """Public, content-addressed identity for an OS image build."""
+
+    environment_id: str
+    definition_sha256: str
+    source_sha256: str
+    provider: str
+    image_format: str
+    architecture: str
+    machine: Mapping[str, object]
+    kind: str = field(default="os_environment", init=False)
+
+    def __post_init__(self) -> None:
+        digest = re.compile(r"^[0-9a-f]{64}$")
+        for name in ("definition_sha256", "source_sha256"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not digest.fullmatch(value):
+                raise ValueError(f"provisioning {name} must be a lowercase SHA-256 digest")
+        if self.environment_id != f"env-sha256-{self.definition_sha256}":
+            raise ValueError("provisioning environment_id contradicts definition digest")
+        for name in ("provider", "image_format", "architecture"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value):
+                raise ValueError(f"provisioning {name} must be a machine-safe identifier")
+        if self.architecture not in {"x86_64", "aarch64"} or self.image_format not in {"vhdx", "qcow2", "raw"}:
+            raise ValueError("provisioning architecture or image format is unsupported")
+        if not isinstance(self.machine, Mapping):
+            raise ValueError("provisioning machine contract must be a mapping")
+        machine = dict(self.machine)
+        expected = {
+            "architecture", "cpu_count", "memory_mb", "firmware", "secure_boot",
+            "tpm_version", "disk_size_gib", "disk_bus", "network_mode",
+        }
+        if set(machine) != expected or machine["architecture"] != self.architecture:
+            raise ValueError("provisioning machine contract shape or architecture is invalid")
+        for name in ("cpu_count", "memory_mb", "disk_size_gib"):
+            value = machine[name]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"provisioning machine {name} must be positive")
+        if not isinstance(machine["secure_boot"], bool):
+            raise ValueError("provisioning machine secure_boot must be boolean")
+        for name in ("firmware", "disk_bus", "network_mode"):
+            value = machine[name]
+            if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", value):
+                raise ValueError(f"provisioning machine {name} is invalid")
+        if (
+            machine["firmware"] not in {"bios", "uefi"}
+            or machine["disk_bus"] not in {"ide", "sata", "scsi", "virtio", "nvme"}
+            or machine["network_mode"] not in {"isolated", "host_only"}
+            or (machine["secure_boot"] and machine["firmware"] != "uefi")
+        ):
+            raise ValueError("provisioning machine contract is unsupported")
+        if machine["tpm_version"] not in {None, "1.2", "2.0"}:
+            raise ValueError("provisioning machine tpm_version is invalid")
+        object.__setattr__(self, "machine", FrozenDict(machine))
+
+
+RunSource = Union[ScriptedSource, RoamSource, ProvisioningSource]
 
 
 @dataclass(frozen=True)
@@ -529,6 +592,8 @@ class RunRecord:
             raise ValueError("scripted runs require ScriptedSource")
         if self.execution_kind is ExecutionKind.ROAM and not isinstance(self.source, RoamSource):
             raise ValueError("roam runs require RoamSource")
+        if self.execution_kind is ExecutionKind.PROVISIONING and not isinstance(self.source, ProvisioningSource):
+            raise ValueError("provisioning runs require ProvisioningSource")
 
 
 @dataclass(frozen=True)

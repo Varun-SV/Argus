@@ -31,11 +31,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+guest-runtime-build = ["pyinstaller>=6.0"]
 # Desktop GUI automation on Windows (UIA tree + input synthesis + screenshots)
 windows = [
     "pywinauto>=0.6.8",
     "mss>=9.0",
     "psutil>=5.9",
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 # Linux GUI automation (X11 / Xvfb)
 linux = [

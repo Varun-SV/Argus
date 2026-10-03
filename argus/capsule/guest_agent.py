@@ -104,7 +104,8 @@ def _observation_to_dict(obs: Observation) -> dict:
 
 
 class GuestAgentState:
-    def __init__(self) -> None:
+    def __init__(self, *, adapter_factory=None) -> None:
+        self._adapter_factory = adapter_factory
         self._lock = threading.RLock()
         self.adapter: Optional[Adapter] = None
         self.workspace_root: Optional[Path] = None
@@ -408,7 +409,7 @@ class GuestAgentState:
             previous_cwd = Path.cwd()
             try:
                 os.environ["ARGUS_INPUT_MODE"] = input_mode
-                adapter = create_platform_adapter(adapter_type)
+                adapter = (self._adapter_factory or create_platform_adapter)(adapter_type)
                 if self.workspace_root is not None:
                     setter = getattr(adapter, "set_working_directory", None)
                     if callable(setter):

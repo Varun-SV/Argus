@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import ipaddress
+from dataclasses import replace
 from pathlib import Path
 
 from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleRequest
 from argus.capsule.hyperv import HyperVProvider, _ps_quote
+from argus.capsule.provider_identity import (
+    mutable_disk_identity,
+    provider_uuid_identity,
+)
 
 
 # Hyper-V integration-component IDs are stable across localized host display
@@ -29,6 +34,19 @@ class IsolatedHyperVProvider(HyperVProvider):
     authority, not to make broadly connected Capsule networking convenient.
     """
 
+    bootstrap_media_suffix = ".vhdx"
+
+    def create_bootstrap_media(self, source: Path, output: Path) -> Path:
+        from argus.capsule.windows_bootstrap import create_windows_bootstrap_disk
+
+        self._ensure_host()
+        return create_windows_bootstrap_disk(source, output, self._run_ps)
+
+    def destroy_bootstrap_media(self, media: Path) -> None:
+        from argus.capsule.windows_bootstrap import destroy_windows_bootstrap_disk
+
+        destroy_windows_bootstrap_disk(media, self._run_ps)
+
     def _validate_isolation_settings(self, request: CapsuleRequest) -> tuple[str, tuple[str, ...]]:
         settings = request.settings
         if not settings.disable_guest_file_copy:
@@ -40,8 +58,13 @@ class IsolatedHyperVProvider(HyperVProvider):
         if transport not in {"https", "http"}:
             raise CapsuleError("capsule.guest_transport must be https or http")
         if transport == "https":
+            provisioned = bool(
+                settings.environment_id
+                and settings.base_image_sha256
+                and settings.guest_runtime_identity
+            )
             ca = settings.resolved_guest_ca_cert
-            if ca is None or not ca.is_file():
+            if not provisioned and (ca is None or not ca.is_file()):
                 raise CapsuleError(
                     "HTTPS Capsule control requires guest_ca_cert pointing to the "
                     "dedicated guest CA/self-signed certificate"
@@ -276,6 +299,26 @@ class IsolatedHyperVProvider(HyperVProvider):
                 30,
             )
 
+            if settings.secure_boot is not None:
+                boot_mode = (
+                    "On -SecureBootTemplate MicrosoftWindows"
+                    if settings.secure_boot else "Off"
+                )
+                self._run_ps(
+                    f"Set-VMFirmware -VMName {_ps_quote(vm_name)} "
+                    f"-EnableSecureBoot {boot_mode} -ErrorAction Stop",
+                    30,
+                )
+            if settings.tpm_version:
+                if settings.tpm_version != "2.0":
+                    raise CapsuleError("Hyper-V Capsule supports TPM 2.0 only")
+                self._run_ps(
+                    f"Set-VMKeyProtector -VMName {_ps_quote(vm_name)} "
+                    "-NewLocalKeyProtector -ErrorAction Stop; "
+                    f"Enable-VMTPM -VMName {_ps_quote(vm_name)} -ErrorAction Stop",
+                    30,
+                )
+
             self._disable_host_file_copy(vm_name)
             self._apply_network_isolation(
                 vm_name,
@@ -312,3 +355,229 @@ class IsolatedHyperVProvider(HyperVProvider):
                     f"create={create_exc}; cleanup={cleanup_exc}"
                 ) from create_exc
             raise
+
+
+    def _enable_host_kvp(self, vm_name: str) -> None:
+        quoted_id = _ps_quote(_KVP_EXCHANGE_ID.upper())
+        query = (
+            "Get-VMIntegrationService -VMName " + _ps_quote(vm_name)
+            + " | Where-Object { ([string]$_.Id).ToUpperInvariant().EndsWith('\\' + "
+            + quoted_id + ") }"
+        )
+        self._run_ps(
+            "$ErrorActionPreference='Stop'; $svc=" + query + "; "
+            "if (-not $svc -or @($svc).Count -ne 1) "
+            "{ throw 'Key-Value Pair Exchange integration service unavailable' }; "
+            "if (-not $svc.Enabled) "
+            "{ Enable-VMIntegrationService -VMIntegrationService $svc -ErrorAction Stop }",
+            20,
+        )
+
+    def create_stopped(self, request: CapsuleRequest) -> CapsuleHandle:
+        self._ensure_host()
+        settings = request.settings
+        transport, egress_allowlist = self._validate_isolation_settings(request)
+        if settings.provider.lower() != "hyperv":
+            raise CapsuleError(
+                f"IsolatedHyperVProvider cannot handle provider {settings.provider!r}"
+            )
+        if not request.capsule_id:
+            raise CapsuleError("stopped Hyper-V allocation requires a stable Capsule ID")
+        if settings.allow_external_switch:
+            raise CapsuleError("External Hyper-V switches are not permitted")
+        if settings.guest_input_mode not in {"safe", "semantic", "physical", "legacy"}:
+            raise CapsuleError("guest_input_mode must be safe/semantic or physical/legacy")
+        if settings.memory_mb < 1024 or settings.cpu_count < 1:
+            raise CapsuleError("Capsule CPU/memory contract is invalid")
+        if not (1 <= settings.guest_port <= 65535):
+            raise CapsuleError("capsule.guest_port must be between 1 and 65535")
+
+        image = Path(settings.image).expanduser()
+        if not settings.image or not image.is_file():
+            raise CapsuleError(f"Capsule golden image not found: {settings.image!r}")
+        image = image.resolve()
+        self._validate_switch(settings.switch_name)
+
+        root_parent = settings.resolved_vm_root
+        root_parent.mkdir(parents=True, exist_ok=True)
+        root = root_parent / request.capsule_id
+        if root.exists():
+            raise CapsuleError(f"Capsule directory already exists: {root}")
+        root.mkdir(parents=False)
+        vm_name = "Argus-" + request.capsule_id.removeprefix("cap-")[:20]
+        child_vhd = root / "session.vhdx"
+        vm_path = root / "vm"
+        try:
+            self._run_ps(
+                f"New-VHD -Path {_ps_quote(str(child_vhd))} "
+                f"-ParentPath {_ps_quote(str(image))} -Differencing | Out-Null",
+                45,
+            )
+            self._run_ps(
+                "New-VM "
+                f"-Name {_ps_quote(vm_name)} -Generation 2 "
+                f"-MemoryStartupBytes {int(settings.memory_mb)}MB "
+                f"-VHDPath {_ps_quote(str(child_vhd))} "
+                f"-Path {_ps_quote(str(vm_path))} "
+                f"-SwitchName {_ps_quote(settings.switch_name)} | Out-Null",
+                45,
+            )
+            self._run_ps(
+                "$ErrorActionPreference='Stop'; "
+                f"Set-VMProcessor -VMName {_ps_quote(vm_name)} "
+                f"-Count {int(settings.cpu_count)}; "
+                f"Set-VM -Name {_ps_quote(vm_name)} "
+                "-AutomaticCheckpointsEnabled $false "
+                "-AutomaticStartAction Nothing -AutomaticStopAction TurnOff",
+                30,
+            )
+            if settings.secure_boot is not None:
+                boot_mode = (
+                    "On -SecureBootTemplate MicrosoftWindows"
+                    if settings.secure_boot else "Off"
+                )
+                self._run_ps(
+                    f"Set-VMFirmware -VMName {_ps_quote(vm_name)} "
+                    f"-EnableSecureBoot {boot_mode} -ErrorAction Stop",
+                    30,
+                )
+            if settings.tpm_version:
+                if settings.tpm_version != "2.0":
+                    raise CapsuleError("Hyper-V Capsule supports TPM 2.0 only")
+                self._run_ps(
+                    f"Set-VMKeyProtector -VMName {_ps_quote(vm_name)} "
+                    "-NewLocalKeyProtector -ErrorAction Stop; "
+                    f"Enable-VMTPM -VMName {_ps_quote(vm_name)} -ErrorAction Stop",
+                    30,
+                )
+            self._disable_host_file_copy(vm_name)
+            self._apply_network_isolation(
+                vm_name,
+                settings.switch_name,
+                settings.guest_port,
+                egress_allowlist=egress_allowlist,
+                allow_dhcp=settings.allow_dhcp,
+            )
+            vm_id = self._run_ps(
+                f"(Get-VM -Name {_ps_quote(vm_name)} -ErrorAction Stop).Id.ToString()",
+                15,
+            ).strip()
+            return CapsuleHandle(
+                session_id=request.session_id,
+                provider=self.provider_name,
+                vm_name=vm_name,
+                root_dir=str(root),
+                address="",
+                guest_port=settings.guest_port,
+                transport=transport,
+                guest_os="windows",
+                architecture="x86_64",
+                capsule_id=request.capsule_id,
+                execution_mode=request.execution_mode,
+                provider_resource_identity=provider_uuid_identity(
+                    "hyperv", vm_id
+                ),
+                mutable_disk_identity=mutable_disk_identity(child_vhd),
+            )
+        except Exception as create_exc:
+            cleanup_exc = self._cleanup_partial(vm_name, root)
+            if cleanup_exc is not None:
+                raise CapsuleError(
+                    "Hyper-V stopped allocation failed and cleanup also failed: "
+                    f"create={create_exc}; cleanup={cleanup_exc}"
+                ) from create_exc
+            raise
+
+    def inspect_ownership(self, handle: CapsuleHandle) -> tuple[str, str]:
+        root = Path(handle.root_dir)
+        disk = root / "session.vhdx"
+        vm_id = self._run_ps(
+            f"(Get-VM -Name {_ps_quote(handle.vm_name)} -ErrorAction Stop).Id.ToString()",
+            15,
+        ).strip()
+        attached = self._run_ps(
+            f"Get-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
+            "| ForEach-Object { $_.Path }",
+            15,
+        )
+        expected = str(disk.resolve()).lower()
+        if expected not in {line.strip().lower() for line in attached.splitlines()}:
+            raise CapsuleError("Hyper-V mutable disk is no longer attached to the Capsule")
+        return (
+            provider_uuid_identity("hyperv", vm_id),
+            mutable_disk_identity(disk),
+        )
+
+    def attach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
+        media = Path(media).resolve()
+        if not media.is_file() or media.suffix.lower() != ".vhdx":
+            raise CapsuleError("protected Capsule bootstrap VHDX is missing")
+        state = self._run_ps(
+            f"(Get-VM -Name {_ps_quote(handle.vm_name)} -ErrorAction Stop).State.ToString()",
+            15,
+        ).strip().lower()
+        if state != "off":
+            raise CapsuleError("Hyper-V bootstrap media must be attached while VM is off")
+        self._run_ps(
+            "$ErrorActionPreference='Stop'; "
+            f"if ((Get-VHD -Path {_ps_quote(str(media))} -ErrorAction Stop).Attached) "
+            "{ throw 'bootstrap disk is already attached' }; "
+            f"Add-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
+            f"-ControllerType SCSI -Path {_ps_quote(str(media))} -ErrorAction Stop | Out-Null; "
+            f"$d=Get-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
+            f"| Where-Object {{ $_.Path -eq {_ps_quote(str(media))} }}; "
+            "if (@($d).Count -ne 1 -or $d.ControllerType -ne 'SCSI') "
+            "{ throw 'bootstrap disk attachment failed' }",
+            30,
+        )
+
+    def detach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
+        media = Path(media).resolve()
+        self._run_ps(
+            "$ErrorActionPreference='Stop'; "
+            f"$d=Get-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
+            f"| Where-Object {{ $_.Path -eq {_ps_quote(str(media))} }}; "
+            "if ($d) { $d | Remove-VMHardDiskDrive -ErrorAction Stop }; "
+            f"$left=Get-VMHardDiskDrive -VMName {_ps_quote(handle.vm_name)} "
+            f"| Where-Object {{ $_.Path -eq {_ps_quote(str(media))} }}; "
+            "if ($left) { throw 'bootstrap disk remains attached' }",
+            30,
+        )
+
+    def start_existing(
+        self,
+        handle: CapsuleHandle,
+        request: CapsuleRequest,
+    ) -> CapsuleHandle:
+        if request.capsule_id != handle.capsule_id:
+            raise CapsuleError("Hyper-V reconnect Capsule ID mismatch")
+        self.inspect_ownership(handle)
+        self._enable_host_kvp(handle.vm_name)
+        self._run_ps(
+            f"Start-VM -Name {_ps_quote(handle.vm_name)} -ErrorAction Stop | Out-Null",
+            60,
+        )
+        try:
+            address = self._wait_for_guest_address(
+                handle.vm_name,
+                request.settings.boot_timeout_seconds,
+                requested_address=request.settings.guest_address,
+            )
+        finally:
+            self._disable_host_kvp(handle.vm_name)
+        return replace(
+            handle,
+            session_id=request.session_id,
+            address=address,
+            control_generation=request.control_generation,
+            execution_mode=request.execution_mode,
+        )
+
+    def stop_existing(self, handle: CapsuleHandle) -> None:
+        self._run_ps(
+            "$vm=Get-VM -Name " + _ps_quote(handle.vm_name)
+            + " -ErrorAction Stop; "
+            "if ($vm.State -ne 'Off') "
+            "{ Stop-VM -VM $vm -TurnOff -Force -ErrorAction Stop }",
+            60,
+        )

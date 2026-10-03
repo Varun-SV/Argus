@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 import time
 from typing import List, Optional
 
@@ -45,7 +46,25 @@ def _windows_launch_args(target: str, *, literal: bool = False) -> List[str]:
     """Return Windows subprocess argv without reparsing a staged literal path."""
     if literal:
         return [str(target)]
-    args = shlex.split(str(target), posix=False)
+    if sys.platform == "win32":
+        # shlex in non-POSIX mode retains surrounding quotes. Passing those
+        # tokens to Popen quotes them a second time, so a spaced executable
+        # becomes an invalid pathname. Use the Windows command-line parser.
+        import ctypes
+
+        argc = ctypes.c_int()
+        parser = ctypes.windll.shell32.CommandLineToArgvW
+        parser.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        parser.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        argv = parser(str(target), ctypes.byref(argc))
+        if not argv:
+            raise AdapterError("Windows launch target cannot be parsed")
+        try:
+            args = [argv[index] for index in range(argc.value)]
+        finally:
+            ctypes.windll.kernel32.LocalFree(ctypes.cast(argv, ctypes.c_void_p))
+    else:
+        args = shlex.split(str(target), posix=False)
     if not args:
         raise AdapterError("Windows launch target cannot be empty")
     return args
