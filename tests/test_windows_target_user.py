@@ -70,3 +70,99 @@ def test_target_marker_corruption_is_not_reinitialized(tmp_path):
             stack.enter_context(patch.dict(sys.modules, {module: SimpleNamespace()}))
         with pytest.raises(CapsuleError, match="ownership is corrupt"):
             initialize_target_user("cap-" + "a" * 32, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("privilege", "groups", "non_admin"),
+    [(1, ["Utilisateurs"], True), (1, ["ADMINISTRATEURS"], False), (2, [], False)],
+)
+def test_health_uses_native_account_policy_with_indirect_groups(
+    monkeypatch, privilege, groups, non_admin
+):
+    from argus.capsule import secure_guest_agent as agent
+
+    class ApiError(Exception):
+        winerror = 5
+
+    calls = []
+    def user_info(server, name, level):
+        calls.append(("user", server, name, level))
+        return {"priv": privilege}
+    def local_groups(server, name, flags):
+        calls.append(("groups", server, name, flags))
+        return groups
+    net = SimpleNamespace(error=ApiError, NetUserGetInfo=user_info,
+                          NetUserGetLocalGroups=local_groups)
+    security = SimpleNamespace(
+        error=ApiError, WinBuiltinAdministratorsSid=2,
+        CreateWellKnownSid=lambda kind, domain: kind,
+        LookupAccountSid=lambda server, sid: ("Administrateurs", "BUILTIN", 4),
+    )
+    monkeypatch.setitem(sys.modules, "win32net", net)
+    monkeypatch.setitem(sys.modules, "win32netcon",
+                        SimpleNamespace(USER_PRIV_USER=1, LG_INCLUDE_INDIRECT=1))
+    monkeypatch.setitem(sys.modules, "win32security", security)
+    monkeypatch.setattr(agent.platform, "system", lambda: "Windows")
+    def no_subprocess(*args, **kwargs):
+        pytest.fail("Windows health must not spawn a shell")
+    monkeypatch.setattr(agent.subprocess, "run", no_subprocess)
+    assert agent._target_user_policy() == {
+        "target_user": "argus-target", "target_user_present": True,
+        "target_user_non_admin": non_admin, "target_user_locked": False,
+    }
+    assert calls == [
+        ("user", None, "argus-target", 1),
+        ("groups", None, "argus-target", 1),
+    ]
+
+
+@pytest.mark.parametrize("error_code", [2221, 5])
+def test_health_missing_account_and_api_failure_do_not_report_readiness(
+    monkeypatch, error_code
+):
+    from argus.capsule import secure_guest_agent as agent
+
+    class ApiError(Exception):
+        winerror = error_code
+    def unavailable(*args):
+        raise ApiError()
+    monkeypatch.setitem(sys.modules, "win32net",
+                        SimpleNamespace(error=ApiError, NetUserGetInfo=unavailable))
+    monkeypatch.setitem(sys.modules, "win32netcon", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "win32security", SimpleNamespace())
+    monkeypatch.setattr(agent.platform, "system", lambda: "Windows")
+    result = agent._target_user_policy()
+    if error_code == 2221:
+        assert result["target_user_present"] is False
+        assert result["target_user_non_admin"] is False
+    else:
+        assert result == {}
+
+
+@pytest.mark.parametrize("failure_stage", ["groups", "sid"])
+def test_health_group_or_sid_lookup_failure_is_not_positive_readiness(
+    monkeypatch, failure_stage
+):
+    from argus.capsule import secure_guest_agent as agent
+
+    class ApiError(Exception):
+        winerror = 5
+    def unavailable(*args):
+        raise ApiError()
+    net = SimpleNamespace(
+        error=ApiError, NetUserGetInfo=lambda *args: {"priv": 1},
+        NetUserGetLocalGroups=unavailable if failure_stage == "groups"
+        else lambda *args: ["Utilisateurs"],
+    )
+    security = SimpleNamespace(
+        error=ApiError, WinBuiltinAdministratorsSid=2,
+        CreateWellKnownSid=lambda kind, domain: kind,
+        LookupAccountSid=unavailable if failure_stage == "sid"
+        else lambda *args: ("Administrateurs", "BUILTIN", 4),
+    )
+    monkeypatch.setitem(sys.modules, "win32net", net)
+    monkeypatch.setitem(sys.modules, "win32netcon",
+                        SimpleNamespace(USER_PRIV_USER=1, LG_INCLUDE_INDIRECT=1))
+    monkeypatch.setitem(sys.modules, "win32security", security)
+    monkeypatch.setattr(agent.platform, "system", lambda: "Windows")
+    assert agent._target_user_policy() == {}

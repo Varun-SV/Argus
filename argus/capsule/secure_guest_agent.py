@@ -113,39 +113,45 @@ def _machine_identity() -> str:
 def _target_user_policy() -> dict[str, object]:
     system = platform.system().lower()
     if system == "windows":
-        script = (
-            "$ErrorActionPreference='Stop';$n='argus-target';"
-            "$u=Get-LocalUser -Name $n -ErrorAction SilentlyContinue;"
-            "if(-not $u){'missing';exit 0};"
-            "$g=Get-LocalGroup -SID 'S-1-5-32-544';"
-            "$a=Get-LocalGroupMember -Group $g.Name "
-            "-ErrorAction Stop|Where-Object Name -Match ('\\\\'+$n+'$');"
-            "if($a){'admin'}else{'nonadmin'}"
-        )
+        # Health is served within the request deadline. Starting PowerShell here
+        # can exceed that deadline on a cold Windows boot; query SAM directly.
         try:
-            result = subprocess.run(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    script,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except (OSError, subprocess.TimeoutExpired):
+            import win32net
+            import win32netcon
+            import win32security
+        except ImportError:
             return {}
-        status = result.stdout.strip().splitlines()[-1:] or [""]
+        try:
+            account = win32net.NetUserGetInfo(None, "argus-target", 1)
+        except win32net.error as exc:
+            if exc.winerror != 2221:  # NERR_UserNotFound
+                return {}
+            return {
+                "target_user": "argus-target",
+                "target_user_present": False,
+                "target_user_non_admin": False,
+                "target_user_locked": False,
+            }
+        try:
+            administrators, _, _ = win32security.LookupAccountSid(
+                None,
+                win32security.CreateWellKnownSid(
+                    win32security.WinBuiltinAdministratorsSid, None
+                ),
+            )
+            groups = win32net.NetUserGetLocalGroups(
+                None, "argus-target", win32netcon.LG_INCLUDE_INDIRECT
+            )
+        except (win32net.error, win32security.error):
+            return {}
         return {
             "target_user": "argus-target",
-            "target_user_present": status[0] in {"nonadmin", "admin"},
-            "target_user_non_admin": status[0] == "nonadmin",
+            "target_user_present": True,
+            "target_user_non_admin": (
+                account["priv"] == win32netcon.USER_PRIV_USER
+                and administrators.casefold()
+                not in {group.casefold() for group in groups}
+            ),
             "target_user_locked": False,
         }
 
