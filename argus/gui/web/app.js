@@ -71,6 +71,9 @@ const state = {
   liveJob: null,
   pollTimer: null,
   saveTimer: null,
+  saveChain: Promise.resolve(),
+  closing: false,
+  pendingActions: 0,
   watchOn: false,
   watchSettled: null,
 };
@@ -126,6 +129,7 @@ const setFollowups = (l) => followupsIn(state.conv, l);
 const I = (intent, args) => ({ intent, args: args || {} });
 
 async function sendText(text) {
+  if (state.closing) return;
   text = (text || "").trim();
   if (!text) return;
   const conv = state.conv;
@@ -142,6 +146,7 @@ async function sendText(text) {
 }
 
 async function runChip(label, intentObj) {
+  if (state.closing) return;
   const conv = state.conv;
   if (!conv.title) { conv.title = label.slice(0, 60); renderRecents(); }
   pushIn(conv, { role: "user", kind: "user", text: label });
@@ -150,6 +155,8 @@ async function runChip(label, intentObj) {
 }
 
 async function execute(res, conv = state.conv) {
+  if (state.closing) return;
+  state.pendingActions++;
   const a = res.args || {};
   const { push, say, sayError, setFollowups, withThinking } = inConv(conv);
   try {
@@ -179,7 +186,7 @@ async function execute(res, conv = state.conv) {
         poll();
         return;
       }
-      case "run": return startRun(a.tests || "all", pick(a, ["environment", "capsule_provider", "retain"]), conv);
+      case "run": return await startRun(a.tests || "all", pick(a, ["environment", "capsule_provider", "retain"]), conv);
       case "dry_run": {
         const r = await api().dry_run(a.tests || "all", a.draft || null);
         if (!r.ok) return sayError(r.error);
@@ -189,7 +196,7 @@ async function execute(res, conv = state.conv) {
           : [{ label: "Run all tests", intent: I("run", { tests: "all" }) }, { label: "Watch for changes", intent: I("watch", { action: "start" }) }]);
         return;
       }
-      case "roam": return startRoam(a, conv);
+      case "roam": return await startRoam(a, conv);
       case "write_test": {
         const draft = await withThinking(() => api().draft_test(a.description || ""));
         showDraft(draft, conv);
@@ -296,6 +303,7 @@ async function execute(res, conv = state.conv) {
   } catch (e) {
     sayError(String(e && e.message ? e.message : e));
   } finally {
+    state.pendingActions--;
     scheduleSave();
   }
 }
@@ -410,11 +418,13 @@ function watchRunning() {
   return state.watchOn;
 }
 function poll() {
+  if (state.closing) return;
   if (state.pollTimer) return;
   state.pollTimer = setTimeout(tick, 150);
 }
 async function tick() {
   state.pollTimer = null;
+  if (state.closing) return;
   const ids = activeJobIds();
   const finished = [];  // [conv, msg]
   for (const id of ids) {
@@ -445,7 +455,7 @@ async function tick() {
       }
     }
   }
-  if (state.watchOn || state.conv.msgs.some((m) => m.kind === "watch" && m.watch.running)) {
+  if (state.watchOn || allConversations().some((c) => c.msgs.some((m) => m.kind === "watch" && m.watch.running))) {
     const w = await api().watch_status();
     state.watchOn = !!w.running;
     // Watched re-runs have no run card, so refresh the sidebar's test list and status
@@ -455,15 +465,24 @@ async function tick() {
       if (state.watchSettled !== null) refreshTests();
       state.watchSettled = settled;
     }
-    for (const m of state.conv.msgs) {
-      if (m.kind === "watch" && m.watch.id === w.id && JSON.stringify(w) !== JSON.stringify(m.watch)) update(m, { watch: w });
-    }
+    applyWatchSnapshot(w);
   }
   await updateLive();
   if (finished.length) onFinished(finished);
   const busy = activeJobIds().size > 0 || watchRunning() || (state.liveJob && state.liveJob.running);
   renderBusy(busy);
   if (busy) state.pollTimer = setTimeout(tick, 700);
+}
+
+function applyWatchSnapshot(w) {
+  let changed = false;
+  for (const c of allConversations()) for (const m of c.msgs) {
+    if (m.kind === "watch" && m.watch.id === w.id && JSON.stringify(w) !== JSON.stringify(m.watch)) {
+      update(m, { watch: w });
+      changed = true;
+    }
+  }
+  if (changed) scheduleSave();
 }
 
 function onFinished(items) {
@@ -918,25 +937,59 @@ function stash() {
 }
 function scheduleSave() {
   clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => {
-    const c = state.conv;
-    if (c && c.msgs.length) state.conversations = [c, ...state.conversations.filter((x) => x.id !== c.id)];
-    const clean = state.conversations.slice(0, 30).map((conv) => Object.assign({}, conv, {
-      msgs: conv.msgs.filter((m) => m.kind !== "thinking"),
-    }));
-    api().save_conversations(clean).then((r) => {
-      if (r && r.ok === false && !state.saveError) {
-        state.saveError = true;
-        sayIn(state.conv, "Could not save this conversation. Check your user-data folder permissions before closing Argus.", { error: true });
-      }
-    }).catch(() => {
+  if (state.closing) return;
+  state.saveTimer = setTimeout(() => flushConversations(), 400);
+}
+
+function flushConversations() {
+  clearTimeout(state.saveTimer);
+  const c = state.conv;
+  if (c && c.msgs.length) state.conversations = [c, ...state.conversations.filter((x) => x.id !== c.id)];
+  const clean = JSON.parse(JSON.stringify(state.conversations.slice(0, 30).map((conv) => Object.assign({}, conv, {
+    msgs: conv.msgs.filter((m) => m.kind !== "thinking"),
+  }))));
+  const save = state.saveChain.then(async () => {
+    try {
+      const r = await api().save_conversations(clean);
+      if (!r || r.ok !== true) throw new Error("Save not confirmed");
+      state.saveError = false;
+      return { ok: true };
+    } catch (e) {
       if (!state.saveError) {
         state.saveError = true;
         sayIn(state.conv, "Could not save this conversation. Check your user-data folder permissions before closing Argus.", { error: true });
       }
-    });
-    renderRecents();
-  }, 400);
+      return { ok: false };
+    }
+  });
+  state.saveChain = save;
+  renderRecents();
+  return save;
+}
+
+function resumeAfterCloseFailure() {
+  state.closing = false;
+  for (const el of state.closeControls || []) el.disabled = false;
+  state.closeControls = [];
+  sayIn(state.conv, "This window stayed open because its latest conversation could not be saved. Wait for any response, check your user-data folder permissions, then try closing again.", { error: true });
+  poll();
+}
+
+async function flushConversationsForClose() {
+  if (!state.conv || state.pendingActions || allConversations().some((c) => c.msgs.some((m) => m.kind === "thinking"))) return { ok: false };
+  state.closing = true;
+  clearTimeout(state.saveTimer);
+  clearTimeout(state.pollTimer);
+  state.closeControls = [...document.querySelectorAll("button, input, textarea")].filter((el) => !el.disabled);
+  for (const el of state.closeControls) el.disabled = true;
+  if (state.info && state.info.project_required) return { ok: true };
+  try {
+    const watch = await api().watch_status();
+    state.watchOn = !!watch.running;
+    applyWatchSnapshot(watch);
+    const result = await flushConversations();
+    return result;
+  } catch (e) { return { ok: false }; }
 }
 function renderAll() {
   renderThread();
@@ -1068,6 +1121,7 @@ function wire() {
     sayIn(state.conv, "Stopping the active job before closing. Wait for its result and cleanup, then close this window again.");
     poll();
   });
+  window.addEventListener("argusclosesavefailed", resumeAfterCloseFailure);
 }
 
 async function openProject() {

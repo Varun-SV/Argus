@@ -17,6 +17,56 @@ TESTS = [
 CONTEXT = {"tests": TESTS, "last_target": "notepad.exe", "providers": ["ollama", "anthropic"]}
 
 
+@pytest.mark.parametrize("options", [
+    "--minutes nope", "--minutes", "--minutes nan", "--minutes inf",
+    "--minutes -1", "--minutes 0", "--minutes 241", "--minutes 2 --minutes 3",
+    "--minutes --adapter cli", "--adapter", "--adapter nope",
+    "--adapter cli --adapter browser", "--memory --no-memory", "--minutes=oops",
+])
+def test_invalid_slash_roam_options_never_become_target_or_default_duration(options):
+    with pytest.raises(IntentError):
+        parse_slash("/roam notepad.exe " + options, TESTS)
+
+
+def test_roam_quoted_target_options_remain_literal():
+    got = parse_slash('/roam "python tool.py --minutes nope" --minutes 0.5 --adapter cli', TESTS)
+    assert got["args"]["target"] == "python tool.py --minutes nope"
+    assert got["args"]["minutes"] == 0.5
+
+
+@pytest.mark.parametrize("text", [
+    "run all tests except destructive", "run checkout but skip destructive",
+    "run everything excluding checkout", "run checkout only when it is safe",
+    "run all tests unless destructive is enabled", "run checkout if it is safe",
+])
+@pytest.mark.parametrize("suggested", ["all", ["checkout.test.yaml"]])
+def test_model_cannot_drop_exclusions_or_conditions(text, suggested):
+    context = {**CONTEXT, "tests": [*TESTS, {"file": "destructive.test.yaml", "name": "destructive"}]}
+    got = validate_intent({"intent": "run", "args": {"tests": suggested}}, text, context)
+    assert got["intent"] == "chat"
+    assert "explicit list" in got["args"]["reply"]
+
+
+@pytest.mark.parametrize("text,action,args", [
+    ("Does stop preserve evidence?", "stop", {}),
+    ("Does setup of an Argus project overwrite files?", "init", {}),
+    ("Is it possible to write a test?", "write_test", {}),
+    ("Will saving this draft change my test?", "save_test", {}),
+    ("Can Argus run all tests?", "run", {"tests": "all"}),
+    ("Could you explain whether running checkout is safe?", "run", {"tests": "all"}),
+    ("Does roam notepad.exe need a capsule?", "roam", {"target": "notepad.exe"}),
+    ("Is switching to local safe?", "environment", {"environment": "local"}),
+    ("Does start watch run my tests?", "watch", {"action": "start"}),
+])
+def test_informational_questions_never_authorize_model_proposed_actions(text, action, args):
+    assert validate_intent({"intent": action, "args": args}, text, CONTEXT)["intent"] == "chat"
+
+
+def test_polite_direct_run_request_remains_authorized():
+    got = validate_intent({"intent": "run", "args": {"tests": "all"}}, "Can you run checkout?", CONTEXT)
+    assert got == {"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}
+
+
 def test_non_slash_text_is_not_parsed():
     assert parse_slash("run checkout", TESTS) is None
 

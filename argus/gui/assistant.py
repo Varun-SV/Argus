@@ -224,15 +224,33 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
     i = 0
     while i < len(parts):
         p = parts[i]
-        if p in ("--minutes", "-m") and i + 1 < len(parts):
-            minutes = _minutes(_unquote(parts[i + 1]))
+        if p in ("--minutes", "-m", "--adapter"):
+            if i + 1 >= len(parts) or parts[i + 1].startswith("--"):
+                raise IntentError(f"{p} needs a value. Use /roam <target> --minutes 5 --adapter cli.")
+            value = _unquote(parts[i + 1])
+            if p == "--adapter":
+                if value not in ADAPTERS:
+                    raise IntentError(f"Unknown adapter; use one of {', '.join(ADAPTERS)}.")
+                if adapter is not None and adapter != value:
+                    raise IntentError("Choose one adapter for this roam.")
+                adapter = value
+            else:
+                try:
+                    duration = float(value)
+                except (TypeError, ValueError):
+                    raise IntentError("--minutes needs a number greater than 0 and at most 240.") from None
+                if not 0 < duration <= 240:
+                    raise IntentError("--minutes needs a finite number greater than 0 and at most 240.")
+                if minutes is not None and minutes != duration:
+                    raise IntentError("Choose one duration for this roam.")
+                minutes = duration
             i += 2
             continue
-        if p == "--adapter" and i + 1 < len(parts):
-            adapter = _unquote(parts[i + 1])
-            i += 2
-            continue
+        if p.startswith(("--minutes=", "--adapter=", "-m=")):
+            raise IntentError("Separate the option and value with a space, e.g. --minutes 5 --adapter cli.")
         if p in ("--no-memory", "--memory"):
+            if memory is not None and memory != (p == "--memory"):
+                raise IntentError("Choose either --memory or --no-memory for this roam.")
             memory = p == "--memory"
         else:
             words.append(p)
@@ -546,11 +564,17 @@ def run_settings_from_text(text: str) -> tuple:
 
 def _question_about_action(text: str) -> bool:
     """Questions/advice prompts are not authorization to perform an action."""
-    return bool(
-        re.match(r"^\s*(?:what|which|why|how|when|where)\b", text, re.IGNORECASE)
-        or re.match(r"^\s*(?:do|should|would|could|can)\s+(?:i|we)\b", text, re.IGNORECASE)
-        or re.match(r"^\s*should\s+(?:you|argus)\b", text, re.IGNORECASE)
-    )
+    # A direct polite request is authorization; a capability/consequence question
+    # is not, even if a model proposes a mutating intent for it.
+    if re.match(r"^\s*(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+                r"(?:run|execute|rerun|test|check|stop|cancel|abort|save|persist|init|"
+                r"initialize|initialise|setup|set|scaffold|write|draft|create|make|"
+                r"roam|explore|switch|change|use|select|choose|start|watch|enable|disable)\b",
+                text, re.IGNORECASE):
+        return False
+    return bool(re.match(
+        r"^\s*(?:what|which|why|how|when|where|is|are|was|were|has|have|had|"
+        r"does|did|do|will|would|should|could|can|may|might)\b", text, re.IGNORECASE))
 
 
 def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
@@ -575,6 +599,11 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     )
     if not executes:
         return None, "I won't execute tests unless you explicitly ask me to run, execute, test, or check them."
+
+    if re.search(r"\b(?:except|excluding|exclude|skip|skipping|omit|omitting|without|unless|"
+                 r"if|only\s+when|but\s+not|all\s+but|other\s+than|apart\s+from|instead\s+of)\b",
+                 text, re.IGNORECASE):
+        return None, "I didn't run anything: exclusions or conditions need an explicit list of tests to run. Name only the tests you want."
 
     if re.search(
         r"\b(?:all\s+(?:the\s+)?tests?|every\s+test|everything|(?:whole|full)\s+suite|"
@@ -827,6 +856,8 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         return intent("dry_run", tests=chosen)
 
     if name == "roam":
+        if _question_about_action(text):
+            return intent("chat", reply="Ask me explicitly to roam a target before I start testing it.")
         target = _unquote(str(args.get("target") or "").strip())
         last = str(context.get("last_target") or "")
         adapter = adapter_for(target)

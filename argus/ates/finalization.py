@@ -215,7 +215,7 @@ def _commit_revision_one(store):
         if committed.canonical_line() != completion.canonical_line(): raise FinalizationError("event store committed a different completion")
         if store._read_all() != expected: raise FinalizationError("persisted evidence differs from manifest-bound candidate")
         bp = _publish(dirs.run, "run.json", _json(_binding(o, completion, mb, pb))); dirs.assert_authoritative()
-        return FinalizationResult(o, store.run_dir, mp, pp, bp, FinalizationTrustState.BOUND_VERIFIED)
+        return FinalizationResult(o, store.run_dir, mp, pp, bp, FinalizationTrustState.BOUND_VERIFIED, mb)
     finally: manifests.close()
 
 
@@ -253,7 +253,7 @@ def _verify_store(store, root):
     if actual != xe: raise FinalizationError("canonical evidence differs from regenerated finalization")
     _same(manifest, xm, "evidence manifest"); _same(package, xp, "package manifest")
     mb, pb = _json(xm), _json(xp); _same(binding, _binding(o, final, mb, pb), "run binding")
-    return FinalizationResult(o, root, mp, pp, bp, FinalizationTrustState.BOUND_VERIFIED)
+    return FinalizationResult(o, root, mp, pp, bp, FinalizationTrustState.BOUND_VERIFIED, mb)
 
 
 def verify_finalized_run(run_dir):

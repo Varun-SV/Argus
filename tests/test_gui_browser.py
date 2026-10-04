@@ -192,3 +192,89 @@ def test_provider_environment_and_unavailable_knowledge_are_visible(desktop_brow
     page.locator("#model-menu").get_by_role("menuitemradio", name=re.compile("^anthropic")).click()
     page.get_by_text("Could not load .argus/config.yaml.", exact=False).wait_for()
     assert "sentinel-secret" not in page.locator("body").inner_text()
+
+
+def test_watch_updates_hidden_conversation_and_persists_final_stop_snapshot(desktop_browser):
+    page, api, project = desktop_browser
+    page.evaluate("runChip('Watch these tests', I('watch',{action:'start'}))")
+    owner = page.evaluate("state.conv.id")
+    page.evaluate("newChat()")
+    # A settled rerun belongs to the watch ID in the older conversation.
+    api._watch["events"].append({"at": "12:00:00", "file": "smoke.test.yaml",
+                                 "status": "pass", "summary": "2/2 steps passed"})
+    page.wait_for_function("allConversations().some(c=>c.msgs.some(m=>m.kind==='watch' && m.watch.events.length===1))")
+    page.evaluate("execute(I('watch',{action:'stop'}))")
+    page.wait_for_function("allConversations().some(c=>c.msgs.some(m=>m.kind==='watch' && !m.watch.running && m.watch.events.length===1))")
+    assert page.evaluate("state.conv.msgs.some(m=>m.kind==='watch')") is False
+    page.evaluate("flushConversations()")
+    saved = next(c for c in api.load_conversations() if c["id"] == owner)
+    watch = next(m["watch"] for m in saved["msgs"] if m["kind"] == "watch")
+    assert not watch["running"] and watch["events"][0]["status"] == "pass"
+    page.reload()
+    page.wait_for_function("state.info && state.conversations.length > 0")
+    page.evaluate("openConversation(" + json.dumps(owner) + ")")
+    assert page.evaluate("state.conv.msgs.find(m=>m.kind==='watch').watch.running") is False
+
+
+def test_close_flush_cancels_debounce_and_saves_latest_after_older_inflight_save(desktop_browser):
+    page, api, project = desktop_browser
+    page.evaluate("""() => {
+      const real = window.pywebview.api;
+      window.saveCalls = [];
+      window.releaseFirstSave = null;
+      window.pywebview.api = new Proxy(real, {get: (target, key) => key === 'save_conversations' ? async (chats) => {
+        window.saveCalls.push(chats);
+        if (window.saveCalls.length === 1) await new Promise(resolve => window.releaseFirstSave = resolve);
+        return target.save_conversations(chats);
+      } : target[key]});
+      sayIn(state.conv, 'First snapshot');
+      flushConversations();
+    }""")
+    page.wait_for_function("window.releaseFirstSave !== null")
+    page.evaluate("""() => {
+      sayIn(state.conv, 'Latest response just before close');
+      scheduleSave();
+      window.closeResult = null;
+      flushConversationsForClose().then(r => window.closeResult = r);
+    }""")
+    assert page.evaluate("window.closeResult") is None
+    page.evaluate("window.releaseFirstSave()")
+    page.wait_for_function("window.closeResult && window.closeResult.ok")
+    assert len(page.evaluate("window.saveCalls")) == 2
+    saved = api.load_conversations()
+    assert saved[0]["msgs"][-1]["text"] == "Latest response just before close"
+    assert page.evaluate("document.getElementById('input').disabled")
+    page.reload()
+    page.wait_for_function("state.conversations.some(c=>c.msgs.some(m=>m.text==='Latest response just before close'))")
+
+
+def test_failed_close_save_returns_failure_and_can_retry(desktop_browser):
+    page, api, project = desktop_browser
+    page.evaluate("""() => {
+      window.realBridge = window.pywebview.api;
+      window.pywebview.api = new Proxy(window.realBridge, {get: (target,key) =>
+        key === 'save_conversations' ? async () => ({ok:false}) : target[key]});
+      sayIn(state.conv, 'Keep this response');
+      scheduleSave();
+    }""")
+    assert page.evaluate("flushConversationsForClose()") == {"ok": False}
+    # Native close rejection tells the webview to resume; the failure is visible.
+    page.evaluate("window.dispatchEvent(new Event('argusclosesavefailed'))")
+    page.get_by_text("This window stayed open because", exact=False).wait_for()
+    assert not page.evaluate("state.closing")
+    assert not page.locator("#input").is_disabled()
+    page.evaluate("() => { window.pywebview.api = window.realBridge; }")
+    assert page.evaluate("flushConversationsForClose()") == {"ok": True}
+    assert any(m.get("text") == "Keep this response" for c in api.load_conversations() for m in c["msgs"])
+
+
+def test_invalid_forced_environment_is_visible_and_cannot_run_local(desktop_browser, monkeypatch):
+    page, api, project = desktop_browser
+    monkeypatch.setenv("ARGUS_EXECUTION_ENVIRONMENT", "capusle")
+    page.reload()
+    page.wait_for_function("state.info && !state.info.ok")
+    assert page.locator("#env-btn").inner_text() == "Check environment"
+    page.get_by_text("ARGUS_EXECUTION_ENVIRONMENT must be local or capsule", exact=False).wait_for()
+    page.evaluate("runChip('Run smoke', I('run',{tests:['smoke.test.yaml']}))")
+    page.wait_for_function("state.conv.msgs.some(m=>m.error && m.text.includes('ARGUS_EXECUTION_ENVIRONMENT'))")
+    assert api._jobs == {}

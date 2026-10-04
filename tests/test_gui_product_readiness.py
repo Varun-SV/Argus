@@ -2,6 +2,7 @@
 
 import json
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -167,15 +168,32 @@ def test_native_project_windows_have_separate_state_and_active_close_waits(tmp_p
 
     def create_window(title, **kwargs):
         window = SimpleNamespace(title=title, api=kwargs["js_api"],
-            events=SimpleNamespace(closing=_Event()), selected=None, scripts=[])
+            events=SimpleNamespace(closing=_Event(), closed=_Event()), selected=None, scripts=[],
+            callbacks=[], flushed=threading.Event(), notified=threading.Event(),
+            destroyed=threading.Event(), focused=0, action_threads=[], destroy_thread=None)
         window.create_file_dialog = lambda kind: window.selected
-        window.evaluate_js = lambda script: window.scripts.append(script)
+        def evaluate(script, callback=None):
+            window.action_threads.append(threading.get_ident())
+            window.scripts.append(script)
+            if callback:
+                window.callbacks.append(callback)
+                window.flushed.set()
+            else:
+                window.notified.set()
+        window.evaluate_js = evaluate
+        window.restore = lambda: setattr(window, "focused", window.focused + 1)
+        window.show = lambda: None
+        def destroy():
+            window.destroy_thread = threading.get_ident()
+            window.destroyed.set()
+        window.destroy = destroy
         windows.append(window)
         return window
 
     monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(create_window=create_window,
         start=lambda: None, FileDialog=SimpleNamespace(FOLDER="folder")))
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARGUS_GUI_STATE_DIR", str(tmp_path / "state"))
     run_gui()
     first = windows[0]
     assert first.api.app_info()["project_required"]
@@ -189,15 +207,41 @@ def test_native_project_windows_have_separate_state_and_active_close_waits(tmp_p
     assert second.api._jobs is not first.api._jobs
     assert second.api._drafts is not first.api._drafts
     assert second.api._persist_lock is first.api._persist_lock
+    assert first.api.open_project()["ok"]  # same project focuses the existing window
+    assert len(windows) == 2 and second.focused == 1
     assert first.api.app_info()["project_required"]
     assert not (tmp_path / ".argus").exists()
     second.api._active_job = "active"
     second.api._jobs["active"] = {"running": True}
     assert second.events.closing[0]() is False
-    assert second.api._stop.is_set() and second.scripts
-    second.evaluate_js = lambda script: (_ for _ in ()).throw(RuntimeError("bridge unavailable"))
+    assert second.notified.wait(3) and second.api._stop.is_set() and second.scripts
+    evaluate = second.evaluate_js
+    second.evaluate_js = lambda script, callback=None: (_ for _ in ()).throw(RuntimeError("bridge unavailable"))
     assert second.events.closing[0]() is False
     second.api._jobs["active"]["running"] = False
-    assert second.events.closing[0]() is True
+    second.evaluate_js = evaluate
+    assert second.events.closing[0]() is False
+    assert second.flushed.wait(3)
+    assert second.events.closing[0]() is False and len(second.callbacks) == 1
+    assert not second.destroyed.is_set()
     assert "closing" in second.api._begin_job({"id": "late", "running": True})
     assert second.api.watch_start()["ok"] is False
+    second.notified.clear()
+    second.callbacks.pop()({"ok": False})
+    assert second.notified.wait(3)
+    assert second.action_threads[-1] != threading.get_ident()
+    assert not second.api._closing and not second.destroyed.is_set()
+    assert any("argusclosesavefailed" in script for script in second.scripts)
+    second.flushed.clear()
+    assert second.events.closing[0]() is False
+    assert second.flushed.wait(3)
+    second.callbacks.pop()({"ok": True})
+    assert second.destroyed.wait(3) and second.events.closing[0]() is True
+    assert second.destroy_thread != threading.get_ident()
+    # Ownership is retained until the OS reports actual close.
+    from argus.gui.state import ProjectInUse, ProjectLease
+    with pytest.raises(ProjectInUse):
+        ProjectLease(project)
+    second.events.closed[0]()
+    lease = ProjectLease(project)
+    lease.close()

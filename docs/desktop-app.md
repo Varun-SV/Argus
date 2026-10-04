@@ -20,6 +20,8 @@ Python installations also need the appropriate [target adapter dependencies](../
 
 Project initialization is explicit. Argus does not initialize its installation directory or an arbitrary launch directory when no project is selected. Configuration errors appear in the conversation; fix `.argus/config.yaml` and choose **Retry settings**.
 
+One desktop window owns each project's conversation history. Opening that project again focuses its existing window; a second Argus process asks you to use or close the owning window. Different projects can be open together.
+
 ## Configure a model
 
 Edit `.argus/config.yaml` to configure Ollama, OpenAI, or Anthropic. Set hosted-provider credentials through the supported configuration or environment variables. Use `/providers` to check connection and vision support before running natural-language actions.
@@ -43,15 +45,19 @@ Use **What can Argus do?** or `/help` for supported commands and examples:
 | Inspect execution settings | `/env` |
 | Verify evidence | `/evidence` |
 
+Name the tests you want to run explicitly. Exclusions or conditions such as "run all except destructive" need clarification before anything executes. Questions about what an action does are informational; direct requests such as "Can you run smoke?" authorize it. `/roam` requires valid option values: `--minutes` must be finite, greater than zero, and at most 240; conflicting options are rejected.
+
 Drafts are validated before they are displayed. Review their YAML, preview it, and explicitly choose **Save to .argus**. Saving never replaces an existing test. Unsaved drafts belong to the current application session; after restarting, draft text remains in the conversation but its action buttons may ask you to draft it again.
 
 **Stop** requests cancellation and lets execution perform its normal teardown. Closing a window with an active job requests Stop and keeps the window open until cleanup finishes; close it again after the result settles. Watch mode observes `.argus/*.test.yaml` and re-runs changed files. Stop watching before editing tests you do not want to execute.
 
-Conversations are stored in per-user application data and separated by project. A window reload reconnects to jobs and watch mode still owned by the current backend. After a process restart, an interrupted job is shown as **Outcome unknown**; check persisted history and ATES evidence before retrying. Malformed saved cards show a recovery message instead of preventing startup. Conversation saving errors are surfaced before closing.
+Conversations are stored in per-user application data and separated by project. A window reload reconnects to jobs and watch mode still owned by the current backend. After a process restart, an interrupted job is shown as **Outcome unknown**; check persisted history and ATES evidence before retrying. Malformed saved cards show a recovery message instead of preventing startup. Closing flushes the latest conversation and waits for a successful save. A failed or uncertain save keeps the window open for recovery, even when model configuration is invalid. Watch cards continue updating in their original conversation while you use another chat.
 
 ## Capsule readiness
 
 The environment picker selects Local or Capsule execution for the session. Local execution shares the host; Capsule execution requires a configured provider, supported virtualization host, and prepared image. Selecting Capsule never silently falls back to Local.
+
+`ARGUS_EXECUTION_ENVIRONMENT` accepts only `local` or `capsule`. Other values show a configuration error and block execution; correct the value and restart the app.
 
 `/env` distinguishes manually prepared images from verified ISO-derived cache entries and reports configuration blockers. This inspection does not allocate a VM or contact a guest. VM and guest readiness are checked when a run starts.
 

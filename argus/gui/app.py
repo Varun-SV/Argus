@@ -14,11 +14,11 @@ import base64
 import hashlib
 import json
 import os
-import sys
 import threading
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Optional
 
 import yaml
@@ -28,6 +28,7 @@ from argus.config import ArgusConfig, _env_bool, init_project, load_config
 from argus.engine.results import load_runs
 from argus.engine.spec import AssertStep, SpecError, discover_tests, load_spec, parse_spec
 from argus.gui import assistant
+from argus.gui.state import ProjectLease, ProjectInUse, gui_state_root, project_identity
 from argus.providers.base import ProviderError
 from argus.providers.registry import PROVIDER_TYPES
 from argus.tokens import Budget, TokenTracker
@@ -41,9 +42,15 @@ _ROAM_STATUS = {"pass": "done", "fail": "fail", "error": "error", "cancelled": "
                 "outcome_unknown": "unknown"}
 
 
+class EnvironmentConfigurationError(ValueError):
+    pass
+
+
 def _forced_environment() -> Optional[str]:
     """ARGUS_EXECUTION_ENVIRONMENT wins over any per-session choice (see make_execution_environment)."""
     value = (os.environ.get("ARGUS_EXECUTION_ENVIRONMENT") or "").strip().lower()
+    if value and value not in ("local", "capsule"):
+        raise EnvironmentConfigurationError("ARGUS_EXECUTION_ENVIRONMENT must be local or capsule. Correct it and restart Argus.")
     return value or None
 
 
@@ -71,8 +78,10 @@ class ArgusAPI:
     def __init__(self, project_dir: Optional[Path] = None, *, project_required=False,
                  project_opener=None) -> None:
         self._project_dir = project_dir
+        self._conversation_project = Path(project_dir or Path.cwd()).resolve()
         self._project_required = project_required
         self._project_opener = project_opener
+        self._startup_error = None
         self._lock = threading.RLock()
         self._persist_lock = threading.Lock()
         self._stop = threading.Event()
@@ -118,6 +127,8 @@ class ArgusAPI:
             return {"ok": False, "error": "Project selection requires the Argus desktop window."}
         try:
             return self._project_opener()
+        except ProjectInUse as exc:
+            return {"ok": False, "error": str(exc)}
         except (OSError, ValueError):
             return {"ok": False, "error": "Could not open that folder. Choose an existing project folder."}
 
@@ -139,7 +150,10 @@ class ArgusAPI:
 
     def _job_environment(self, cfg: ArgusConfig, overrides: dict):
         """Return (env, capsule_provider, retain, error) for a new job."""
-        s = self._session_view(cfg)
+        try:
+            s = self._session_view(cfg)
+        except EnvironmentConfigurationError as exc:
+            return None, None, None, str(exc)
         env = overrides.get("environment") or s["environment"]
         forced = _forced_environment()
         if forced and env != forced:
@@ -160,18 +174,20 @@ class ArgusAPI:
         try:
             cfg = self._config()
             s = self._session_view(cfg)
-        except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError) as exc:
             required = self._project_required
+            invalid_environment = isinstance(exc, EnvironmentConfigurationError)
             return {
                 "ok": False, "version": __version__, "project_required": required,
                 "can_open_project": self._project_opener is not None,
                 "project": str(self._project_dir or Path.cwd()) if not required else "",
                 "project_name": "Open a project" if required else Path(self._project_dir or Path.cwd()).name,
                 "initialized": False, "provider": "", "model": "Choose a project" if required else "Check configuration",
-                "providers": [], "environment": "local", "capsule_provider": "auto",
-                "env_label": "Local", "retain": False, "memory": True, "last_target": "",
+                "providers": [], "environment": None, "capsule_provider": "auto",
+                "env_label": "Check environment" if invalid_environment else "Not ready",
+                "env_locked": invalid_environment, "retain": False, "memory": True, "last_target": "",
                 "tokens": self._usage_now(),
-                "error": ("Open a folder to start testing. Each project keeps its own tests and conversations."
+                "error": (str(exc) if invalid_environment else self._startup_error or "Open a folder to start testing. Each project keeps its own tests and conversations."
                           if required else "Could not load .argus/config.yaml. Check its YAML structure and setting values, then retry."),
             }
         return {
@@ -234,7 +250,10 @@ class ArgusAPI:
             return {"ok": False, "error": f"unknown environment {environment!r}"}
         if capsule_provider is not None and capsule_provider not in assistant.CAPSULE_PROVIDERS:
             return {"ok": False, "error": f"unknown Capsule provider {capsule_provider!r}"}
-        forced = _forced_environment()
+        try:
+            forced = _forced_environment()
+        except EnvironmentConfigurationError as exc:
+            return {"ok": False, "error": str(exc)}
         if forced and environment != forced:
             return {"ok": False, "error": (
                 f"ARGUS_EXECUTION_ENVIRONMENT={forced} is set for this app, so runs stay {forced}. "
@@ -254,7 +273,12 @@ class ArgusAPI:
 
     def environment(self) -> dict:
         cfg = self._config()
-        s = self._session_view(cfg)
+        try:
+            s = self._session_view(cfg)
+        except EnvironmentConfigurationError as exc:
+            return {"ok": False, "label": "Check environment", "environment": None,
+                    "env_locked": True, "rows": [{"k": "configuration", "v": "not ready"}],
+                    "note": str(exc), "error": str(exc)}
         cc = cfg.execution.capsule
         if s["environment"] == "capsule":
             rows = [
@@ -678,10 +702,10 @@ class ArgusAPI:
         if adapter not in assistant.ADAPTERS:
             return {"ok": False, "error": f"unknown adapter {adapter!r}"}
         cfg = self._config()
-        s = self._session_view(cfg)
         env, cap, retain, err = self._job_environment(cfg, overrides or {})
         if err:
             return {"ok": False, "error": err}
+        s = self._session_view(cfg)
         memory = s["memory"] if memory is None else bool(memory)
         minutes = minutes or cfg.time_minutes or 10
         job = {"id": uuid.uuid4().hex[:12], "kind": "roam", "running": True, "target": target,
@@ -899,6 +923,8 @@ class ArgusAPI:
         pending: Dict[str, dict] = {}  # changed file -> its event, until it has been re-run
         while watch["running"]:
             time.sleep(poll)
+            if not watch["running"]:
+                break
             current = _mtimes(project_dir)
             for name, m in current.items():
                 if seen.get(name) != m and name not in pending:
@@ -1046,7 +1072,12 @@ class ArgusAPI:
         except (FinalizationError, OSError, ValueError) as exc:
             out.update(state="invalid", headline="Evidence did not verify", detail=str(exc))
             return out
-        manifest = json.loads(Path(fin.evidence_manifest_path).read_text(encoding="utf-8"))
+        try:
+            manifest = json.loads(fin.evidence_manifest_bytes)
+        except (AttributeError, TypeError, ValueError):
+            out.update(state="invalid", headline="Verified manifest snapshot unavailable",
+                       detail="Retry verification before viewing evidence metadata.")
+            return out
         ev = manifest.get("evidence", {})
         artifacts = manifest.get("artifacts", [])
         out.update(
@@ -1205,7 +1236,9 @@ class ArgusAPI:
     # ---- conversations -----------------------------------------------------------
 
     def load_conversations(self) -> list:
-        cfg = self._config()
+        if self._project_required:
+            return []
+        cfg = SimpleNamespace(project_dir=self._conversation_project)
         try:
             path = _conversation_path(cfg)
             if path.is_symlink():
@@ -1237,11 +1270,14 @@ class ArgusAPI:
             return []
 
     def save_conversations(self, conversations: list) -> dict:
+        if self._project_required:
+            return {"ok": False, "error": "Open a project folder before saving conversations."}
         try:
-            path = _conversation_path(self._config())
-            _write_atomic(path, json.dumps(list(conversations or [])[:30]).encode("utf-8"))
-        except OSError as exc:
-            return {"ok": False, "error": str(exc)}
+            path = _conversation_path(SimpleNamespace(project_dir=self._conversation_project))
+            with self._persist_lock:
+                _write_atomic(path, json.dumps(list(conversations or [])[:30]).encode("utf-8"))
+        except (OSError, TypeError, ValueError):
+            return {"ok": False, "error": "Could not save conversations. Check your user-data folder permissions and retry."}
         return {"ok": True}
 
 
@@ -1322,16 +1358,7 @@ def _run_notes(data: dict) -> List[str]:
 
 def _conversation_path(cfg: ArgusConfig) -> Path:
     """Per-user GUI state path, keyed by project without storing chats in its repo."""
-    override = os.environ.get("ARGUS_GUI_STATE_DIR")
-    if override:
-        root = Path(override).expanduser()
-    elif os.name == "nt":
-        root = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
-                    or (Path.home() / "AppData" / "Local")) / "Argus"
-    elif sys.platform == "darwin":
-        root = Path.home() / "Library" / "Application Support" / "Argus"
-    else:
-        root = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")) / "argus"
+    root = gui_state_root()
 
     project = str(Path(cfg.project_dir).resolve())
     project_key = hashlib.sha256(project.encode("utf-8")).hexdigest()[:24]
@@ -1411,7 +1438,15 @@ def _write_atomic(path: Path, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
+        if os.name != "nt":
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -1433,11 +1468,27 @@ def _mtimes(project_dir: Path) -> Dict[str, float]:
 def run_gui() -> None:
     import webview
     persist_lock = threading.Lock()
+    windows = {}
+    windows_lock = threading.RLock()
 
     def create_project_window(project=None):
+        key = project_identity(project) if project is not None else None
+        with windows_lock:
+            if key in windows:
+                existing = windows[key]
+                existing.restore()
+                existing.show()
+                return existing
+            lease = ProjectLease(project) if project is not None else None
+            try:
+                return build_window(project, key, lease)
+            except BaseException:
+                if lease:
+                    lease.close()
+                raise
+
+    def build_window(project, key, lease):
         api = ArgusAPI(project, project_required=project is None)
-        # Windows can open the same project twice. Serialize usage persistence
-        # across all its windows, as well as within each API instance.
         api._persist_lock = persist_lock
         window = webview.create_window(
             "Argus" + (f" · {project.name}" if project else ""),
@@ -1456,9 +1507,46 @@ def run_gui() -> None:
             return {"ok": True, "project": str(folder)}
 
         api._project_opener = open_project
+        close_state = {"ready": False, "attempt": None}
+
+        def notify_failed():
+            try:
+                window.evaluate_js("window.dispatchEvent(new Event('argusclosesavefailed'))")
+            except Exception:
+                pass
+
+        def begin_flush(attempt):
+            def saved(result):
+                with api._lock:
+                    if close_state["attempt"] != attempt:
+                        return
+                    close_state["attempt"] = None
+                    if not isinstance(result, dict) or result.get("ok") is not True:
+                        api._closing = False
+                        success = False
+                    else:
+                        close_state["ready"] = True
+                        success = True
+                timer.cancel()
+                # EdgeChromium invokes promise callbacks on its UI thread.
+                # Native window operations/evaluate_js must run off that thread.
+                threading.Thread(target=window.destroy if success else notify_failed,
+                                 daemon=True).start()
+
+            timer = threading.Timer(30, lambda: saved({"ok": False}))
+            timer.daemon = True
+            timer.start()
+            try:
+                window.evaluate_js("flushConversationsForClose()", callback=saved)
+            except Exception:
+                saved({"ok": False})
 
         def closing():
             with api._lock:
+                if close_state["ready"]:
+                    return True
+                if close_state["attempt"] is not None:
+                    return False
                 job = api._jobs.get(api._active_job) if api._active_job else None
                 if job and job.get("running"):
                     api.stop()
@@ -1466,19 +1554,39 @@ def run_gui() -> None:
                 else:
                     api._closing = True
                     api.watch_stop()
+                    attempt = uuid.uuid4().hex
+                    close_state["attempt"] = attempt
                     blocked = False
             if blocked:
-                try:
-                    window.evaluate_js("window.dispatchEvent(new Event('arguscloseblocked'))")
-                except Exception:
-                    # A reloading/unavailable WebView must not bypass teardown.
-                    pass
+                def notify_blocked():
+                    try:
+                        window.evaluate_js("window.dispatchEvent(new Event('arguscloseblocked'))")
+                    except Exception:
+                        # A reloading/unavailable WebView must not bypass teardown.
+                        pass
+                threading.Thread(target=notify_blocked, daemon=True).start()
                 return False
-            return True
+            # The native closing event must return before JS calls back into Python.
+            threading.Thread(target=begin_flush, args=(attempt,), daemon=True).start()
+            return False
+
+        def closed():
+            with windows_lock:
+                if key is not None and windows.get(key) is window:
+                    del windows[key]
+                if lease:
+                    lease.close()
 
         window.events.closing += closing
+        window.events.closed += closed
+        if key is not None:
+            windows[key] = window
         return window
 
     current = Path.cwd().resolve()
-    create_project_window(current if (current / ".argus").is_dir() else None)
+    try:
+        create_project_window(current if (current / ".argus").is_dir() else None)
+    except ProjectInUse as exc:
+        launcher = create_project_window()
+        launcher._js_api._startup_error = str(exc)
     webview.start()
