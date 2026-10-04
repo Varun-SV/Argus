@@ -141,6 +141,12 @@ host-only network, and licensed ISO. Libvirt also requires an active non-forward
 ancestors that group can traverse. Provider capability checks fail closed on
 unsupported firmware, disk bus, network, security, or image format.
 
+Hyper-V installer cleanup distinguishes an absent VM from a failed ownership
+query. It enumerates VMs with errors enabled, requires an unambiguous matching
+private configuration path before claiming a partially created VM, and verifies
+absence after removal. Query failures, unexpected ownership paths, and incomplete
+removal retain the private workspace as uncertain and prohibit publication.
+
 Attended installation (`unattended: false`) is rejected before creating an
 installer VM. It does not install the verified runtime and bootstrap service
 required for publication. Use the supported unattended profiles.

@@ -1155,6 +1155,83 @@ def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> No
     assert any("Remove-VM" in command for command in commands)
 
 
+@pytest.mark.parametrize("ownership", ["absent", "denied", "mismatch", "partial", "remains"])
+def test_hyperv_allocation_failure_verifies_cleanup_ownership(
+    tmp_path: Path, ownership: str,
+) -> None:
+    import re
+
+    definition = _unattended_runtime_definition(tmp_path, "hyperv")
+    commands = []
+    image = None
+    allocated = False
+    removed = False
+
+    def run(script, timeout):
+        nonlocal image, allocated, removed
+        commands.append(script)
+        if "Get-VMSwitch" in script:
+            return "Internal"
+        if script.startswith("New-VHD"):
+            image = Path(re.search(r"-Path '([^']+)'", script).group(1))
+            image.write_bytes(b"partial disk")
+        if script.startswith("New-VM"):
+            allocated = True
+            raise ProvisioningError("allocation failed")
+        if "Get-VM -ErrorAction Stop | Where-Object" in script:
+            assert "SilentlyContinue" not in script
+            if not allocated or removed:
+                return ""
+            if ownership == "denied":
+                raise ProvisioningError("query denied")
+            if ownership == "mismatch":
+                return str(tmp_path / "unrelated-vm")
+            if ownership in {"partial", "remains"}:
+                return str(image.parent / "vm")
+            return ""
+        if "Remove-VM" in script:
+            removed = ownership != "remains"
+        return ""
+
+    provider = HyperVProvisioner(
+        switch_name="Argus-Internal", runner=run, baseline_validator=lambda image: None,
+    )
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="vhdx", cache_root=tmp_path / "cache",
+    )
+    expected = ProvisioningError if ownership in {"absent", "partial"} else ProvisioningCleanupError
+    with pytest.raises(expected) as error:
+        provider.provision(definition, plan)
+    uncertain = isinstance(error.value, ProvisioningCleanupError)
+    assert uncertain == (ownership not in {"absent", "partial"})
+    if not uncertain:
+        assert str(error.value) == "allocation failed"
+    assert bool(list(plan.cache_dir.parent.glob(".building-*"))) == uncertain
+    assert not plan.cache_dir.exists()
+    assert any("Remove-VM" in script for script in commands) == (ownership in {"partial", "remains"})
+
+
+def test_hyperv_collision_lookup_errors_prevent_allocation(tmp_path: Path) -> None:
+    definition = _unattended_runtime_definition(tmp_path, "hyperv")
+    commands = []
+
+    def run(script, timeout):
+        commands.append(script)
+        if "Get-VMSwitch" in script:
+            return "Internal"
+        raise ProvisioningError("query denied")
+
+    provider = HyperVProvisioner(
+        switch_name="Argus-Internal", runner=run, baseline_validator=lambda image: None,
+    )
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="vhdx", cache_root=tmp_path / "cache",
+    )
+    with pytest.raises(ProvisioningError, match="query denied"):
+        provider.provision(definition, plan)
+    assert not any(script.startswith("New-") for script in commands)
+
+
 def test_baseline_attests_target_release_edition_and_ubuntu_packages(tmp_path: Path) -> None:
     windows = _runtime_definition(tmp_path)
     windows = replace(windows, installation=InstallationSpec(

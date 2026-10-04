@@ -127,7 +127,7 @@ class HyperVProvisioner(EnvironmentProvisioner):
         vm = _ps_quote(name)
         # Collision is checked before mutation; cleanup is restricted to this
         # randomly named VM and runs after success, failure or interruption.
-        if self._ps("if (Get-VM -Name " + vm + " -ErrorAction SilentlyContinue) {'exists'}"):
+        if self._vm_path(name):
             raise ProvisioningError("provisioning VM name already exists")
         owned = False
         vm_dir = image.parent / "vm"
@@ -207,13 +207,10 @@ class HyperVProvisioner(EnvironmentProvisioner):
                 # New-VM may have created the VM before a transport failure.
                 # Only claim it when Hyper-V reports our private VM path.
                 try:
-                    reported_path = self._ps(
-                        f"$v=Get-VM -Name {vm} -ErrorAction SilentlyContinue; "
-                        "if ($v) { $v.Path }", 15,
-                    )
-                    owned = bool(reported_path) and (
-                        Path(reported_path).resolve() == vm_dir.resolve()
-                    )
+                    reported_path = self._vm_path(name)
+                    if reported_path and Path(reported_path).resolve() != vm_dir.resolve():
+                        raise ProvisioningCleanupError("provisioning VM ownership path differs")
+                    owned = bool(reported_path)
                 except Exception as exc:
                     raise ProvisioningCleanupError(
                         "cannot establish provisioning VM ownership after failure"
@@ -222,6 +219,8 @@ class HyperVProvisioner(EnvironmentProvisioner):
                 try:
                     self._ps(f"Stop-VM -Name {vm} -TurnOff -Force -ErrorAction SilentlyContinue; "
                              f"Remove-VM -Name {vm} -Force -ErrorAction Stop", 60)
+                    if self._vm_path(name):
+                        raise ProvisioningCleanupError("provisioning VM remains after removal")
                     if vm_dir.exists():
                         shutil.rmtree(vm_dir)
                 except Exception as exc:
@@ -243,6 +242,19 @@ class HyperVProvisioner(EnvironmentProvisioner):
             valid = False
         if not valid:
             raise ProvisioningError("Hyper-V image type or virtual size is invalid")
+
+    def _vm_path(self, name: str) -> str:
+        # A missing-name Get-VM with SilentlyContinue leaves $? false on
+        # Windows PowerShell 5.1. Enumerate authoritatively instead: an empty
+        # successful query proves absence, while access/WMI failures propagate.
+        return self._ps(
+            "$v=@(Get-VM -ErrorAction Stop | Where-Object { $_.Name -eq "
+            + _ps_quote(name) + " }); "
+            "if ($v.Count -gt 1) { throw 'ambiguous provisioning VM ownership' }; "
+            "if ($v.Count -eq 1) { "
+            "if (![string]::IsNullOrWhiteSpace($v[0].Path)) { $v[0].Path } "
+            "else { throw 'provisioning VM ownership path is unavailable' } }", 15,
+        )
 
     def provision(
         self, definition: EnvironmentDefinition, plan: ProvisioningPlan
