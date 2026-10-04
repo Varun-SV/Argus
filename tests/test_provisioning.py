@@ -1157,10 +1157,11 @@ def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> No
 
 @pytest.mark.parametrize("ownership", ["absent", "denied", "mismatch", "partial", "remains"])
 def test_hyperv_allocation_failure_verifies_cleanup_ownership(
-    tmp_path: Path, ownership: str,
+    tmp_path: Path, ownership: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import re
 
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
     definition = _unattended_runtime_definition(tmp_path, "hyperv")
     commands = []
     image = None
@@ -1211,7 +1212,10 @@ def test_hyperv_allocation_failure_verifies_cleanup_ownership(
     assert any("Remove-VM" in script for script in commands) == (ownership in {"partial", "remains"})
 
 
-def test_hyperv_collision_lookup_errors_prevent_allocation(tmp_path: Path) -> None:
+def test_hyperv_collision_lookup_errors_prevent_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
     definition = _unattended_runtime_definition(tmp_path, "hyperv")
     commands = []
 
