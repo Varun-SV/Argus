@@ -1185,6 +1185,7 @@ function restoreConversations(saved) {
 }
 
 async function restoreJobs() {
+  const finished = [];
   for (const id of activeJobIds()) {
     let job;
     try { job = await api().job_status(id); } catch (e) { job = { ok: false }; }
@@ -1192,8 +1193,10 @@ async function restoreJobs() {
       if (m.job !== id) continue;
       if (job.ok && m.kind === "run" && job.runs?.[m.idx]) {
         m.snap = job.runs[m.idx]; m.meta = runMeta(job);
+        if (!job.running) finished.push([c, m]);
       } else if (job.ok && m.kind === "roam") m.snap = job;
       else markUnconfirmed(m);
+      if (job.ok && m.kind === "roam" && !job.running) finished.push([c, m]);
     }
   }
   let watch;
@@ -1202,6 +1205,7 @@ async function restoreJobs() {
   for (const c of allConversations()) for (const m of c.msgs) if (m.kind === "watch") {
     m.watch = watch.running && watch.id === m.watch.id ? watch : Object.assign({}, m.watch, { running: false });
   }
+  if (finished.length) onFinished(finished);
 }
 
 async function boot() {

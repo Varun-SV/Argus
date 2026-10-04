@@ -25,7 +25,7 @@ import yaml
 
 from argus import __version__
 from argus.config import ArgusConfig, _env_bool, init_project, load_config
-from argus.engine.results import load_runs
+from argus.engine.results import load_runs, valid_run_history
 from argus.engine.spec import AssertStep, SpecError, discover_tests, load_spec, parse_spec
 from argus.gui import assistant
 from argus.gui.state import ProjectLease, ProjectInUse, gui_state_root, project_identity
@@ -537,7 +537,11 @@ class ArgusAPI:
         if tests != "all":
             order = list(tests or [])
             by_name = {p.name: p for p in paths}
-            paths = [by_name[n] for n in order if n in by_name]
+            missing = [n for n in order if n not in by_name]
+            if missing:
+                return {"ok": False, "error": (
+                    f"Tests no longer available: {', '.join(missing)}. Nothing was run; refresh the Tests list and retry.")}
+            paths = [by_name[n] for n in order]
         if not paths:
             return {"ok": False, "error": "No tests to run. Try /init to create an example."}
         env, cap, retain, err = self._job_environment(cfg, overrides)
@@ -764,7 +768,8 @@ class ArgusAPI:
                  "actual": f.actual, "detail": f.detail}
                 for f in session.findings
             ]
-            job["report"] = _rel(cfg, session_dir / "report.md")
+            report_path = session_dir / "report.md"
+            job["report"] = _rel(cfg, report_path) if report_path.is_file() else None
             job["regressions"] = [_rel(cfg, p) for p in sorted(session_dir.glob("regression-*.test.yaml"))]
             job["stopped_reason"] = session.stopped_reason or ""
             status = str(getattr(session, "execution_status", "") or "")
@@ -979,6 +984,8 @@ class ArgusAPI:
         cfg = self._config()
         kc = cfg.knowledge
         backend = f"{kc.type} graph · {kc.vector_backend} vectors · {kc.embedding_model}"
+        if kc.enabled and not kc.persist_dir and not cfg.argus_dir.is_dir():
+            return {"ok": False, "error": "Set up this project with /init before inspecting its knowledge store."}
         try:
             ks = cfg.make_knowledge_store()
         except Exception as exc:  # optional extras may be missing
@@ -1014,11 +1021,12 @@ class ArgusAPI:
         try:
             cfg = self._config()
             ks = cfg.make_knowledge_store()
-            if ks is not None:
-                try:
-                    ks.clear_target(target)
-                finally:
-                    ks.close()
+            if ks is None:
+                return {"ok": False, "error": "The knowledge store is disabled. Enable it before resetting a target."}
+            try:
+                ks.clear_target(target)
+            finally:
+                ks.close()
             return {"ok": True, "target": target}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -1206,7 +1214,9 @@ class ArgusAPI:
                     continue
                 resolved = path.resolve(strict=True)
                 resolved.relative_to(runs_dir)
-                out.append((path.name, json.loads(resolved.read_text(encoding="utf-8"))))
+                data = json.loads(resolved.read_text(encoding="utf-8"))
+                if valid_run_history(data):
+                    out.append((path.name, data))
             except (json.JSONDecodeError, OSError, ValueError):
                 continue
         return out
@@ -1225,7 +1235,7 @@ class ArgusAPI:
             data = json.loads(resolved.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
             return None
-        return dict(data, kind="run") if isinstance(data, dict) else None
+        return dict(data, kind="run") if valid_run_history(data) else None
 
     def recent_runs(self, limit: int = 20) -> list:
         rows = []

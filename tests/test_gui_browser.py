@@ -18,6 +18,42 @@ from tests.conftest import FakeProvider
 from tests.test_gui_api import CLI_SPEC
 
 
+@pytest.mark.parametrize("status", ["pass", "fail"])
+def test_reload_finishes_terminal_restored_job_in_its_owning_conversation(desktop_browser, monkeypatch, status):
+    from tests.test_gui_api import _wait
+
+    page, api, project = desktop_browser
+    spec = yaml.safe_load(CLI_SPEC)
+    if status == "fail":
+        spec["steps"][1]["assert"]["stdout_contains"] = "not printed"
+    (project / ".argus" / "reload.test.yaml").write_text(yaml.safe_dump(spec))
+    job = _wait(api, api.run_tests(["reload.test.yaml"])["job"]["id"])
+    stale = dict(job["runs"][0], status="running", result=None, key=None, steps=[])
+    api.save_conversations([{"id": "owner", "title": "Reload owner", "seq": 2,
+        "msgs": [{"id": "owner:1", "kind": "run", "role": "argus", "job": job["id"], "idx": 0,
+                  "snap": stale, "meta": {"running": True, "env_label": job["env_label"], "provider": job["provider"]}}]}])
+    list_tests = api.list_tests
+    calls = []
+    def first_snapshot_is_stale():
+        rows = list_tests()
+        calls.append(True)
+        if len(calls) == 1:
+            return [dict(row, last=None) for row in rows]
+        return rows
+    monkeypatch.setattr(api, "list_tests", first_snapshot_is_stale)
+    page.reload()
+    page.wait_for_function("status => state.tests.some(t=>t.file==='reload.test.yaml' && t.last===status)", arg=status)
+    page.wait_for_function("state.conversations.some(c=>c.id==='owner' && c.followups.length > 0)")
+    assert len(calls) >= 2
+    assert page.evaluate("state.conv.id") != "owner"
+    followups = page.evaluate("state.conversations.find(c=>c.id==='owner').followups")
+    if status == "fail":
+        assert any(f.get("intent", {}).get("intent") == "explain" for f in followups)
+    else:
+        assert any(f.get("intent", {}).get("intent") == "evidence" for f in followups)
+    assert not page.evaluate("activeJobIds().size")
+
+
 @pytest.fixture
 def desktop_browser(tmp_path, monkeypatch):
     playwright = pytest.importorskip("playwright.sync_api")

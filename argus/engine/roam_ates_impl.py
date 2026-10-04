@@ -108,6 +108,8 @@ def _attempt_status(stopped_reason: str) -> str:
         return "error"
     if "action outcome unresolved" in reason:
         return "outcome_unknown"
+    if reason.startswith("launch failed:"):
+        return "error"
     if "stopped by user" in reason:
         return "cancelled"
     if "provider" in reason:

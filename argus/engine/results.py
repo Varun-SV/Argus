@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -253,6 +254,31 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
     return path
 
 
+def valid_run_history(data) -> bool:
+    """Accept old result documents while rejecting shapes history readers cannot use."""
+    if not isinstance(data, dict):
+        return False
+    for name in ("test_file", "test_name", "status", "provider", "adapter"):
+        if name in data and not isinstance(data[name], str):
+            return False
+    steps = data.get("steps", [])
+    tokens = data.get("tokens", {})
+    if not isinstance(steps, list) or not isinstance(tokens, dict):
+        return False
+    if any(not isinstance(step, dict) or
+           ("status" in step and not isinstance(step["status"], str)) for step in steps):
+        return False
+    for value in (data.get("duration_s", 0), tokens.get("total_tokens", 0)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        try:
+            if not math.isfinite(value):
+                return False
+        except OverflowError:
+            return False
+    return True
+
+
 def load_runs(project_dir: Path, limit: int = 50) -> List[dict]:
     runs_dir = project_dir / ".argus" / "runs"
     if not runs_dir.is_dir():
@@ -260,7 +286,9 @@ def load_runs(project_dir: Path, limit: int = 50) -> List[dict]:
     out = []
     for path in sorted(runs_dir.glob("*.json"), reverse=True)[:limit]:
         try:
-            out.append(json.loads(path.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, OSError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if valid_run_history(data):
+                out.append(data)
+        except (json.JSONDecodeError, UnicodeError, OSError):
             continue
     return out
