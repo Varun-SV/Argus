@@ -30,7 +30,7 @@ def test_system_qemu_can_read_only_iso_without_opening_control_root():
     import grp
 
     with tempfile.TemporaryDirectory(dir="/tmp") as name:
-        root = Path(name)
+        root = Path(name).resolve()
         root.chmod(0o755)
         vm = root / "provider-storage" / "capsule"
         vm.mkdir(parents=True, mode=0o755)
@@ -68,7 +68,7 @@ def test_qemu_access_rejects_private_ancestor_and_missing_group():
     import grp
 
     with tempfile.TemporaryDirectory(dir="/tmp") as name:
-        root = Path(name)  # private ancestor cannot be traversed by QEMU
+        root = Path(name).resolve()  # private ancestor cannot be traversed by QEMU
         vm = root / "capsule"
         vm.mkdir(mode=0o755)
         calls = []
@@ -87,7 +87,7 @@ def test_inherited_acl_removal_failure_prevents_secret_rendering():
     import grp
 
     with tempfile.TemporaryDirectory(dir="/tmp") as name:
-        root = Path(name)
+        root = Path(name).resolve()
         root.chmod(0o755)
         settings = CapsuleSettings(libvirt_qemu_group=grp.getgrgid(os.getgid()).gr_name)
 
@@ -108,7 +108,7 @@ def test_native_bootstrap_storage_removes_inherited_named_and_default_acls():
     import grp
 
     with tempfile.TemporaryDirectory(dir="/tmp") as name:
-        root = Path(name)
+        root = Path(name).resolve()
         root.chmod(0o755)
         unrelated_uid = os.geteuid() + 1
         subprocess.run(
