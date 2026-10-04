@@ -27,6 +27,9 @@ def test_retained_metadata_preserves_qemu_traversal_on_repeated_failures():
         root.chmod(0o755)
         vm = root / "capsule"
         vm.mkdir(mode=0o750)
+        # macOS may inherit /private/tmp's group instead of the process group.
+        # Model the provider's explicit QEMU group assignment before retention.
+        os.chown(vm, -1, os.getgid())
         vm.chmod(0o2750)
         handle = _handle(vm)
         before = vm.stat()
