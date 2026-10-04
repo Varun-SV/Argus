@@ -30,6 +30,8 @@ from .core import (
     ExecutionKind,
     FindingRecord,
     ObservationRecord,
+    PROVISIONING_STAGES,
+    ProvisioningSource,
     RequirementIdentity,
     RoamSource,
     RunRecord,
@@ -812,7 +814,7 @@ def _run_record(raw: object, expected_run_id: RunId) -> RunRecord:
 
                 ),
             )
-        else:
+        elif execution_kind is ExecutionKind.ROAM:
             source = RoamSource(
                 objective_present=source_raw["objective_present"],
                 objective_commitment=_run_source_commitment(
@@ -826,6 +828,16 @@ def _run_record(raw: object, expected_run_id: RunId) -> RunRecord:
 
                 ),
                 policy_ref=source_raw.get("policy_ref"),
+            )
+        else:
+            source = ProvisioningSource(
+                environment_id=source_raw["environment_id"],
+                definition_sha256=source_raw["definition_sha256"],
+                source_sha256=source_raw["source_sha256"],
+                provider=source_raw["provider"],
+                image_format=source_raw["image_format"],
+                architecture=source_raw["architecture"],
+                machine=source_raw["machine"],
             )
         configuration_commitment = _run_source_commitment(
             raw.get("configuration_commitment"),
@@ -905,6 +917,8 @@ def _validate_provenance_and_terminal_lifecycle(events, run_id: RunId) -> RunRec
         _finalization_error(
             "roam runs must declare exactly one canonical roam step"
         )
+    if run.execution_kind is ExecutionKind.PROVISIONING and tuple(step_kinds) != PROVISIONING_STAGES:
+        _finalization_error("provisioning runs must declare the canonical build stages")
 
     target_launched = False
     target_closed = False
@@ -935,6 +949,101 @@ def _validate_provenance_and_terminal_lifecycle(events, run_id: RunId) -> RunRec
                     "action terminal event occurred outside an active target lifecycle",
                 )
     return run
+
+
+def _validate_provisioning_lifecycle(
+    events, run_id: RunId, *, allow_incomplete: bool = False,
+) -> None:
+    """Keep image-build evidence a bounded ATES producer, not a plaintext side channel."""
+    starts = [e for e in events if e.envelope.event_type is EventType.RUN_STARTED]
+    if len(starts) != 1:
+        raise FinalizationError("provisioning evidence requires one RUN_STARTED")
+    run = _run_record(starts[0].payload.get("run"), run_id)
+    if run.execution_kind is not ExecutionKind.PROVISIONING:
+        for event in events:
+            if event.envelope.event_type is EventType.OBSERVATION_CAPTURED:
+                raw = event.payload.get("observation")
+                if isinstance(raw, Mapping) and "image_sha256" in raw.get("facts", {}):
+                    raise FinalizationError("image digest observation requires a provisioning run")
+        return
+    source = run.source
+    if (
+        not isinstance(source, ProvisioningSource)
+        or run.adapter_type != "provisioning"
+        or run.environment_type != "provisioning"
+        or run.provider != source.provider
+        or run.model is not None
+        or run.model_provider is not None
+    ):
+        raise FinalizationError("provisioning run provenance is invalid")
+    step_ids = {}
+    for raw, stage in zip(starts[0].payload["steps"], PROVISIONING_STAGES):
+        step = _step_record(raw)[0]
+        if step.kind != stage or step.instruction != EvidenceValue.safe(stage):
+            raise FinalizationError("provisioning stage declaration is invalid")
+        step_ids[str(step.step_id)] = stage
+    opened: dict[str, str] = {}
+    completed: list[str] = []
+    completed_statuses: list[StepAttemptStatus] = []
+    image_digest_count = 0
+    for event in events:
+        kind = event.envelope.event_type
+        if kind in {
+            EventType.ACTION_PROPOSED, EventType.ACTION_POLICY_VALIDATED,
+            EventType.ACTION_DISPATCH_COMMITTED, EventType.ACTION_EXECUTED,
+            EventType.ACTION_OUTCOME_UNKNOWN, EventType.ASSERTION_EVALUATED,
+            EventType.FINDING_RECORDED, EventType.CHECKPOINT_CAPTURED,
+            EventType.ARTIFACT_COLLECTED, EventType.ARTIFACT_SUPPRESSED,
+            EventType.FAILURE_CAPSULE_RETAINED,
+        }:
+            raise FinalizationError("provisioning run contains unsupported test evidence")
+        if kind is EventType.STEP_ATTEMPT_STARTED:
+            record = _attempt(event.payload.get("attempt"), running=True)
+            stage = step_ids.get(str(record.step_id))
+            if stage is None or record.attempt != 1 or len(completed) >= len(PROVISIONING_STAGES):
+                raise FinalizationError("provisioning stage start is invalid")
+            if stage != PROVISIONING_STAGES[len(completed)] or opened:
+                raise FinalizationError("provisioning stages are out of order")
+            if any(status is not StepAttemptStatus.PASSED for status in completed_statuses):
+                raise FinalizationError("provisioning continued after a failed stage")
+            opened[str(record.step_attempt_id)] = stage
+        elif kind is EventType.OBSERVATION_CAPTURED:
+            raw = _mapping(event.payload.get("observation"), "provisioning observation")
+            attempt_id = raw.get("step_attempt_id")
+            stage = opened.get(attempt_id) if isinstance(attempt_id, str) else None
+            facts = _mapping(raw.get("facts"), "provisioning observation facts")
+            if (
+                stage != "image_hashed"
+                or raw.get("source") != "provisioning"
+                or raw.get("capture_policy") != "ates-provisioning-v1"
+                or set(facts) != {"image_sha256"}
+                or image_digest_count
+            ):
+                raise FinalizationError("provisioning image hash observation is invalid")
+            digest = _schema_evidence(facts["image_sha256"], "provisioning image SHA-256")
+            if digest.disposition is not EvidenceDisposition.SAFE or (
+                not isinstance(digest.value, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest.value)
+            ):
+                raise FinalizationError("provisioning image digest is invalid")
+            image_digest_count += 1
+        elif kind is EventType.STEP_ATTEMPT_COMPLETED:
+            record = _attempt(event.payload.get("attempt"), running=False)
+            attempt_id = str(record.step_attempt_id)
+            stage = opened.pop(attempt_id, None)
+            if stage is None or stage != step_ids.get(str(record.step_id)):
+                raise FinalizationError("provisioning stage completion is invalid")
+            if stage == "image_hashed" and record.status is StepAttemptStatus.PASSED and image_digest_count != 1:
+                raise FinalizationError("passed image hash stage has no digest evidence")
+            completed.append(stage)
+            completed_statuses.append(record.status)
+    handoffs = [e for e in events if e.envelope.event_type is EventType.RUN_MARKED_INCOMPLETE]
+    if len(handoffs) == 1 and handoffs[0].payload.get("execution_result") == "pass":
+        if (completed != list(PROVISIONING_STAGES) or image_digest_count != 1
+                or any(status is not StepAttemptStatus.PASSED for status in completed_statuses)):
+            raise FinalizationError("passed provisioning run lacks required stages or image digest")
+    if opened and not allow_incomplete:
+        raise FinalizationError("provisioning stage remains active at finalization")
 
 
 def _has_effective_attempt_execution_error(events) -> bool:
@@ -1971,6 +2080,7 @@ def derive_evidence_state(events, run_id):
     independent_lifecycle_error = _active_close_and_independent_lifecycle(events)
     _validate_ignored_event_shapes(events)
     _validate_provenance_and_terminal_lifecycle(events, run_id)
+    _validate_provisioning_lifecycle(events, run_id)
     (
         unresolved_dispatch,
         lifecycle_error,

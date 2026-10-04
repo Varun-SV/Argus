@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+from dataclasses import replace
 import json
 import os
 import platform
@@ -34,17 +35,23 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from argus.capsule.base import (
+    CapsuleCleanupError,
     CapsuleError,
     CapsuleHandle,
     CapsuleProvider,
     CapsuleProviderCapabilities,
     CapsuleRequest,
+    CapsuleSettings,
     FailureCapsule,
 )
 from argus.capsule.files import validate_session_id
+from argus.capsule.provider_identity import (
+    mutable_disk_identity,
+    provider_uuid_identity,
+)
 
 
-class _AmbiguousResourceOwnership(CapsuleError):
+class _AmbiguousResourceOwnership(CapsuleCleanupError):
     """A libvirt mutation may have completed but ownership cannot be attested."""
 
 
@@ -53,6 +60,7 @@ class LibvirtProvider(CapsuleProvider):
 
     provider_name = "libvirt"
     provider_capabilities = CapsuleProviderCapabilities(
+        protected_bootstrap_media=True,
         provider="libvirt",
         host_platforms=("linux",),
         guest_os=("linux",),
@@ -569,7 +577,12 @@ class LibvirtProvider(CapsuleProvider):
         guest_os = (settings.guest_os or "auto").lower().strip()
         if guest_os not in {"auto", "linux"}:
             raise CapsuleError("libvirt/QEMU Capsules currently support guest_os=linux only")
-        if not settings.guest_token:
+        provisioned = bool(
+            settings.environment_id
+            and settings.base_image_sha256
+            and settings.guest_runtime_identity
+        )
+        if not provisioned and not settings.guest_token:
             raise CapsuleError(
                 "Capsule bootstrap token is missing; set ARGUS_CAPSULE_GUEST_TOKEN on the host"
             )
@@ -600,7 +613,7 @@ class LibvirtProvider(CapsuleProvider):
             raise CapsuleError("capsule.guest_transport must be https or http")
         if transport == "https":
             ca = settings.resolved_guest_ca_cert
-            if ca is None or not ca.is_file():
+            if not provisioned and (ca is None or not ca.is_file()):
                 raise CapsuleError(
                     "HTTPS Capsule control requires guest_ca_cert pointing to the "
                     "dedicated guest CA/self-signed certificate"
@@ -846,6 +859,11 @@ class LibvirtProvider(CapsuleProvider):
                     )
                     if network_name in active_networks:
                         self._virsh_cmd(uri, "net-destroy", network_name, timeout=30)
+                    remaining = self._list_names(
+                        self._virsh_cmd(uri, "net-list", "--all", "--name", timeout=15)
+                    )
+                    if network_name in remaining:
+                        self._virsh_cmd(uri, "net-undefine", network_name, timeout=30)
 
             if owns("filter"):
                 filters = self._nwfilter_names(
@@ -854,7 +872,7 @@ class LibvirtProvider(CapsuleProvider):
                 if filter_name in filters:
                     self._virsh_cmd(uri, "nwfilter-undefine", filter_name, timeout=30)
         except Exception as exc:
-            return CapsuleError(
+            return CapsuleCleanupError(
                 f"libvirt resource cleanup failed: {exc}; session storage preserved at {root}"
             )
 
@@ -864,7 +882,7 @@ class LibvirtProvider(CapsuleProvider):
             except FileNotFoundError:
                 pass
             except OSError as exc:
-                return CapsuleError(f"session storage removal failed: {exc}")
+                return CapsuleCleanupError(f"session storage removal failed: {exc}")
         return None
 
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
@@ -1075,19 +1093,25 @@ class LibvirtProvider(CapsuleProvider):
         # the supported contract rather than persisted in potentially reportable
         # FailureCapsule metadata.
         uri = "qemu:///system"
-        _vm_name, network_name, _filter_name, _bridge = self._resource_names(handle.session_id)
-        state = self._virsh_cmd(uri, "domstate", handle.vm_name, timeout=15).strip().lower()
+        resource_key = handle.capsule_id or handle.session_id
+        _vm_name, network_name, _filter_name, _bridge = self._resource_names(
+            resource_key
+        )
+        state = self._virsh_cmd(
+            uri, "domstate", handle.vm_name, timeout=15
+        ).strip().lower()
         if state not in {"shut off", "shutoff", "off"}:
             self._virsh_cmd(uri, "destroy", handle.vm_name, timeout=45)
-        active_networks = self._list_names(
-            self._virsh_cmd(uri, "net-list", "--name", timeout=15)
-        )
-        if network_name in active_networks:
-            self._virsh_cmd(uri, "net-destroy", network_name, timeout=30)
+        if not handle.capsule_id:
+            active_networks = self._list_names(
+                self._virsh_cmd(uri, "net-list", "--name", timeout=15)
+            )
+            if network_name in active_networks:
+                self._virsh_cmd(uri, "net-destroy", network_name, timeout=30)
 
         final_state = self._virsh_cmd(uri, "domstate", handle.vm_name, timeout=15).strip() or "shut off"
         failure = FailureCapsule(
-            failure_id=handle.session_id,
+            failure_id=handle.capsule_id or handle.session_id,
             session_id=handle.session_id,
             provider=self.provider_name,
             vm_name=handle.vm_name,
@@ -1095,11 +1119,14 @@ class LibvirtProvider(CapsuleProvider):
             reason=(reason or "test failure")[:2000],
             retained_at=datetime.now(timezone.utc).isoformat(),
             vm_state=final_state,
+            capsule_id=handle.capsule_id,
+            failed_generation=handle.control_generation,
+            execution_mode=handle.execution_mode,
+            provider_resource_identity=handle.provider_resource_identity,
+            mutable_disk_identity=handle.mutable_disk_identity,
         )
-        (root / "failure-capsule.json").write_text(
-            json.dumps(failure.to_dict(), indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        manifest = root / "failure-capsule.json"
+        failure.persist(manifest)
         return failure
 
     def destroy(self, handle: CapsuleHandle) -> None:
@@ -1108,7 +1135,10 @@ class LibvirtProvider(CapsuleProvider):
                 f"LibvirtProvider cannot destroy handle owned by {handle.provider!r}"
             )
         root = Path(handle.root_dir)
-        _vm_name, network_name, filter_name, _bridge = self._resource_names(handle.session_id)
+        resource_key = handle.capsule_id or handle.session_id
+        _vm_name, network_name, filter_name, _bridge = self._resource_names(
+            resource_key
+        )
         cleanup_exc = self._cleanup_resources(
             "qemu:///system",
             handle.vm_name,
@@ -1120,3 +1150,376 @@ class LibvirtProvider(CapsuleProvider):
         )
         if cleanup_exc is not None:
             raise cleanup_exc
+
+
+    @staticmethod
+    def _stable_key(handle: CapsuleHandle) -> str:
+        return handle.capsule_id or handle.session_id
+
+    @staticmethod
+    def _guest_ip_from_network_xml(root: Path) -> str:
+        path = root / "network.xml"
+        try:
+            tree = ET.parse(path)
+            host = tree.getroot().find("./ip/dhcp/host")
+            value = "" if host is None else str(host.attrib.get("ip") or "")
+            address = ipaddress.ip_address(value)
+        except (OSError, ET.ParseError, ValueError) as exc:
+            raise CapsuleError("retained libvirt network identity is invalid") from exc
+        if not isinstance(address, ipaddress.IPv4Address):
+            raise CapsuleError("retained libvirt guest address must be IPv4")
+        return str(address)
+
+    def create_stopped(self, request: CapsuleRequest) -> CapsuleHandle:
+        transport, uri = self._validate_settings(request)
+        settings = request.settings
+        if not request.capsule_id:
+            raise CapsuleError("stopped libvirt allocation requires a stable Capsule ID")
+        resource_key = request.capsule_id
+
+        image = Path(settings.image).expanduser()
+        if not settings.image or not image.is_file():
+            raise CapsuleError(f"Capsule golden image not found: {settings.image!r}")
+        image = image.resolve()
+        pool = self._network_pool(settings.libvirt_network_cidr)
+        vm_name, network_name, filter_name, bridge_name = self._resource_names(
+            resource_key
+        )
+        mac = self._mac_for(resource_key)
+        arch = self._host_arch(settings.libvirt_arch)
+        base_format = self._base_image_format(image)
+        self._assert_resources_available(uri, vm_name, network_name, filter_name)
+
+        root_parent = self._resolved_vm_root(settings.vm_root)
+        try:
+            root_parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise CapsuleError(
+                f"cannot prepare libvirt Capsule storage at {root_parent}: {exc}"
+            ) from exc
+        root = root_parent / resource_key
+        if root.exists():
+            raise CapsuleError(f"Capsule directory already exists: {root}")
+        root.mkdir(parents=False)
+
+        overlay = root / "session.qcow2"
+        network_xml = root / "network.xml"
+        filter_xml = root / "nwfilter.xml"
+        domain_xml = root / "domain.xml"
+        owned_resources: set[str] = set()
+        try:
+            self._qemu_img_cmd(
+                "create",
+                "-f",
+                "qcow2",
+                "-F",
+                base_format,
+                "-b",
+                str(image),
+                str(overlay),
+                timeout=45,
+            )
+            with self._network_allocation_lock(uri):
+                network = self._allocate_network(
+                    uri,
+                    resource_key,
+                    settings.libvirt_network_cidr,
+                )
+                host_ip = str(network.network_address + 1)
+                guest_ip = str(network.network_address + 2)
+                self._validate_requested_address(
+                    settings.guest_address,
+                    guest_ip,
+                )
+                self._write_xml(
+                    network_xml,
+                    self._network_xml(
+                        network_name,
+                        bridge_name,
+                        network,
+                        mac,
+                        guest_ip,
+                        vm_name,
+                    ),
+                )
+                self._write_xml(
+                    filter_xml,
+                    self._filter_xml(
+                        filter_name,
+                        host_ip,
+                        guest_ip,
+                        settings.guest_port,
+                    ),
+                )
+                self._write_xml(
+                    domain_xml,
+                    self._domain_xml(
+                        vm_name,
+                        overlay,
+                        network_name,
+                        filter_name,
+                        mac,
+                        settings.memory_mb,
+                        settings.cpu_count,
+                        arch,
+                        str(settings.libvirt_machine or "").strip(),
+                    ),
+                )
+                self._assert_resources_available(
+                    uri, vm_name, network_name, filter_name
+                )
+                if any(
+                    network.overlaps(existing)
+                    for existing in self._occupied_networks(uri)
+                ):
+                    raise CapsuleError(
+                        f"libvirt Capsule subnet {network} became occupied during allocation"
+                    )
+                self._create_owned_resource(
+                    uri,
+                    "filter",
+                    filter_name,
+                    owned_resources,
+                    "nwfilter-define",
+                    filter_xml,
+                    timeout=30,
+                )
+                self._create_owned_resource(
+                    uri,
+                    "network",
+                    network_name,
+                    owned_resources,
+                    "net-define",
+                    network_xml,
+                    timeout=30,
+                )
+            self._create_owned_resource(
+                uri,
+                "domain",
+                vm_name,
+                owned_resources,
+                "define",
+                domain_xml,
+                timeout=30,
+            )
+            domain_uuid = self._virsh_cmd(
+                uri, "domuuid", vm_name, timeout=15
+            ).strip()
+            return CapsuleHandle(
+                session_id=request.session_id,
+                provider=self.provider_name,
+                vm_name=vm_name,
+                root_dir=str(root),
+                address="",
+                guest_port=settings.guest_port,
+                transport=transport,
+                guest_os="linux",
+                architecture=arch,
+                capsule_id=request.capsule_id,
+                execution_mode=request.execution_mode,
+                provider_resource_identity=provider_uuid_identity(
+                    "libvirt", domain_uuid
+                ),
+                mutable_disk_identity=mutable_disk_identity(overlay),
+            )
+        except Exception as create_exc:
+            preserve_storage = isinstance(
+                create_exc, _AmbiguousResourceOwnership
+            )
+            cleanup_exc = self._cleanup_resources(
+                uri,
+                vm_name,
+                network_name,
+                filter_name,
+                root,
+                remove_storage=not preserve_storage,
+                owned_resources=owned_resources,
+                remove_nvram=arch == "aarch64",
+            )
+            if cleanup_exc is not None:
+                raise CapsuleCleanupError(
+                    "libvirt stopped allocation failed and cleanup also failed: "
+                    f"create={create_exc}; cleanup={cleanup_exc}"
+                ) from create_exc
+            if preserve_storage:
+                raise CapsuleCleanupError(
+                    "libvirt allocation has ambiguous provider ownership; "
+                    f"storage preserved at {root}: {create_exc}"
+                ) from create_exc
+            raise
+
+    def inspect_ownership(self, handle: CapsuleHandle) -> tuple[str, str]:
+        uri = "qemu:///system"
+        root = Path(handle.root_dir)
+        overlay = root / "session.qcow2"
+        domain_uuid = self._virsh_cmd(
+            uri, "domuuid", handle.vm_name, timeout=15
+        ).strip()
+        try:
+            xml = ET.fromstring(
+                self._virsh_cmd(
+                    uri, "dumpxml", handle.vm_name, timeout=15
+                )
+            )
+        except ET.ParseError as exc:
+            raise CapsuleError("libvirt domain XML is invalid") from exc
+        sources = {
+            str(node.attrib.get("file") or "")
+            for node in xml.findall("./devices/disk/source")
+        }
+        if str(overlay) not in sources:
+            raise CapsuleError(
+                "libvirt mutable disk is no longer attached to the retained domain"
+            )
+        return (
+            provider_uuid_identity("libvirt", domain_uuid),
+            mutable_disk_identity(overlay),
+        )
+
+    def bootstrap_media_directory(
+        self, handle: CapsuleHandle, settings: CapsuleSettings
+    ) -> Path:
+        """Share only the ISO with system QEMU, outside the private control root."""
+        if os.name != "posix":
+            raise CapsuleError("libvirt bootstrap storage requires a Linux host")
+        if not settings.libvirt_qemu_group:
+            raise CapsuleError("libvirt bootstrap requires an explicit libvirt_qemu_group")
+        import grp
+
+        try:
+            gid = grp.getgrnam(settings.libvirt_qemu_group).gr_gid
+        except (KeyError, OSError):
+            raise CapsuleError("cannot resolve the configured system QEMU group") from None
+        root = Path(handle.root_dir).absolute()
+        directory = root / "bootstrap-media"
+        try:
+            if root.resolve() != root or not root.is_dir():
+                raise CapsuleError("libvirt Capsule storage must be a canonical directory")
+            root_info = root.stat()
+            if root_info.st_uid != os.geteuid() or root_info.st_mode & 0o022:
+                raise CapsuleError("libvirt Capsule storage must be owned privately by Argus")
+            # Never open up a private home/control root to make QEMU work.
+            # Operators must provide traversable system-provider storage.
+            for parent in (root, *root.parents):
+                info = parent.stat()
+                if not (info.st_mode & stat.S_IXOTH) and not (
+                    info.st_gid == gid and info.st_mode & stat.S_IXGRP
+                ):
+                    raise CapsuleError("QEMU cannot traverse the Capsule storage root")
+            directory.mkdir(mode=0o700, exist_ok=True)
+            info = directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                raise CapsuleError("libvirt bootstrap storage ownership is invalid")
+            directory.chmod(0o700)
+            # Remove inherited named/default ACLs before granting the trusted
+            # QEMU group traversal. No other host account receives secret access.
+            self._run(("setfacl", "-b", "-k", "--", str(directory)), 15)
+            os.chown(directory, -1, gid)
+            directory.chmod(0o2710)
+        except OSError:
+            raise CapsuleError("cannot prepare protected libvirt bootstrap storage") from None
+        return directory
+
+    def create_bootstrap_media(self, source: Path, output: Path) -> Path:
+        if os.name != "posix":
+            raise CapsuleError("libvirt bootstrap storage requires a Linux host")
+        info = output.parent.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o2710
+        ):
+            raise CapsuleError("libvirt bootstrap storage is not protected")
+        media = super().create_bootstrap_media(source, output)
+        try:
+            os.chown(media, -1, info.st_gid)
+            media.chmod(0o640)
+        except OSError:
+            media.unlink(missing_ok=True)
+            raise CapsuleError("cannot grant system QEMU read access to bootstrap ISO") from None
+        return media
+
+    def attach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
+        media = Path(media).resolve()
+        if not media.is_file():
+            raise CapsuleError("Capsule bootstrap ISO is missing")
+        state = self._virsh_cmd(
+            "qemu:///system", "domstate", handle.vm_name, timeout=15
+        ).strip().lower()
+        if state not in {"shut off", "shutoff", "off"}:
+            raise CapsuleError("libvirt bootstrap media must be attached while domain is off")
+        self._virsh_cmd(
+            "qemu:///system",
+            "attach-disk",
+            handle.vm_name,
+            str(media),
+            "hdb",
+            "--type",
+            "cdrom",
+            "--mode",
+            "readonly",
+            "--config",
+            timeout=30,
+        )
+
+    def detach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
+        state = self._virsh_cmd(
+            "qemu:///system", "domstate", handle.vm_name, timeout=15
+        ).strip().lower()
+        args = [
+            "detach-disk",
+            handle.vm_name,
+            "hdb",
+            "--config",
+        ]
+        if state not in {"shut off", "shutoff", "off"}:
+            args.append("--live")
+        self._virsh_cmd("qemu:///system", *args, timeout=30)
+
+    def start_existing(
+        self,
+        handle: CapsuleHandle,
+        request: CapsuleRequest,
+    ) -> CapsuleHandle:
+        if request.capsule_id != handle.capsule_id:
+            raise CapsuleError("libvirt reconnect Capsule ID mismatch")
+        _transport, uri = self._validate_settings(request)
+        self.inspect_ownership(handle)
+        resource_key = self._stable_key(handle)
+        _vm, network_name, _filter, _bridge = self._resource_names(resource_key)
+        all_networks = self._list_names(
+            self._virsh_cmd(uri, "net-list", "--all", "--name", timeout=15)
+        )
+        if network_name not in all_networks:
+            raise CapsuleError("retained libvirt network ownership is missing")
+        active_networks = self._list_names(
+            self._virsh_cmd(uri, "net-list", "--name", timeout=15)
+        )
+        if network_name not in active_networks:
+            self._virsh_cmd(uri, "net-start", network_name, timeout=30)
+        guest_ip = self._guest_ip_from_network_xml(Path(handle.root_dir))
+        self._virsh_cmd(uri, "start", handle.vm_name, timeout=60)
+        address = self._wait_for_guest_address(
+            uri,
+            handle.vm_name,
+            guest_ip,
+            request.settings.boot_timeout_seconds,
+        )
+        return replace(
+            handle,
+            session_id=request.session_id,
+            address=address,
+            control_generation=request.control_generation,
+            execution_mode=request.execution_mode,
+        )
+
+    def stop_existing(self, handle: CapsuleHandle) -> None:
+        uri = "qemu:///system"
+        state = self._virsh_cmd(
+            uri, "domstate", handle.vm_name, timeout=15
+        ).strip().lower()
+        if state not in {"shut off", "shutoff", "off"}:
+            self._virsh_cmd(uri, "destroy", handle.vm_name, timeout=45)
+
+    def quarantine(self, handle: CapsuleHandle) -> None:
+        self.stop_existing(handle)

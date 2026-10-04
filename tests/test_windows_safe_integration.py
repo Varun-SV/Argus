@@ -50,7 +50,9 @@ def test_semantic_actions_do_not_move_cursor_or_steal_foreground():
     unrelated_proc = None
 
     try:
-        target.launch(f'{sys.executable} {fixture} "Argus UIA Safety Target"')
+        target.launch(subprocess.list2cmdline([
+            sys.executable, str(fixture), "Argus UIA Safety Target",
+        ]))
         obs = target.observe(include_screenshot=False)
         edit_id = next(el.element_id for el in obs.elements if el.control_type == "Edit")
         button_id = next(
@@ -107,9 +109,9 @@ def test_spawned_target_child_focus_is_verified_and_user_foreground_restored(tmp
     unrelated_proc = None
 
     try:
-        target.launch(
-            f'{sys.executable} {spawn_fixture} "Argus Spawn Child Parent" "{marker}"'
-        )
+        target.launch(subprocess.list2cmdline([
+            sys.executable, str(spawn_fixture), "Argus Spawn Child Parent", str(marker),
+        ]))
         obs = target.observe(include_screenshot=False)
         spawn_id = next(
             el.element_id
@@ -165,7 +167,9 @@ def test_descendant_ui_outlives_launcher_and_close_cleans_verified_child():
     attached_created = None
 
     try:
-        target.launch(f'{sys.executable} {launcher} "Argus Descendant Lifecycle Target"')
+        target.launch(subprocess.list2cmdline([
+            sys.executable, str(launcher), "Argus Descendant Lifecycle Target",
+        ]))
         assert target._proc is not None
         launcher_pid = target._proc.pid
         attached_pid = target._attached_pid
