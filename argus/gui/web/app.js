@@ -70,6 +70,10 @@ const state = {
   liveTs: 0,
   liveJob: null,
   pollTimer: null,
+  pollInFlight: false,
+  pollRequested: false,
+  pollDone: null,
+  finishPoll: null,
   saveTimer: null,
   saveChain: Promise.resolve(),
   closing: false,
@@ -228,7 +232,7 @@ async function execute(res, conv = state.conv) {
         ].filter(Boolean));
         return;
       }
-      case "knowledge": return knowledge(a.action || "show", a.target || "", conv);
+      case "knowledge": return await knowledge(a.action || "show", a.target || "", conv);
       case "evidence": {
         const r = await withThinking(() => api().evidence(a.key || null));
         if (!r.ok) return sayError(r.error);
@@ -258,7 +262,7 @@ async function execute(res, conv = state.conv) {
         setFollowups([{ label: "Token usage", intent: I("tokens") }, { label: "Run all tests", intent: I("run", { tests: "all" }) }]);
         return;
       }
-      case "switch_provider": return switchProvider(a.provider, conv);
+      case "switch_provider": return await switchProvider(a.provider, conv);
       case "environment": {
         if (a.environment) {
           const r = await api().set_environment(a.environment, a.capsule_provider || null);
@@ -419,59 +423,74 @@ function watchRunning() {
 }
 function poll() {
   if (state.closing) return;
+  if (state.pollInFlight) { state.pollRequested = true; return; }
   if (state.pollTimer) return;
   state.pollTimer = setTimeout(tick, 150);
 }
 async function tick() {
   state.pollTimer = null;
-  if (state.closing) return;
-  const ids = activeJobIds();
-  const finished = [];  // [conv, msg]
-  for (const id of ids) {
-    let job;
-    try { job = await api().job_status(id); } catch (e) { continue; }
-    if (!job.ok) {
-      // A restarted backend cannot establish the outcome of an old job.
-      for (const c of allConversations()) for (const m of c.msgs) if (m.job === id) markUnconfirmed(m);
-      continue;
-    }
-    for (const c of allConversations()) {
-      for (const m of c.msgs) {
-        if (m.job !== id) continue;
-        if (m.kind === "run") {
-          const snap = job.runs[m.idx];
-          const was = m.snap.status;
-          const jobWasRunning = !!m.meta.running;
-          if (JSON.stringify(snap) !== JSON.stringify(m.snap) || m.meta.running !== job.running) {
-            update(m, { snap, meta: runMeta(job) });
+  if (state.closing || state.pollInFlight) return;
+  state.pollInFlight = true;
+  state.pollDone = new Promise(resolve => state.finishPoll = resolve);
+  try {
+    const ids = activeJobIds();
+    const finished = [];  // [conv, msg]
+    for (const id of ids) {
+      let job;
+      try { job = await api().job_status(id); } catch (e) { continue; }
+      if (!job.ok) {
+        // A restarted backend cannot establish the outcome of an old job.
+        for (const c of allConversations()) for (const m of c.msgs) if (m.job === id) markUnconfirmed(m);
+        continue;
+      }
+      for (const c of allConversations()) {
+        for (const m of c.msgs) {
+          if (m.job !== id) continue;
+          if (m.kind === "run") {
+            const snap = job.runs[m.idx];
+            const was = m.snap.status;
+            const jobWasRunning = !!m.meta.running;
+            if (JSON.stringify(snap) !== JSON.stringify(m.snap) || m.meta.running !== job.running) {
+              update(m, { snap, meta: runMeta(job) });
+            }
+            if (((was === "running" || was === "queued") && !["running", "queued"].includes(snap.status)) ||
+                (jobWasRunning && !job.running)) finished.push([c, m]);
+          } else if (m.kind === "roam") {
+            const was = m.snap.running;
+            if (JSON.stringify(job) !== JSON.stringify(m.snap)) update(m, { snap: job });
+            if (was && !job.running) finished.push([c, m]);
           }
-          if (((was === "running" || was === "queued") && !["running", "queued"].includes(snap.status)) ||
-              (jobWasRunning && !job.running)) finished.push([c, m]);
-        } else if (m.kind === "roam") {
-          const was = m.snap.running;
-          if (JSON.stringify(job) !== JSON.stringify(m.snap)) update(m, { snap: job });
-          if (was && !job.running) finished.push([c, m]);
         }
       }
     }
-  }
-  if (state.watchOn || allConversations().some((c) => c.msgs.some((m) => m.kind === "watch" && m.watch.running))) {
-    const w = await api().watch_status();
-    state.watchOn = !!w.running;
-    // Watched re-runs have no run card, so refresh the sidebar's test list and status
-    // dots whenever another watched re-run finishes.
-    const settled = (w.events || []).filter((e) => !["running", "waiting"].includes(e.status)).length;
-    if (settled !== state.watchSettled) {
-      if (state.watchSettled !== null) refreshTests();
-      state.watchSettled = settled;
+    if (state.watchOn || allConversations().some((c) => c.msgs.some((m) => m.kind === "watch" && m.watch.running))) {
+      const w = await api().watch_status();
+      state.watchOn = !!w.running;
+      // Watched re-runs have no run card, so refresh the sidebar's test list and status
+      // dots whenever another watched re-run finishes.
+      const settled = w.settled_count ?? (w.events || []).filter((e) => !["running", "waiting"].includes(e.status)).length;
+      if (settled !== state.watchSettled) {
+        if (state.watchSettled !== null) refreshTests();
+        state.watchSettled = settled;
+      }
+      applyWatchSnapshot(w);
     }
-    applyWatchSnapshot(w);
+    await updateLive();
+    if (finished.length) onFinished(finished);
+    const busy = activeJobIds().size > 0 || watchRunning() || (state.liveJob && state.liveJob.running);
+    renderBusy(busy);
+  } catch (e) {
+    // A transient bridge failure leaves active jobs eligible for the next tick.
+  } finally {
+    state.pollInFlight = false;
+    state.finishPoll();
+    state.pollDone = null;
+    state.finishPoll = null;
+    const again = state.pollRequested || activeJobIds().size > 0 || watchRunning() ||
+      (state.liveJob && state.liveJob.running);
+    state.pollRequested = false;
+    if (!state.closing && again && !state.pollTimer) state.pollTimer = setTimeout(tick, 700);
   }
-  await updateLive();
-  if (finished.length) onFinished(finished);
-  const busy = activeJobIds().size > 0 || watchRunning() || (state.liveJob && state.liveJob.running);
-  renderBusy(busy);
-  if (busy) state.pollTimer = setTimeout(tick, 700);
 }
 
 function applyWatchSnapshot(w) {
@@ -980,10 +999,12 @@ async function flushConversationsForClose() {
   state.closing = true;
   clearTimeout(state.saveTimer);
   clearTimeout(state.pollTimer);
+  state.pollTimer = null;
   state.closeControls = [...document.querySelectorAll("button, input, textarea")].filter((el) => !el.disabled);
   for (const el of state.closeControls) el.disabled = true;
   if (state.info && state.info.project_required) return { ok: true };
   try {
+    if (state.pollDone) await state.pollDone;
     const watch = await api().watch_status();
     state.watchOn = !!watch.running;
     applyWatchSnapshot(watch);

@@ -11,6 +11,20 @@ from argus.gui.app import ArgusAPI
 from argus.gui.state import ProjectInUse, ProjectLease, project_identity
 
 
+def test_watch_completed_history_is_bounded_without_dropping_pending_changes():
+    from argus.gui.app import _settle_watch_event
+    pending = [{"file": str(i), "status": "waiting"} for i in range(7)]
+    watch = {"events": pending[:], "settled_count": 0}
+    for i in range(500):
+        event = {"file": str(i), "status": "running"}
+        watch["events"].append(event)
+        _settle_watch_event(watch, event, "pass", "completed")
+    assert watch["settled_count"] == 500
+    assert watch["events"][:7] == pending
+    assert len(watch["events"]) == 207
+    assert [e["file"] for e in watch["events"][7:]] == [str(i) for i in range(300, 500)]
+
+
 def test_project_lease_excludes_other_process_and_survives_stale_lock_file(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGUS_GUI_STATE_DIR", str(tmp_path / "state"))
     code = """import sys

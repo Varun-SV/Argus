@@ -43,7 +43,7 @@ class LocalKnowledgeStore(KnowledgeStore):
             try:
                 import chromadb
                 self._chroma_client = chromadb.PersistentClient(
-                    path=str(self._dir / "chroma")
+                    path=str(getattr(self, "_chroma_path", self._dir / "chroma"))
                 )
                 self._chroma_ok = True
             except Exception:

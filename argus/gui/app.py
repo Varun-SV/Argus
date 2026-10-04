@@ -905,7 +905,8 @@ class ArgusAPI:
                 return {"ok": True, "watch": _copy(self._watch)}
             # Don't clear self._stop here: a Stop must still reach an active job.
             self._watch = {"id": uuid.uuid4().hex[:12], "running": True,
-                           "pattern": ".argus/*.test.yaml", "events": [], "started_at": time.time()}
+                           "pattern": ".argus/*.test.yaml", "events": [], "settled_count": 0,
+                           "started_at": time.time()}
             threading.Thread(target=self._watch_worker, args=(self._watch, cfg.project_dir),
                              daemon=True).start()
             return {"ok": True, "watch": _copy(self._watch)}
@@ -934,9 +935,12 @@ class ArgusAPI:
                     pending[name] = event
             for name in sorted(set(seen) - set(current)):
                 # A deleted spec has nothing to re-run; record it so the sidebar refreshes.
-                watch["events"].append({"at": time.strftime("%H:%M:%S"), "file": name, "change": "removed",
-                                        "status": "removed", "summary": "spec removed"})
-                pending.pop(name, None)
+                event = pending.pop(name, None)
+                if event is None:
+                    event = {"at": time.strftime("%H:%M:%S"), "file": name, "status": "waiting"}
+                    watch["events"].append(event)
+                event["change"] = "removed"
+                _settle_watch_event(watch, event, "removed", "spec removed")
             seen = current
             for name in list(pending):
                 if not watch["running"]:
@@ -950,7 +954,7 @@ class ArgusAPI:
                         event.update(status="waiting", summary="waiting for the current job to finish")
                         break
                     del pending[name]  # e.g. the spec was deleted: nothing to retry
-                    event.update(status="skipped", summary=started.get("error", "not run"))
+                    _settle_watch_event(watch, event, "skipped", started.get("error", "not run"))
                     continue
                 del pending[name]
                 event.update(status="running", summary="re-running…")
@@ -959,11 +963,13 @@ class ArgusAPI:
                     time.sleep(0.3)
                 run = job["runs"][0]
                 result = run.get("result") or {}
-                event["status"] = run["status"]
                 steps = result.get("steps", [])
                 passed = sum(1 for s in steps if s.get("status") == "pass")
-                event["summary"] = (f"{passed}/{len(steps)} steps passed" if steps
-                                    else (run["notes"][-1] if run["notes"] else run["status"]))
+                summary = (f"{passed}/{len(steps)} steps passed" if steps
+                           else (run["notes"][-1] if run["notes"] else run["status"]))
+                _settle_watch_event(watch, event, run["status"], summary)
+        for event in pending.values():
+            _settle_watch_event(watch, event, "stopped", "watch stopped before re-run")
 
     # ---- knowledge --------------------------------------------------------------
 
@@ -1009,8 +1015,10 @@ class ArgusAPI:
             cfg = self._config()
             ks = cfg.make_knowledge_store()
             if ks is not None:
-                ks.clear_target(target)
-                ks.close()
+                try:
+                    ks.clear_target(target)
+                finally:
+                    ks.close()
             return {"ok": True, "target": target}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -1305,6 +1313,18 @@ class _ScreenshotCapturingAdapter:
 
     def close(self) -> None:
         return self._inner.close()
+
+
+def _settle_watch_event(watch: dict, event: dict, status: str, summary: str) -> None:
+    """Keep pending changes and a bounded completed history for saved cards."""
+    if event.get("status") in {"running", "waiting"}:
+        watch["settled_count"] = watch.get("settled_count", 0) + 1
+    event.update(status=status, summary=summary)
+    events = watch["events"]
+    completed = [i for i, item in enumerate(events) if item.get("status") not in {"running", "waiting"}]
+    discard = set(completed[:-200])
+    if discard:
+        events[:] = [item for i, item in enumerate(events) if i not in discard]
 
 
 def _copy(value):

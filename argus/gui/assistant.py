@@ -96,9 +96,17 @@ def intent(name: str, **args) -> dict:
 def adapter_for(target: str) -> str:
     """Guess the adapter for a roam target the same way people describe them."""
     t = target.strip().lower()
+    head = _ROAM_TOKEN.match(t)
+    executable = _unquote(head.group()).replace("\\", "/").rsplit("/", 1)[-1] if head else ""
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
     if re.match(r"^https?://", t) or t.startswith("localhost") or t.startswith("127.0.0.1"):
         return "browser"
-    if re.search(r"\.(sh|py|js|bat|ps1|cmd)\b", t) or t.startswith("./"):
+    if (re.search(r"\.(sh|py|js|bat|ps1|cmd)\b", t) or t.startswith("./")
+            or _CLI_COMMAND_HEAD.match(t)
+            or _CLI_COMMAND_HEAD.fullmatch(executable)
+            or _CLI_COMMAND_HEAD.fullmatch(t.replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".exe"))
+            or re.match(r"^/(?:[^\s/]+/)*[^\s/.]+(?:\s|$)", t)):
         return "cli"
     return "desktop-gui"
 
@@ -564,6 +572,10 @@ def run_settings_from_text(text: str) -> tuple:
 
 def _question_about_action(text: str) -> bool:
     """Questions/advice prompts are not authorization to perform an action."""
+    if re.match(r"^\s*(?:please\s+)?(?:tell\s+me|explain|describe|show\s+me|"
+                r"teach\s+me|help\s+me\s+understand)\b[^.!?]*\b(?:how|why|when|whether)\b",
+                text, re.IGNORECASE):
+        return True
     # A direct polite request is authorization; a capability/consequence question
     # is not, even if a model proposes a mutating intent for it.
     if re.match(r"^\s*(?:can|could|would|will)\s+you\s+(?:please\s+)?"
@@ -588,7 +600,7 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     ):
         return None, "I won't execute a test when the instruction is negated."
 
-    executes = bool(
+    executes = (
         re.search(r"\b(?:run|execute|rerun|re-run)\b", text, re.IGNORECASE)
         or re.search(
             r"(?:^|\b(?:please|can\s+you|could\s+you|would\s+you|i\s+want\s+you\s+to)\s+)"
@@ -601,7 +613,8 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
         return None, "I won't execute tests unless you explicitly ask me to run, execute, test, or check them."
 
     if re.search(r"\b(?:except|excluding|exclude|skip|skipping|omit|omitting|without|unless|"
-                 r"if|only\s+when|but\s+not|all\s+but|other\s+than|apart\s+from|instead\s+of)\b",
+                 r"if|when|after|before|until|once|as\s+soon\s+as|only\s+when|but\s+not|"
+                 r"all\s+but|other\s+than|apart\s+from|instead\s+of)\b",
                  text, re.IGNORECASE):
         return None, "I didn't run anything: exclusions or conditions need an explicit list of tests to run. Name only the tests you want."
 
@@ -613,7 +626,19 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     ):
         return "all", None
 
-    lowered = text.casefold()
+    # Only the requested test phrase can authorize tests. Command and execution
+    # settings are not names, even when a test happens to share their vocabulary.
+    lowered = text[executes.end():].casefold()
+    quoted = [(m.start(), m.end()) for m in re.finditer(r'"[^"]*"|\'[^\']*\'', lowered)]
+    settings = re.finditer(r"\b(?:in\s+(?:a\s+)?(?:(?:hyper-?v|libvirt)\s+)?capsule|"
+                           r"(?:on\s+(?:this\s+)?(?:device|machine)|locally)|"
+                           r"(?:keep|retain)(?:ing)?\s+(?:the\s+)?failure\s+capsule)(?![\w.-])",
+                           lowered)
+    for setting in settings:
+        if not any(a <= setting.start() < b for a, b in quoted):
+            lowered = lowered[:setting.start()]
+            break
+    matches = []
     chosen = []
     for item in tests:
         aliases = {
@@ -622,12 +647,23 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
             str(item.get("name") or "").casefold(),
         }
         aliases.discard("")
-        if any(re.search(r"(?<![\w-])" + re.escape(alias) + r"(?![\w-])", lowered)
-               for alias in sorted(aliases, key=len, reverse=True)):
-            chosen.append(str(item["file"]))
+        for alias in aliases:
+            for match in re.finditer(r"(?<![\w.-])" + re.escape(alias) + r"(?![\w.-])", lowered):
+                matches.append((match.start(), match.end(), str(item["file"])))
+    # A complete filename or longer title takes precedence over a short alias
+    # contained within it. Equal spans remain explicit ambiguous selections.
+    occupied = []
+    for start, end, file in sorted(matches, key=lambda m: m[1] - m[0], reverse=True):
+        if any(start < b and end > a and (start, end) != (a, b) for a, b in occupied):
+            continue
+        occupied.append((start, end))
+        chosen.append(file)
+    for start, end in occupied:
+        if len({file for a, b, file in matches if (a, b) == (start, end)}) > 1:
+            return None, "That name matches multiple tests. Use the exact filename of each test you want to run."
     if not chosen:
         return None, "Which test should I run? Name a test from the sidebar, or say 'run all tests'."
-    return list(dict.fromkeys(chosen)), None
+    return [str(item["file"]) for item in tests if str(item["file"]) in chosen], None
 
 
 def _authorized_simple_action(text: str, action: str) -> bool:

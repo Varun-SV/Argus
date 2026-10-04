@@ -17,6 +17,59 @@ TESTS = [
 CONTEXT = {"tests": TESTS, "last_target": "notepad.exe", "providers": ["ollama", "anthropic"]}
 
 
+def test_run_matches_only_test_phrase_and_complete_names():
+    tests = [{"file": name + ".test.yaml", "name": name}
+             for name in ("checkout", "run", "capsule", "failure", "test", "yaml")]
+    context = {**CONTEXT, "tests": tests}
+    for text in ("run checkout in a capsule", "please run checkout and retain the failure capsule",
+                 "run checkout.test.yaml locally"):
+        got = validate_intent({"intent": "run", "args": {"tests": "all"}}, text, context)
+        assert got["args"]["tests"] == ["checkout.test.yaml"]
+    assert validate_intent({"intent": "run"}, 'run "capsule" and run.test.yaml', context)["args"]["tests"] == [
+        "run.test.yaml", "capsule.test.yaml"]
+
+
+def test_quoted_names_keep_control_words_and_ambiguous_aliases_require_filenames():
+    tests = [{"file": "one.test.yaml", "name": "checkout"},
+             {"file": "two.test.yaml", "name": "checkout"},
+             {"file": "three.test.yaml", "name": "check in a capsule"},
+             {"file": "locally-cached.test.yaml", "name": "cached"}]
+    context = {**CONTEXT, "tests": tests}
+    assert validate_intent({"intent": "run"}, "run checkout", context)["intent"] == "chat"
+    assert validate_intent({"intent": "run"}, "run one.test.yaml", context)["args"]["tests"] == ["one.test.yaml"]
+    assert validate_intent({"intent": "run"}, 'run "check in a capsule"', context)["args"]["tests"] == ["three.test.yaml"]
+    assert validate_intent({"intent": "run"}, "run locally-cached", context)["args"]["tests"] == ["locally-cached.test.yaml"]
+
+
+@pytest.mark.parametrize("condition", ["after deployment finishes", "when the server is ready",
+                                         "before releasing", "once ready", "until ready",
+                                         "as soon as deployment finishes"])
+def test_temporal_run_conditions_do_not_authorize_immediate_execution(condition):
+    assert validate_intent({"intent": "run"}, "run checkout " + condition, CONTEXT)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text,proposed", [
+    ("Tell me how to stop a run", {"intent": "stop"}),
+    ("Please explain how to run checkout", {"intent": "run"}),
+    ("Describe how to roam notepad.exe", {"intent": "roam", "args": {"target": "notepad.exe"}}),
+    ("Show me how to reset knowledge for notepad.exe",
+     {"intent": "knowledge", "args": {"action": "reset", "target": "notepad.exe"}}),
+])
+def test_imperative_advice_does_not_authorize_action(text, proposed):
+    assert validate_intent(proposed, text, CONTEXT)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("target", ["git status", "npm test", "python", "/usr/bin/git status",
+                                    r'C:\Tools\git.exe status', r'"C:\Program Files\Python\python.exe"'])
+def test_slash_roam_recognizes_extensionless_cli_and_known_absolute_executables(target):
+    assert parse_slash("/roam " + target)["args"]["adapter"] == "cli"
+
+
+def test_desktop_absolute_executable_and_explicit_adapter_remain_supported():
+    assert parse_slash(r"/roam C:\Windows\System32\notepad.exe")["args"]["adapter"] == "desktop-gui"
+    assert parse_slash("/roam python --adapter desktop-gui")["args"]["adapter"] == "desktop-gui"
+
+
 @pytest.mark.parametrize("options", [
     "--minutes nope", "--minutes", "--minutes nan", "--minutes inf",
     "--minutes -1", "--minutes 0", "--minutes 241", "--minutes 2 --minutes 3",

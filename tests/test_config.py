@@ -93,6 +93,24 @@ def test_env_overrides(tmp_path, monkeypatch):
     assert cfg.provider.api_key == "sk-test"
 
 
+@pytest.mark.parametrize("default,other", [("openai", "anthropic"), ("anthropic", "openai"),
+                                         ("ollama", "openai")])
+def test_switch_back_to_default_restores_generic_provider_environment(tmp_path, monkeypatch, default, other):
+    init_project(tmp_path)
+    path = tmp_path / ".argus" / "config.yaml"
+    path.write_text(f"provider: {default}\nproviders:\n  {other}:\n    model: other-model\n    api_key: other-key\n")
+    monkeypatch.delenv("ARGUS_PROVIDER", raising=False)
+    monkeypatch.setenv("ARGUS_API_KEY", "default-key")
+    monkeypatch.setenv("ARGUS_MODEL", "default-model")
+    monkeypatch.setenv("ARGUS_BASE_URL", "https://default.invalid")
+    switched = load_config(tmp_path, provider=other)
+    assert switched.provider.model == "other-model" and switched.provider.api_key == "other-key"
+    assert switched.provider.base_url != "https://default.invalid"
+    restored = load_config(tmp_path, provider=default)
+    assert restored.provider.model == "default-model" and restored.provider.api_key == "default-key"
+    assert restored.provider.base_url == "https://default.invalid"
+
+
 def test_ollama_budget_ignores_tokens(tmp_path, monkeypatch):
     monkeypatch.delenv("ARGUS_PROVIDER", raising=False)
     init_project(tmp_path)

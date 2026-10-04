@@ -30,6 +30,7 @@ def create_knowledge_store(
     embedding_model: str = "all-MiniLM-L6-v2",
     data_dir: Optional[Path] = None,
     interactive: bool = True,
+    docker_storage_path: Optional[Path] = None,
 ) -> Optional[KnowledgeStore]:
     """Build and return a KnowledgeStore.
 
@@ -68,7 +69,9 @@ def create_knowledge_store(
         return ks
 
     if store_type in ("docker", "qdrant"):
-        resolved_url = _start_docker_qdrant(data_dir or resolved_dir.parent)
+        resolved_url = (_start_docker_qdrant(data_dir or resolved_dir.parent, docker_storage_path)
+                        if docker_storage_path is not None
+                        else _start_docker_qdrant(data_dir or resolved_dir.parent))
         if resolved_url:
             ks = _make_remote(resolved_dir, resolved_url, embedding_model)
             if ks is not None:
@@ -162,10 +165,10 @@ def _make_remote(
         return None
 
 
-def _start_docker_qdrant(data_dir: Path) -> Optional[str]:
+def _start_docker_qdrant(data_dir: Path, storage_path: Optional[Path] = None) -> Optional[str]:
     try:
         from argus.knowledge.docker_manager import DockerManager
-        mgr = DockerManager(data_dir)
+        mgr = DockerManager(data_dir, qdrant_data_dir=storage_path) if storage_path is not None else DockerManager(data_dir)
         if not mgr.available():
             return None
         return mgr.ensure_qdrant()

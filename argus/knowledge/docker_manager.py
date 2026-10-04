@@ -23,8 +23,9 @@ class DockerManager:
     NEO4J_BOLT_PORT = 7687
     NEO4J_HTTP_PORT = 7474
 
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, qdrant_data_dir: Optional[Path] = None) -> None:
         self._data_dir = data_dir
+        self._qdrant_data_dir = qdrant_data_dir
 
     def available(self) -> bool:
         """Return True if Docker is installed and the daemon is running."""
@@ -87,7 +88,7 @@ class DockerManager:
         if not docker:
             return None
         if not self._container_running(self.QDRANT_CONTAINER):
-            data_path = self._data_dir / "qdrant-data"
+            data_path = self._qdrant_data_dir or self._data_dir / "qdrant-data"
             data_path.mkdir(parents=True, exist_ok=True)
             if self._container_exists(self.QDRANT_CONTAINER):
                 subprocess.run(

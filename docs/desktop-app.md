@@ -47,9 +47,15 @@ Use **What can Argus do?** or `/help` for supported commands and examples:
 
 Name the tests you want to run explicitly. Exclusions or conditions such as "run all except destructive" need clarification before anything executes. Questions about what an action does are informational; direct requests such as "Can you run smoke?" authorize it. `/roam` requires valid option values: `--minutes` must be finite, greater than zero, and at most 240; conflicting options are rejected.
 
+Temporal requests such as "run checkout after deployment" need clarification too. Advice requests such as "Tell me how to stop" do not perform the action. Test matching excludes command and environment wording; use an exact filename or quoted name when a name is ambiguous. `/roam git status`, `/roam npm test`, and `/roam python` select the CLI adapter; an explicit `--adapter` remains authoritative.
+
 Drafts are validated before they are displayed. Review their YAML, preview it, and explicitly choose **Save to .argus**. Saving never replaces an existing test. Unsaved drafts belong to the current application session; after restarting, draft text remains in the conversation but its action buttons may ask you to draft it again.
 
 **Stop** requests cancellation and lets execution perform its normal teardown. Closing a window with an active job requests Stop and keeps the window open until cleanup finishes; close it again after the result settles. Watch mode observes `.argus/*.test.yaml` and re-runs changed files. Stop watching before editing tests you do not want to execute.
+
+Watch cards retain the latest 200 completed events and all pending changes. The default knowledge store rejects redirected project directories, including Windows junctions. Explicitly configured external persistence directories remain supported. Switching back to the project's default provider restores its generic `ARGUS_API_KEY`, `ARGUS_MODEL`, and `ARGUS_BASE_URL` settings; another provider uses its own configured settings.
+
+On macOS and other hosts without secure descriptor-backed directory paths, JSON is the default project knowledge backend when no type is configured. Explicit default Chroma/Docker selection stops with configuration guidance on those hosts; use `knowledge.type: json`, or an explicitly configured, operator-approved `knowledge.persist_dir` for the existing backend behavior. Full native macOS anchoring for these optional backends remains future work.
 
 Conversations are stored in per-user application data and separated by project. A window reload reconnects to jobs and watch mode still owned by the current backend. After a process restart, an interrupted job is shown as **Outcome unknown**; check persisted history and ATES evidence before retrying. Malformed saved cards show a recovery message instead of preventing startup. Closing flushes the latest conversation and waits for a successful save. A failed or uncertain save keeps the window open for recovery, even when model configuration is invalid. Watch cards continue updating in their original conversation while you use another chat.
 

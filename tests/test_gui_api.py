@@ -284,7 +284,9 @@ def test_unexpected_adapter_failure_marks_run_as_error(project, fake_llm, monkey
     explained = api.explain()
     assert explained["ok"] and explained["key"] == run["key"]
     assert explained["test"] == "cli.test.yaml"
-    assert api.run_tests(["cli.test.yaml"])["ok"] is True  # the slot was released
+    rerun = api.run_tests(["cli.test.yaml"])
+    assert rerun["ok"] is True  # the slot was released
+    _wait(api, rerun["job"]["id"])  # finish before the provider monkeypatch is removed
 
 
 # ---- review regressions -------------------------------------------------------

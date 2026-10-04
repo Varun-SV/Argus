@@ -379,6 +379,14 @@ class ArgusConfig:
     def make_knowledge_store(self):
         from argus.knowledge import create_knowledge_store
         kc = self.knowledge
+        if not kc.enabled:
+            return None
+        if not kc.persist_dir:
+            from argus.knowledge.storage import create_project_knowledge_store
+            return create_project_knowledge_store(
+                self.project_dir, store_type=kc.type, vector_backend=kc.vector_backend,
+                vector_url=kc.vector_url, embedding_model=kc.embedding_model,
+            )
         persist = Path(kc.persist_dir) if kc.persist_dir else self.argus_dir / "knowledge"
         return create_knowledge_store(
             enabled=kc.enabled,
@@ -464,7 +472,8 @@ def load_config(
     # process pin exists. Session overrides must not inherit the generic ARGUS_*
     # model/base-url/key values, which may belong to a different provider.
     active = env_provider or provider or raw.get("provider") or "ollama"
-    session_override = provider is not None and not env_provider
+    session_override = (provider is not None and not env_provider
+                        and provider != (raw.get("provider") or "ollama"))
     allow_generic_env = not session_override
 
     providers = raw.get("providers") or {}
@@ -482,7 +491,7 @@ def load_config(
     kc_raw = raw.get("knowledge") or {}
     knowledge = KnowledgeConfig(
         enabled=bool(kc_raw.get("enabled", True)),
-        type=str(kc_raw.get("type", "local")),
+        type=str(kc_raw.get("type", "local" if os.name == "nt" or Path("/proc/self/fd").is_dir() else "json")),
         vector_backend=str(kc_raw.get("vector_backend", "chroma")),
         vector_url=kc_raw.get("vector_url") or None,
         persist_dir=kc_raw.get("persist_dir") or None,

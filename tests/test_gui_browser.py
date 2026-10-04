@@ -278,3 +278,96 @@ def test_invalid_forced_environment_is_visible_and_cannot_run_local(desktop_brow
     page.evaluate("runChip('Run smoke', I('run',{tests:['smoke.test.yaml']}))")
     page.wait_for_function("state.conv.msgs.some(m=>m.error && m.text.includes('ARGUS_EXECUTION_ENVIRONMENT'))")
     assert api._jobs == {}
+
+
+@pytest.mark.parametrize("action,method", [("knowledge", "knowledge"), ("switch_provider", "set_provider")])
+def test_close_waits_for_pending_provider_or_knowledge_response(desktop_browser, action, method):
+    page, api, project = desktop_browser
+    page.evaluate("""({action,method}) => {
+      const real = window.pywebview.api;
+      window.releaseResponse = null;
+      window.pywebview.api = new Proxy(real, {get:(target,key) => key===method ? async (...args) => {
+        await new Promise(resolve=>window.releaseResponse=resolve);
+        return target[key](...args);
+      } : target[key]});
+      runChip('Pending response', I(action, action==='knowledge' ? {action:'show'} : {provider:'anthropic'}));
+    }""", {"action": action, "method": method})
+    page.wait_for_function("window.releaseResponse !== null")
+    assert page.evaluate("state.pendingActions") == 1
+    assert page.evaluate("flushConversationsForClose()") == {"ok": False}
+    page.evaluate("window.releaseResponse()")
+    page.wait_for_function("state.pendingActions === 0")
+    assert page.evaluate("flushConversationsForClose()") == {"ok": True}
+    saved = api.load_conversations()
+    messages = saved[0]["msgs"]
+    assert messages[-1]["role"] == "argus" and messages[-1]["kind"] != "thinking"
+    assert any(m.get("text") == "Pending response" for m in messages)
+
+
+def test_poll_requests_during_a_delayed_tick_cannot_start_parallel_ticks(desktop_browser):
+    page, api, project = desktop_browser
+    page.wait_for_function("!state.pollInFlight")
+    page.evaluate("""() => {
+      clearTimeout(state.pollTimer); state.pollTimer=null;
+      const real=window.pywebview.api;
+      window.pollCalls=0; window.pollActive=0; window.pollMax=0; window.pollRelease=null;
+      window.pywebview.api=new Proxy(real,{get:(target,key)=>key==='watch_status'?async()=>{
+        window.pollCalls++; window.pollActive++; window.pollMax=Math.max(window.pollMax,window.pollActive);
+        await new Promise(resolve=>window.pollRelease=resolve);
+        window.pollActive--;
+        return {id:'delayed',running:window.pollCalls===1,events:[],settled_count:0};
+      }:target[key]});
+      state.watchOn=true; poll();
+    }""")
+    page.wait_for_function("window.pollCalls===1")
+    page.evaluate("() => { for(let i=0;i<10;i++) poll(); }")
+    page.wait_for_timeout(900)
+    assert page.evaluate("window.pollCalls") == 1
+    page.evaluate("window.pollRelease()")
+    page.wait_for_function("window.pollCalls===2")
+    page.evaluate("window.pollRelease()")
+    page.wait_for_function("!state.pollInFlight && !state.pollTimer")
+    assert page.evaluate("window.pollMax") == 1
+    assert page.evaluate("window.pollCalls") == 2
+
+
+def test_bounded_watch_history_still_refreshes_tests_after_new_completion(desktop_browser):
+    page, api, project = desktop_browser
+    page.wait_for_function("!state.pollInFlight")
+    page.evaluate("""() => {
+      clearTimeout(state.pollTimer); state.pollTimer=null;
+      const real=window.pywebview.api;
+      window.refreshCount=0; refreshTests=async()=>{window.refreshCount++};
+      window.pywebview.api=new Proxy(real,{get:(target,key)=>key==='watch_status'?async()=>({
+        id:'bounded',running:false,settled_count:201,
+        events:Array.from({length:200},(_,i)=>({file:String(i),status:'pass'}))
+      }):target[key]});
+      state.watchSettled=200; state.watchOn=true; tick();
+    }""")
+    page.wait_for_function("!state.pollInFlight && state.watchSettled===201")
+    assert page.evaluate("window.refreshCount") == 1
+
+
+def test_close_waits_for_in_flight_poll_before_saving_final_snapshot(desktop_browser):
+    page, api, project = desktop_browser
+    page.wait_for_function("!state.pollInFlight")
+    page.evaluate("""() => {
+      clearTimeout(state.pollTimer); state.pollTimer=null;
+      const real=window.pywebview.api; let first=true;
+      window.pollRelease=null; window.closeResult=null;
+      window.pywebview.api=new Proxy(real,{get:(target,key)=>key==='watch_status'?async()=>{
+        if(first){ first=false; await new Promise(resolve=>window.pollRelease=resolve); }
+        return {id:'close-poll',running:false,settled_count:1,events:[{file:'latest',status:'pass'}]};
+      }:target[key]});
+      push({role:'argus',kind:'watch',watch:{id:'close-poll',running:true,events:[]}});
+      state.watchOn=true; poll();
+    }""")
+    page.wait_for_function("window.pollRelease !== null")
+    page.evaluate("() => { flushConversationsForClose().then(r=>window.closeResult=r); }")
+    assert page.evaluate("window.closeResult") is None
+    page.evaluate("window.pollRelease()")
+    page.wait_for_function("window.closeResult && window.closeResult.ok")
+    saved = api.load_conversations()
+    watch = next(m["watch"] for c in saved for m in c["msgs"] if m.get("kind") == "watch")
+    assert watch["events"][-1] == {"file": "latest", "status": "pass"}
+    assert not watch["running"] and page.evaluate("state.pollTimer") is None
