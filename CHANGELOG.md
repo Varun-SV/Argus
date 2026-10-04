@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bundled SIL OFL fonts for the desktop app (Newsreader, IBM Plex Sans, IBM Plex Mono)
 - Redesigned project website (`index.html`) in the same design language
 ### Fixed
+- Integrated ISO-backed provisioning and secure Capsule generation/reconnect contracts from PR #27 while preserving the desktop theme and session provider picker
+- Desktop project selection opens isolated project windows; setup creates a cross-platform CLI sample without overwriting existing files
+- Configuration and conversation-saving failures are visible; malformed saved result cards no longer prevent startup, and window reloads reconnect to existing jobs and watch mode
+- Desktop menus support keyboard navigation and active windows wait for job cancellation/cleanup before closing
 - Desktop app no longer double-counts project token usage when several runs happen in one session
 - Hybrid knowledge engine (`argus/knowledge/`) — persistent graph + vector store that accumulates learning across sessions
 - `LocalKnowledgeStore`: ChromaDB (vectors) + NetworkX (state graph), zero-config, disk-backed at `.argus/knowledge/`

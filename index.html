@@ -597,7 +597,7 @@
     capsule: { name: "Capsule", badge: "Recommended for production", badgeBg: "#14C9AC", path: "Runner / Roam → CapsuleExecutionEnvironment → Capsule → Guest adapter",
       lead: "A disposable virtual machine for tests that shouldn’t share the operator’s interactive host.",
       points: ["Hyper-V (Windows) and libvirt/QEMU/KVM (Linux) providers", "Pinned HTTPS guest control with per-session bearer rotation", "Isolated networking, fail-closed provider capabilities", "Optional forensic Failure Capsule on scripted run failures"],
-      note: "Roam findings don’t trigger Failure Capsule retention yet; that applies to scripted argus run failures.",
+      note: "Requires a configured virtualization host and image. ISO-derived Windows production images remain gated on protected bootstrap delivery; advanced provisioning and reconnect use the configuration/API. Roam findings do not trigger Failure Capsule retention.",
       layers: [["Runner / Roam", "your test spec or roam session"], ["CapsuleExecutionEnvironment", "no silent fallback to local"], ["Capsule", "disposable VM · host_only network"], ["Guest adapter", "drives the app inside the guest"], ["application under test", "never touches your desktop"]] },
     fleet: { name: "Fleet", badge: "Execution plane", badgeBg: "#E3DACC", path: "Control Center → Node Agent → ExecutionEnvironment → Capsule → Adapter",
       lead: "The same Capsule boundary, extended across physical machines. No second Capsule abstraction.",

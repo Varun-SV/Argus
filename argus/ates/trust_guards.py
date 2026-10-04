@@ -63,6 +63,7 @@ OBSERVATION_FACT_KEYS = frozenset(
         "stdout",
         "stderr",
         "url",
+        "image_sha256",
     }
 )
 
@@ -685,6 +686,7 @@ def install() -> None:
         events, run_id, raw = base_incomplete_events(root)
         try:
             _validate_incomplete_prefix(events, run_id, ev)
+            ev._validate_provisioning_lifecycle(events, run_id, allow_incomplete=True)
             # Prefix incompleteness relaxes only future terminal requirements;
             # every retained artifact already emitted must satisfy the complete
             # ArtifactRecord metadata/commitment contract before reports copy it.

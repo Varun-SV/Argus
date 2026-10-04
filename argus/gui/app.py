@@ -21,6 +21,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import yaml
+
 from argus import __version__
 from argus.config import ArgusConfig, _env_bool, init_project, load_config
 from argus.engine.results import load_runs
@@ -66,8 +68,11 @@ class _StoppableBudget(Budget):
 class ArgusAPI:
     """Methods exposed to the web UI. Every public method returns JSON-safe data."""
 
-    def __init__(self, project_dir: Optional[Path] = None) -> None:
+    def __init__(self, project_dir: Optional[Path] = None, *, project_required=False,
+                 project_opener=None) -> None:
         self._project_dir = project_dir
+        self._project_required = project_required
+        self._project_opener = project_opener
         self._lock = threading.RLock()
         self._persist_lock = threading.Lock()
         self._stop = threading.Event()
@@ -77,6 +82,7 @@ class ArgusAPI:
         self._job_specs: Dict[str, dict] = {}       # job id -> {run index: TestSpec} parsed at start
         self._job_trackers: Dict[str, list] = {}    # job id -> TokenTrackers used by that job
         self._active_job: Optional[str] = None
+        self._closing = False
         self._results: Dict[str, dict] = {}
         self._last_finished: Optional[str] = None
         self._last_failed: Optional[str] = None
@@ -98,7 +104,22 @@ class ArgusAPI:
     # ---- config / session ---------------------------------------------------
 
     def _config(self, provider: Optional[str] = None) -> ArgusConfig:
-        return load_config(self._project_dir, provider=provider or self._session["provider"])
+        if self._project_required:
+            raise ValueError("Open a project folder before setting up or running tests.")
+        try:
+            return load_config(self._project_dir, provider=provider or self._session["provider"])
+        except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+            # Parser diagnostics can contain credential-bearing YAML lines.
+            raise ValueError("Could not load .argus/config.yaml. Check its YAML structure and setting values, then retry.") from None
+
+    def open_project(self) -> dict:
+        """Open a separate project window; never rebind an active job's project."""
+        if self._project_opener is None:
+            return {"ok": False, "error": "Project selection requires the Argus desktop window."}
+        try:
+            return self._project_opener()
+        except (OSError, ValueError):
+            return {"ok": False, "error": "Could not open that folder. Choose an existing project folder."}
 
     def _session_view(self, cfg: ArgusConfig) -> dict:
         """The effective environment, resolved the same way make_execution_environment does."""
@@ -136,9 +157,25 @@ class ArgusAPI:
         return "Local"
 
     def app_info(self) -> dict:
-        cfg = self._config()
-        s = self._session_view(cfg)
+        try:
+            cfg = self._config()
+            s = self._session_view(cfg)
+        except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+            required = self._project_required
+            return {
+                "ok": False, "version": __version__, "project_required": required,
+                "can_open_project": self._project_opener is not None,
+                "project": str(self._project_dir or Path.cwd()) if not required else "",
+                "project_name": "Open a project" if required else Path(self._project_dir or Path.cwd()).name,
+                "initialized": False, "provider": "", "model": "Choose a project" if required else "Check configuration",
+                "providers": [], "environment": "local", "capsule_provider": "auto",
+                "env_label": "Local", "retain": False, "memory": True, "last_target": "",
+                "tokens": self._usage_now(),
+                "error": ("Open a folder to start testing. Each project keeps its own tests and conversations."
+                          if required else "Could not load .argus/config.yaml. Check its YAML structure and setting values, then retry."),
+            }
         return {
+            "ok": True, "project_required": False, "can_open_project": self._project_opener is not None,
             "version": __version__,
             "project": str(cfg.project_dir),
             "project_name": cfg.project_dir.name,
@@ -227,14 +264,35 @@ class ArgusAPI:
                     "hyperv": "Hyper-V · Windows guest",
                     "libvirt": "libvirt/QEMU/KVM · Linux guest",
                 }.get(s["capsule_provider"], s["capsule_provider"])},
-                {"k": "image", "v": cc.image or "not configured"},
-                {"k": "guest control", "v": f"{cc.guest_transport} · session bearer rotation "
-                                           f"{'on' if cc.rotate_session_token else 'off'}"},
+                {"k": "image source", "v": "verified ISO-derived cache" if cc.environment_definition else "manually prepared image"},
+                {"k": "image", "v": cc.image_cache_root if cc.environment_definition else (cc.image or "not configured")},
+                {"k": "guest control", "v": ("fresh generation · exact TLS pin · rotated bearer" if cc.environment_definition
+                                              else f"{cc.guest_transport} · session bearer rotation {'on' if cc.rotate_session_token else 'off'}")},
                 {"k": "network", "v": cc.network_mode},
                 {"k": "retain_on_failure", "v": "on · keeps a Failure Capsule" if s["retain"] else "off"},
             ]
             note = ("No silent fallback: if Capsule requirements aren't met, the run stops "
                     "instead of running locally.")
+            if cc.environment_definition:
+                rows.append({"k": "definition", "v": cc.environment_definition})
+            try:
+                # Factory inspection verifies configuration/cache without prepare,
+                # provider commands, VM allocation or guest contact.
+                env = cfg.make_execution_environment("cli", "capsule", {
+                    "provider": s["capsule_provider"], "retain_on_failure": s["retain"],
+                })
+                env._validate_provider_host_platform(env.provider)
+                if cc.environment_definition:
+                    env._validate_provisioned_security()
+                    rows.append({"k": "environment ID", "v": env.settings.environment_id})
+                elif not env.settings.image or not Path(env.settings.image).is_file():
+                    raise ValueError("Configure an existing golden image in execution.capsule.image.")
+                elif not env.settings.guest_token:
+                    raise ValueError("Configure the manual guest's control credential using the documented host secret settings.")
+                rows.append({"k": "configuration", "v": "verified · VM and guest readiness checked when a run starts"})
+            except Exception as exc:
+                rows.append({"k": "configuration", "v": "not ready"})
+                note = f"{exc} No VM was created. " + note
         else:
             rows = [
                 {"k": "environment", "v": "local · shared, non-isolated"},
@@ -409,11 +467,22 @@ class ArgusAPI:
 
     def init_project(self) -> dict:
         cfg = self._config()
+        _argus_root(cfg, create=True)
         notes = {"config.yaml": "provider, budgets, execution, knowledge",
-                 "notepad.test.yaml": "example desktop test",
+                 "smoke.test.yaml": "CLI smoke test · no model calls required",
                  "runs": "run results + ATES evidence", "roam": "roam reports + regression stubs"}
         existed = {name for name in notes if (cfg.argus_dir / name).exists()}
-        path = init_project(cfg.project_dir)
+        path = init_project(cfg.project_dir, create_example=False)
+        sample = {
+            "name": "CLI smoke test", "target": {"adapter": "cli", "launch": (
+                "cmd.exe /d /c echo Argus is ready" if os.name == "nt" else "/bin/echo Argus is ready")},
+            "steps": [{"assert": {"exit_code_is": 0}}, {"assert": {"stdout_contains": "Argus is ready"}}],
+        }
+        try:
+            with (path / "smoke.test.yaml").open("x", encoding="utf-8") as handle:
+                yaml.safe_dump(sample, handle, sort_keys=False)
+        except FileExistsError:
+            pass
         files = [
             {"path": f".argus/{name}" + ("/" if (path / name).is_dir() else ""), "note": note,
              "created": name not in existed}
@@ -425,6 +494,8 @@ class ArgusAPI:
 
     def _begin_job(self, job: dict) -> Optional[str]:
         with self._lock:
+            if self._closing:
+                return "This window is closing. Reopen the project to start another job."
             if self._active_job and self._jobs[self._active_job]["running"]:
                 return "Argus is already running something. Stop it first, or wait for it to finish."
             self._stop.clear()
@@ -473,10 +544,10 @@ class ArgusAPI:
         if err:
             return {"ok": False, "error": err}
         self._job_specs[job["id"]] = specs
-        threading.Thread(target=self._run_worker, args=(job,), daemon=True).start()
+        threading.Thread(target=self._run_worker, args=(job, cfg), daemon=True).start()
         return {"ok": True, "job": self.job_status(job["id"])}
 
-    def _run_worker(self, job: dict) -> None:
+    def _run_worker(self, job: dict, cfg: ArgusConfig) -> None:
         try:
             for index, run in enumerate(job["runs"]):
                 job["current"] = index
@@ -486,19 +557,18 @@ class ArgusAPI:
                 if self._stop.is_set():
                     run["status"] = "stopped"
                     continue
-                self._execute_run(job, run, self._job_specs.get(job["id"], {}).get(index))
+                self._execute_run(job, run, self._job_specs.get(job["id"], {}).get(index), cfg)
         finally:
             self._job_specs.pop(job["id"], None)
             job["ended_at"] = time.time()
             job["running"] = False
             job["action"] = "Finished"
 
-    def _execute_run(self, job: dict, run: dict, spec) -> None:
+    def _execute_run(self, job: dict, run: dict, spec, cfg: ArgusConfig) -> None:
         """Run ``spec`` — parsed when the job was created, so edits made meanwhile don't apply."""
         from argus.adapters import AdapterError
         from argus.engine.runner import run_test
 
-        cfg = self._config(job["provider_type"])  # frozen when the job started
         run["status"] = "running"
         job["action"] = f"Launching {run['launch']}"
         tracker = TokenTracker()
@@ -561,7 +631,10 @@ class ArgusAPI:
         finally:
             if ks is not None:
                 job["stats"] = self.live_stats(run["launch"])
-                ks.close()
+                try:
+                    ks.close()
+                except Exception:
+                    run["notes"].append("Knowledge state could not be saved. Check the knowledge store before continuing.")
             self._active_ks = None
             self._job_tracker = None
             self._charge(tracker, cfg)
@@ -624,14 +697,13 @@ class ArgusAPI:
         if err:
             return {"ok": False, "error": err}
         self._last_target = target
-        threading.Thread(target=self._roam_worker, args=(job,), daemon=True).start()
+        threading.Thread(target=self._roam_worker, args=(job, cfg), daemon=True).start()
         return {"ok": True, "job": self.job_status(job["id"])}
 
-    def _roam_worker(self, job: dict) -> None:
+    def _roam_worker(self, job: dict, cfg: ArgusConfig) -> None:
         from argus.adapters import AdapterError
         from argus.engine.roam import roam
 
-        cfg = self._config(job["provider_type"])  # frozen when the job started
         tracker = TokenTracker()
         self._job_tracker = tracker
         self._job_trackers.setdefault(job["id"], []).append(tracker)
@@ -696,7 +768,10 @@ class ArgusAPI:
         finally:
             if ks is not None:
                 job["stats"] = self.live_stats(job["target"])
-                ks.close()
+                try:
+                    ks.close()
+                except Exception:
+                    job["log"].append("Knowledge state could not be saved. Check the knowledge store before continuing.")
             self._active_ks = None
             self._job_tracker = None
             self._charge(tracker, cfg)
@@ -799,14 +874,17 @@ class ArgusAPI:
 
     def watch_start(self) -> dict:
         cfg = self._config()
-        if self._watch and self._watch["running"]:
+        with self._lock:
+            if self._closing:
+                return {"ok": False, "error": "This window is closing. Reopen the project to start watching."}
+            if self._watch and self._watch["running"]:
+                return {"ok": True, "watch": _copy(self._watch)}
+            # Don't clear self._stop here: a Stop must still reach an active job.
+            self._watch = {"id": uuid.uuid4().hex[:12], "running": True,
+                           "pattern": ".argus/*.test.yaml", "events": [], "started_at": time.time()}
+            threading.Thread(target=self._watch_worker, args=(self._watch, cfg.project_dir),
+                             daemon=True).start()
             return {"ok": True, "watch": _copy(self._watch)}
-        # Don't clear self._stop here: a Stop the user just pressed must still reach an active job.
-        self._watch = {"id": uuid.uuid4().hex[:12], "running": True,
-                       "pattern": ".argus/*.test.yaml", "events": [], "started_at": time.time()}
-        threading.Thread(target=self._watch_worker, args=(self._watch, cfg.project_dir),
-                         daemon=True).start()
-        return {"ok": True, "watch": _copy(self._watch)}
 
     def watch_stop(self) -> dict:
         if self._watch:
@@ -1354,15 +1432,53 @@ def _mtimes(project_dir: Path) -> Dict[str, float]:
 
 def run_gui() -> None:
     import webview
+    persist_lock = threading.Lock()
 
-    api = ArgusAPI()
-    webview.create_window(
-        "Argus",
-        url=str(WEB_DIR / "index.html"),
-        js_api=api,
-        width=1440,
-        height=900,
-        min_size=(1024, 680),
-        background_color="#FAF9F5",
-    )
+    def create_project_window(project=None):
+        api = ArgusAPI(project, project_required=project is None)
+        # Windows can open the same project twice. Serialize usage persistence
+        # across all its windows, as well as within each API instance.
+        api._persist_lock = persist_lock
+        window = webview.create_window(
+            "Argus" + (f" · {project.name}" if project else ""),
+            url=str(WEB_DIR / "index.html"), js_api=api,
+            width=1440, height=900, min_size=(1024, 680), background_color="#FAF9F5",
+        )
+
+        def open_project():
+            selected = window.create_file_dialog(webview.FileDialog.FOLDER)
+            if not selected:
+                return {"ok": True, "cancelled": True}
+            folder = Path(selected[0]).resolve(strict=True)
+            if not folder.is_dir():
+                raise ValueError("not a directory")
+            create_project_window(folder)
+            return {"ok": True, "project": str(folder)}
+
+        api._project_opener = open_project
+
+        def closing():
+            with api._lock:
+                job = api._jobs.get(api._active_job) if api._active_job else None
+                if job and job.get("running"):
+                    api.stop()
+                    blocked = True
+                else:
+                    api._closing = True
+                    api.watch_stop()
+                    blocked = False
+            if blocked:
+                try:
+                    window.evaluate_js("window.dispatchEvent(new Event('arguscloseblocked'))")
+                except Exception:
+                    # A reloading/unavailable WebView must not bypass teardown.
+                    pass
+                return False
+            return True
+
+        window.events.closing += closing
+        return window
+
+    current = Path.cwd().resolve()
+    create_project_window(current if (current / ".argus").is_dir() else None)
     webview.start()

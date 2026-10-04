@@ -258,7 +258,7 @@ def test_init_reports_created_files(tmp_path, monkeypatch):
     assert api.app_info()["initialized"] is False
     out = api.init_project()
     assert {f["path"] for f in out["files"]} == {
-        ".argus/config.yaml", ".argus/notepad.test.yaml", ".argus/runs/", ".argus/roam/"}
+        ".argus/config.yaml", ".argus/smoke.test.yaml", ".argus/runs/", ".argus/roam/"}
     assert all(f["created"] for f in out["files"])
     assert not any(f["created"] for f in api.init_project()["files"])
 

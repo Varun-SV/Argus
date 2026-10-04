@@ -167,6 +167,12 @@ async function execute(res, conv = state.conv) {
         ]);
         return;
       }
+      case "retry_settings": {
+        await refreshInfo();
+        await refreshTests();
+        if (state.info && state.info.ok) say("Project settings loaded. You're ready to continue.");
+        return;
+      }
       case "stop": {
         await api().stop();
         say("Stopping at the next step. Anything already observed is kept in the report and the knowledge graph.");
@@ -415,8 +421,8 @@ async function tick() {
     let job;
     try { job = await api().job_status(id); } catch (e) { continue; }
     if (!job.ok) {
-      // The API no longer knows this job: stop treating its cards as active.
-      for (const c of allConversations()) for (const m of c.msgs) if (m.job === id && m.meta) m.meta.running = false;
+      // A restarted backend cannot establish the outcome of an old job.
+      for (const c of allConversations()) for (const m of c.msgs) if (m.job === id) markUnconfirmed(m);
       continue;
     }
     for (const c of allConversations()) {
@@ -574,6 +580,12 @@ function renderThread() {
 }
 
 function renderHero() {
+  if (state.info && state.info.project_required) {
+    return h("div", { class: "hero" },
+      h("h1", { icon: "logoBig" }, "What should Argus test today?"),
+      h("p", { class: "muted", text: state.info.error }),
+      h("div", { class: "chips" }, h("button", { class: "chip hov", text: "Open project folder", onClick: openProject })));
+  }
   const hasProject = !state.info || state.info.initialized;
   const starters = hasProject
     ? [
@@ -827,8 +839,17 @@ function renderBusy(busy) {
 
 /* --------------------------------------------------------- sidebar & info --- */
 async function refreshInfo() {
-  try { state.info = await api().app_info(); } catch (e) { return; }
+  try { state.info = await api().app_info(); } catch (e) {
+    sayIn(state.conv, "Could not load project settings. Use Open project folder to try another project.", { error: true });
+    return;
+  }
   renderInfo();
+  if (state.info.ok === false && !state.info.project_required && state.configError !== state.info.error) {
+    state.configError = state.info.error;
+    sayIn(state.conv, state.info.error, { error: true });
+    followupsIn(state.conv, [{ label: "Retry settings", intent: I("retry_settings") }]);
+  } else if (state.info.ok !== false) state.configError = null;
+  if (!state.conv.msgs.length) renderThread();
 }
 function renderInfo() {
   const info = state.info;
@@ -844,13 +865,14 @@ function renderInfo() {
   $("memory-state").className = info.memory ? "on" : "";
   $("memory-btn").setAttribute("aria-pressed", info.memory ? "true" : "false");
   $("retain-btn").setAttribute("aria-checked", info.retain ? "true" : "false");
+  $("open-project").disabled = info.can_open_project === false;
 }
 
 async function refreshTests() {
   try { state.tests = await api().list_tests(); } catch (e) { state.tests = []; }
   const list = $("test-list");
   if (!state.tests.length) {
-    list.replaceChildren(h("div", { class: "side-empty", text: state.info && state.info.initialized ? "No .test.yaml files yet." : "No .argus/ here yet. Ask Argus to set up this project." }));
+    list.replaceChildren(h("div", { class: "side-empty", text: state.info && state.info.project_required ? "Open a project folder to see its tests." : (state.info && state.info.initialized ? "No .test.yaml files yet." : "No .argus/ here yet. Ask Argus to set up this project.") }));
     return;
   }
   const color = { pass: "var(--pass)", fail: "var(--fail)", error: "var(--error)" };
@@ -902,7 +924,17 @@ function scheduleSave() {
     const clean = state.conversations.slice(0, 30).map((conv) => Object.assign({}, conv, {
       msgs: conv.msgs.filter((m) => m.kind !== "thinking"),
     }));
-    api().save_conversations(clean).catch(() => {});
+    api().save_conversations(clean).then((r) => {
+      if (r && r.ok === false && !state.saveError) {
+        state.saveError = true;
+        sayIn(state.conv, "Could not save this conversation. Check your user-data folder permissions before closing Argus.", { error: true });
+      }
+    }).catch(() => {
+      if (!state.saveError) {
+        state.saveError = true;
+        sayIn(state.conv, "Could not save this conversation. Check your user-data folder permissions before closing Argus.", { error: true });
+      }
+    });
     renderRecents();
   }, 400);
 }
@@ -921,14 +953,20 @@ function toggleMenu(name) {
     $(n + "-btn").setAttribute("aria-expanded", state.menu === n ? "true" : "false");
   }
   $("scrim").hidden = !state.menu;
-  if (state.menu) buildMenu(state.menu);
+  if (state.menu) {
+    buildMenu(state.menu);
+    $(name + "-menu").querySelector("button:not(:disabled)")?.focus();
+  }
 }
 const closeMenu = () => { if (state.menu) toggleMenu(state.menu); };
 
 function menuItem(label, hint, fn, extra) {
   return h("button", { class: "menu-item hov", role: extra && extra.radio ? "menuitemradio" : "menuitem",
     "aria-checked": extra && extra.radio ? (extra.current ? "true" : "false") : null,
-    onClick: () => { closeMenu(); fn(); } },
+    onClick: async () => {
+      closeMenu();
+      try { await fn(); } catch (e) { sayIn(state.conv, String(e), { error: true }); }
+    } },
     extra && extra.desc ? h("span", { class: "txt" }, h("b", { text: label }), h("span", { text: extra.desc })) : h("span", { text: label }),
     extra && extra.radio ? (extra.current ? iconEl("check") : null) : h("span", { class: "h", text: hint }));
 }
@@ -965,7 +1003,7 @@ function buildMenu(name) {
     }, { desc, radio: true, current: env === e && (e === "local" || cap === c) }));
   } else if (name === "model") {
     items = (info.providers || []).map((p) => menuItem(`${p.type} · ${p.model}`, "", () => {
-      if (!p.current) switchProvider(p.type);
+      if (!p.current) return switchProvider(p.type);
     }, { desc: p.note, radio: true, current: p.current }));
     if (!items.length) items = [h("div", { class: "side-empty", text: "No providers configured. Run /init first." })];
   }
@@ -982,6 +1020,7 @@ function wire() {
     sendText(text);
   });
   $("new-chat").addEventListener("click", newChat);
+  $("open-project").addEventListener("click", openProject);
   $("help-btn").addEventListener("click", () => runChip("What can Argus do?", I("help")));
   for (const b of document.querySelectorAll("[data-nav]")) {
     b.addEventListener("click", () => {
@@ -997,18 +1036,97 @@ function wire() {
   $("env-btn").addEventListener("click", () => toggleMenu("env"));
   $("model-btn").addEventListener("click", () => toggleMenu("model"));
   $("scrim").addEventListener("click", closeMenu);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+  document.addEventListener("keydown", (e) => {
+    if (!state.menu) return;
+    const name = state.menu;
+    if (e.key === "Escape") { closeMenu(); $(name + "-btn").focus(); return; }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const items = Array.from($(name + "-menu").querySelectorAll("button:not(:disabled)"));
+    if (!items.length) return;
+    let next = items.indexOf(document.activeElement) + (e.key === "ArrowUp" ? -1 : 1);
+    if (e.key === "Home") next = 0;
+    if (e.key === "End") next = items.length - 1;
+    items[(next + items.length) % items.length].focus();
+  });
   $("memory-btn").addEventListener("click", async () => {
-    const r = await api().set_memory(!(state.info && state.info.memory));
-    state.info = r; renderInfo();
+    try {
+      const r = await api().set_memory(!(state.info && state.info.memory));
+      state.info = r; renderInfo();
+    } catch (e) { sayIn(state.conv, String(e), { error: true }); }
   });
   $("retain-btn").addEventListener("click", async () => {
-    const r = await api().set_retain(!(state.info && state.info.retain));
-    state.info = r; renderInfo();
+    try {
+      const r = await api().set_retain(!(state.info && state.info.retain));
+      state.info = r; renderInfo();
+    } catch (e) { sayIn(state.conv, String(e), { error: true }); }
   });
   const stop = () => execute(I("stop"));
   $("stop-btn").addEventListener("click", stop);
   $("live-stop").addEventListener("click", stop);
+  window.addEventListener("arguscloseblocked", () => {
+    sayIn(state.conv, "Stopping the active job before closing. Wait for its result and cleanup, then close this window again.");
+    poll();
+  });
+}
+
+async function openProject() {
+  if (state.projectOpening) return;
+  state.projectOpening = true;
+  const button = $("open-project");
+  button.disabled = true;
+  try {
+    const result = await api().open_project();
+    if (!result.ok) sayIn(state.conv, result.error, { error: true });
+  } catch (e) { sayIn(state.conv, "Could not open the folder chooser. Try reopening the desktop app.", { error: true }); }
+  finally { button.disabled = false; state.projectOpening = false; }
+}
+
+function markUnconfirmed(m) {
+  if (m.kind === "run") {
+    m.snap.status = "unknown";
+    m.meta.running = false;
+    m.snap.notes = [...(m.snap.notes || []), "Completion could not be confirmed. Check run history and evidence before retrying."];
+  } else if (m.kind === "roam") {
+    m.snap.running = false;
+    m.snap.status = "unknown";
+  }
+  m.v = (m.v || 0) + 1;
+}
+
+function restoreConversations(saved) {
+  if (!Array.isArray(saved)) return [];
+  return saved.filter((c) => c && typeof c.id === "string" && Array.isArray(c.msgs)).slice(0, 30).map((c) => {
+    const msgs = c.msgs.filter((m) => m && typeof m.id === "string" && m.kind !== "thinking").map((m) => {
+      try { renderMsg(m); return m; }
+      catch (e) {
+        return { id: m.id, role: "argus", kind: "text", error: true,
+          text: "This saved result could not be restored. Check run history and evidence for the original result." };
+      }
+    });
+    return Object.assign({}, c, { msgs, title: typeof c.title === "string" ? c.title : "Restored chat",
+      followups: [], seq: Math.max(Number(c.seq) || 1, msgs.length + 1) });
+  });
+}
+
+async function restoreJobs() {
+  for (const id of activeJobIds()) {
+    let job;
+    try { job = await api().job_status(id); } catch (e) { job = { ok: false }; }
+    for (const c of allConversations()) for (const m of c.msgs) {
+      if (m.job !== id) continue;
+      if (job.ok && m.kind === "run" && job.runs?.[m.idx]) {
+        m.snap = job.runs[m.idx]; m.meta = runMeta(job);
+      } else if (job.ok && m.kind === "roam") m.snap = job;
+      else markUnconfirmed(m);
+    }
+  }
+  let watch;
+  try { watch = await api().watch_status(); } catch (e) { watch = { running: false }; }
+  state.watchOn = !!watch.running;
+  for (const c of allConversations()) for (const m of c.msgs) if (m.kind === "watch") {
+    m.watch = watch.running && watch.id === m.watch.id ? watch : Object.assign({}, m.watch, { running: false });
+  }
 }
 
 async function boot() {
@@ -1021,19 +1139,12 @@ async function boot() {
   await refreshTests();
   try {
     const saved = await api().load_conversations();
-    state.conversations = Array.isArray(saved) ? saved.filter((c) => c && Array.isArray(c.msgs)) : [];
+    state.conversations = restoreConversations(saved);
   } catch (e) { state.conversations = []; }
-  // Anything that was still running when the app closed can't be resumed.
-  for (const c of state.conversations) {
-    for (const m of c.msgs) {
-      if (m.kind === "run" && ["running", "queued"].includes(m.snap.status)) m.snap.status = "stopped";
-      if (m.kind === "run" && m.meta) m.meta.running = false;
-      if (m.kind === "roam" && m.snap.running) { m.snap.running = false; m.snap.status = "stopped"; }
-      if (m.kind === "watch") m.watch.running = false;
-    }
-  }
+  await restoreJobs();
   renderAll();
   await updateLive();
+  poll();
   $("input").focus();
 }
 

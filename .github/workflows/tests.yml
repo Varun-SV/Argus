@@ -36,6 +36,11 @@ jobs:
         run: |
           python -m build
           python -m twine check dist/*
+      - name: Check desktop chat interactions in Chromium
+        run: |
+          python -m pip install ".[browser]"
+          python -m playwright install --with-deps chromium
+          python -m pytest tests/test_gui_browser.py -q
 
   pytest:
     name: pytest · ${{ matrix.label }} · py${{ matrix.python }}
