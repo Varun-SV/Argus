@@ -14,6 +14,10 @@ class CapsuleError(AdapterError):
     """Raised when a Capsule cannot be created, reached, or destroyed safely."""
 
 
+class CapsuleCleanupError(CapsuleError):
+    """Provider resources may still depend on storage; preserve recovery state."""
+
+
 def _strict_bool(value: Any, name: str) -> bool:
     """Parse a security-sensitive boolean without Python truthiness surprises."""
     if isinstance(value, bool):
@@ -95,6 +99,7 @@ class CapsuleSettings:
     environment_id: str = ""
     base_image_sha256: str = ""
     guest_runtime_identity: str = ""
+    require_target_desktop: bool = False
     control_root: str = ""
 
     default_execution_mode: str = "isolated"
@@ -131,6 +136,7 @@ class CapsuleSettings:
             "allow_dhcp",
             "disable_guest_file_copy",
             "secure_boot",
+            "require_target_desktop",
             "allow_llm_mode_change",
             "failure_allow_reconnect",
             "failure_allow_llm_reconnect",
@@ -248,7 +254,7 @@ class FailureCapsule:
             except (OSError, ValueError, TypeError):
                 raise CapsuleError("retained Capsule metadata ownership or generation conflicts") from None
             path.chmod(0o600)
-        _atomic_json(path, self.to_dict())
+        _atomic_json(path, self.to_dict(), preserve_parent_permissions=True)
         path.chmod(0o444)
 
 

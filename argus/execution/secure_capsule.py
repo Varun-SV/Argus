@@ -33,7 +33,7 @@ from argus.capsule.control import (
 )
 from argus.capsule.guest import GuestAdapterProxy
 from argus.capsule.secure_client import SecureGuestAgentClient
-from argus.execution.base import ExecutionEnvironmentError
+from argus.execution.base import ExecutionCleanupError, ExecutionEnvironmentError
 from argus.execution.capsule import CapsuleExecutionEnvironment
 
 
@@ -312,6 +312,7 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             timeout_seconds=min(15.0, self.settings.agent_timeout_seconds),
             pinned_cert_sha256=attempt.tls_cert_sha256,
             allow_insecure_http=False,
+            **({"require_target_desktop": True} if self.settings.require_target_desktop else {}),
         )
         client.wait_until_ready(self.settings.agent_timeout_seconds)
         health = client.health()
@@ -568,7 +569,7 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                                 capsule_id,
                                 CapsuleLifecycleState.RECOVERY_REQUIRED.value,
                             )
-                        raise ExecutionEnvironmentError(
+                        raise ExecutionCleanupError(
                             "provisioned Capsule preparation failed and destroy is uncertain"
                         ) from None
                 if record_created:
@@ -747,11 +748,6 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
             raise ExecutionEnvironmentError(
                 "no reconnectable Failure Capsule is retained"
             )
-        mode = self._mode_request(
-            execution_mode,
-            requested_by_llm=requested_by_llm,
-            reconnect=True,
-        )
         registry = self._control_registry or CapsuleControlRegistry(
             self.settings.resolved_control_root
         )
@@ -773,6 +769,11 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         )
         with registry.operation_lock(handle.capsule_id):
             self._verify_retained_ownership(registry, handle)
+            mode = self._mode_request(
+                execution_mode,
+                requested_by_llm=requested_by_llm,
+                reconnect=True,
+            )
             registry.transition(
                 handle.capsule_id,
                 CapsuleLifecycleState.RECONNECTING.value,

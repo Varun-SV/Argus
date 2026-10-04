@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from argus.capsule.base import (
+    CapsuleCleanupError,
     CapsuleError,
     CapsuleHandle,
     CapsuleProvider,
@@ -50,7 +51,7 @@ from argus.capsule.provider_identity import (
 )
 
 
-class _AmbiguousResourceOwnership(CapsuleError):
+class _AmbiguousResourceOwnership(CapsuleCleanupError):
     """A libvirt mutation may have completed but ownership cannot be attested."""
 
 
@@ -858,6 +859,11 @@ class LibvirtProvider(CapsuleProvider):
                     )
                     if network_name in active_networks:
                         self._virsh_cmd(uri, "net-destroy", network_name, timeout=30)
+                    remaining = self._list_names(
+                        self._virsh_cmd(uri, "net-list", "--all", "--name", timeout=15)
+                    )
+                    if network_name in remaining:
+                        self._virsh_cmd(uri, "net-undefine", network_name, timeout=30)
 
             if owns("filter"):
                 filters = self._nwfilter_names(
@@ -866,7 +872,7 @@ class LibvirtProvider(CapsuleProvider):
                 if filter_name in filters:
                     self._virsh_cmd(uri, "nwfilter-undefine", filter_name, timeout=30)
         except Exception as exc:
-            return CapsuleError(
+            return CapsuleCleanupError(
                 f"libvirt resource cleanup failed: {exc}; session storage preserved at {root}"
             )
 
@@ -876,7 +882,7 @@ class LibvirtProvider(CapsuleProvider):
             except FileNotFoundError:
                 pass
             except OSError as exc:
-                return CapsuleError(f"session storage removal failed: {exc}")
+                return CapsuleCleanupError(f"session storage removal failed: {exc}")
         return None
 
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
@@ -1283,7 +1289,7 @@ class LibvirtProvider(CapsuleProvider):
                     "network",
                     network_name,
                     owned_resources,
-                    "net-create",
+                    "net-define",
                     network_xml,
                     timeout=30,
                 )
@@ -1331,12 +1337,12 @@ class LibvirtProvider(CapsuleProvider):
                 remove_nvram=arch == "aarch64",
             )
             if cleanup_exc is not None:
-                raise CapsuleError(
+                raise CapsuleCleanupError(
                     "libvirt stopped allocation failed and cleanup also failed: "
                     f"create={create_exc}; cleanup={cleanup_exc}"
                 ) from create_exc
             if preserve_storage:
-                raise CapsuleError(
+                raise CapsuleCleanupError(
                     "libvirt allocation has ambiguous provider ownership; "
                     f"storage preserved at {root}: {create_exc}"
                 ) from create_exc

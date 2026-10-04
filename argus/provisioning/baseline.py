@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 
-from argus.capsule.base import CapsuleSettings
+from argus.capsule.base import CapsuleCleanupError, CapsuleSettings
 from argus.execution.secure_capsule import SecureCapsuleExecutionEnvironment
 from argus.provisioning.build import ProvisioningCleanupError
 from argus.provisioning.capsule_bridge import capsule_settings_from_derived_image
@@ -147,6 +147,10 @@ def validate_secure_capsule_baseline(
             bearer_digest = sha256(client.token.encode()).hexdigest()
             if len(pin) != 64 or not client.token:
                 raise ProvisioningError("baseline lacks a generation-specific TLS or auth identity")
+        except CapsuleCleanupError:
+            raise ProvisioningCleanupError(
+                "baseline Capsule preparation cleanup is uncertain"
+            ) from None
         except Exception:
             failed = True
         finally:

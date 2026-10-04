@@ -223,7 +223,8 @@ def test_libvirt_builder_uses_verified_source_and_private_seed(
     optical_policy = base64.b64decode(shlex.split(optical_command)[2]).decode()
     assert 'SUBSYSTEM=="block", ENV{ID_CDROM}=="1", TAG-="uaccess"' in optical_policy
     assert 'SUBSYSTEM=="scsi_generic"' in optical_policy
-    assert optical_policy.count('OWNER:="root", GROUP:="root", MODE:="0600"') == 2
+    assert optical_policy.count('OWNER="root", GROUP="root", MODE="0600"') == 2
+    assert ':=' not in optical_policy  # Focal's udev 245 predates final assignment.
     assert "/target/etc/machine-id" in user_data_seen[0]
     assert "usermod --password '!'" in user_data_seen[0]
     assert "passwd --lock" not in user_data_seen[0]

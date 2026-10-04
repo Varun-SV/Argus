@@ -232,6 +232,18 @@ only `provider` and `retain_on_failure`; a provider override still has to match
 the verified image contract. Keep the host's allowed execution modes and
 failure policy authoritative.
 
+Omitted `cpu_count` and `memory_mb` values come from the immutable environment
+definition. Explicit configuration or environment-variable values must match
+that contract. Manually prepared guests retain the defaults of two CPUs and
+4096 MiB when these settings are omitted.
+
+On libvirt, provisioned Capsules use persistent network definitions so retained
+VMs can restart after a host or libvirt restart. Reconnect starts an inactive
+owned network; final destruction removes its definition. Retained metadata
+updates preserve the Capsule directory's QEMU traversal permissions. Before
+publication, the image directory loses group write access and both image and
+manifest become read-only.
+
 This runtime example is for a Linux/libvirt definition and cache. A Windows
 definition can be parsed and its runtime bundle verified, but the current
 Hyper-V provider's false protected-media capability prevents secure Capsule
@@ -266,8 +278,10 @@ candidate image and validates the runtime identity, OS release/edition or
 flavor, requested packages, generation, and fresh TLS/session/bearer digests.
 It also invokes `whoami` on Windows or `id -un` on Ubuntu and checks that the
 worker is a non-administrator/non-root user. Ubuntu Desktop additionally must
-report desktop readiness. The two children are torn down before the image is
-published; teardown uncertainty blocks publication.
+report desktop readiness. Agent readiness polls for the target desktop within
+the configured agent timeout. The two children are torn down before the image
+is published; preparation rollback or teardown uncertainty blocks publication,
+preserves the recovery workspace, and leaves ATES unfinalized.
 
 Static checks and mocked provider tests do not establish live host acceptance.
 Release acceptance requires successful installation, generalization, baseline,

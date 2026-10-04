@@ -174,4 +174,6 @@ def capsule_settings_from_derived_image(
         environment_id=definition.environment_id,
         base_image_sha256=manifest.image_sha256,
         guest_runtime_identity=runtime.runtime_identity,
+        require_target_desktop=(definition.installation.target_os == "ubuntu"
+                                and definition.installation.target_flavor == "desktop"),
     )

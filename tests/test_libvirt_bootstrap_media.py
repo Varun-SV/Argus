@@ -10,13 +10,38 @@ import tempfile
 
 import pytest
 
-from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleSettings
+from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleSettings, FailureCapsule
 from argus.capsule.bootstrap import create_bootstrap_attempt
 from argus.capsule.control import new_capsule_id
 from argus.capsule.libvirt import LibvirtProvider
 
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="native POSIX group permissions")
+
+
+def test_retained_metadata_preserves_qemu_traversal_on_repeated_failures():
+    import grp
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as name:
+        root = Path(name).resolve()
+        root.chmod(0o755)
+        vm = root / "capsule"
+        vm.mkdir(mode=0o750)
+        vm.chmod(0o2750)
+        handle = _handle(vm)
+        before = vm.stat()
+        failure = FailureCapsule("failure", "session", "libvirt", handle.vm_name, str(vm),
+                                 "assertion", "2026-10-04T00:00:00Z", "shut off",
+                                 capsule_id=handle.capsule_id, failed_generation=1,
+                                 provider_resource_identity="resource", mutable_disk_identity="disk")
+        for generation in (1, 2):
+            replace(failure, failed_generation=generation).persist(vm / "failure-capsule.json")
+            assert stat.S_IMODE(vm.stat().st_mode) == stat.S_IMODE(before.st_mode)
+            assert vm.stat().st_gid == before.st_gid
+            assert not list(vm.glob(".failure-capsule.json.tmp-*"))
+        provider = LibvirtProvider(runner=lambda *args: "")
+        settings = CapsuleSettings(libvirt_qemu_group=grp.getgrgid(os.getgid()).gr_name)
+        assert provider.bootstrap_media_directory(handle, settings).is_dir()
 
 
 def _handle(root):

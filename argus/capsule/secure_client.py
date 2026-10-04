@@ -80,6 +80,7 @@ class SecureGuestAgentClient(GuestAgentClient):
         pinned_cert_sha256: str = "",
         allow_insecure_http: bool = False,
         opener: Optional[Callable] = None,
+        require_target_desktop: bool = False,
     ) -> None:
         parsed = urllib.parse.urlparse(endpoint)
         scheme = parsed.scheme.lower()
@@ -127,6 +128,7 @@ class SecureGuestAgentClient(GuestAgentClient):
             endpoint,
             token,
             timeout_seconds=timeout_seconds,
+            require_target_desktop=require_target_desktop,
             opener=opener,
         )
         self.transport_secure = scheme == "https"

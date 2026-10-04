@@ -210,6 +210,11 @@ def publish_derived_image(
             recorder.begin_stage("baseline_validated")
             validate_baseline(image)
             recorder.complete_stage("baseline_validated")
+            # The installer may have granted QEMU group write access. Revoke
+            # directory mutation before hashing and publishing immutable bytes.
+            if os.name == "posix":
+                workspace.chmod(0o750)
+            image.chmod(0o444)
             recorder.begin_stage("image_hashed")
             digest = sha256()
             with image.open("rb") as handle:
@@ -237,7 +242,7 @@ def publish_derived_image(
                 json.dump(asdict(manifest), handle, sort_keys=True, separators=(",", ":"))
                 handle.flush()
                 os.fsync(handle.fileno())
-            image.chmod(0o444)
+            (workspace / "manifest.json").chmod(0o444)
             recorder.begin_stage("publication")
             # The lock protects cooperating builders. A foreign cache entry is
             # never overwritten, even when it appears during installation.

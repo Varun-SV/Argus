@@ -246,9 +246,9 @@ class UbuntuAutoinstallProfile:
             "mkdir -p /target/etc/udev/rules.d",
             "printf '%s' " + shlex.quote(base64.b64encode((
                 'SUBSYSTEM=="block", ENV{ID_CDROM}=="1", TAG-="uaccess", '
-                'OWNER:="root", GROUP:="root", MODE:="0600"\n'
+                'OWNER="root", GROUP="root", MODE="0600"\n'
                 'SUBSYSTEM=="scsi_generic", SUBSYSTEMS=="scsi", ATTRS{type}=="4|5", '
-                'TAG-="uaccess", OWNER:="root", GROUP:="root", MODE:="0600"\n'
+                'TAG-="uaccess", OWNER="root", GROUP="root", MODE="0600"\n'
             ).encode()).decode())
             + " | base64 -d > /target/etc/udev/rules.d/72-argus-optical.rules",
             "mkdir -p /target/etc/polkit-1/rules.d",

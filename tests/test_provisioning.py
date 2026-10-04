@@ -834,6 +834,7 @@ def test_publication_requires_booted_baseline_and_rejects_pre_baseline_cache(
     )
     assert result.manifest.manifest_version == "argus-derived-image-v2"
     old = plan.manifest_path.read_text().replace("argus-derived-image-v2", "argus-derived-image-v1")
+    plan.manifest_path.chmod(0o644)  # Deliberate owner tampering with a sealed cache.
     plan.manifest_path.write_text(old)
     with pytest.raises(ProvisioningError, match="published derived-image manifest is invalid"):
         publish_derived_image(
@@ -867,6 +868,7 @@ def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
         def __init__(self, adapter_type, bound):
             assert adapter_type == "cli"
             assert bound.image == str(image.resolve())
+            assert bound.require_target_desktop == (fault == "desktop")
             type(self).counter += 1
             self.session_id = f"probe-{type(self).counter}"
             self._capsule_id = f"cap-{type(self).counter:032x}"
@@ -1355,3 +1357,129 @@ def test_config_selects_only_an_ates_verified_published_image(tmp_path, monkeypa
     plan.image_path.write_bytes(b"tampered")
     with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
         cfg.make_execution_environment("cli")
+
+
+@pytest.mark.parametrize("override", [None, "cpu", "memory", "env-cpu", "env-memory"])
+def test_config_definition_supplies_only_omitted_hardware(tmp_path, monkeypatch, override):
+    from dataclasses import asdict
+    import yaml
+    from argus.config import load_config
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.delenv("ARGUS_CAPSULE_CPU_COUNT", raising=False)
+    monkeypatch.delenv("ARGUS_CAPSULE_MEMORY_MB", raising=False)
+    definition = _runtime_definition(tmp_path, "libvirt")
+    spec = tmp_path / "environment.yaml"
+    spec.write_text(yaml.safe_dump(asdict(definition)))
+    cache = tmp_path / "cache"
+    plan = build_provisioning_plan(definition, LibvirtProvisioner(network_name="build").capabilities(),
+                                  output_format="qcow2", cache_root=cache, evidence_root=tmp_path)
+    publish_derived_image(definition, plan, lambda iso, image, payload: image.write_bytes(b"guest"),
+                          validate_baseline=lambda image: None)
+    values = {"provider": "libvirt", "environment_definition": str(spec),
+              "image_cache_root": str(cache), "provisioning_evidence_root": str(tmp_path)}
+    if override == "cpu":
+        values["cpu_count"] = 2
+    elif override == "memory":
+        values["memory_mb"] = 4096
+    elif override == "env-cpu":
+        monkeypatch.setenv("ARGUS_CAPSULE_CPU_COUNT", "2")
+    elif override == "env-memory":
+        monkeypatch.setenv("ARGUS_CAPSULE_MEMORY_MB", "4096")
+    config_path = tmp_path / ".argus" / "config.yaml"
+    config_path.parent.mkdir(exist_ok=True)
+    config_path.write_text(yaml.safe_dump({"execution": {"environment": "capsule", "capsule": values}}))
+    cfg = load_config(tmp_path)
+    if override:
+        with pytest.raises(ProvisioningError, match="machine contract"):
+            cfg.make_execution_environment("cli")
+    else:
+        env = cfg.make_execution_environment("cli")
+        assert (env.settings.cpu_count, env.settings.memory_mb) == (4, 8192)
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_baseline_preparation_cleanup_uncertainty_preserves_workspace(tmp_path, monkeypatch, uncertain):
+    from argus.capsule.base import CapsuleCleanupError
+    from argus.ates import FinalizationError, verify_finalized_run
+    import argus.provisioning.baseline as baseline_module
+    import argus.provisioning.build as build_module
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    plan = build_provisioning_plan(definition, LibvirtProvisioner(network_name="build").capabilities(),
+                                  output_format="qcow2", cache_root=tmp_path / "cache")
+    closed = []
+    runs = []
+    recorder_type = build_module.AtesProvisioningRecorder
+
+    def recorder(*args):
+        result = recorder_type(*args)
+        runs.append(result.run_dir)
+        return result
+
+    monkeypatch.setattr(build_module, "AtesProvisioningRecorder", recorder)
+
+    class FailedPreparation:
+        _handle = None
+
+        def __init__(self, *args):
+            pass
+
+        def prepare(self):
+            raise (CapsuleCleanupError("cleanup uncertain") if uncertain else CapsuleError("authentication failed"))
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(baseline_module, "SecureCapsuleExecutionEnvironment", FailedPreparation)
+
+    def baseline(image):
+        validate_secure_capsule_baseline(definition, image, provider="libvirt", image_format="qcow2",
+                                        settings=CapsuleSettings(provider="libvirt", cpu_count=4, memory_mb=8192))
+
+    with pytest.raises(ProvisioningCleanupError if uncertain else ProvisioningError):
+        publish_derived_image(definition, plan, lambda iso, image, payload: image.write_bytes(b"candidate"),
+                              validate_baseline=baseline)
+    assert closed == [True]
+    assert not plan.cache_dir.exists()
+    assert len(list(plan.cache_dir.parent.glob(".building-*"))) == int(uncertain)
+    assert len(runs) == 1
+    if uncertain:
+        with pytest.raises(FinalizationError):
+            verify_finalized_run(runs[0])
+    else:
+        verify_finalized_run(runs[0])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="native POSIX publication permissions")
+@pytest.mark.parametrize("seal_fails", [False, True])
+def test_publication_revokes_qemu_directory_write_access(tmp_path, monkeypatch, seal_fails):
+    import stat
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    plan = build_provisioning_plan(definition, LibvirtProvisioner(network_name="build").capabilities(),
+                                  output_format="qcow2", cache_root=tmp_path / "cache")
+
+    def install(iso, image, payload):
+        image.parent.chmod(0o2770)
+        image.write_bytes(b"candidate")
+        image.chmod(0o660)
+
+    original = Path.chmod
+    if seal_fails:
+        def fail_seal(path, mode, *args, **kwargs):
+            if path.name.startswith(".building-") and mode == 0o750:
+                raise OSError("cannot seal directory")
+            return original(path, mode, *args, **kwargs)
+        monkeypatch.setattr(Path, "chmod", fail_seal)
+        with pytest.raises(OSError, match="cannot seal"):
+            publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
+        assert not plan.cache_dir.exists()
+        assert not list(plan.cache_dir.parent.glob(".building-*"))
+    else:
+        publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
+        assert stat.S_IMODE(plan.cache_dir.stat().st_mode) == 0o750
+        assert stat.S_IMODE(plan.image_path.stat().st_mode) == 0o444
+        assert stat.S_IMODE(plan.manifest_path.stat().st_mode) == 0o444

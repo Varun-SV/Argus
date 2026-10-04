@@ -136,8 +136,9 @@ class CapsuleConfig:
     image: str = ""
     switch_name: str = ""
     vm_root: str = ""
-    memory_mb: int = 4096
-    cpu_count: int = 2
+    # None preserves omission until an immutable definition can supply values.
+    memory_mb: Optional[int] = None
+    cpu_count: Optional[int] = None
     guest_port: int = 8765
     guest_token_env: str = CAPSULE_GUEST_TOKEN_ENV
     guest_token_ref: str = ""
@@ -225,7 +226,7 @@ class ArgusConfig:
         elif cc.guest_token_ref:
             from argus.secrets import ArgusSecretStore
 
-            guest_token = ArgusSecretStore().get(cc.guest_token_ref)
+            guest_token = ArgusSecretStore().get(cc.guest_token_ref).rstrip("\r\n")
         else:
             guest_token = os.environ.get(CAPSULE_GUEST_TOKEN_ENV, "")
         capsule_config = {
@@ -240,8 +241,8 @@ class ArgusConfig:
             "image": os.environ.get("ARGUS_CAPSULE_IMAGE") or cc.image,
             "switch_name": os.environ.get("ARGUS_CAPSULE_SWITCH") or cc.switch_name,
             "vm_root": os.environ.get("ARGUS_CAPSULE_VM_ROOT") or cc.vm_root,
-            "memory_mb": _env_int("ARGUS_CAPSULE_MEMORY_MB", cc.memory_mb),
-            "cpu_count": _env_int("ARGUS_CAPSULE_CPU_COUNT", cc.cpu_count),
+            "memory_mb": _env_int("ARGUS_CAPSULE_MEMORY_MB", cc.memory_mb if cc.memory_mb is not None else 4096),
+            "cpu_count": _env_int("ARGUS_CAPSULE_CPU_COUNT", cc.cpu_count if cc.cpu_count is not None else 2),
             "guest_port": _env_int("ARGUS_CAPSULE_GUEST_PORT", cc.guest_port),
             "guest_token": guest_token,
             "guest_input_mode": (
@@ -323,6 +324,10 @@ class ArgusConfig:
                 return path if path.is_absolute() else self.project_dir / path
 
             definition = load_environment_definition(project_path(cc.environment_definition))
+            for field, env_name in (("cpu_count", "ARGUS_CAPSULE_CPU_COUNT"),
+                                    ("memory_mb", "ARGUS_CAPSULE_MEMORY_MB")):
+                if getattr(cc, field) is None and os.environ.get(env_name) in {None, ""}:
+                    capsule_config[field] = getattr(definition.machine, field)
             if str(capsule_config["provider"]).lower() == "auto":
                 import platform
 
@@ -499,8 +504,8 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             image=str(capsule_raw.get("image") or ""),
             switch_name=str(capsule_raw.get("switch_name") or ""),
             vm_root=str(capsule_raw.get("vm_root") or ""),
-            memory_mb=int(capsule_raw.get("memory_mb") or 4096),
-            cpu_count=int(capsule_raw.get("cpu_count") or 2),
+            memory_mb=int(capsule_raw["memory_mb"]) if "memory_mb" in capsule_raw else None,
+            cpu_count=int(capsule_raw["cpu_count"]) if "cpu_count" in capsule_raw else None,
             guest_port=int(capsule_raw.get("guest_port") or 8765),
             guest_token_env=CAPSULE_GUEST_TOKEN_ENV,
             guest_token_ref=str(capsule_raw.get("guest_token_ref") or ""),

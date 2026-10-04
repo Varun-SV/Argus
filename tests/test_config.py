@@ -1,5 +1,36 @@
 from argus.config import init_project, load_config
 from argus.tokens import TokenTracker
+import pytest
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r\n\r\n"])
+def test_secret_store_token_line_endings_are_removed(tmp_path, monkeypatch, ending):
+    import argus.execution
+    from argus.config import CapsuleConfig, ExecutionConfig
+    from argus.secrets import ArgusSecretStore
+
+    cfg = load_config(tmp_path)
+    cfg.execution = ExecutionConfig("capsule", CapsuleConfig(guest_token_ref="secret://test/token"))
+    monkeypatch.setattr(ArgusSecretStore, "get", lambda self, ref: "sentinel-token" + ending)
+    monkeypatch.setattr(argus.execution, "create_execution_environment",
+                        lambda *args, **kwargs: kwargs["capsule_config"])
+    assert cfg.make_execution_environment("cli")["guest_token"] == "sentinel-token"
+
+
+def test_omitted_legacy_hardware_keeps_runtime_defaults(tmp_path, monkeypatch):
+    import argus.execution
+    from argus.config import ExecutionConfig
+
+    monkeypatch.delenv("ARGUS_CAPSULE_MEMORY_MB", raising=False)
+    monkeypatch.delenv("ARGUS_CAPSULE_CPU_COUNT", raising=False)
+    cfg = load_config(tmp_path)
+    cfg.execution = ExecutionConfig("capsule")
+    assert cfg.execution.capsule.cpu_count is None
+    assert cfg.execution.capsule.memory_mb is None
+    monkeypatch.setattr(argus.execution, "create_execution_environment",
+                        lambda *args, **kwargs: kwargs["capsule_config"])
+    settings = cfg.make_execution_environment("cli")
+    assert (settings["cpu_count"], settings["memory_mb"]) == (2, 4096)
 
 
 def test_init_creates_scaffold(tmp_path):

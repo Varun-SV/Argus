@@ -6,7 +6,7 @@ import ipaddress
 from dataclasses import replace
 from pathlib import Path
 
-from argus.capsule.base import CapsuleError, CapsuleHandle, CapsuleRequest
+from argus.capsule.base import CapsuleCleanupError, CapsuleError, CapsuleHandle, CapsuleRequest
 from argus.capsule.hyperv import HyperVProvider, _ps_quote
 from argus.capsule.provider_identity import (
     mutable_disk_identity,
@@ -403,10 +403,17 @@ class IsolatedHyperVProvider(HyperVProvider):
         root = root_parent / request.capsule_id
         if root.exists():
             raise CapsuleError(f"Capsule directory already exists: {root}")
-        root.mkdir(parents=False)
         vm_name = "Argus-" + request.capsule_id.removeprefix("cap-")[:20]
         child_vhd = root / "session.vhdx"
         vm_path = root / "vm"
+        collision = self._run_ps(
+            "$ErrorActionPreference='Stop'; "
+            f"$v=@(Get-VM -ErrorAction Stop | Where-Object {{ $_.Name -eq {_ps_quote(vm_name)} }}); "
+            "if ($v.Count) { 'present' }", 15,
+        ).strip()
+        if collision:
+            raise CapsuleError("Hyper-V Capsule VM already exists; refusing allocation")
+        root.mkdir(parents=False)
         try:
             self._run_ps(
                 f"New-VHD -Path {_ps_quote(str(child_vhd))} "
@@ -480,9 +487,11 @@ class IsolatedHyperVProvider(HyperVProvider):
                 mutable_disk_identity=mutable_disk_identity(child_vhd),
             )
         except Exception as create_exc:
-            cleanup_exc = self._cleanup_partial(vm_name, root)
+            cleanup_exc = self._cleanup_partial(
+                vm_name, root, expected_vm_path=vm_path / vm_name, expected_disk=child_vhd,
+            )
             if cleanup_exc is not None:
-                raise CapsuleError(
+                raise CapsuleCleanupError(
                     "Hyper-V stopped allocation failed and cleanup also failed: "
                     f"create={create_exc}; cleanup={cleanup_exc}"
                 ) from create_exc

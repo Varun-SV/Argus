@@ -237,8 +237,12 @@ def _ensure_private_dir(path: Path) -> None:
     ensure_private_directory(path)
 
 
-def _atomic_json(path: Path, data: dict) -> None:
-    _ensure_private_dir(path.parent)
+def _atomic_json(path: Path, data: dict, *, preserve_parent_permissions: bool = False) -> None:
+    if preserve_parent_permissions:
+        if path.parent.is_symlink() or not path.parent.is_dir():
+            raise CapsuleError("atomic metadata requires an existing provider directory")
+    else:
+        _ensure_private_dir(path.parent)
     temporary = path.parent / f".{path.name}.tmp-{uuid4().hex}"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_CLOEXEC", 0)

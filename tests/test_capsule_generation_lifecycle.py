@@ -9,6 +9,7 @@ import time
 import pytest
 
 from argus.capsule.base import (
+    CapsuleCleanupError,
     CapsuleHandle,
     CapsuleProvider,
     CapsuleProviderCapabilities,
@@ -309,8 +310,9 @@ def test_uncertain_provider_cleanup_preserves_media_for_recovery(tmp_path, monke
 
     monkeypatch.setattr(provider, "detach_bootstrap", uncertain)
     monkeypatch.setattr(provider, "destroy", uncertain)
-    with pytest.raises(ExecutionEnvironmentError, match="destroy is uncertain"):
+    with pytest.raises(ExecutionEnvironmentError, match="destroy is uncertain") as error:
         env.prepare()
+    assert isinstance(error.value, CapsuleCleanupError)
     assert provider.attached[0].exists()
     assert list((env.settings.resolved_control_root / "bootstrap-attempts").iterdir())
     record = CapsuleControlRegistry(env.settings.resolved_control_root).load(env._capsule_id)
@@ -508,6 +510,34 @@ def test_host_restart_restores_quarantined_reference_without_adopting_lost_state
     (env.settings.resolved_control_root / (retained.capsule_id + ".json")).unlink()
     with pytest.raises(ExecutionEnvironmentError, match="durable ownership is invalid"):
         fresh.restore_failure(metadata)
+
+
+def test_restored_mode_policy_uses_retained_mode_before_provider_mutation(tmp_path):
+    env, provider = _environment(
+        tmp_path, allowed_execution_modes=("isolated", "shared_user"),
+        failure_allow_llm_reconnect=True, allow_llm_mode_change=False,
+    )
+    env.prepare()
+    env.transition_execution_mode("shared_user")
+    env.record_failure("assertion")
+    env.close()
+    failure = env._retained_failure
+    metadata = Path(failure.root_dir) / "failure-capsule.json"
+    failure.persist(metadata)
+    fresh = SecureCapsuleExecutionEnvironment("cli", env.settings, provider=provider,
+                                              client_factory=LifecycleClient)
+    fresh.restore_failure(metadata)
+    before = CapsuleControlRegistry(env.settings.resolved_control_root).load(failure.capsule_id)
+    stops, starts = provider.stops, len(provider.starts)
+    with pytest.raises(ExecutionEnvironmentError, match="LLM-requested Capsule mode change"):
+        fresh.reconnect_failure(execution_mode="isolated", requested_by_llm=True)
+    after = CapsuleControlRegistry(env.settings.resolved_control_root).load(failure.capsule_id)
+    assert after == before
+    assert provider.stops == stops and len(provider.starts) == starts
+    fresh.reconnect_failure(execution_mode="shared_user", requested_by_llm=True)
+    assert fresh._handle.execution_mode == "shared_user"
+    assert fresh._handle.control_generation == 3
+    fresh.close()
 
 
 def test_llm_cannot_expand_execution_mode_policy(tmp_path: Path) -> None:
