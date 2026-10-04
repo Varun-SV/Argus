@@ -1155,7 +1155,7 @@ def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> No
     assert any("Remove-VM" in command for command in commands)
 
 
-@pytest.mark.parametrize("ownership", ["absent", "denied", "mismatch", "partial", "remains"])
+@pytest.mark.parametrize("ownership", ["absent", "denied", "mismatch", "parent", "partial", "remains"])
 def test_hyperv_allocation_failure_verifies_cleanup_ownership(
     tmp_path: Path, ownership: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1166,10 +1166,11 @@ def test_hyperv_allocation_failure_verifies_cleanup_ownership(
     commands = []
     image = None
     allocated = False
+    allocated_name = None
     removed = False
 
     def run(script, timeout):
-        nonlocal image, allocated, removed
+        nonlocal image, allocated, allocated_name, removed
         commands.append(script)
         if "Get-VMSwitch" in script:
             return "Internal"
@@ -1178,6 +1179,7 @@ def test_hyperv_allocation_failure_verifies_cleanup_ownership(
             image.write_bytes(b"partial disk")
         if script.startswith("New-VM"):
             allocated = True
+            allocated_name = re.search(r"-Name '([^']+)'", script).group(1)
             raise ProvisioningError("allocation failed")
         if "Get-VM -ErrorAction Stop | Where-Object" in script:
             assert "SilentlyContinue" not in script
@@ -1187,8 +1189,10 @@ def test_hyperv_allocation_failure_verifies_cleanup_ownership(
                 raise ProvisioningError("query denied")
             if ownership == "mismatch":
                 return str(tmp_path / "unrelated-vm")
-            if ownership in {"partial", "remains"}:
+            if ownership == "parent":
                 return str(image.parent / "vm")
+            if ownership in {"partial", "remains"}:
+                return str(image.parent / "vm" / allocated_name)
             return ""
         if "Remove-VM" in script:
             removed = ownership != "remains"

@@ -169,6 +169,10 @@ def windows_11_answer_xml(
     _element(os_image, "WillShowUI", "OnError")
     user_data = _element(setup, "UserData")
     _element(user_data, "AcceptEula", "true")
+    # Image selection is explicit above; activation belongs to the operator.
+    # Omit Key entirely rather than supplying an invalid empty element.
+    product_key = _element(user_data, "ProductKey")
+    _element(product_key, "WillShowUI", "Never")
 
     specialize = _settings(root, "specialize")
     runtime_locale = _component(specialize, "Microsoft-Windows-International-Core")

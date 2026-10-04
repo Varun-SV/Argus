@@ -191,7 +191,7 @@ class HyperVProvisioner(EnvironmentProvisioner):
                 "-Direction Outbound -Weight 1"
             )
             self._ps(setup_script, 60)
-            self._ps(f"Start-VM -Name {vm} -ErrorAction Stop | Out-Null", 60)
+            self._start_installer(name)
             if self._on_started is not None:
                 self._on_started(name)
             deadline = time.monotonic() + self.install_timeout_seconds
@@ -208,7 +208,8 @@ class HyperVProvisioner(EnvironmentProvisioner):
                 # Only claim it when Hyper-V reports our private VM path.
                 try:
                     reported_path = self._vm_path(name)
-                    if reported_path and Path(reported_path).resolve() != vm_dir.resolve():
+                    expected_path = vm_dir / name
+                    if reported_path and Path(reported_path).resolve() != expected_path.resolve():
                         raise ProvisioningCleanupError("provisioning VM ownership path differs")
                     owned = bool(reported_path)
                 except Exception as exc:
@@ -242,6 +243,40 @@ class HyperVProvisioner(EnvironmentProvisioner):
             valid = False
         if not valid:
             raise ProvisioningError("Hyper-V image type or virtual size is invalid")
+
+    def _start_installer(self, name: str) -> None:
+        # Stock Windows DVDs require a boot-confirmation key. Warm WMI before
+        # power-on; the virtual keyboard is exposed only while the VM runs.
+        # This applies only to the newly allocated installer's first boot.
+        vm = _ps_quote(name)
+        self._ps(
+            f"$installer=Get-VM -Name {vm} -ErrorAction Stop; "
+            "$id=$installer.Id.ToString(); "
+            "$system=Get-WmiObject -Namespace root/virtualization/v2 "
+            "-Class Msvm_ComputerSystem -Filter (\"Name='\"+$id+\"'\") -ErrorAction Stop; "
+            "if ($null -eq $system) { throw 'installer system is unavailable' }; "
+            "Get-WmiObject -Namespace root/virtualization/v2 -List "
+            "-Class Msvm_Keyboard -ErrorAction Stop | Out-Null; "
+            "Start-VM -VM $installer -ErrorAction Stop | Out-Null; "
+            "for ($lookup=0; $lookup -lt 20; $lookup++) { "
+            "$keyboards=@($system.GetRelated('Msvm_Keyboard')); "
+            "if ($keyboards.Count -ne 0) { break }; Start-Sleep -Milliseconds 100 }; "
+            "if ($keyboards.Count -ne 1) { throw 'installer keyboard is unavailable' }; "
+            "$key=$keyboards[0].GetMethodParameters('TypeKey'); "
+            "$key.keyCode=[uint32]32; "
+            "$delivered=$false; "
+            "for ($i=0; $i -lt 9; $i++) { Start-Sleep -Milliseconds 500; "
+            "$result=$keyboards[0].InvokeMethod('TypeKey',$key,$null); "
+            "if ($null -eq $result -or $null -eq $result.ReturnValue) "
+            "{ throw 'installer boot confirmation failed' }; "
+            # Hyper-V may withdraw the firmware keyboard during the handoff.
+            # Stop sending keys only after an acknowledged delivery; boot and
+            # installation success still require the normal baseline gates.
+            "if ($result.ReturnValue -eq 32775 -and $delivered) { break }; "
+            "if ($result.ReturnValue -ne 0) { throw 'installer boot confirmation failed' }; "
+            "$delivered=$true }",
+            60,
+        )
 
     def _vm_path(self, name: str) -> str:
         # A missing-name Get-VM with SilentlyContinue leaves $? false on

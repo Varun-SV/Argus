@@ -130,7 +130,26 @@ def test_answer_iso_has_root_autounattend_xml(tmp_path: Path) -> None:
     assert disc[extent * _SECTOR:extent * _SECTOR + size] == windows_11_answer_xml(definition)
     assert b"secret://" not in disc
     assert b"Password" not in disc
-    assert b"ProductKey" not in disc
+    root = ET.fromstring(windows_11_answer_xml(definition))
+    assert root.find(".//a:ProductKey/a:Key", _NS) is None
+
+
+@pytest.mark.parametrize("edition,image_name", [
+    ("professional", "Windows 11 Pro"),
+    ("education", "Windows 11 Education"),
+    ("enterprise", "Windows 11 Enterprise"),
+])
+def test_answer_defers_activation_without_interactive_product_key_ui(
+    tmp_path: Path, edition: str, image_name: str,
+) -> None:
+    definition = _definition(tmp_path)
+    definition = replace(definition, installation=replace(definition.installation, edition=edition))
+    root = ET.fromstring(windows_11_answer_xml(definition))
+    setup = root.find("a:settings[@pass='windowsPE']/a:component[@name='Microsoft-Windows-Setup']", _NS)
+    assert setup.findtext("a:ImageInstall/a:OSImage/a:InstallFrom/a:MetaData/a:Value", namespaces=_NS) == image_name
+    assert setup.findtext("a:UserData/a:ProductKey/a:WillShowUI", namespaces=_NS) == "Never"
+    assert root.find(".//a:ProductKey/a:Key", _NS) is None
+    assert root.find("a:settings[@pass='specialize']/a:component[@name='Microsoft-Windows-Shell-Setup']/a:ProductKey", _NS) is None
 
 
 def test_hyperv_builder_attaches_and_discards_private_answer_media(
@@ -171,6 +190,90 @@ def test_hyperv_builder_attaches_and_discards_private_answer_media(
     )
     assert not (plan.cache_dir / "windows-answer.iso").exists()
     assert not (plan.cache_dir / "windows-build-payload.iso").exists()
+    boot = next(script for script in scripts if "InvokeMethod('TypeKey'" in script)
+    assert boot.index("-Class Msvm_Keyboard") < boot.index("Start-VM")
+    assert boot.index("Start-VM") < boot.index("GetRelated('Msvm_Keyboard')")
+    assert boot.index("Start-VM") < boot.index("InvokeMethod('TypeKey'")
+    assert "$id=$installer.Id.ToString()" in boot
+    assert "$result.ReturnValue -ne 0" in boot
+    assert sum("InvokeMethod('TypeKey'" in script for script in scripts) == 1
+
+
+def test_failed_boot_confirmation_cleans_installer_and_prevents_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    definition = _definition(tmp_path)
+    scripts = []
+    started, validated = [], []
+
+    def run(script, timeout):
+        scripts.append(script)
+        if "Get-VMSwitch" in script:
+            return "Internal"
+        if script.startswith("New-VHD"):
+            Path(re.search(r"-Path '([^']+)'", script).group(1)).write_bytes(b"partial disk")
+        if "InvokeMethod('TypeKey'" in script:
+            raise ProvisioningError("boot confirmation failed")
+        return ""
+
+    provider = HyperVProvisioner(
+        switch_name="Argus-Internal", runner=run, on_started=started.append,
+        baseline_validator=validated.append,
+    )
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="vhdx", cache_root=tmp_path / "cache",
+    )
+    with pytest.raises(ProvisioningError, match="boot confirmation failed"):
+        provider.provision(definition, plan)
+    assert not started and not validated
+    assert any("Remove-VM" in script for script in scripts)
+    assert not plan.cache_dir.exists()
+    assert not list(plan.cache_dir.parent.glob(".building-*"))
+
+
+@pytest.mark.skipif(os.name != "nt" or not shutil.which("powershell.exe"),
+                    reason="requires Windows PowerShell")
+@pytest.mark.parametrize("returns,success,calls", [
+    ("0,0,0,0,0,0,0,0,0", True, 9),
+    ("0,32775", True, 2),
+    ("32775", False, 1),
+    ("0,32769", False, 2),
+    ("$null", False, 1),
+    ("0,$null", False, 2),
+])
+def test_boot_keyboard_handoff_requires_prior_acknowledgement(
+    returns: str, success: bool, calls: int,
+) -> None:
+    scripts = []
+    HyperVProvisioner(switch_name="unused", runner=lambda script, timeout: scripts.append(script))._start_installer("fixture")
+    # Execute the production PowerShell branches with in-memory WMI doubles.
+    # These functions shadow all native operations: no VM or host is changed.
+    shim = """
+$ErrorActionPreference='Stop'
+$global:callCount=0
+$keyboard=New-Object PSObject
+$keyboard | Add-Member ScriptMethod GetMethodParameters { param($name) @{keyCode=0} }
+$keyboard | Add-Member ScriptMethod InvokeMethod {
+    param($name,$key,$options)
+    $code=$global:codes[$global:callCount]
+    $global:callCount++
+    return [pscustomobject]@{ReturnValue=$code}
+}
+$system=New-Object PSObject
+$system | Add-Member ScriptMethod GetRelated { param($name) return $keyboard }
+function Get-VM { return [pscustomobject]@{Id=[guid]::Empty} }
+function Get-WmiObject { return $system }
+function Start-VM {}
+function Start-Sleep {}
+"""
+    command = shim + "$global:codes=@(" + returns + "); try { " + scripts[0] + (
+        "; Write-Output 'accepted' } catch { Write-Output 'rejected' }; "
+        "Write-Output $global:callCount"
+    )
+    result = subprocess.run([shutil.which("powershell.exe"), "-NoProfile", "-NonInteractive",
+                             "-Command", command], capture_output=True, text=True, timeout=15, check=True)
+    assert result.stdout.splitlines() == ["accepted" if success else "rejected", str(calls)]
 
 
 @pytest.mark.skipif(os.name != "nt" or not shutil.which("tar"),
