@@ -20,6 +20,27 @@ def test_load_defaults_without_config(tmp_path, monkeypatch):
     assert cfg.provider.model == "gemma3:9b"
 
 
+def test_libvirt_qemu_group_survives_config_and_environment_override(tmp_path, monkeypatch):
+    import argus.execution
+
+    init_project(tmp_path)
+    (tmp_path / ".argus" / "config.yaml").write_text(
+        "execution:\n  environment: capsule\n  capsule:\n"
+        "    provider: libvirt\n    libvirt_qemu_group: argus-qemu\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("ARGUS_CAPSULE_LIBVIRT_QEMU_GROUP", raising=False)
+    cfg = load_config(tmp_path)
+    assert cfg.execution.capsule.libvirt_qemu_group == "argus-qemu"
+    monkeypatch.setattr(
+        argus.execution, "create_execution_environment",
+        lambda *args, **kwargs: kwargs["capsule_config"],
+    )
+    assert cfg.make_execution_environment("cli")["libvirt_qemu_group"] == "argus-qemu"
+    monkeypatch.setenv("ARGUS_CAPSULE_LIBVIRT_QEMU_GROUP", "service-qemu")
+    assert cfg.make_execution_environment("cli")["libvirt_qemu_group"] == "service-qemu"
+
+
 def test_load_from_scaffold(tmp_path, monkeypatch):
     monkeypatch.delenv("ARGUS_PROVIDER", raising=False)
     monkeypatch.delenv("ARGUS_MODEL", raising=False)

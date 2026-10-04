@@ -89,6 +89,7 @@ Releases = "https://github.com/Varun-SV/Argus/releases"
 [project.scripts]
 argus = "argus.cli:main"
 argus-gui = "argus.gui.app:run_gui"
+argus-guest-runtime-build = "argus.provisioning.build_guest_runtime:main"
 
 [tool.setuptools.packages.find]
 include = ["argus*"]

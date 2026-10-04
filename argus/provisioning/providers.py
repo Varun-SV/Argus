@@ -9,6 +9,7 @@ for the disposable Capsule; its installer state is not portable with the VHDX.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import os
 import platform
 import shutil
@@ -44,20 +45,17 @@ from argus.provisioning.ubuntu_unattended import (
 from argus.secrets import ArgusSecretStore
 
 
-def _attended_only(definition: EnvironmentDefinition) -> None:
-    installation = definition.installation
-    if installation.unattended or installation.credential_ref or installation.packages:
+def _require_unattended(definition: EnvironmentDefinition) -> None:
+    if not definition.installation.unattended:
         raise ProvisioningError(
-            "attended provider requires unattended=false, no credential_ref and no packages"
+            "attended provisioning is unsupported: use unattended=true to install "
+            "the verified guest runtime and bootstrap service"
         )
-    if installation.update_policy != "manual":
-        raise ProvisioningError("attended provider requires update_policy=manual")
-    if installation.edition is not None:
-        raise ProvisioningError("attended provider cannot guarantee installation.edition")
-    if installation.locale != "en-US" or installation.timezone != "UTC":
-        raise ProvisioningError(
-            "attended provider cannot guarantee installation.locale or timezone"
-        )
+
+
+def _require_default_guest_port(settings: CapsuleSettings | None) -> None:
+    if settings is not None and settings.guest_port != 8765:
+        raise ProvisioningError("provisioned guest runtime requires guest_port=8765")
 
 
 def _command(argv: Sequence[str], timeout: float) -> str:
@@ -252,10 +250,9 @@ class HyperVProvisioner(EnvironmentProvisioner):
         if plan.provider != "hyperv" or plan.output_format != "vhdx":
             raise ProvisioningError("Hyper-V plan provider or output format mismatch")
         validate_provider_capabilities(definition, self.capabilities(), output_format="vhdx")
-        if definition.installation.unattended:
-            windows_11_answer_xml(definition)
-        else:
-            _attended_only(definition)
+        _require_unattended(definition)
+        _require_default_guest_port(self._baseline_settings)
+        windows_11_answer_xml(definition)
         if platform.system().lower() != "windows" and self._runner is None:
             raise ProvisioningError("Hyper-V provisioning requires Windows")
         if not self.switch_name:
@@ -610,13 +607,8 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         validate_provider_capabilities(
             definition, self.capabilities(), output_format=plan.output_format
         )
-        password_hash = None
-        if definition.installation.unattended:
-            # Production runtime profiles have a locked non-admin target user.
-            # No reusable password is needed by Subiquity or the final image.
-            password_hash = "!"
-        else:
-            _attended_only(definition)
+        _require_unattended(definition)
+        _require_default_guest_port(self._baseline_settings)
         if platform.system().lower() != "linux" and self._runner is None:
             raise ProvisioningError("libvirt provisioning requires Linux")
         if self._baseline_validator is not None and self._runner is None:
@@ -625,15 +617,18 @@ class LibvirtProvisioner(EnvironmentProvisioner):
             raise ProvisioningError("secure Capsule baseline settings are required")
         if self._runner is None and not self.qemu_group:
             raise ProvisioningError("libvirt provisioning requires an explicit QEMU group")
+        baseline_settings = self._baseline_settings
+        if baseline_settings is not None and not baseline_settings.libvirt_qemu_group:
+            baseline_settings = replace(baseline_settings, libvirt_qemu_group=self.qemu_group)
 
         def validate(image: Path) -> None:
             if self._baseline_validator is not None:
                 self._baseline_validator(image)
             else:
-                assert self._baseline_settings is not None
+                assert baseline_settings is not None
                 validate_secure_capsule_baseline(
                     definition, image, provider="libvirt", image_format=plan.output_format,
-                    settings=self._baseline_settings,
+                    settings=baseline_settings,
                 )
         return publish_derived_image(
             definition, plan,
@@ -645,17 +640,10 @@ class LibvirtProvisioner(EnvironmentProvisioner):
                     plan.output_format,
                     UbuntuAutoinstallProfile(
                         definition=definition,
-                        password_hash=password_hash,
+                        password_hash="!",
                         runtime_manifest=build_payload.runtime_manifest,
                     ),
                     build_payload,
-                )
-                if password_hash is not None
-                else self._install(
-                    definition,
-                    iso,
-                    image,
-                    plan.output_format,
                 )
             ),
             validate_baseline=validate,

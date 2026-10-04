@@ -138,6 +138,34 @@ def test_bootstrap_attempt_can_be_rendered_as_removable_iso(
         assert data[16 * 2048 + 1:16 * 2048 + 6] == b"CD001"
         assert b"ARGUS_BOOTSTRAP" in data
         assert attempt.bootstrap_token.encode("utf-8") in data
+        # Read the directory records as an ISO reader would, then apply Linux
+        # ISO-9660 case folding/version removal. Never use source filenames.
+        primary = data[16 * 2048:17 * 2048]
+        extent = int.from_bytes(primary[158:162], "little")
+        size = int.from_bytes(primary[166:170], "little")
+        directory = data[extent * 2048:extent * 2048 + size]
+        mounted = tmp_path / "mounted"
+        mounted.mkdir()
+        offset = 0
+        while offset < len(directory) and directory[offset]:
+            record = directory[offset:offset + directory[offset]]
+            identifier = record[33:33 + record[32]]
+            if identifier not in {b"\x00", b"\x01"}:
+                name = identifier.decode("ascii").lower().removesuffix(";1")
+                start = int.from_bytes(record[2:6], "little") * 2048
+                length = int.from_bytes(record[10:14], "little")
+                (mounted / name).write_bytes(data[start:start + length])
+            offset += len(record)
+        from argus.capsule.bootstrap import load_bootstrap_manifest
+        from argus.capsule.bootstrap_service import _stage_from_root
+
+        assert {path.name for path in mounted.iterdir()} == {
+            "bootstrap.json", "bootstrap.token", "tls-cert.pem", "tls-key.pem"
+        }
+        assert load_bootstrap_manifest(mounted) == attempt.manifest
+        staged = _stage_from_root(mounted, tmp_path / "staging")
+        assert (staged / "bootstrap.token").read_bytes() == attempt.token_path.read_bytes()
+        assert (staged / "tls-key.pem").read_bytes() == attempt.tls_key_path.read_bytes()
     finally:
         output.unlink(missing_ok=True)
         attempt.destroy()

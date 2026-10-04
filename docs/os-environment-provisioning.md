@@ -37,10 +37,15 @@ use a distribution ABI compatible with the target Ubuntu guest. The output path
 must not already exist.
 
 ```sh
-python -m scripts.build_guest_runtime dist/argus-guest-win.zip --runtime-version 0.1.0
+argus-guest-runtime-build dist/argus-guest-win.zip --runtime-version 0.1.0
 ```
 
-Run the same command on Linux to build the Ubuntu runtime. The script freezes
+The command is included in installed wheels. Install the `guest-runtime-build`
+extra in the approved build environment for PyInstaller. The equivalent module
+command is `python -m argus.provisioning.build_guest_runtime`; source checkouts
+also retain `python -m scripts.build_guest_runtime` for compatibility.
+
+Run the same command on Linux to build the Ubuntu runtime. The command freezes
 the guest driver and installed Argus adapters into an offline bundle and prints
 JSON containing its SHA-256, target OS/architecture, runtime version, and
 bootstrap policy versions. Copy the digest and bundle path into the matching
@@ -136,8 +141,9 @@ host-only network, and licensed ISO. Libvirt also requires an active non-forward
 ancestors that group can traverse. Provider capability checks fail closed on
 unsupported firmware, disk bus, network, security, or image format.
 
-Attended installation remains available for definitions with
-`unattended: false`, manual updates, and no packages or credential reference.
+Attended installation (`unattended: false`) is rejected before creating an
+installer VM. It does not install the verified runtime and bootstrap service
+required for publication. Use the supported unattended profiles.
 Unattended Windows supports Windows 11 23H2/24H2 Professional, Education, or
 Enterprise, UEFI, and the provider's supported secure boot/TPM contract. The
 Ubuntu profile selects a pinned server or desktop source, requires a specific
@@ -162,6 +168,26 @@ installation, generalization, baseline, or cleanup failure blocks publication.
 If provider cleanup cannot be confirmed, Argus retains the private workspace
 for recovery rather than publishing an uncertain image.
 
+Provisioned guests currently require `guest_port: 8765`, matching the installed
+service and Windows firewall policy. Custom ports are rejected before Capsule
+allocation; manually prepared development guests retain their existing options.
+
+For provisioned libvirt Capsules, set `capsule.libvirt_qemu_group` to the trusted
+host group containing the system QEMU service account. Only Argus and that
+service account should belong to this group. The provisioning baseline inherits
+`LibvirtProvisioner.qemu_group` when its Capsule settings omit the group. Install
+the host `setfacl` tool. Keep `vm_root` in the provider's system image hierarchy
+or operator-prepared equivalent with QEMU-traversable ancestors. The per-Capsule
+directory must be owned by Argus and not writable by group/other.
+
+The controller's bootstrap attempt directory remains private. Only the rendered
+ISO is placed in the Capsule's `bootstrap-media` directory: Argus has full access,
+the QEMU group has traversal and ISO read access, and other host users have none.
+Inherited/default ACLs are removed before this grant. These permissions do not
+relax the Ubuntu guest's root-only block-device and target-user restrictions.
+Native QEMU access and retained-startup guest denial still require real-host
+acceptance. A cleanup failure must preserve possibly attached media for recovery.
+
 ## Use a published image from config
 
 Provisioning and runtime image selection are separate steps. The following
@@ -176,6 +202,7 @@ execution:
   environment: capsule
   capsule:
     provider: libvirt
+    libvirt_qemu_group: libvirt-qemu  # use this host's actual system QEMU group
     environment_definition: environments/ubuntu.yaml
     image_cache_root: images
     provisioning_evidence_root: provisioning-evidence

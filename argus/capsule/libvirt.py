@@ -40,6 +40,7 @@ from argus.capsule.base import (
     CapsuleProvider,
     CapsuleProviderCapabilities,
     CapsuleRequest,
+    CapsuleSettings,
     FailureCapsule,
 )
 from argus.capsule.files import validate_session_id
@@ -1368,6 +1369,69 @@ class LibvirtProvider(CapsuleProvider):
             provider_uuid_identity("libvirt", domain_uuid),
             mutable_disk_identity(overlay),
         )
+
+    def bootstrap_media_directory(
+        self, handle: CapsuleHandle, settings: CapsuleSettings
+    ) -> Path:
+        """Share only the ISO with system QEMU, outside the private control root."""
+        if os.name != "posix":
+            raise CapsuleError("libvirt bootstrap storage requires a Linux host")
+        if not settings.libvirt_qemu_group:
+            raise CapsuleError("libvirt bootstrap requires an explicit libvirt_qemu_group")
+        import grp
+
+        try:
+            gid = grp.getgrnam(settings.libvirt_qemu_group).gr_gid
+        except (KeyError, OSError):
+            raise CapsuleError("cannot resolve the configured system QEMU group") from None
+        root = Path(handle.root_dir).absolute()
+        directory = root / "bootstrap-media"
+        try:
+            if root.resolve() != root or not root.is_dir():
+                raise CapsuleError("libvirt Capsule storage must be a canonical directory")
+            root_info = root.stat()
+            if root_info.st_uid != os.geteuid() or root_info.st_mode & 0o022:
+                raise CapsuleError("libvirt Capsule storage must be owned privately by Argus")
+            # Never open up a private home/control root to make QEMU work.
+            # Operators must provide traversable system-provider storage.
+            for parent in (root, *root.parents):
+                info = parent.stat()
+                if not (info.st_mode & stat.S_IXOTH) and not (
+                    info.st_gid == gid and info.st_mode & stat.S_IXGRP
+                ):
+                    raise CapsuleError("QEMU cannot traverse the Capsule storage root")
+            directory.mkdir(mode=0o700, exist_ok=True)
+            info = directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                raise CapsuleError("libvirt bootstrap storage ownership is invalid")
+            directory.chmod(0o700)
+            # Remove inherited named/default ACLs before granting the trusted
+            # QEMU group traversal. No other host account receives secret access.
+            self._run(("setfacl", "-b", "-k", "--", str(directory)), 15)
+            os.chown(directory, -1, gid)
+            directory.chmod(0o2710)
+        except OSError:
+            raise CapsuleError("cannot prepare protected libvirt bootstrap storage") from None
+        return directory
+
+    def create_bootstrap_media(self, source: Path, output: Path) -> Path:
+        if os.name != "posix":
+            raise CapsuleError("libvirt bootstrap storage requires a Linux host")
+        info = output.parent.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o2710
+        ):
+            raise CapsuleError("libvirt bootstrap storage is not protected")
+        media = super().create_bootstrap_media(source, output)
+        try:
+            os.chown(media, -1, info.st_gid)
+            media.chmod(0o640)
+        except OSError:
+            media.unlink(missing_ok=True)
+            raise CapsuleError("cannot grant system QEMU read access to bootstrap ISO") from None
+        return media
 
     def attach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
         media = Path(media).resolve()

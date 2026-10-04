@@ -31,7 +31,6 @@ from argus.capsule.control import (
     CapsuleLifecycleState,
     new_capsule_id,
 )
-from argus.capsule.permissions import ensure_private_directory
 from argus.capsule.guest import GuestAdapterProxy
 from argus.capsule.secure_client import SecureGuestAgentClient
 from argus.execution.base import ExecutionEnvironmentError
@@ -280,6 +279,10 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
         )
 
     def _validate_provisioned_security(self) -> None:
+        if self.settings.guest_port != 8765:
+            raise ExecutionEnvironmentError(
+                "provisioned guest runtime requires guest_port=8765; custom ports are unsupported"
+            )
         if not self.provider.capabilities().protected_bootstrap_media:
             raise ExecutionEnvironmentError(
                 "provider cannot protect secret-bearing bootstrap media from the target user; "
@@ -405,7 +408,8 @@ class SecureCapsuleExecutionEnvironment(CapsuleExecutionEnvironment):
                 # Rendering and attachment both belong to the transaction.
                 # An exception before a provider call still abandons N and
                 # destroys every unattached secret-bearing file.
-                ensure_private_directory(media_dir)
+                media_dir = self.provider.bootstrap_media_directory(current, request_settings)
+                media = media_dir / media.name
                 self.provider.create_bootstrap_media(attempt.root, media)
                 attached = True  # A failed reply may hide a completed attach.
                 self.provider.attach_bootstrap(current, media)

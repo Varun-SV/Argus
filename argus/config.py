@@ -77,6 +77,7 @@ execution:
   #   libvirt_network_cidr: ""   # optional site-specific private /24, e.g. 10.250.77.0/24
   #   libvirt_arch: ""           # auto host arch; x86_64 or aarch64 when pinned
   #   libvirt_machine: ""        # optional libvirt/QEMU machine type
+  #   libvirt_qemu_group: ""     # trusted system QEMU group for provisioned media
   #
   #   # PR6 secure control plane / network isolation
   #   guest_transport: https
@@ -158,6 +159,7 @@ class CapsuleConfig:
     libvirt_network_cidr: str = ""
     libvirt_arch: str = ""
     libvirt_machine: str = ""
+    libvirt_qemu_group: str = ""
 
 
 @dataclass
@@ -288,6 +290,9 @@ class ArgusConfig:
             ),
             "libvirt_machine": (
                 os.environ.get("ARGUS_CAPSULE_LIBVIRT_MACHINE") or cc.libvirt_machine
+            ),
+            "libvirt_qemu_group": (
+                os.environ.get("ARGUS_CAPSULE_LIBVIRT_QEMU_GROUP") or cc.libvirt_qemu_group
             ),
         }
         for key, value in (capsule_overrides or {}).items():
@@ -539,6 +544,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             libvirt_network_cidr=str(capsule_raw.get("libvirt_network_cidr") or ""),
             libvirt_arch=str(capsule_raw.get("libvirt_arch") or ""),
             libvirt_machine=str(capsule_raw.get("libvirt_machine") or ""),
+            libvirt_qemu_group=str(capsule_raw.get("libvirt_qemu_group") or ""),
         ),
     )
 

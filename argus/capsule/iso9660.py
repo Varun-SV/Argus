@@ -110,8 +110,9 @@ def write_root_iso(
 
     created = False
     try:
-        with target.open("xb") as stream:
-            created = True
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+        with os.fdopen(fd, "wb") as stream:
             stream.write(b"\x00" * (16 * _SECTOR))
             stream.write(primary)
             stream.write(_sector(b"\xffCD001\x01"))

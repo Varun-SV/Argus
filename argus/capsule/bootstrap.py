@@ -308,8 +308,8 @@ def create_bootstrap_iso(
         volume_label="ARGUS_BOOTSTRAP",
         files=(
             ("BOOTSTRAP.JSON;1", root / "bootstrap.json"),
-            ("TOKEN.TXT;1", root / manifest.token_file),
-            ("CERT.PEM;1", root / manifest.tls_cert_file),
-            ("KEY.PEM;1", root / manifest.tls_key_file),
+            (manifest.token_file.upper() + ";1", root / manifest.token_file),
+            (manifest.tls_cert_file.upper() + ";1", root / manifest.tls_cert_file),
+            (manifest.tls_key_file.upper() + ";1", root / manifest.tls_key_file),
         ),
     )

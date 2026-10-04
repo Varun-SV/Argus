@@ -258,6 +258,33 @@ def test_unprotected_bootstrap_media_is_rejected_before_provider_allocation(tmp_
     assert not provider.attached
 
 
+def test_custom_provisioned_port_is_rejected_before_provider_allocation(tmp_path):
+    env, provider = _environment(tmp_path, guest_port=9443)
+    with pytest.raises(ExecutionEnvironmentError, match="guest_port=8765"):
+        env.prepare()
+    assert not provider.root.exists()
+    assert not provider.attached
+
+
+def test_generation_uses_provider_storage_and_cleans_it(tmp_path, monkeypatch):
+    env, provider = _environment(tmp_path)
+    media_dir = tmp_path / "provider-storage" / "bootstrap-media"
+
+    def directory(handle, settings):
+        assert handle.capsule_id
+        assert settings.environment_id == env.settings.environment_id
+        media_dir.mkdir(parents=True, exist_ok=True)
+        return media_dir
+
+    monkeypatch.setattr(provider, "bootstrap_media_directory", directory)
+    env.prepare()
+    assert provider.attached[0].parent == media_dir
+    assert provider.detached[0] == provider.attached[0]
+    assert not list(media_dir.iterdir())
+    assert not list((env.settings.resolved_control_root / "bootstrap-attempts").iterdir())
+    env.close()
+
+
 def test_uncertain_first_generation_is_abandoned_not_reused(
     tmp_path: Path,
 ) -> None:
@@ -272,6 +299,22 @@ def test_uncertain_first_generation_is_abandoned_not_reused(
     assert record.last_committed_generation_known_by_host == 2
     assert provider.stops >= 1
     env.close()
+
+
+def test_uncertain_provider_cleanup_preserves_media_for_recovery(tmp_path, monkeypatch):
+    env, provider = _environment(tmp_path)
+
+    def uncertain(*args):
+        raise RuntimeError("provider detachment is uncertain")
+
+    monkeypatch.setattr(provider, "detach_bootstrap", uncertain)
+    monkeypatch.setattr(provider, "destroy", uncertain)
+    with pytest.raises(ExecutionEnvironmentError, match="destroy is uncertain"):
+        env.prepare()
+    assert provider.attached[0].exists()
+    assert list((env.settings.resolved_control_root / "bootstrap-attempts").iterdir())
+    record = CapsuleControlRegistry(env.settings.resolved_control_root).load(env._capsule_id)
+    assert record.lifecycle_state == CapsuleLifecycleState.RECOVERY_REQUIRED.value
 
 
 def test_failed_media_rendering_destroys_secrets_and_abandons_generation(tmp_path, monkeypatch):

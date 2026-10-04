@@ -110,6 +110,9 @@ class CapsuleSettings:
     libvirt_network_cidr: str = ""
     libvirt_arch: str = ""
     libvirt_machine: str = ""
+    # Trusted host group containing the system QEMU service account. Only this
+    # group and the host controller may read per-generation libvirt media.
+    libvirt_qemu_group: str = ""
 
     @classmethod
     def from_mapping(cls, value: Optional[Mapping[str, Any]] = None) -> "CapsuleSettings":
@@ -287,6 +290,16 @@ class CapsuleProvider(ABC):
         )
 
     bootstrap_media_suffix: str = ".iso"
+
+    def bootstrap_media_directory(
+        self, handle: CapsuleHandle, settings: CapsuleSettings
+    ) -> Path:
+        """Prepare private storage for one-attempt provider control media."""
+        from argus.capsule.permissions import ensure_private_directory
+
+        directory = settings.resolved_control_root / "bootstrap-media"
+        ensure_private_directory(directory)
+        return directory
 
     def create_bootstrap_media(self, source: Path, output: Path) -> Path:
         """Render provider-specific, one-attempt media without booting a VM."""

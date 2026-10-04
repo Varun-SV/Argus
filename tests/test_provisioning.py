@@ -48,7 +48,9 @@ def _guest_runtime(
     target_os: str = "windows-11",
 ) -> GuestRuntimeIdentity:
     payload = tmp_path / f"runtime-{target_os}"
-    entrypoint = payload / "bin" / "argus-guest-agent.py"
+    entrypoint = payload / "bin" / (
+        "argus-guest-agent.exe" if target_os == "windows-11" else "argus-guest-agent.py"
+    )
     entrypoint.parent.mkdir(parents=True, exist_ok=True)
     entrypoint.write_text(
         "print('argus guest runtime')\n",
@@ -62,7 +64,7 @@ def _guest_runtime(
             runtime_version="0.1.0-dev.0",
             target_os=target_os,
             target_architecture="x86_64",
-            entrypoint="bin/argus-guest-agent.py",
+            entrypoint=entrypoint.relative_to(payload).as_posix(),
         )
     return GuestRuntimeIdentity(
         bundle_path=str(bundle),
@@ -140,6 +142,63 @@ def _runtime_definition(tmp_path: Path, provider: str = "hyperv") -> Environment
     )
 
 
+def _unattended_runtime_definition(tmp_path: Path, provider: str) -> EnvironmentDefinition:
+    base = _runtime_definition(tmp_path, provider)
+    if provider == "hyperv":
+        return replace(
+            base,
+            machine=replace(base.machine, secure_boot=True, tpm_version="2.0"),
+            installation=InstallationSpec(
+                unattended=True, target_os="windows-11", target_release="24H2",
+                edition="professional", update_policy="frozen",
+            ),
+        )
+    return replace(base, installation=InstallationSpec(
+        unattended=True, target_os="ubuntu", target_release="24.04.1",
+        target_flavor="server", update_policy="latest", apt_mirror="http://mirror.internal/ubuntu",
+    ))
+
+
+def _write_ubuntu_build_inputs(argv) -> bool:
+    if argv[0] == "xorriso":
+        if "-extract" in argv:
+            path = Path(argv[-1])
+            if argv[-2] == "/casper/install-sources.yaml":
+                path.write_text("- id: ubuntu-server\n  variant: server\n", encoding="utf-8")
+            else:
+                path.write_bytes(b"verified boot input")
+        else:
+            Path(argv[argv.index("-o") + 1]).write_bytes(b"build payload ISO")
+        return True
+    if argv[0] == "cloud-localds":
+        Path(argv[3]).write_bytes(b"NoCloud seed")
+        return True
+    return False
+
+
+@pytest.mark.parametrize("provider_name", ["hyperv", "libvirt"])
+def test_providers_reject_attended_builds_before_commands_or_cache(
+    tmp_path, monkeypatch, provider_name
+):
+    monkeypatch.setattr(platform, "system", lambda: "Windows" if provider_name == "hyperv" else "Linux")
+    definition = _runtime_definition(tmp_path, provider_name)
+    calls = []
+    if provider_name == "hyperv":
+        provider = HyperVProvisioner(switch_name="Argus-Internal", runner=lambda *args: calls.append(args))
+        fmt = "vhdx"
+    else:
+        provider = LibvirtProvisioner(network_name="argus-local", runner=lambda *args: calls.append(args))
+        fmt = "qcow2"
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format=fmt, cache_root=tmp_path / "cache"
+    )
+    with pytest.raises(ProvisioningError, match="attended provisioning is unsupported"):
+        provider.provision(definition, plan)
+    assert calls == []
+    assert not plan.cache_dir.exists()
+    assert not list(tmp_path.rglob(".building-*"))
+
+
 def test_cleanup_outcomes_are_explicit_and_uncertainty_is_typed() -> None:
     assert {state.value for state in ProvisioningCleanupState} == {
         "NOTHING_CREATED",
@@ -148,6 +207,35 @@ def test_cleanup_outcomes_are_explicit_and_uncertainty_is_typed() -> None:
     }
     error = ProvisioningCleanupError("provider ownership uncertain")
     assert error.cleanup_state is ProvisioningCleanupState.UNCERTAIN
+
+
+@pytest.mark.parametrize("provider_name", ["hyperv", "libvirt"])
+def test_providers_reject_custom_baseline_port_before_installation(
+    tmp_path, monkeypatch, provider_name
+):
+    monkeypatch.setattr(platform, "system", lambda: "Windows" if provider_name == "hyperv" else "Linux")
+    definition = _unattended_runtime_definition(tmp_path, provider_name)
+    calls = []
+    settings = CapsuleSettings(guest_port=9443)
+    if provider_name == "hyperv":
+        provider = HyperVProvisioner(
+            switch_name="Argus-Internal", runner=lambda *args: calls.append(args),
+            baseline_settings=settings,
+        )
+        fmt = "vhdx"
+    else:
+        provider = LibvirtProvisioner(
+            network_name="argus-local", runner=lambda *args: calls.append(args),
+            baseline_settings=settings,
+        )
+        fmt = "qcow2"
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format=fmt, cache_root=tmp_path / "cache"
+    )
+    with pytest.raises(ProvisioningError, match="guest_port=8765"):
+        provider.provision(definition, plan)
+    assert calls == []
+    assert not plan.cache_dir.exists()
 
 
 def test_guest_runtime_identity_changes_environment_identity(
@@ -176,8 +264,8 @@ def test_guest_runtime_bundle_verifies_payload_and_manifest(
     )
     assert verified.file.sha256 == runtime.runtime_bundle_sha256
     assert verified.manifest.runtime_version == runtime.runtime_version
-    assert verified.manifest.entrypoint == "bin/argus-guest-agent.py"
-    assert "bin/argus-guest-agent.py" in verified.payload_files
+    assert verified.manifest.entrypoint == "bin/argus-guest-agent.exe"
+    assert "bin/argus-guest-agent.exe" in verified.payload_files
 
 
 @pytest.mark.parametrize("field,old_policy", [
@@ -445,7 +533,8 @@ def test_plan_separates_manifest_by_output_format(tmp_path: Path) -> None:
     assert raw.image_path.name == "base.raw"
 
 
-def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path) -> None:
+@pytest.mark.parametrize("guest_port", [8765, 9443])
+def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path, guest_port) -> None:
     definition = _runtime_definition(tmp_path)
     image = tmp_path / "base.vhdx"
     image.write_bytes(b"derived-image")
@@ -465,8 +554,12 @@ def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path) ->
         memory_mb=8192,
         cpu_count=4,
         network_mode="host_only",
-        guest_port=9443,
+        guest_port=guest_port,
     )
+    if guest_port != 8765:
+        with pytest.raises(ProvisioningError, match="guest_port=8765"):
+            capsule_settings_from_derived_image(definition, manifest, image, settings=base)
+        return
     settings = capsule_settings_from_derived_image(
         definition,
         manifest,
@@ -478,7 +571,7 @@ def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path) ->
     assert settings.cpu_count == 4
     assert settings.network_mode == "host_only"
     assert settings.secure_boot is False
-    assert settings.guest_port == 9443
+    assert settings.guest_port == 8765
     assert settings.image == str(image.resolve())
     assert settings.environment_id == definition.environment_id
     assert settings.base_image_sha256 == manifest.image_sha256
@@ -918,11 +1011,13 @@ def test_media_swap_before_staging_does_not_publish(tmp_path: Path, monkeypatch)
 
 def test_libvirt_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Linux")
-    definition = _runtime_definition(tmp_path, "libvirt")
+    definition = _unattended_runtime_definition(tmp_path, "libvirt")
     commands = []
 
     def run(argv, timeout):
         commands.append(tuple(argv))
+        if _write_ubuntu_build_inputs(argv):
+            return ""
         if argv[0] == "qemu-img" and argv[1] == "create":
             Path(argv[-2]).write_bytes(b"bootable image fixture")
         if argv[0] == "qemu-img" and argv[1] == "info":
@@ -987,11 +1082,13 @@ def test_libvirt_failure_after_start_cleans_vm_and_does_not_publish(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Linux")
-    definition = _runtime_definition(tmp_path, "libvirt")
+    definition = _unattended_runtime_definition(tmp_path, "libvirt")
     commands = []
 
     def run(argv, timeout):
         commands.append(tuple(argv))
+        if _write_ubuntu_build_inputs(argv):
+            return ""
         if argv[:2] == ("qemu-img", "create"):
             Path(argv[-2]).write_bytes(b"partial disk")
         if "net-dumpxml" in argv:
@@ -1023,7 +1120,7 @@ def test_libvirt_failure_after_start_cleans_vm_and_does_not_publish(
 def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> None:
     import re
 
-    original = _runtime_definition(tmp_path)
+    original = _unattended_runtime_definition(tmp_path, "hyperv")
     definition = replace(
         original, machine=replace(original.machine, secure_boot=True, tpm_version="2.0")
     )

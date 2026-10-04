@@ -22,6 +22,10 @@ def _bind_machine_contract(
     """Bind runtime-equivalent Capsule settings to the immutable machine contract."""
 
     machine = definition.machine
+    if settings is not None and settings.guest_port != 8765:
+        raise ProvisioningError(
+            "provisioned guest runtime requires guest_port=8765; custom ports are unsupported"
+        )
     expected_os = {"hyperv": "windows-11", "libvirt": "ubuntu"}.get(manifest.provider)
     if definition.require_guest_runtime().target_os != expected_os:
         raise ProvisioningError("guest runtime OS contradicts derived image provider contract")
