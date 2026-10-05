@@ -629,7 +629,10 @@ _FUTURE_TIME = re.compile(
     r"friday|saturday|sunday)|"
     r"this\s+(?:morning|afternoon|evening|weekend)|"
     r"(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
-    r"in\s+(?:a|an|a\s+few|\d+(?:\.\d+)?)\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)|"
+    r"in\s+(?:a|an|a\s+few|a\s+couple\s+(?:of\s+)?|half\s+an?|a\s+half|another|\d+(?:\.\d+)?|"
+    r"one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty|fifty|sixty)"
+    r"(?:\s+and\s+a\s+half)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)|"
+    r"in\s+a\s+(?:bit|while|moment)|"
     r"at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|at\s+(?:noon|midnight))\b",
     re.IGNORECASE)
 
@@ -638,7 +641,9 @@ _FUTURE_TIME = re.compile(
 # _TAKE_BACK is safe to apply to free text such as a test description or a roam target;
 # _CANCELLATION also treats a bare "don't"/"but not" after the verb as a take-back.
 _TAKE_BACK = (r"never\s*mind|nevermind|cancel\s+(?:that|it|this)|cancel(?=\s*(?:[.!,;]|$))|"
-              r"scratch\s+that|forget\s+(?:it|that)|on\s+second\s+thoughts?|hold\s+off|"
+              r"scratch\s+that|forget\s+(?:it|that|about\s+(?:it|that))|on\s+second\s+thoughts?|hold\s+off|"
+              r"(?:i(?:'ve|\s+have)?\s+)?changed\s+my\s+mind|(?:i\s+)?take\s+(?:that|it)\s+back|"
+              r"no\s*,?\s*wait|wait\s*,?\s*no|"
               r"actually\s*,?\s*(?:no|not|don'?t|do\s+not)")
 _TAKE_BACK_RE = re.compile(r"(?<![\w-])(?:" + _TAKE_BACK + r")(?![\w-])", re.IGNORECASE)
 _CANCELLATION = re.compile(
@@ -673,12 +678,21 @@ def _without_literals(text: str) -> str:
                   lambda m: " " * len(m.group()), text)
 
 
+_RETENTION_CLAUSE = re.compile(
+    r"(?:" + _SETTING_REFUSAL + r"(?:(?!\b(?:run|execute|rerun|re-run|test|check)\b)[^.;!?]){0,40})?"
+    r"\b(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?failure\s+capsule\b",
+    re.IGNORECASE)
+
+
 def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     """Return the test scope explicitly authorized by the user's own words."""
     # Literal quoted titles and complete filenames are data, not instructions.
     # Keep offsets intact so scope extraction still uses the original request.
     command = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'|(?<![\w.-])[\w.-]+\.test\.ya?ml(?![\w.-])',
                      lambda m: " " * len(m.group()), text).replace("\u2019", "'")
+    # Failure-retention settings ("don't retain the failure capsule") are parsed by
+    # run_settings_from_text(); they neither withdraw the run nor exclude tests.
+    command = _RETENTION_CLAUSE.sub(lambda m: " " * len(m.group()), command)
     if _question_about_action(text):
         return None, "I can describe the tests, but I won't execute them unless you explicitly ask me to run one."
     if re.search(
@@ -706,10 +720,10 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     if _CANCELLATION.search(command, executes.end()):
         return None, "I didn't run anything: the request was taken back. Ask again when you want it to run."
 
-    if re.search(r"\b(?:except|excluding|exclude|skip|skipping|omit|omitting|without|unless|"
-                 r"if|when|after|before|until|once|as\s+soon\s+as|only\s+when|but\s+not|"
-                 r"all\s+but|other\s+than|apart\s+from|instead\s+of)\b",
-                 command, re.IGNORECASE):
+    if _CONDITION.search(command) or re.search(
+            r"\b(?:except|excluding|exclude|skip|skipping|omit|omitting|without|"
+            r"only\s+when|but\s+not|all\s+but|other\s+than|apart\s+from|instead\s+of)\b",
+            command, re.IGNORECASE):
         return None, "I didn't run anything: exclusions or conditions need an explicit list of tests to run. Name only the tests you want."
 
     # The desktop app has no scheduler, so a future time can't be honoured by running now.
@@ -964,11 +978,18 @@ def _mentions_target(text: str, target: str, adapter: str) -> bool:
 
 def _names_knowledge_target(text: str, target: str) -> bool:
     """True when the user's message itself names ``target`` (as written or by its key)."""
-    if target.casefold() in text.casefold():
+    # Whole mentions only: "app" must not match "happy.exe", nor "notepad" match "notepad.exe".
+    if re.search(r"(?<![\w.\-/\\:])" + re.escape(target) + r"(?![\w]|[.\-/\\:]\w)", text, re.IGNORECASE):
         return True
     key = re.sub(r"[^a-z0-9]+", "-", target.casefold()).strip("-")
-    words = "-" + re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-") + "-"
-    return bool(key) and f"-{key}-" in words
+    if not key:
+        return False
+    # By knowledge key ("notepad-exe"): compare against whole whitespace-separated mentions,
+    # alone or as a run of consecutive words ("Visual Studio Code").
+    tokens = [re.sub(r"[^a-z0-9]+", "-", t.casefold()).strip("-") for t in text.split()]
+    tokens = [t for t in tokens if t]
+    return any("-".join(tokens[i:j]) == key
+               for i in range(len(tokens)) for j in range(i + 1, len(tokens) + 1))
 
 
 def _refers_to_last_target(text: str) -> bool:

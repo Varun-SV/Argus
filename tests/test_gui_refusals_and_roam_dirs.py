@@ -390,3 +390,70 @@ def test_plain_environment_and_provider_changes_still_work():
     ctx = {"providers": ["ollama", "anthropic"]}
     for text in ("switch to anthropic", "use anthropic"):
         assert validate_intent({"intent": "switch_provider", "args": {"provider": "anthropic"}}, text, ctx)["intent"] == "switch_provider"
+
+
+@pytest.mark.parametrize("intent,text", [
+    ("run", "run checkout, I changed my mind"), ("run", "run checkout. I take that back"),
+    ("stop", "stop the run, I've changed my mind"),
+    ("knowledge", "export knowledge for notepad.exe, I take it back"),
+])
+def test_changed_my_mind_withdraws_the_request(intent, text):
+    args = {"action": "export", "target": "notepad.exe"} if intent == "knowledge" else {}
+    assert validate_intent({"intent": intent, "args": args}, text, TESTS)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("intent,text", [
+    ("run", "run checkout in half an hour"), ("run", "run checkout in two minutes"),
+    ("run", "run checkout in an hour and a half"), ("roam", "roam notepad.exe in half an hour"),
+    ("environment", "switch to local in a bit"),
+])
+def test_word_based_and_fractional_delays_are_deferred(intent, text):
+    args = {"target": split_roam_request(text).target} if intent == "roam" else {}
+    assert validate_intent({"intent": intent, "args": args}, text, TESTS)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "run checkout provided that the build passes", "run checkout in case it breaks",
+    "run checkout whenever the server is up", "run checkout till it passes",
+])
+def test_run_uses_the_shared_condition_vocabulary(text):
+    assert validate_intent({"intent": "run"}, text, TESTS)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text,retain", [
+    ("run checkout and don't retain the failure capsule", False),
+    ("run checkout without retaining the failure capsule", False),
+    ("run checkout and keep the failure capsule", True),
+])
+def test_retention_settings_are_not_read_as_cancellations_or_exclusions(text, retain):
+    routed = validate_intent({"intent": "run"}, text, TESTS)
+    assert routed["intent"] == "run" and routed["args"]["tests"] == ["checkout.test.yaml"]
+    assert routed["args"]["retain"] is retain
+
+
+@pytest.mark.parametrize("text,target", [
+    ("export knowledge for happy.exe", "app"), ("export knowledge for chromebook", "chrome"),
+    ("export knowledge for notepad.exe", "notepad"),
+])
+def test_knowledge_targets_must_be_whole_mentions(text, target):
+    routed = validate_intent({"intent": "knowledge", "args": {"action": "export", "target": target}}, text, {})
+    assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text,target", [
+    ("export knowledge for notepad.exe", "notepad.exe"), ("export knowledge for notepad-exe", "notepad.exe"),
+    ("reset knowledge for Visual Studio Code", "Visual Studio Code"),
+    ("export knowledge for http://localhost:3000.", "http://localhost:3000"),
+])
+def test_whole_knowledge_mentions_still_match(text, target):
+    action = "reset" if text.startswith("reset") else "export"
+    routed = validate_intent({"intent": "knowledge", "args": {"action": action, "target": target}}, text, {})
+    assert routed["intent"] == "knowledge" and routed["args"]["target"] == target
+
+
+def test_a_malformed_provider_entry_never_becomes_the_session_provider(api, tmp_path):
+    _write_config(tmp_path, "provider: ollama\nproviders:\n  anthropic:\n    api_key_env: [BAD]\n")
+    out = api.set_provider("anthropic")
+    assert not out["ok"] and "anthropic" in out["error"]
+    assert api._session["provider"] is None and api.app_info()["ok"]
+    assert api.set_provider("ollama")["ok"]

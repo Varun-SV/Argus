@@ -284,8 +284,21 @@ class ArgusAPI:
             return {"ok": False, "error": (
                 f"ARGUS_PROVIDER={pinned} pins this app to {pinned}. "
                 "Unset it before switching providers in the GUI.")}
+        # Load and check the candidate before making it current: a malformed entry must
+        # not become the session provider, or every later _config() would fail with it.
+        previous = self._session["provider"]
+        try:
+            self._config(provider=name)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return {"ok": False, "error": (
+                f"The '{name}' entry in .argus/config.yaml isn't valid, so the session stays on "
+                f"{cfg.provider.type}. Fix that provider's settings and try again.")}
         self._session["provider"] = name
-        return {"ok": True, **self.app_info()}
+        info = self.app_info()
+        if not info.get("ok"):
+            self._session["provider"] = previous
+            return {"ok": False, "error": info.get("error") or f"'{name}' isn't ready; the session provider is unchanged."}
+        return {"ok": True, **info}
 
     def set_environment(self, environment: str, capsule_provider: Optional[str] = None) -> dict:
         if environment not in assistant.ENVIRONMENTS:

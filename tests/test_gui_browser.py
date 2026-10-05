@@ -689,3 +689,17 @@ def test_in_memory_conversations_are_bounded_but_keep_active_jobs(desktop_browse
     assert result["count"] == 31  # the 30 newest, plus the one that still owns a running job
     assert "busy" in result["ids"] and "c39" not in result["ids"]
     assert not result["evicted"]
+
+
+def test_saved_conversations_always_include_ones_with_active_jobs(desktop_browser):
+    page, api, project = desktop_browser
+    saved = page.evaluate("""() => {
+      state.conversations = [];
+      for (let i = 0; i < 35; i++) state.conversations.push(
+        {id: 'c' + i, title: 'c' + i, msgs: [{id: 'm' + i, kind: 'text', role: 'user', text: 'hi'}]});
+      state.conversations.push({id: 'busy', title: 'busy', msgs: [{id: 'busy-run', kind: 'run', job: 'j-busy',
+        snap: {status: 'running'}, meta: {running: true}}]});
+      return persistedConversations().map((c) => c.id);
+    }""")
+    assert len(saved) == 30 and "busy" in saved
+    assert saved[:29] == [f"c{i}" for i in range(29)]
