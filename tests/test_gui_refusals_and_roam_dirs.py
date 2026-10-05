@@ -147,3 +147,47 @@ def test_finished_watch_jobs_are_bounded_but_explain_targets_survive(api):
     assert "j0" not in api._jobs and "j0" not in api._job_trackers
     assert "k0" in api._results and "k1" not in api._results
     assert f"j{total - 1}" in api._jobs and f"k{total - 1}" in api._results
+
+
+@pytest.mark.parametrize("text", [
+    "run checkout, actually don't", "run checkout but do not", "run checkout. never mind",
+    "run checkout, scratch that", "run checkout; on second thought, hold off",
+])
+def test_trailing_cancellations_take_the_run_back(text):
+    routed = validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}, text, TESTS)
+    assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "run checkout not locally", "run checkout, it should not be local",
+    "run checkout but I’d rather not run locally", "run checkout without local execution",
+])
+def test_broader_environment_refusals_never_choose_or_keep_local(text):
+    routed = validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}, text, TESTS)
+    assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "run checkout and never retain the failure capsule",
+    "run checkout, I would rather not keep the failure capsule",
+    "run checkout and no need to keep the failure capsule",
+])
+def test_broader_retention_refusals_never_retain(text):
+    routed = validate_intent({"intent": "run"}, text, TESTS)
+    assert routed["intent"] == "run" and routed["args"]["retain"] is False
+
+
+def test_hyphenated_test_names_are_not_refusals():
+    tests = {"tests": [{"file": "no-login.test.yaml", "name": "no-login", "adapter": "cli"}]}
+    routed = validate_intent({"intent": "run"}, "run no-login locally", tests)
+    assert routed["intent"] == "run" and routed["args"]["environment"] == "local"
+
+
+@pytest.mark.parametrize("source", ["config", "env"])
+def test_unknown_model_provider_is_reported_instead_of_ready(api, tmp_path, monkeypatch, source):
+    if source == "config":
+        _write_config(tmp_path, "provider: typo\n")
+    else:
+        monkeypatch.setenv("ARGUS_PROVIDER", "typo")
+    info = api.app_info()
+    assert not info["ok"] and "typo" in info["error"] and "anthropic" in info["error"]

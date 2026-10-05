@@ -49,6 +49,10 @@ class EnvironmentConfigurationError(ValueError):
     pass
 
 
+class ProviderConfigurationError(ValueError):
+    pass
+
+
 def _forced_environment() -> Optional[str]:
     """ARGUS_EXECUTION_ENVIRONMENT wins over any per-session choice (see make_execution_environment)."""
     value = (os.environ.get("ARGUS_EXECUTION_ENVIRONMENT") or "").strip().lower()
@@ -199,10 +203,17 @@ class ArgusAPI:
     def app_info(self) -> dict:
         try:
             cfg = self._config()
+            if cfg.provider.type not in PROVIDER_TYPES:
+                # Every route, run and roam constructs a provider first, so an unknown one
+                # means nothing can work: report it instead of a ready session.
+                raise ProviderConfigurationError(
+                    f"Unknown model provider {cfg.provider.type!r}. Set provider (or ARGUS_PROVIDER) to one of: "
+                    f"{', '.join(PROVIDER_TYPES)}.")
             s = self._session_view(cfg)
         except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError) as exc:
             required = self._project_required
             invalid_environment = isinstance(exc, EnvironmentConfigurationError)
+            explained = invalid_environment or isinstance(exc, ProviderConfigurationError)
             return {
                 "ok": False, "version": __version__, "project_required": required,
                 "can_open_project": self._project_opener is not None,
@@ -214,7 +225,7 @@ class ArgusAPI:
                 "env_locked": bool(os.environ.get("ARGUS_EXECUTION_ENVIRONMENT", "").strip()),
                 "retain": False, "memory": True, "last_target": "",
                 "tokens": self._usage_now(),
-                "error": (str(exc) if invalid_environment else self._startup_error or "Open a folder to start testing. Each project keeps its own tests and conversations."
+                "error": (str(exc) if explained else self._startup_error or "Open a folder to start testing. Each project keeps its own tests and conversations."
                           if required else "Could not load .argus/config.yaml. Check its YAML structure and setting values, then retry."),
             }
         return {

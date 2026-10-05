@@ -533,6 +533,12 @@ def split_roam_request(text: str) -> Optional[RoamRequest]:
     return RoamRequest(target, modifiers, problem)
 
 
+# Refusal words for execution settings ("not locally", "would rather not keep ...").
+# Hyphenated forms such as a "no-login" test name are not refusals.
+_SETTING_REFUSAL = (r"(?<![\w-])(?:don'?t|do\s+not|never|not|no|avoid(?:ing)?|can'?t|cannot|won'?t|"
+                    r"shouldn'?t|mustn'?t|without)(?![\w-])")
+
+
 def run_settings_from_text(text: str) -> tuple:
     """Execution settings explicitly and positively requested in free text.
 
@@ -543,12 +549,14 @@ def run_settings_from_text(text: str) -> tuple:
     """
     settings: dict = {}
     problem = None
+    # Quoted titles and filenames are data; curly apostrophes are still apostrophes.
+    words = _without_literals(text).replace("\u2019", "'")
 
     negated_environment = re.search(
-        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,80}"
+        _SETTING_REFUSAL + r"[^.;!?]{0,80}"
         r"(?:locally|local(?![\w-])(?:\s+(?:host|machine))?|"
         r"in\s+(?:a\s+)?(?:hyper-?v\s+|libvirt\s+)?capsule)\b",
-        text,
+        words,
         re.IGNORECASE,
     )
     if negated_environment:
@@ -584,8 +592,8 @@ def run_settings_from_text(text: str) -> tuple:
             found["capsule_provider"] = m.group("cap").lower().replace("-", "")
         problem = problem or _merge(settings, found)
 
-    if re.search(r"\b(?:don'?t|do\s+not|without)\s+(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?"
-                 r"failure\s+capsule\b", text, re.IGNORECASE):
+    if re.search(_SETTING_REFUSAL + r"[^.;!?]{0,40}\b(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?"
+                 r"failure\s+capsule\b", words, re.IGNORECASE):
         settings["retain"] = False
     elif re.search(r"\b(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?failure\s+capsule\b", text, re.IGNORECASE):
         settings["retain"] = True
@@ -626,6 +634,14 @@ _FUTURE_TIME = re.compile(
     re.IGNORECASE)
 
 
+# A correction after the request ("run checkout, actually don't") takes it back.
+_CANCELLATION = re.compile(
+    r"(?<![\w-])(?:don'?t|do\s+not|dont|never\s*mind|nevermind|cancel(?:\s+(?:that|it|this))?|"
+    r"scratch\s+that|forget\s+(?:it|that)|on\s+second\s+thoughts?|hold\s+off|"
+    r"actually\s*,?\s*(?:no|not)|but\s+(?:not|never))(?![\w-])",
+    re.IGNORECASE)
+
+
 def _without_literals(text: str) -> str:
     """Blank quoted text, URLs, paths and filenames: their words aren't instructions."""
     return re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'|\S*[/\\]\S*|\S+\.[A-Za-z_]\S*',
@@ -662,6 +678,8 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     )
     if not executes:
         return None, "I won't execute tests unless you explicitly ask me to run, execute, test, or check them."
+    if _CANCELLATION.search(command, executes.end()):
+        return None, "I didn't run anything: the request was taken back. Ask again when you want it to run."
 
     if re.search(r"\b(?:except|excluding|exclude|skip|skipping|omit|omitting|without|unless|"
                  r"if|when|after|before|until|once|as\s+soon\s+as|only\s+when|but\s+not|"
