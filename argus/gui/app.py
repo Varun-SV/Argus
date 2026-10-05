@@ -98,6 +98,7 @@ class ArgusAPI:
         self._job_specs: Dict[str, dict] = {}       # job id -> {run index: TestSpec} parsed at start
         self._job_trackers: Dict[str, list] = {}    # job id -> TokenTrackers used by that job
         self._watch_jobs: List[str] = []            # finished watch-created jobs, oldest first
+        self._job_vision: Dict[str, bool] = {}      # job id -> model vision capability, probed once
         self._active_job: Optional[str] = None
         self._closing = False
         self._results: Dict[str, dict] = {}
@@ -633,6 +634,7 @@ class ArgusAPI:
                 self._execute_run(job, run, self._job_specs.get(job["id"], {}).get(index), cfg)
         finally:
             self._job_specs.pop(job["id"], None)
+            self._job_vision.pop(job["id"], None)
             job["ended_at"] = time.time()
             job["running"] = False
             job["action"] = "Finished"
@@ -655,6 +657,10 @@ class ArgusAPI:
             if spec is None:
                 raise SpecError(f"{run['file']} could not be parsed when the run started")
             provider = cfg.make_provider(tracker)
+            # Each test gets a fresh provider (for its own token tracker), but the model's
+            # capabilities don't change within a job: probe vision once, not per test.
+            if job["id"] in self._job_vision and hasattr(provider, "_vision"):
+                provider._vision = self._job_vision[job["id"]]
             capsule = ({"provider": job["capsule_provider"], "retain_on_failure": job["retain"]}
                        if job["env"] == "capsule" else None)
             adapter = _ScreenshotCapturingAdapter(
@@ -674,6 +680,8 @@ class ArgusAPI:
                 knowledge_store=ks,
                 project_dir=cfg.project_dir,
             )
+            if isinstance(getattr(provider, "_vision", None), bool):
+                self._job_vision[job["id"]] = provider._vision
             try:
                 result.save(cfg.project_dir)
             except OSError as exc:
@@ -1147,6 +1155,15 @@ class ArgusAPI:
             return {"ok": False, "error": str(exc)}
 
     def knowledge_export(self, target: str) -> dict:
+        with self._lock:
+            # Stores rewrite graph files while they close; reading one mid-write could
+            # export an empty or partial document, so wait like reset does.
+            job = self._jobs.get(self._active_job) if self._active_job else None
+            if self._closing or (job and job["running"]) or self._active_ks is not None:
+                return {"ok": False, "error": "Wait for the current job to finish and its knowledge store to close before exporting knowledge."}
+            return self._knowledge_export(target)
+
+    def _knowledge_export(self, target: str) -> dict:
         from argus.knowledge.fingerprint import target_key
         from argus.knowledge.storage import read_project_knowledge_file
         from argus.ates.store import AtesStoreError

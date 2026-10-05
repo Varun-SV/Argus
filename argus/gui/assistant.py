@@ -644,6 +644,11 @@ _TAKE_BACK_RE = re.compile(r"(?<![\w-])(?:" + _TAKE_BACK + r")(?![\w-])", re.IGN
 _CANCELLATION = re.compile(
     r"(?<![\w-])(?:" + _TAKE_BACK + r"|don'?t|do\s+not|dont|but\s+(?:not|never))(?![\w-])",
     re.IGNORECASE)
+# The app can't wait for a condition, so "stop it if it hangs" / "roam X once the build
+# passes" must not act immediately.
+_CONDITION = re.compile(
+    r"(?<![\w-])(?:if|when|whenever|once|after|before|until|till|unless|as\s+soon\s+as|"
+    r"in\s+case|provided\s+that)(?![\w-])", re.IGNORECASE)
 _ROAM_TAKE_BACK = re.compile(
     r"(?<![\w-])(?:" + _TAKE_BACK + r"|but\s+(?:don'?t|do\s+not|not|never))(?![\w-])",
     re.IGNORECASE)
@@ -787,6 +792,9 @@ def _authorized_simple_action(text: str, action: str) -> bool:
     trailing = _TAKE_BACK_RE if action == "write_test" else _CANCELLATION
     if any(not (action == "stop" and m.group().lower().startswith("cancel"))
            for m in trailing.finditer(command, verb_end)):
+        return False
+    # A drafted test's description may say "when ..."; the other actions take effect now.
+    if action != "write_test" and _CONDITION.search(command):
         return False
     return not re.search(
         r"\b(?:don'?t|do\s+not|never|not|no|avoid|can'?t|cannot|won'?t|"
@@ -1018,6 +1026,9 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         verb = _ROAM_VERB.search(text)
         if verb and _ROAM_TAKE_BACK.search(_without_literals(text).replace("\u2019", "'"), verb.end()):
             return intent("chat", reply="I didn't start anything: the request was taken back.")
+        if _CONDITION.search(_without_literals(text)):
+            return intent("chat", reply=("I didn't start anything: I can't wait for a condition before "
+                                         "roaming. Ask again when you want it to start now."))
         if _FUTURE_TIME.search(_without_literals(text)):
             return intent("chat", reply=("I didn't start anything: I can't schedule a roam for later. "
                                          "Ask again when you want it to start now."))

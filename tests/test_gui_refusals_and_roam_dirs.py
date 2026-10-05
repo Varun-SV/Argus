@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from argus.config import init_project
@@ -228,3 +230,100 @@ def test_quoted_test_titles_never_change_run_settings():
         assert routed["args"].get("environment") is None and routed["args"].get("retain") is None
     explicit = validate_intent({"intent": "run"}, 'run "Checkout in a capsule" in a capsule', tests)
     assert explicit["args"]["environment"] == "capsule"
+
+
+@pytest.mark.parametrize("action,text", [
+    ("stop", "stop the run if it hangs"), ("stop", "stop it when checkout finishes"),
+    ("stop", "stop the roam once it finds a bug"), ("save_test", "save this draft after it passes"),
+    ("init", "initialize the Argus project unless one exists"),
+])
+def test_conditional_simple_actions_are_not_taken_now(action, text):
+    assert validate_intent({"intent": action}, text, {"has_draft": True})["intent"] == "chat"
+
+
+def test_a_drafted_test_may_describe_conditions():
+    text = "write a test that login fails when the password is wrong"
+    assert validate_intent({"intent": "write_test"}, text, {})["intent"] == "write_test"
+
+
+@pytest.mark.parametrize("text", [
+    "roam notepad.exe after deployment", "roam notepad.exe when the build passes",
+    "once the server starts, roam notepad.exe", "roam notepad.exe if the login page loads",
+])
+def test_conditional_roams_are_not_started_now(text):
+    routed = validate_intent({"intent": "roam", "args": {"target": split_roam_request(text).target}}, text, {})
+    assert routed["intent"] == "chat"
+
+
+def test_condition_words_inside_quoted_targets_and_urls_still_roam():
+    for text, target in (('roam "tool --when ready"', "tool --when ready"),
+                         ("roam https://example.test/if", "https://example.test/if")):
+        routed = validate_intent({"intent": "roam", "args": {"target": target}}, text, {})
+        assert routed["intent"] == "roam" and routed["args"]["target"] == target
+
+
+def test_knowledge_export_waits_for_an_active_store(api, tmp_path):
+    graphs = tmp_path / ".argus" / "knowledge"
+    graphs.mkdir(exist_ok=True)
+    (graphs / "notepad-exe.graph.json").write_text("{}", encoding="utf-8")
+    api._active_ks = object()
+    out = api.knowledge_export("notepad.exe")
+    assert not out["ok"] and "Wait" in out["error"]
+    assert not (tmp_path / ".argus" / "exports" / "notepad-exe.graph.json").exists()
+
+
+class _ProbeCountingProvider:
+    """Wraps FakeProvider to count vision probes across every provider a job creates."""
+    probes = 0
+
+    @classmethod
+    def make(cls, offline=False):
+        from tests.conftest import FakeProvider
+        from argus.providers.base import ProviderError
+
+        class Provider(FakeProvider):
+            def _detect_vision(self):
+                cls.probes += 1
+                if offline:
+                    raise ProviderError("provider offline")
+                return True
+        return Provider([])
+
+
+def _write_specs(project, specs):
+    import yaml
+    for name, steps in specs.items():
+        (project / ".argus" / f"{name}.test.yaml").write_text(yaml.safe_dump({
+            "name": name, "target": {"adapter": "cli", "launch": f'"{sys.executable}" -c "print(123)"'},
+            "steps": steps}, sort_keys=False), encoding="utf-8")
+
+
+def _run_and_wait(api, files):
+    import time
+    started = api.run_tests(files)
+    assert started["ok"], started
+    deadline = time.time() + 60
+    while api.job_status(started["job"]["id"])["running"]:
+        assert time.time() < deadline
+        time.sleep(0.05)
+    return api.job_status(started["job"]["id"])
+
+
+def test_assertion_only_specs_never_probe_the_model(api, tmp_path, monkeypatch):
+    _ProbeCountingProvider.probes = 0
+    monkeypatch.setattr(gui_app.ArgusConfig, "make_provider",
+                        lambda self, tracker=None: _ProbeCountingProvider.make(offline=True))
+    _write_specs(tmp_path, {"only-asserts": [{"assert": {"exit_code_is": 0}}]})
+    job = _run_and_wait(api, ["only-asserts.test.yaml"])
+    assert job["runs"][0]["status"] == "pass", job["runs"][0]
+    assert _ProbeCountingProvider.probes == 0
+
+
+def test_a_multi_test_job_probes_vision_once(api, tmp_path, monkeypatch):
+    _ProbeCountingProvider.probes = 0
+    monkeypatch.setattr(gui_app.ArgusConfig, "make_provider",
+                        lambda self, tracker=None: _ProbeCountingProvider.make())
+    _write_specs(tmp_path, {f"t{i}": ["Check the output", {"assert": {"exit_code_is": 0}}] for i in range(3)})
+    job = _run_and_wait(api, [f"t{i}.test.yaml" for i in range(3)])
+    assert len(job["runs"]) == 3
+    assert _ProbeCountingProvider.probes == 1

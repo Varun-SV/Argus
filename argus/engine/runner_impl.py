@@ -363,8 +363,14 @@ def run_test(
                 )
             ates_closed = True
 
+    # Assertion-only specs (and the built-in "close" teardown) never call the model, so
+    # don't probe it: the probe can cost requests and fails when the provider is offline.
+    needs_model = any(
+        isinstance(step, NLStep) and not (step.kind == "teardown" and step.text == "close")
+        for step in spec.steps
+    )
     try:
-        use_vision = provider.supports_vision()
+        use_vision = provider.supports_vision() if needs_model else False
     except ProviderError as exc:
         result.status = "error"
         result.error = f"provider check failed: {exc}"
@@ -372,7 +378,7 @@ def run_test(
         result.tokens = provider.tracker.snapshot()
         finish_ates("runtime.provider_check_failed", "error")
         return result
-    if not use_vision and warn:
+    if needs_model and not use_vision and warn:
         warn(
             f"model '{provider.model}' is not multimodal — vision-related testing is "
             "disabled; Argus will rely on the accessibility tree only."
