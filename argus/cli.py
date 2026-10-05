@@ -626,6 +626,10 @@ def knowledge_docker_status() -> None:
     except (ValueError, OSError) as exc:
         raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
     for name, running in s.items():
+        if running is None:
+            console.print(f"  [yellow]?[/yellow]  {name}: unknown — could not verify the container's "
+                          "project ownership; inspect Docker resources")
+            continue
         glyph = "[green]●[/green]" if running else "[dim]○[/dim]"
         state = "running" if running else "stopped"
         console.print(f"  {glyph}  {name}: {state}")

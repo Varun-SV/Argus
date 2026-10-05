@@ -395,6 +395,11 @@ _ROAM_PHRASES = tuple(re.compile(r"\b" + p + r"\b", re.IGNORECASE)
 _MODIFIER_WORDS = re.compile(
     r"\b(?:capsules?|locally|local|memory|hyper-?v|libvirt|seconds?|secs?|minutes?|mins?|hours?|hrs?)\b",
     re.IGNORECASE)
+# The same refusal forms run, watch and the simple actions reject ("no need to",
+# "should not", "would rather not", ...), anywhere before the roam verb in the clause.
+_ROAM_REFUSAL = re.compile(
+    r"\b(?:don'?t|do\s+not|never|not|no|avoid|can'?t|cannot|won'?t|shouldn'?t|mustn'?t|without)"
+    r"\b[^.;!?]*\b(?:roam|explore)\b", re.IGNORECASE)
 _DEICTIC_TARGET = re.compile(
     r"^(?:(?:it|that)(?:\s+again)?|again|(?:the\s+)?same(?:\s+(?:app|target))?|"
     r"(?:the\s+)?(?:previous|last)(?:\s+(?:app|target))?)[.!]?$", re.IGNORECASE)
@@ -490,9 +495,6 @@ def split_roam_request(text: str) -> Optional[RoamRequest]:
     match = _ROAM_VERB.search(text)
     if not match:
         return None
-    if re.search(r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,40}\b(?:roam|explore)\b",
-                 text[:match.end()], re.IGNORECASE):
-        return RoamRequest("", {}, "I won't roam a target when the instruction is negated.")
     modifiers: dict = {}
     problem = None
 
@@ -501,6 +503,9 @@ def split_roam_request(text: str) -> Optional[RoamRequest]:
         for m in pattern.finditer(prefix):
             problem = problem or _merge(modifiers, _roam_modifier(m))
         prefix = pattern.sub(" ", prefix)
+    # Checked after the modifiers are removed, so "without memory, roam X" is not a refusal.
+    if _ROAM_REFUSAL.search(prefix.replace("\u2019", "'") + match.group(0)):
+        return RoamRequest("", {}, "I won't roam a target when the instruction is negated.")
     leftover = _MODIFIER_WORDS.search(prefix)
     if leftover and not problem:
         problem = f'I couldn\'t tell how "{leftover.group(0)}" should apply to this roam. ' + _QUOTE_HINT
@@ -611,6 +616,17 @@ def _question_about_action(text: str) -> bool:
         r"does|did|do|will|would|should|could|can|may|might)\b", text, re.IGNORECASE))
 
 
+_FUTURE_TIME = re.compile(
+    r"\b(?:tomorrow|tonight|later|afterwards?|eventually|soon|overnight|"
+    r"next\s+(?:minute|hour|day|week|weekend|month|year|time|monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday)|"
+    r"this\s+(?:morning|afternoon|evening|weekend)|"
+    r"(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"in\s+(?:a|an|a\s+few|\d+(?:\.\d+)?)\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)|"
+    r"at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|at\s+(?:noon|midnight))\b",
+    re.IGNORECASE)
+
+
 def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     """Return the test scope explicitly authorized by the user's own words."""
     # Literal quoted titles and complete filenames are data, not instructions.
@@ -647,6 +663,11 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
                  r"all\s+but|other\s+than|apart\s+from|instead\s+of)\b",
                  command, re.IGNORECASE):
         return None, "I didn't run anything: exclusions or conditions need an explicit list of tests to run. Name only the tests you want."
+
+    # The desktop app has no scheduler, so a future time can't be honoured by running now.
+    if _FUTURE_TIME.search(command):
+        return None, ("I didn't run anything: I can't schedule runs for later. "
+                      "Ask again when you want the tests to run now.")
 
     if re.search(
         r"\b(?:all\s+(?:the\s+)?tests?|every\s+test|everything|(?:whole|full)\s+suite|"

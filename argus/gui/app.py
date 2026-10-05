@@ -776,7 +776,7 @@ class ArgusAPI:
             budget = _StoppableBudget(
                 cfg.make_budget(tracker, time_minutes=job["minutes"]), self._stop
             )
-            session_dir = cfg.argus_dir / "roam" / time.strftime("%Y%m%d-%H%M%S")
+            session_dir = _reserve_roam_dir(cfg)
             memory_dir = cfg.argus_dir / "roam" / "memory" if job["memory"] else None
 
             def on_event(line: str) -> None:
@@ -1518,6 +1518,24 @@ def _argus_subdir(cfg: ArgusConfig, name: str, create: bool = True) -> Path:
     except ValueError as exc:
         raise OSError(f".argus/{name} escapes the project: {sub}") from exc
     return resolved
+
+
+def _reserve_roam_dir(cfg: ArgusConfig) -> Path:
+    """A fresh ``.argus/roam/<stamp>-<id>`` directory owned by this roam alone.
+
+    The engine writes fixed names (report.md, session.json, screenshots), so two roams
+    started in the same second must never share a directory.
+    """
+    root = _argus_subdir(cfg, "roam")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for _ in range(10):
+        candidate = root / f"{stamp}-{uuid.uuid4().hex[:8]}"
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise OSError("Could not reserve a unique roam directory")
 
 
 def _restored_result(card_result: dict) -> dict:

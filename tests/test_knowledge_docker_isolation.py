@@ -383,3 +383,39 @@ def test_running_mount_reopens_after_creator_exit_but_unavailable_attestation_fa
     with pytest.raises(DockerOwnershipError):
         a.ensure_qdrant()
     assert not a.stop("qdrant")
+
+
+@pytest.mark.parametrize("cause", ["foreign_storage", "inspect_fails"])
+def test_unverifiable_qdrant_status_is_unknown_not_stopped(tmp_path, daemon, cause):
+    a = manager(tmp_path)
+    a.ensure_qdrant()
+    info = next(iter(daemon.containers.values()))
+    if cause == "foreign_storage":
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        info["Mounts"][0]["Source"] = str(foreign)
+    else:
+        daemon.fail.add("inspect")
+    assert info["State"]["Running"]
+    assert a.status()["qdrant"] is None
+
+
+def test_cli_prints_unknown_for_unverifiable_qdrant(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from click.testing import CliRunner
+    from argus import cli
+    from argus.knowledge import storage
+
+    class Unverifiable:
+        def status(self):
+            return {"qdrant": None, "neo4j": False}
+
+    @contextmanager
+    def project_manager(_project):
+        yield Unverifiable()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(storage, "project_docker_manager", project_manager)
+    out = CliRunner().invoke(cli.main, ["knowledge", "docker", "status"])
+    assert out.exit_code == 0, out.output
+    assert "qdrant: unknown" in out.output and "qdrant: stopped" not in out.output

@@ -372,8 +372,13 @@ class DockerManager:
         return ownership_confirmed
 
     def status(self) -> dict:
-        """Return running state of both containers."""
-        qdrant = False
+        """Return running state of both containers.
+
+        ``qdrant`` is None when its state can't be verified (Docker inspection failed or
+        the container failed the ownership checks): it may still be running, so callers
+        must not report it as stopped.
+        """
+        qdrant: Optional[bool] = False
         try:
             docker = shutil.which("docker")
             name, labels, storage, _ = self._qdrant_scope()
@@ -385,6 +390,7 @@ class DockerManager:
             pass
         except (OSError, ValueError, subprocess.SubprocessError):
             log.warning("Qdrant status could not verify project ownership. Inspect Docker resources before retrying.")
+            qdrant = None
         return {
             "qdrant": qdrant,
             "neo4j": self._container_running(self.NEO4J_CONTAINER),
