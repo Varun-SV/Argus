@@ -301,7 +301,53 @@ def read_project_knowledge_file(project_dir: Path, name: str) -> bytes:
         directories.close()
 
 
-def create_project_knowledge_store(project_dir: Path, **options):
+@contextmanager
+def project_docker_manager(project_dir: Path, *, create=False):
+    """Keep CLI Docker ownership anchored under the same project authority."""
+    from argus.knowledge.docker_manager import DockerManager
+    pins = []
+    try:
+        project = _pin(_PinnedDirectory(Path(project_dir).resolve(strict=True)))
+        pins.append(project)
+        try:
+            if not create and os.name == "nt":
+                (project.path / ".argus").lstat()
+            argus = (_pin(project.ensure_child(".argus", "project data")) if create else
+                     _existing_child(project, ".argus"))
+        except FileNotFoundError:
+            yield None
+            return
+        pins.append(argus)
+        try:
+            if not create and os.name == "nt":
+                (argus.path / "qdrant-data").lstat()
+            server = (_pin(argus.ensure_child("qdrant-data", "knowledge server storage")) if create else
+                      _existing_child(argus, "qdrant-data"))
+        except FileNotFoundError:
+            server = None
+        if server is not None:
+            pins.append(server)
+        if create and os.name != "nt" and not Path("/proc/self/fd").is_dir():
+            raise ValueError("Secure project Docker storage is unavailable on this platform. "
+                             "Use knowledge.type=json or an explicitly configured external service.")
+        source = (Path(f"/proc/{os.getpid()}/fd/{server._fd}")
+                  if server is not None and os.name != "nt" and Path("/proc/self/fd").is_dir()
+                  else server.path if server is not None else None)
+        def authoritative():
+            project.assert_child_identity(".argus", argus, "project data")
+            if server is not None:
+                argus.assert_child_identity("qdrant-data", server, "knowledge server storage")
+        authoritative()
+        yield DockerManager(argus.path, qdrant_data_dir=source)
+        authoritative()
+    except AtesStoreError as exc:
+        raise KnowledgeFileError(str(exc)) from None
+    finally:
+        for pin in reversed(pins):
+            pin.close()
+
+
+def create_project_knowledge_store(project_dir: Path, *, graph_persist_dir=None, **options):
     from argus.knowledge import _resolve_auto, create_knowledge_store
     from argus.knowledge.store import LocalKnowledgeStore
 
@@ -326,7 +372,8 @@ def create_project_knowledge_store(project_dir: Path, **options):
                                                if os.name != "nt" and Path("/proc/self/fd").is_dir()
                                                else qdrant.path)
         store = create_knowledge_store(
-            persist_dir=_DirectoryFiles(directories.knowledge), data_dir=argus_path, **options)
+            persist_dir=(graph_persist_dir if graph_persist_dir is not None else _DirectoryFiles(directories.knowledge)),
+            data_dir=argus_path, **options)
         if isinstance(store, LocalKnowledgeStore):
             store._chroma_path = directories.pin_vectors()
         directories.assert_authoritative()

@@ -181,21 +181,19 @@ def test_docker_storage_alias_is_rejected_before_startup(tmp_path, monkeypatch):
 @pytest.mark.skipif(not STABLE_DIRECTORY_PATHS, reason="Default Docker storage fails with guidance on this host")
 def test_docker_mount_uses_pinned_host_directory_not_daemon_self_descriptor(tmp_path, monkeypatch):
     from argus.knowledge import docker_manager
+    from tests.test_knowledge_docker_isolation import DockerDaemon
     manager = docker_manager.DockerManager
-    captured = []
+    daemon = DockerDaemon()
     monkeypatch.setattr(manager, "available", lambda self: True)
     monkeypatch.setattr(manager, "_container_running", lambda self, name: False)
     monkeypatch.setattr(manager, "_container_exists", lambda self, name: False)
     monkeypatch.setattr(manager, "_wait_http", lambda *args: True)
     monkeypatch.setattr(docker_manager.shutil, "which", lambda name: "docker")
-    def run(args, **kwargs):
-        captured.append(args)
-        return SimpleNamespace(returncode=0, stdout="")
-    monkeypatch.setattr(docker_manager.subprocess, "run", run)
+    monkeypatch.setattr(docker_manager.subprocess, "run", daemon.run)
     cfg = configuration(tmp_path)
     cfg.knowledge.type = "docker"
     store = cfg.make_knowledge_store()
-    command = captured[0]
+    command = next(c for c in daemon.commands if c[1] == "run")
     mount = command[command.index("-v") + 1].removesuffix(":/qdrant/storage")
     from pathlib import Path
     source = Path(mount)

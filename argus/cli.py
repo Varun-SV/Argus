@@ -579,14 +579,16 @@ def knowledge_docker() -> None:
 @knowledge_docker.command("up")
 def knowledge_docker_up() -> None:
     """Start argus-qdrant Docker container."""
-    from argus.knowledge.docker_manager import DockerManager
+    from argus.knowledge.storage import project_docker_manager
     cfg = load_config()
-    mgr = DockerManager(cfg.argus_dir)
-    if not mgr.available():
-        console.print("[red]✗[/red] Docker is not available on this system.")
-        sys.exit(1)
-    with console.status("Starting argus-qdrant…"):
-        url = mgr.ensure_qdrant()
+    try:
+        with project_docker_manager(cfg.project_dir, create=True) as mgr:
+            if not mgr.available():
+                raise click.ClickException("Docker is not available on this system.")
+            with console.status("Starting project Qdrant…"):
+                url = mgr.ensure_qdrant()
+    except (ValueError, OSError) as exc:
+        raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
     if url:
         console.print(f"[green]✓[/green] Qdrant running at {url}")
     else:
@@ -597,20 +599,32 @@ def knowledge_docker_up() -> None:
 @knowledge_docker.command("down")
 def knowledge_docker_down() -> None:
     """Stop argus-qdrant Docker container."""
+    from argus.knowledge.storage import project_docker_manager
     from argus.knowledge.docker_manager import DockerManager
     cfg = load_config()
-    mgr = DockerManager(cfg.argus_dir)
-    mgr.stop()
+    try:
+        with project_docker_manager(cfg.project_dir) as mgr:
+            stopped = mgr.stop() if mgr is not None else DockerManager(cfg.argus_dir).stop("neo4j")
+    except (ValueError, OSError) as exc:
+        raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
+    if not stopped:
+        console.print("[red]✗[/red] Could not confirm knowledge services stopped. Inspect Docker ownership and retry.")
+        sys.exit(1)
     console.print("[green]✓[/green] Knowledge Docker services stopped.")
 
 
 @knowledge_docker.command("status")
 def knowledge_docker_status() -> None:
     """Show running state of knowledge Docker containers."""
+    from argus.knowledge.storage import project_docker_manager
     from argus.knowledge.docker_manager import DockerManager
     cfg = load_config()
-    mgr = DockerManager(cfg.argus_dir)
-    s = mgr.status()
+    try:
+        with project_docker_manager(cfg.project_dir) as mgr:
+            s = mgr.status() if mgr is not None else {
+                "qdrant": False, "neo4j": DockerManager(cfg.argus_dir)._container_running(DockerManager.NEO4J_CONTAINER)}
+    except (ValueError, OSError) as exc:
+        raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
     for name, running in s.items():
         glyph = "[green]●[/green]" if running else "[dim]○[/dim]"
         state = "running" if running else "stopped"

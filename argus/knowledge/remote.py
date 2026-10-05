@@ -36,10 +36,14 @@ class RemoteKnowledgeStore(KnowledgeStore):
         self._graphs: Dict[str, Any] = {}
 
     def _client(self):
+        verify = getattr(self._vector_url, "verify", None)
+        if verify is not None:
+            verify()
         if self._qdrant is None:
             try:
                 from qdrant_client import QdrantClient
-                self._qdrant = QdrantClient(url=self._vector_url)
+                options = self._vector_url.client_options() if verify is not None else {}
+                self._qdrant = QdrantClient(url=str(self._vector_url), **options)
             except Exception:
                 pass
         return self._qdrant
@@ -337,12 +341,13 @@ class RemoteKnowledgeStore(KnowledgeStore):
         return stats
 
     def clear_target(self, target: str) -> None:
+        # Verify remote authority before mutating either local or remote state.
+        client = self._client()
         key = target_key(target)
         path = self._dir / f"{key}.graph.json"
         if path.exists():
             path.unlink()
         self._graphs.pop(key, None)
-        client = self._client()
         if client:
             for suffix in ("states", "bugs"):
                 try:

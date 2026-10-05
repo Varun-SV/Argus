@@ -36,6 +36,39 @@ def test_invalid_or_negated_watch_chat_never_calls_watch_api(desktop_browser, mo
     assert page.evaluate("state.conv.msgs.some(m=>m.role==='argus' && m.kind==='text')")
 
 
+@pytest.mark.parametrize("text", ["no need to run checkout", "you should not run checkout",
+                                 "I would rather not run checkout", "run either safe or destructive"])
+def test_negative_and_alternative_run_chat_never_calls_run_api(desktop_browser, monkeypatch, text):
+    page, api, project = desktop_browser
+    for name in ("checkout", "safe", "destructive"):
+        spec = yaml.safe_load(CLI_SPEC)
+        spec["name"] = name
+        (project / ".argus" / f"{name}.test.yaml").write_text(yaml.safe_dump(spec))
+    monkeypatch.setattr(ArgusConfig, "make_provider", lambda self, tracker=None:
+                        FakeProvider([json.dumps({"intent": "run", "args": {"tests": "all"}})]))
+    calls = []
+    monkeypatch.setattr(api, "run_tests", lambda *a, **k: calls.append(a) or {"ok": False})
+    page.evaluate("text => sendText(text)", text)
+    assert not calls and api._jobs == {}
+    assert not page.evaluate("state.conv.msgs.some(m=>m.kind==='run')")
+
+
+def test_invalid_project_environment_shows_guidance_without_locking_picker(desktop_browser, monkeypatch):
+    page, api, project = desktop_browser
+    monkeypatch.delenv("ARGUS_EXECUTION_ENVIRONMENT", raising=False)
+    cfg = api._config()
+    cfg.execution.environment = "capusle"
+    monkeypatch.setattr(api, "_config", lambda *a, **k: cfg)
+    page.reload()
+    page.wait_for_function("state.info && !state.info.ok")
+    assert page.locator("#env-btn").inner_text() == "Check environment"
+    assert not page.evaluate("state.info.env_locked")
+    page.evaluate("runChip('Run smoke', I('run',{tests:['smoke.test.yaml']}))")
+    page.wait_for_function("state.conv.msgs.some(m=>m.error && m.text.includes('execution.environment'))")
+    assert api._jobs == {}
+    assert api.set_environment("local")["ok"]
+
+
 def test_late_stop_failure_card_and_followups_remain_failed(desktop_browser, monkeypatch):
     from argus.engine.results import RunResult
     page, api, project = desktop_browser

@@ -594,21 +594,29 @@ def _question_about_action(text: str) -> bool:
 
 def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     """Return the test scope explicitly authorized by the user's own words."""
+    # Literal quoted titles and complete filenames are data, not instructions.
+    # Keep offsets intact so scope extraction still uses the original request.
+    command = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'|(?<![\w.-])[\w.-]+\.test\.ya?ml(?![\w.-])',
+                     lambda m: " " * len(m.group()), text).replace("\u2019", "'")
     if _question_about_action(text):
         return None, "I can describe the tests, but I won't execute them unless you explicitly ask me to run one."
     if re.search(
-        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:run|execute|rerun|re-run|test|check)\b",
-        text,
+        r"\b(?:don'?t|do\s+not|never|not|no|avoid|can'?t|cannot|won'?t|"
+        r"shouldn'?t|mustn'?t|without)\b[^.;!?]*\b(?:run(?:ning)?|execut(?:e|ing)|rerun(?:ning)?|re-run(?:ning)?|test(?:ing)?|check(?:ing)?)\b",
+        command,
         re.IGNORECASE,
     ):
         return None, "I won't execute a test when the instruction is negated."
 
+    if re.search(r"\b(?:either|or|maybe|perhaps|possibly|might)\b", command, re.IGNORECASE):
+        return None, "I didn't run anything: alternatives or uncertainty need an explicit test list. Name the tests you want to run."
+
     executes = (
-        re.search(r"\b(?:run|execute|rerun|re-run)\b", text, re.IGNORECASE)
+        re.search(r"\b(?:run|execute|rerun|re-run)\b", command, re.IGNORECASE)
         or re.search(
             r"(?:^|\b(?:please|can\s+you|could\s+you|would\s+you|i\s+want\s+you\s+to)\s+)"
             r"(?:test|check)\b",
-            text,
+            command,
             re.IGNORECASE,
         )
     )
@@ -618,13 +626,13 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     if re.search(r"\b(?:except|excluding|exclude|skip|skipping|omit|omitting|without|unless|"
                  r"if|when|after|before|until|once|as\s+soon\s+as|only\s+when|but\s+not|"
                  r"all\s+but|other\s+than|apart\s+from|instead\s+of)\b",
-                 text, re.IGNORECASE):
+                 command, re.IGNORECASE):
         return None, "I didn't run anything: exclusions or conditions need an explicit list of tests to run. Name only the tests you want."
 
     if re.search(
         r"\b(?:all\s+(?:the\s+)?tests?|every\s+test|everything|(?:whole|full)\s+suite|"
         r"(?:run|execute|rerun|re-run)\s+(?:them\s+)?all)\b",
-        text,
+        command,
         re.IGNORECASE,
     ):
         return "all", None
@@ -930,8 +938,8 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     if name == "write_test":
         if not _authorized_simple_action(text, "write_test"):
             return intent("chat", reply="Tell me explicitly to write or draft a test, and what it should cover.")
-        description = str(args.get("description") or text).strip()
-        return intent("write_test", description=description[:2000])
+        # The router selects an action; it cannot rewrite the generator's task.
+        return intent("write_test", description=text)
 
     if name == "knowledge":
         action = args.get("action") if args.get("action") in KNOWLEDGE_ACTIONS else "show"

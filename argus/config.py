@@ -388,9 +388,22 @@ class ArgusConfig:
                 vector_url=kc.vector_url, embedding_model=kc.embedding_model,
             )
         persist = Path(kc.persist_dir) if kc.persist_dir else self.argus_dir / "knowledge"
+        backend = kc.type
+        if backend == "auto":
+            from argus.knowledge import _resolve_auto
+            backend = _resolve_auto(persist.parent, interactive=True)
+        if backend in ("docker", "qdrant"):
+            # Explicit graph persistence does not authorize redirected project
+            # storage for the managed Docker service.
+            from argus.knowledge.storage import create_project_knowledge_store
+            return create_project_knowledge_store(
+                self.project_dir, graph_persist_dir=persist, store_type=backend,
+                vector_backend=kc.vector_backend, vector_url=kc.vector_url,
+                embedding_model=kc.embedding_model,
+            )
         return create_knowledge_store(
             enabled=kc.enabled,
-            store_type=kc.type,
+            store_type=backend,
             vector_backend=kc.vector_backend,
             vector_url=kc.vector_url,
             persist_dir=persist,

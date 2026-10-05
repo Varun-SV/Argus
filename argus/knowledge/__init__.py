@@ -35,7 +35,7 @@ def create_knowledge_store(
     """Build and return a KnowledgeStore.
 
     Resolution order when store_type == "auto" (default):
-      1. Docker available → start argus-qdrant container → RemoteKnowledgeStore
+      1. Docker available → start project-owned Qdrant container → RemoteKnowledgeStore
       2. Docker unavailable, interactive → prompt user to pick json or ml-stack
       3. Non-interactive fallback → JsonKnowledgeStore (zero deps)
 

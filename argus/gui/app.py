@@ -133,10 +133,14 @@ class ArgusAPI:
         except (OSError, ValueError):
             return {"ok": False, "error": "Could not open that folder. Choose an existing project folder."}
 
-    def _session_view(self, cfg: ArgusConfig) -> dict:
+    def _session_view(self, cfg: ArgusConfig, environment: Optional[str] = None) -> dict:
         """The effective environment, resolved the same way make_execution_environment does."""
         forced = _forced_environment()
-        env = forced or self._session["environment"] or cfg.execution.environment or "local"
+        env = forced or environment or self._session["environment"] or cfg.execution.environment or "local"
+        env = str(env).strip().lower()
+        if env not in assistant.ENVIRONMENTS:
+            raise EnvironmentConfigurationError(
+                "execution.environment must be local or capsule. Correct .argus/config.yaml or choose a session environment.")
         cap = (self._session["capsule_provider"] or os.environ.get("ARGUS_CAPSULE_PROVIDER")
                or cfg.execution.capsule.provider or "auto")
         retain = self._session["retain"]
@@ -151,11 +155,16 @@ class ArgusAPI:
 
     def _job_environment(self, cfg: ArgusConfig, overrides: dict):
         """Return (env, capsule_provider, retain, error) for a new job."""
+        requested = overrides.get("environment")
+        if requested is not None:
+            requested = str(requested).strip().lower()
+            if requested not in assistant.ENVIRONMENTS:
+                return None, None, None, "Execution environment must be local or capsule."
         try:
-            s = self._session_view(cfg)
+            s = self._session_view(cfg, requested)
         except EnvironmentConfigurationError as exc:
             return None, None, None, str(exc)
-        env = overrides.get("environment") or s["environment"]
+        env = requested or s["environment"]
         forced = _forced_environment()
         if forced and env != forced:
             return None, None, None, (
@@ -186,7 +195,8 @@ class ArgusAPI:
                 "initialized": False, "provider": "", "model": "Choose a project" if required else "Check configuration",
                 "providers": [], "environment": None, "capsule_provider": "auto",
                 "env_label": "Check environment" if invalid_environment else "Not ready",
-                "env_locked": invalid_environment, "retain": False, "memory": True, "last_target": "",
+                "env_locked": bool(os.environ.get("ARGUS_EXECUTION_ENVIRONMENT", "").strip()),
+                "retain": False, "memory": True, "last_target": "",
                 "tokens": self._usage_now(),
                 "error": (str(exc) if invalid_environment else self._startup_error or "Open a folder to start testing. Each project keeps its own tests and conversations."
                           if required else "Could not load .argus/config.yaml. Check its YAML structure and setting values, then retry."),
@@ -278,7 +288,8 @@ class ArgusAPI:
             s = self._session_view(cfg)
         except EnvironmentConfigurationError as exc:
             return {"ok": False, "label": "Check environment", "environment": None,
-                    "env_locked": True, "rows": [{"k": "configuration", "v": "not ready"}],
+                    "env_locked": bool(os.environ.get("ARGUS_EXECUTION_ENVIRONMENT", "").strip()),
+                    "rows": [{"k": "configuration", "v": "not ready"}],
                     "note": str(exc), "error": str(exc)}
         cc = cfg.execution.capsule
         if s["environment"] == "capsule":
@@ -909,11 +920,13 @@ class ArgusAPI:
                 return {"ok": False, "error": "This window is closing. Reopen the project to start watching."}
             if self._watch and self._watch["running"]:
                 return {"ok": True, "watch": _copy(self._watch)}
+            seen = _test_versions(cfg.project_dir)
             # Don't clear self._stop here: a Stop must still reach an active job.
             self._watch = {"id": uuid.uuid4().hex[:12], "running": True,
                            "pattern": ".argus/*.test.yaml", "events": [], "settled_count": 0,
                            "started_at": time.time()}
             threading.Thread(target=self._watch_worker, args=(self._watch, cfg.project_dir),
+                             kwargs={"initial_versions": seen},
                              daemon=True).start()
             return {"ok": True, "watch": _copy(self._watch)}
 
@@ -925,8 +938,9 @@ class ArgusAPI:
     def watch_status(self) -> dict:
         return _copy(self._watch) if self._watch else {"running": False, "events": []}
 
-    def _watch_worker(self, watch: dict, project_dir: Path, poll: float = 1.0) -> None:
-        seen = _test_versions(project_dir)
+    def _watch_worker(self, watch: dict, project_dir: Path, poll: float = 1.0,
+                      initial_versions: Optional[dict] = None) -> None:
+        seen = dict(initial_versions) if initial_versions is not None else _test_versions(project_dir)
         pending: Dict[str, dict] = {}  # changed file -> its event, until it has been re-run
         while watch["running"]:
             time.sleep(poll)
