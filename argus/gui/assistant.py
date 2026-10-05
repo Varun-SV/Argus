@@ -287,9 +287,9 @@ def _minutes(value) -> Optional[float]:
         m = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    if not math.isfinite(m) or m <= 0:
+    if not math.isfinite(m) or not 0 < m <= 240:
         return None
-    return min(m, 240.0)
+    return m
 
 
 # ----------------------------------------------------------------- LLM ----
@@ -435,7 +435,7 @@ def _looks_like_cli_target(target: str) -> bool:
 
 def _merge(into: dict, found: dict) -> Optional[str]:
     if "minutes" in found and found["minutes"] is None:
-        return "Roam duration must be greater than zero. Choose a positive duration, e.g. for 5 minutes."
+        return "Roam duration must be greater than zero, finite and at most 240 minutes. Choose a supported duration, e.g. for 5 minutes."
     for key, value in found.items():
         if key in into and into[key] != value:
             return "You asked for two different settings for this roam, so I didn't start it. " + _QUOTE_HINT
@@ -694,12 +694,6 @@ def _authorized_simple_action(text: str, action: str) -> bool:
         "init": r"init|initialize|initialise|setup|set\s+up|scaffold",
         "write_test": r"write|draft|create|make",
     }
-    if re.search(
-        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:" + action_words[action] + r")\b",
-        text,
-        re.IGNORECASE,
-    ):
-        return False
     patterns = {
         "stop": r"\b(?:stop|cancel|abort)\b",
         "save_test": (
@@ -710,7 +704,20 @@ def _authorized_simple_action(text: str, action: str) -> bool:
         "init": r"\b(?:init|initialize|initialise|setup|set\s+up|scaffold)\b[^.!?]{0,80}\b(?:argus|project|workspace)\b",
         "write_test": r"\b(?:write|draft|create|make)\b[^.!?]{0,80}\b(?:test|spec)\b",
     }
-    return bool(re.search(patterns[action], text, re.IGNORECASE))
+    # Quoted descriptions are data. Scope negation to the requested action,
+    # so "write a test ensuring users cannot create accounts" remains a draft.
+    command = text.replace("\u2019", "'")
+    command = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'',
+                     lambda m: " " * len(m.group()), command)
+    requested = re.search(patterns[action], command, re.IGNORECASE)
+    if not requested:
+        return False
+    verb = re.search(r"\b(?:" + action_words[action] + r")\b", requested.group(), re.IGNORECASE)
+    return not re.search(
+        r"\b(?:don'?t|do\s+not|never|not|no|avoid|can'?t|cannot|won'?t|"
+        r"shouldn'?t|mustn'?t|without)\b[^.;!?]*\b(?:" + action_words[action] + r")\b",
+        command[:requested.start() + verb.end()], re.IGNORECASE,
+    )
 
 
 def _authorized_explain(text: str) -> bool:

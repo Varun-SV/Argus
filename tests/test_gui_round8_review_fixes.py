@@ -124,7 +124,7 @@ def test_invalid_free_text_duration_never_authorizes_roam(duration, unit, leadin
 
 @pytest.mark.parametrize("modifier,minutes", [
     ("", None), (" for 30 seconds", 0.5), (" for .5 minutes", 0.5),
-    (" for +2 hours", 120), (" for 10000 minutes", 240),
+    (" for +2 hours", 120), (" for 240 minutes", 240),
 ])
 def test_positive_and_unspecified_duration_remain_supported(modifier, minutes):
     got = assistant.validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}},

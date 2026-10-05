@@ -55,7 +55,9 @@ Drafts are validated before they are displayed. Review their YAML, preview it, a
 
 **Stop** requests cancellation and lets execution perform its normal teardown. Closing a window with an active job requests Stop and keeps the window open until cleanup finishes; close it again after the result settles. Watch mode observes `.argus/*.test.yaml` and re-runs changed files. Stop watching before editing tests you do not want to execute.
 
-A late Stop click does not replace a completed Roam outcome; cancellation is reported only when the engine records it. Explicit Roam durations must be positive and finite. Omitting a duration uses the project default, while duration-like text inside a quoted command stays part of that command.
+A late Stop click does not replace a completed Roam outcome; cancellation is reported only when the engine records it. Roam durations must be positive, finite and at most 240 minutes; larger requests are rejected instead of silently shortened. Omitting a duration uses the project default within that range, while duration-like text inside a quoted command stays part of that command.
+
+Broader refusals such as "no need to initialize", "you should not stop" and "I would rather not save" do not authorize those actions. Draft descriptions may still contain quoted titles and negative assertions. Ordered repeated tests keep separate result directories, reports and history entries even when they execute within one second; re-saving one result updates its own entry, and older history remains readable.
 
 Watch cards retain the latest 200 completed events and all pending changes. The default knowledge store rejects redirected project directories, including Windows junctions. Explicitly configured external persistence directories remain supported. Switching back to the project's default provider restores its generic `ARGUS_API_KEY`, `ARGUS_MODEL`, and `ARGUS_BASE_URL` settings; another provider uses its own configured settings.
 

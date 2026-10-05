@@ -308,10 +308,10 @@ def test_unknown_intent_and_non_json_become_chat():
     assert got == {"intent": "chat", "args": {"reply": "I can run tests and roam apps."}}
 
 
-def test_llm_minutes_are_clamped():
-    # The duration comes from the user's words and is clamped; a model-supplied value is ignored.
+def test_llm_over_limit_minutes_are_rejected():
+    # Unsupported user durations require clarification instead of being shortened.
     got = validate_intent({"intent": "roam", "args": {"target": "a.exe"}}, "roam a.exe for 10000 minutes", CONTEXT)
-    assert got["args"]["minutes"] == 240.0
+    assert got["intent"] == "chat" and "240" in got["args"]["reply"]
     got = validate_intent({"intent": "roam", "args": {"target": "a.exe", "minutes": 10_000}}, "roam a.exe", CONTEXT)
     assert got["args"]["minutes"] is None
 

@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import re
+import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 STATUSES = ("pass", "fail", "error", "running", "skipped")
+_storage_order_lock = threading.Lock()
+_last_storage_order = 0
+
+
+def _next_storage_order() -> int:
+    """Keep local allocation order increasing across clock ties or rollback."""
+    global _last_storage_order
+    with _storage_order_lock:
+        _last_storage_order = max(time.time_ns(), _last_storage_order + 1)
+        return _last_storage_order
 
 
 def _runs_root(project_dir: Path) -> Path:
@@ -77,6 +91,16 @@ class RunResult:
     failure_capsule: Optional[dict] = None
     failure_capsule_error: Optional[dict] = None
 
+    def __post_init__(self):
+        # Storage identity is private: it is not an ATES/Capsule identifier or
+        # part of the public result document. Allocation order keeps same-second
+        # history chronological, even when the test filename repeats.
+        self._storage_order = _next_storage_order()
+        self._storage_id = uuid.uuid4().hex
+        self._storage_lock = threading.RLock()
+        self._owned_run_dirs = {}
+        self._owned_history_files = {}
+
     @property
     def passed(self) -> int:
         return sum(1 for s in self.steps if s.status == "pass")
@@ -107,30 +131,62 @@ class RunResult:
         return asdict(self)
 
     def run_dir(self, project_dir: Path) -> Path:
-        runs_root = _runs_root(project_dir)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        candidate = runs_root / f"{stamp}-{safe}"
-        if candidate.is_symlink():
-            raise OSError(f"run directory cannot be a symlink: {candidate}")
-        candidate.mkdir(exist_ok=True)
-        resolved = candidate.resolve(strict=True)
-        try:
-            resolved.relative_to(runs_root)
-        except ValueError as exc:
-            raise OSError(f"run directory escapes .argus/runs: {candidate}") from exc
-        return resolved
+        with self._storage_lock:
+            runs_root = _runs_root(project_dir)
+            owned = self._owned_run_dirs.get(runs_root)
+            if owned is not None:
+                candidate, identity = owned
+                if candidate.is_symlink():
+                    raise OSError(f"run directory cannot be a symlink: {candidate}")
+                st = candidate.stat()
+                if (st.st_dev, st.st_ino) != identity or not candidate.is_dir():
+                    raise OSError("run directory ownership changed")
+                return candidate
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
+            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
+            for _ in range(10):
+                candidate = runs_root / f"{stamp}-{self._storage_order:020d}-{self._storage_id}-{safe}"
+                flat = runs_root / f"{candidate.name}.json"
+                if flat.exists() or flat.is_symlink():
+                    self._storage_id = uuid.uuid4().hex
+                    continue
+                try:
+                    candidate.mkdir(exist_ok=False)
+                except FileExistsError:
+                    self._storage_id = uuid.uuid4().hex
+                    continue
+                if candidate.is_symlink():
+                    raise OSError(f"run directory cannot be a symlink: {candidate}")
+                resolved = candidate.resolve(strict=True)
+                try:
+                    resolved.relative_to(runs_root)
+                except ValueError as exc:
+                    raise OSError(f"run directory escapes .argus/runs: {candidate}") from exc
+                st = resolved.stat()
+                self._owned_run_dirs[runs_root] = (resolved, (st.st_dev, st.st_ino))
+                return resolved
+            raise OSError("Could not reserve a unique run directory")
 
     def save(self, project_dir: Path) -> Path:
-        runs_root = _runs_root(project_dir)
-        run_dir = self.run_dir(project_dir)
-        (run_dir / "result.json").write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        write_report(self, run_dir)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        flat = runs_root / f"{stamp}-{safe}.json"
-        flat.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        return run_dir / "result.json"
+        with self._storage_lock:
+            run_dir = self.run_dir(project_dir)
+            data = json.dumps(self.to_dict(), indent=2)
+            (run_dir / "result.json").write_text(data, encoding="utf-8")
+            write_report(self, run_dir)
+            flat = run_dir.parent / f"{run_dir.name}.json"
+            identity = self._owned_history_files.get(flat)
+            # Reserve history exclusively on the first save. Re-saving may
+            # update only the same file this result instance originally created.
+            with flat.open("x" if identity is None else "r+", encoding="utf-8") as stream:
+                st = os.fstat(stream.fileno())
+                current = (st.st_dev, st.st_ino)
+                if identity is not None and current != identity:
+                    raise OSError("run history ownership changed")
+                self._owned_history_files[flat] = current
+                stream.seek(0)
+                stream.truncate()
+                stream.write(data)
+            return run_dir / "result.json"
 
 
 def write_report(result: RunResult, run_dir: Path) -> Path:
@@ -279,12 +335,23 @@ def valid_run_history(data) -> bool:
     return True
 
 
+def run_history_paths(runs_dir: Path, limit: int = 50) -> List[Path]:
+    """Order new and legacy filenames without reading every result document."""
+    def order(path):
+        match = re.fullmatch(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json", path.name)
+        if match:
+            return match[1], match[2], path.name
+        # A legacy row in the same second predates high-resolution allocation.
+        return path.name[:15], "0" * 20, path.name
+    return sorted(runs_dir.glob("*.json"), key=order, reverse=True)[:limit]
+
+
 def load_runs(project_dir: Path, limit: int = 50) -> List[dict]:
     runs_dir = project_dir / ".argus" / "runs"
     if not runs_dir.is_dir():
         return []
     out = []
-    for path in sorted(runs_dir.glob("*.json"), reverse=True)[:limit]:
+    for path in run_history_paths(runs_dir, limit):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if valid_run_history(data):

@@ -27,7 +27,7 @@ import yaml
 
 from argus import __version__
 from argus.config import ArgusConfig, _env_bool, init_project, load_config
-from argus.engine.results import load_runs, valid_run_history
+from argus.engine.results import load_runs, run_history_paths, valid_run_history
 from argus.engine.spec import AssertStep, SpecError, discover_tests, load_spec, parse_spec
 from argus.gui import assistant
 from argus.gui.state import ProjectLease, ProjectInUse, gui_state_root, project_identity
@@ -734,9 +734,9 @@ class ArgusAPI:
         try:
             minutes = float(minutes)
         except (TypeError, ValueError, OverflowError):
-            return {"ok": False, "error": "Roam duration must be a positive, finite number of minutes."}
-        if not math.isfinite(minutes) or minutes <= 0:
-            return {"ok": False, "error": "Roam duration must be a positive, finite number of minutes."}
+            return {"ok": False, "error": "Roam duration must be positive, finite and at most 240 minutes."}
+        if not math.isfinite(minutes) or not 0 < minutes <= 240:
+            return {"ok": False, "error": "Roam duration must be positive, finite and at most 240 minutes."}
         job = {"id": uuid.uuid4().hex[:12], "kind": "roam", "running": True, "target": target,
                "adapter": adapter, "minutes": float(minutes), "memory": memory,
                "env": env, "capsule_provider": cap, "retain": retain,
@@ -1274,7 +1274,7 @@ class ArgusAPI:
         except OSError:
             return []
         out = []
-        for path in sorted(runs_dir.glob("*.json"), reverse=True)[:limit]:
+        for path in run_history_paths(runs_dir, limit):
             try:
                 if path.is_symlink():
                     continue

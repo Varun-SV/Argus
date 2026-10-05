@@ -270,6 +270,42 @@ def test_knowledge_card_displays_actual_json_fallback(desktop_browser, monkeypat
     assert page.evaluate("state.conv.msgs.find(m=>m.kind==='knowledge').k.backend").startswith("JSON graph")
 
 
+@pytest.mark.parametrize("action,text,method", [
+    ("stop", "you should not stop the run", "stop"),
+    ("init", "no need to initialize the Argus project", "init_project"),
+    ("save_test", "I would rather not save this draft", "save_test"),
+    ("write_test", "I shouldn’t create a test for login", "draft_test"),
+    ("roam", "roam notepad.exe for 300 minutes", "start_roam"),
+])
+def test_negated_actions_and_over_limit_roam_never_call_mutating_api(desktop_browser, monkeypatch, action, text, method):
+    page, api, _ = desktop_browser
+    monkeypatch.setattr(ArgusConfig, "make_provider", lambda *args, **kwargs:
+                        FakeProvider([json.dumps({"intent": action, "args": {"target": "notepad.exe"}})]))
+    calls = []
+    monkeypatch.setattr(api, method, lambda *args, **kwargs: calls.append(args) or {"ok": False})
+    page.evaluate("text => sendText(text)", text)
+    assert not calls and api._jobs == {}
+    assert page.evaluate("state.conv.msgs.some(m=>m.role==='argus' && m.kind==='text')")
+
+
+def test_repeated_run_cards_and_saved_history_remain_distinct(desktop_browser, monkeypatch):
+    from argus.engine.results import RunResult
+    page, api, project = desktop_browser
+    (project / ".argus" / "repeat.test.yaml").write_text(CLI_SPEC)
+    original = RunResult.save
+    def save_same_second(result, project_dir):
+        result.started_at = 1700000000.0
+        return original(result, project_dir)
+    monkeypatch.setattr(RunResult, "save", save_same_second)
+    page.evaluate("runChip('Run twice', I('run',{tests:['repeat.test.yaml','repeat.test.yaml']}))")
+    page.wait_for_function("state.conv.msgs.filter(m=>m.kind==='run' && m.snap.status==='pass').length===2")
+    keys = page.evaluate("state.conv.msgs.filter(m=>m.kind==='run').map(m=>m.snap.key)")
+    assert len(set(keys)) == 2 and len(api.recent_runs()) == 2
+    page.evaluate("flushConversations()")
+    saved = [m for c in api.load_conversations() for m in c["msgs"] if m["kind"] == "run"]
+    assert len(saved) == 2 and {m["snap"]["key"] for m in saved} == set(keys)
+
+
 def test_chat_run_draft_evidence_watch_and_keyboard(desktop_browser):
     page, api, project = desktop_browser
     page.locator("#tools-btn").click()
