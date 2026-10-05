@@ -18,6 +18,46 @@ from tests.conftest import FakeProvider
 from tests.test_gui_api import CLI_SPEC
 
 
+@pytest.mark.parametrize("text", ["/watch stpo", "/watch stop please", "don't watch tests", "never stop watch"])
+def test_invalid_or_negated_watch_chat_never_calls_watch_api(desktop_browser, monkeypatch, text):
+    page, api, project = desktop_browser
+    calls = []
+    monkeypatch.setattr(ArgusConfig, "make_provider", lambda self, tracker=None:
+                        FakeProvider([json.dumps({"intent": "watch", "args": {"action": "start"}})]))
+    def unexpected_watch():
+        calls.append(True)
+        return {"ok": False, "error": "Unexpected watch operation"}
+    monkeypatch.setattr(api, "watch_start", unexpected_watch)
+    monkeypatch.setattr(api, "watch_stop", unexpected_watch)
+    page.evaluate("text => sendText(text)", text)
+    assert not calls
+    assert not api.watch_status()["running"] and api._jobs == {}
+    assert not page.evaluate("state.conv.msgs.some(m=>m.kind==='watch')")
+    assert page.evaluate("state.conv.msgs.some(m=>m.role==='argus' && m.kind==='text')")
+
+
+def test_late_stop_failure_card_and_followups_remain_failed(desktop_browser, monkeypatch):
+    from argus.engine.results import RunResult
+    page, api, project = desktop_browser
+    spec = yaml.safe_load(CLI_SPEC)
+    spec["steps"][1]["assert"]["stdout_contains"] = "not printed"
+    (project / ".argus" / "late-stop.test.yaml").write_text(yaml.safe_dump(spec))
+    original = RunResult.save
+    def stop_during_save(result, project_dir):
+        path = original(result, project_dir)
+        api.stop()
+        return path
+    monkeypatch.setattr(RunResult, "save", stop_during_save)
+    page.evaluate("runChip('Run failing test', I('run',{tests:['late-stop.test.yaml']}))")
+    page.wait_for_function("state.conv.msgs.some(m=>m.kind==='run' && m.snap.status==='fail')")
+    page.wait_for_function("state.conv.followups.some(f=>f.intent && f.intent.intent==='explain')")
+    assert page.evaluate("state.conv.msgs.find(m=>m.kind==='run').snap.result.status") == "fail"
+    assert page.locator(".badge.fail").count() > 0
+    page.evaluate("flushConversations()")
+    saved = next(m for c in api.load_conversations() for m in c["msgs"] if m["kind"] == "run")
+    assert saved["snap"]["status"] == saved["snap"]["result"]["status"] == "fail"
+
+
 @pytest.mark.parametrize("status", ["pass", "fail"])
 def test_reload_finishes_terminal_restored_job_in_its_owning_conversation(desktop_browser, monkeypatch, status):
     from tests.test_gui_api import _wait

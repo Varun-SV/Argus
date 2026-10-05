@@ -208,7 +208,10 @@ def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "")
     if cmd == "/init":
         return intent("init")
     if cmd == "/watch":
-        return intent("watch", action="stop" if rest.lower() == "stop" else "start")
+        action = rest.lower()
+        if action not in ("", "start", "stop"):
+            raise IntentError("Use /watch, /watch start or /watch stop.")
+        return intent("watch", action=action or "start")
     raise IntentError(f"Unknown command {head}. Type /help to see what Argus can do.")
 
 
@@ -796,7 +799,12 @@ def _provider_change_from_text(text: str, configured: Sequence[str]) -> Optional
 
 
 def _watch_action_from_text(text: str) -> Optional[str]:
+    text = text.replace("\u2019", "'")
     if _question_about_action(text):
+        return None
+    if re.search(r"\b(?:don'?t|do\s+not|never|not|avoid|no|can'?t|cannot|won'?t|shouldn'?t|mustn'?t|without)\b[^.;!?]*"
+                 r"\b(?:watch(?:ing)?|monitor(?:ing)?|start|stop|enable|disable|turn\s+(?:on|off))\b",
+                 text, re.IGNORECASE):
         return None
     if re.search(r"\b(?:stop|disable|turn\s+off)\b[^.!?]{0,40}\bwatch\b|"
                  r"\bwatch\b[^.!?]{0,40}\b(?:stop|off)\b", text, re.IGNORECASE):

@@ -14,6 +14,7 @@ import base64
 import hashlib
 import json
 import os
+import stat
 import threading
 import time
 import uuid
@@ -639,7 +640,7 @@ class ArgusAPI:
             key = data["ates_run_id"] or uuid.uuid4().hex
             run["key"] = key
             run["result"] = data
-            run["status"] = "stopped" if self._stop.is_set() and data["status"] != "pass" else data["status"]
+            run["status"] = _run_card_status(data)
             run["notes"].extend(_run_notes(data))
             with self._lock:
                 self._results[key] = data
@@ -925,15 +926,15 @@ class ArgusAPI:
         return _copy(self._watch) if self._watch else {"running": False, "events": []}
 
     def _watch_worker(self, watch: dict, project_dir: Path, poll: float = 1.0) -> None:
-        seen = _mtimes(project_dir)
+        seen = _test_versions(project_dir)
         pending: Dict[str, dict] = {}  # changed file -> its event, until it has been re-run
         while watch["running"]:
             time.sleep(poll)
             if not watch["running"]:
                 break
-            current = _mtimes(project_dir)
+            current = _test_versions(project_dir, seen)
             for name, m in current.items():
-                if seen.get(name) != m and name not in pending:
+                if m is not None and seen.get(name) != m and name not in pending:
                     event = {"at": time.strftime("%H:%M:%S"), "file": name,
                              "status": "running", "summary": "re-running…"}
                     watch["events"].append(event)
@@ -1533,13 +1534,56 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-def _mtimes(project_dir: Path) -> Dict[str, float]:
+def _run_card_status(data: dict) -> str:
+    """Only a recorded user interruption can turn a run result into Stopped."""
+    status = data["status"]
+    steps = data.get("steps") or []
+    if (status != "fail" or data.get("error") or data.get("transfer_error") or
+            data.get("failure_capsule_error") or
+            any(step.get("status") in ("fail", "error") for step in steps)):
+        return status
+    for step in steps:
+        note = step.get("note") or ""
+        if (step.get("status") == "skipped" and note == "skipped: stopped by you"):
+            return "stopped"
+        marker = "run budget exhausted before teardown: stopped by you"
+        if step.get("kind") == "teardown" and (note == marker or note.endswith("; " + marker)):
+            return "stopped"
+    return status
+
+
+def _test_version(path: Path) -> tuple:
+    """Hash a stable regular-file snapshot, including equal-size/mtime edits."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    with os.fdopen(os.open(path, flags), "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError("Test file is not a regular file")
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+        after = os.fstat(handle.fileno())
+        named = path.stat()
+        def metadata(value):
+            return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
+        # Windows fstat and path.stat can disagree on ctime's meaning. Compare
+        # ctime only between handle snapshots; the named entry still binds the
+        # identity, size and modification time of the bytes that were read.
+        if (metadata(before) != metadata(after) or before.st_ctime_ns != after.st_ctime_ns or
+                metadata(after) != metadata(named)):
+            raise OSError("Test file changed while being read")
+        return after.st_mtime_ns, after.st_size, digest.hexdigest()
+
+
+def _test_versions(project_dir: Path, previous: Optional[dict] = None) -> Dict[str, Optional[tuple]]:
     out = {}
     for path in discover_tests(project_dir):
         try:
-            out[path.name] = path.stat().st_mtime
+            out[path.name] = _test_version(path)
         except OSError:
-            continue
+            # It was discovered, so an unreadable or changing file is not proven
+            # deleted. Retain its last version and retry the read on the next poll.
+            out[path.name] = (previous or {}).get(path.name)
     return out
 
 
