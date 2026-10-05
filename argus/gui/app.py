@@ -38,6 +38,7 @@ from argus.tokens import Budget, TokenTracker
 WEB_DIR = Path(__file__).parent / "web"
 
 _MAX_LOG_LINES = 400
+_WATCH_JOBS_KEPT = 20
 _CAPSULE_LABELS = {"auto": "auto", "hyperv": "Hyper-V", "libvirt": "libvirt/KVM"}
 # Roam engine execution_status -> card status.
 _ROAM_STATUS = {"pass": "done", "fail": "fail", "error": "error", "cancelled": "stopped",
@@ -92,6 +93,7 @@ class ArgusAPI:
         self._jobs: Dict[str, dict] = {}
         self._job_specs: Dict[str, dict] = {}       # job id -> {run index: TestSpec} parsed at start
         self._job_trackers: Dict[str, list] = {}    # job id -> TokenTrackers used by that job
+        self._watch_jobs: List[str] = []            # finished watch-created jobs, oldest first
         self._active_job: Optional[str] = None
         self._closing = False
         self._results: Dict[str, dict] = {}
@@ -150,13 +152,20 @@ class ArgusAPI:
             raise EnvironmentConfigurationError(
                 "Capsule provider must be auto, hyperv or libvirt. Correct execution.capsule.provider "
                 "or ARGUS_CAPSULE_PROVIDER, or choose a session provider.")
+        try:
+            configured_retain = _env_bool("ARGUS_CAPSULE_RETAIN_ON_FAILURE",
+                                          cfg.execution.capsule.retain_on_failure)
+        except ValueError as exc:
+            # Capsule setup parses this value even when the session overrides retention,
+            # so an invalid value means no Capsule job can start: say so up front.
+            if env == "capsule":
+                raise EnvironmentConfigurationError(
+                    f"{exc} Correct or unset ARGUS_CAPSULE_RETAIN_ON_FAILURE "
+                    "(or execution.capsule.retain_on_failure).") from exc
+            configured_retain = cfg.execution.capsule.retain_on_failure
         retain = self._session["retain"]
         if retain is None:
-            try:
-                retain = _env_bool("ARGUS_CAPSULE_RETAIN_ON_FAILURE",
-                                   cfg.execution.capsule.retain_on_failure)
-            except ValueError:
-                retain = cfg.execution.capsule.retain_on_failure
+            retain = configured_retain
         return {"environment": env, "capsule_provider": cap, "retain": bool(retain),
                 "memory": bool(self._session["memory"]), "env_locked": forced is not None}
 
@@ -231,10 +240,13 @@ class ArgusAPI:
     @staticmethod
     def _configured_providers(cfg: ArgusConfig) -> List[dict]:
         entries = cfg.raw.get("providers") or {}
+        # The project's default provider may rely on implicit settings (no providers: entry);
+        # it must stay selectable after the session switches away from it.
+        default = str(cfg.raw.get("provider") or "ollama")
         out = []
         for name in PROVIDER_TYPES:
             entry = entries.get(name)
-            if name != cfg.provider.type and not isinstance(entry, dict):
+            if name not in (cfg.provider.type, default) and not isinstance(entry, dict):
                 continue
             entry = entry if isinstance(entry, dict) else {}
             model = cfg.provider.model if name == cfg.provider.type else str(entry.get("model") or "")
@@ -1003,8 +1015,34 @@ class ArgusAPI:
                 summary = (f"{passed}/{len(steps)} steps passed" if steps
                            else (run["notes"][-1] if run["notes"] else run["status"]))
                 _settle_watch_event(watch, event, run["status"], summary)
+                self._retire_watch_job(started["job"]["id"])
         for event in pending.values():
             _settle_watch_event(watch, event, "stopped", "watch stopped before re-run")
+
+    def _retire_watch_job(self, job_id: str) -> None:
+        """Bound the memory held by finished watch re-runs.
+
+        Watch creates no run card, so only the newest few jobs (the live panel and the
+        latest result) need to stay; older snapshots, trackers and results are dropped,
+        except a result that explain/evidence still points at.
+        """
+        with self._lock:
+            self._watch_jobs.append(job_id)
+            keep = []
+            while len(self._watch_jobs) > _WATCH_JOBS_KEPT:
+                old = self._watch_jobs.pop(0)
+                job = self._jobs.get(old)
+                if old == self._active_job or (job is not None and job.get("running")):
+                    keep.append(old)
+                    continue
+                self._jobs.pop(old, None)
+                self._job_specs.pop(old, None)
+                self._job_trackers.pop(old, None)
+                for run in (job or {}).get("runs", []):
+                    key = run.get("key")
+                    if key and key not in (self._last_finished, self._last_failed):
+                        self._results.pop(key, None)
+            self._watch_jobs[:0] = keep
 
     # ---- knowledge --------------------------------------------------------------
 

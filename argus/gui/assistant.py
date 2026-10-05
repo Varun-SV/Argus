@@ -397,9 +397,8 @@ _MODIFIER_WORDS = re.compile(
     re.IGNORECASE)
 # The same refusal forms run, watch and the simple actions reject ("no need to",
 # "should not", "would rather not", ...), anywhere before the roam verb in the clause.
-_ROAM_REFUSAL = re.compile(
-    r"\b(?:don'?t|do\s+not|never|not|no|avoid|can'?t|cannot|won'?t|shouldn'?t|mustn'?t|without)"
-    r"\b[^.;!?]*\b(?:roam|explore)\b", re.IGNORECASE)
+_REFUSAL = r"\b(?:don'?t|do\s+not|never|not|no|avoid|can'?t|cannot|won'?t|shouldn'?t|mustn'?t|without)\b"
+_ROAM_REFUSAL = re.compile(_REFUSAL + r"[^.;!?]*\b(?:roam|explore)\b", re.IGNORECASE)
 _DEICTIC_TARGET = re.compile(
     r"^(?:(?:it|that)(?:\s+again)?|again|(?:the\s+)?same(?:\s+(?:app|target))?|"
     r"(?:the\s+)?(?:previous|last)(?:\s+(?:app|target))?)[.!]?$", re.IGNORECASE)
@@ -625,6 +624,12 @@ _FUTURE_TIME = re.compile(
     r"in\s+(?:a|an|a\s+few|\d+(?:\.\d+)?)\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)|"
     r"at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|at\s+(?:noon|midnight))\b",
     re.IGNORECASE)
+
+
+def _without_literals(text: str) -> str:
+    """Blank quoted text, URLs, paths and filenames: their words aren't instructions."""
+    return re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'|\S*[/\\]\S*|\S+\.[A-Za-z_]\S*',
+                  lambda m: " " * len(m.group()), text)
 
 
 def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
@@ -893,6 +898,15 @@ def _mentions_target(text: str, target: str, adapter: str) -> bool:
     return bool(candidate.endswith((".", "!")) and candidate[:-1].casefold() == wanted)
 
 
+def _names_knowledge_target(text: str, target: str) -> bool:
+    """True when the user's message itself names ``target`` (as written or by its key)."""
+    if target.casefold() in text.casefold():
+        return True
+    key = re.sub(r"[^a-z0-9]+", "-", target.casefold()).strip("-")
+    words = "-" + re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-") + "-"
+    return bool(key) and f"-{key}-" in words
+
+
 def _refers_to_last_target(text: str) -> bool:
     """Require an explicit command-like reference before reusing the previous target."""
     return bool(re.search(
@@ -968,6 +982,9 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         request = split_roam_request(text)
         if request is not None and request.problem:
             return intent("chat", reply=request.problem)
+        if _FUTURE_TIME.search(_without_literals(text)):
+            return intent("chat", reply=("I didn't start anything: I can't schedule a roam for later. "
+                                         "Ask again when you want it to start now."))
         explicitly_named = _mentions_target(text, target, adapter)
         reuses_previous = bool(last and target == last and _refers_to_last_target(text))
         if not target or not (explicitly_named or reuses_previous):
@@ -992,16 +1009,18 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         action = args.get("action") if args.get("action") in KNOWLEDGE_ACTIONS else "show"
         if action in ("reset", "export"):
             verb = r"(?:reset|clear|forget)" if action == "reset" else r"export"
-            negated = re.search(
-                r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}" + verb + r"\b",
-                text,
-                re.IGNORECASE,
-            )
+            negated = re.search(_REFUSAL + r"[^.;!?]*\b" + verb + r"\b",
+                                text.replace("\u2019", "'"), re.IGNORECASE)
             if _question_about_action(text) or negated or not (
                 re.search(verb + r"\b[^.!?]{0,60}\bknowledge\b", text, re.IGNORECASE)
                 or re.search(r"\bknowledge\b[^.!?]{0,60}" + verb + r"\b", text, re.IGNORECASE)
             ):
                 return intent("chat", reply=f"I won't {action} knowledge unless you explicitly ask me to.")
+            target = _unquote(str(args.get("target") or "").strip())
+            # The model picks the action, not whose graph is exported or deleted.
+            if target and not _names_knowledge_target(text, target):
+                return intent("chat", reply=f"Which target should I {action} knowledge for? Name it exactly as you roamed it.")
+            return intent("knowledge", action=action, target=target)
         return intent("knowledge", action=action, target=str(args.get("target") or "").strip())
 
     if name == "switch_provider":

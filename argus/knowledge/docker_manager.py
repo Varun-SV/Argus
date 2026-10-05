@@ -153,7 +153,15 @@ class DockerManager:
         except (OSError, ValueError):
             return False
 
-    def _verify_qdrant(self, info: dict, labels: dict, storage: Path) -> None:
+    @staticmethod
+    def _descriptor_bound(info: dict) -> bool:
+        """True when the storage bind source is a creator-process /proc/<pid>/fd spelling."""
+        return os.name != "nt" and any(
+            m.get("Destination") == "/qdrant/storage" and isinstance(m.get("Source"), str)
+            and re.fullmatch(r"/proc/[0-9]+/fd/[0-9]+", m["Source"])
+            for m in info.get("Mounts") or [])
+
+    def _verify_qdrant(self, info: dict, labels: dict, storage: Path, attest_mount: bool = True) -> None:
         config = info.get("Config") or {}
         mounts = info.get("Mounts") or []
         bindings = (info.get("HostConfig") or {}).get("PortBindings") or {}
@@ -167,7 +175,7 @@ class DockerManager:
                 or config.get("Image") != self.QDRANT_IMAGE
                 or len(writable) != 1 or conflicts
                 or writable[0].get("Type") != "bind" or writable[0].get("RW") is not True
-                or not self._mount_matches(writable[0], storage, info)
+                or (attest_mount and not self._mount_matches(writable[0], storage, info))
                 or (info.get("HostConfig") or {}).get("NetworkMode") not in ("default", "bridge")
                 or set(bindings) != {"6333/tcp"} or not isinstance(expected, list)
                 or len(expected) != 1 or expected[0].get("HostIp") != "127.0.0.1"):
@@ -270,6 +278,17 @@ class DockerManager:
         name, labels, storage, source = self._qdrant_scope(create=True)
         self._check_legacy_writer(docker, storage)
         info = self._inspect_qdrant(docker, name)
+        if (info is not None and not (info.get("State") or {}).get("Running")
+                and self._descriptor_bound(info)):
+            # The creating process's /proc/<pid>/fd bind source is stale once it exits and
+            # can't be attested, and `docker start` would re-resolve it. The labels bind the
+            # container to this exact storage directory and the data lives there, so replace
+            # the stopped container with one bound to the current pinned storage.
+            self._verify_qdrant(info, labels, storage, attest_mount=False)
+            self._qdrant_key(info)
+            if self._docker_command(docker, "rm", info["Id"], timeout=30).returncode != 0:
+                return None
+            info = None
         if info is not None:
             self._verify_qdrant(info, labels, storage)
             self._qdrant_key(info)
@@ -383,9 +402,11 @@ class DockerManager:
             docker = shutil.which("docker")
             name, labels, storage, _ = self._qdrant_scope()
             info = self._inspect_qdrant(docker, name) if docker else None
-            if info is not None:
+            # A stopped container writes nothing, so "stopped" needs no ownership attestation
+            # (and a stopped descriptor-bound mount can't be attested anyway).
+            if info is not None and (info.get("State") or {}).get("Running"):
                 self._verify_qdrant(info, labels, storage)
-                qdrant = bool((info.get("State") or {}).get("Running"))
+                qdrant = True
         except FileNotFoundError:
             pass
         except (OSError, ValueError, subprocess.SubprocessError):

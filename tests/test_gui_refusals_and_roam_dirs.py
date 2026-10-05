@@ -56,3 +56,94 @@ def test_same_second_roams_get_separate_directories(tmp_path, monkeypatch):
     assert first != second and first.is_dir() and second.is_dir()
     assert first.parent == second.parent == (tmp_path / ".argus" / "roam").resolve()
     assert first.name.startswith("20260101-000000-")
+
+
+@pytest.mark.parametrize("text", [
+    "roam notepad.exe tomorrow", "tomorrow, roam notepad.exe", "roam notepad.exe in 10 minutes",
+    "roam notepad.exe later", "explore notepad.exe tonight",
+])
+def test_future_time_roams_ask_instead_of_starting_now(text):
+    target = split_roam_request(text).target
+    routed = validate_intent({"intent": "roam", "args": {"target": target}}, text, {})
+    assert routed["intent"] == "chat" and "schedule" in routed["args"]["reply"]
+
+
+@pytest.mark.parametrize("text,target", [
+    ("roam notepad.exe for 5 minutes", "notepad.exe"),
+    ("roam https://example.test/later", "https://example.test/later"),
+    ("roam python later.py", "python later.py"),
+    ('roam "tool --at 5pm"', "tool --at 5pm"),
+])
+def test_time_words_inside_targets_do_not_block_roams(text, target):
+    routed = validate_intent({"intent": "roam", "args": {"target": target}}, text, {})
+    assert routed["intent"] == "roam" and routed["args"]["target"] == target
+
+
+@pytest.mark.parametrize("action,text", [
+    ("export", "I would rather not export knowledge for notepad.exe"),
+    ("reset", "you should not reset knowledge for notepad.exe"),
+    ("reset", "no need to clear the knowledge for notepad.exe"),
+    ("export", "I can’t export knowledge for notepad.exe right now"),
+])
+def test_broader_refusals_never_authorize_knowledge_mutations(action, text):
+    routed = validate_intent({"intent": "knowledge", "args": {"action": action, "target": "notepad.exe"}}, text, {})
+    assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("action", ["export", "reset"])
+def test_knowledge_mutation_target_must_be_the_one_the_user_named(action):
+    text = f"{action} knowledge for notepad.exe"
+    swapped = validate_intent({"intent": "knowledge", "args": {"action": action, "target": "chrome.exe"}}, text, {})
+    assert swapped["intent"] == "chat"
+    named = validate_intent({"intent": "knowledge", "args": {"action": action, "target": "notepad.exe"}}, text, {})
+    assert named["intent"] == "knowledge" and named["args"]["target"] == "notepad.exe"
+    by_key = validate_intent({"intent": "knowledge", "args": {"action": action, "target": "notepad.exe"}},
+                             f"{action} knowledge for notepad-exe", {})
+    assert by_key["intent"] == "knowledge"
+
+
+@pytest.fixture
+def api(tmp_path, monkeypatch):
+    for var in ("ARGUS_PROVIDER", "ARGUS_MODEL", "ARGUS_EXECUTION_ENVIRONMENT",
+                "ARGUS_CAPSULE_RETAIN_ON_FAILURE", "ARGUS_CAPSULE_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ARGUS_GUI_STATE_DIR", str(tmp_path / "user-state"))
+    init_project(tmp_path)
+    return gui_app.ArgusAPI(tmp_path)
+
+
+def _write_config(project, text):
+    (project / ".argus" / "config.yaml").write_text(text, encoding="utf-8")
+
+
+def test_implicit_default_provider_stays_selectable_after_switching(api, tmp_path):
+    _write_config(tmp_path, "provider: ollama\nproviders:\n  anthropic:\n    model: claude-test\n")
+    assert api.set_provider("anthropic")["ok"]
+    names = [p["type"] for p in api.app_info()["providers"]]
+    assert "ollama" in names and "anthropic" in names
+    assert api.set_provider("ollama")["ok"]
+
+
+def test_invalid_retention_env_is_reported_before_a_capsule_session_looks_ready(api, tmp_path, monkeypatch):
+    _write_config(tmp_path, "provider: ollama\nexecution:\n  environment: capsule\n")
+    monkeypatch.setenv("ARGUS_CAPSULE_RETAIN_ON_FAILURE", "maybe")
+    info = api.app_info()
+    assert not info["ok"] and "ARGUS_CAPSULE_RETAIN_ON_FAILURE" in info["error"]
+    _write_config(tmp_path, "provider: ollama\nexecution:\n  environment: local\n")
+    assert api.app_info()["ok"]  # local sessions never parse the Capsule setting
+
+
+def test_finished_watch_jobs_are_bounded_but_explain_targets_survive(api):
+    total = gui_app._WATCH_JOBS_KEPT + 5
+    for i in range(total):
+        api._jobs[f"j{i}"] = {"id": f"j{i}", "running": False, "runs": [{"key": f"k{i}"}]}
+        api._job_trackers[f"j{i}"] = [object()]
+        api._results[f"k{i}"] = {"status": "fail"}
+    api._last_failed = "k0"
+    api._last_finished = f"k{total - 1}"
+    for i in range(total):
+        api._retire_watch_job(f"j{i}")
+    assert len(api._watch_jobs) == gui_app._WATCH_JOBS_KEPT
+    assert "j0" not in api._jobs and "j0" not in api._job_trackers
+    assert "k0" in api._results and "k1" not in api._results
+    assert f"j{total - 1}" in api._jobs and f"k{total - 1}" in api._results

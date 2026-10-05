@@ -67,6 +67,10 @@ class DockerDaemon:
         elif args[0] == "exec":
             info = next(c for c in self.containers.values() if c["Id"] == args[1])
             output = info["_mounted_identity"]
+        elif args[0] == "rm":
+            name = next(n for n, c in self.containers.items() if c["Id"] == args[1])
+            del self.containers[name]
+            output = args[1]
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
 
@@ -419,3 +423,35 @@ def test_cli_prints_unknown_for_unverifiable_qdrant(tmp_path, monkeypatch):
     out = CliRunner().invoke(cli.main, ["knowledge", "docker", "status"])
     assert out.exit_code == 0, out.output
     assert "qdrant: unknown" in out.output and "qdrant: stopped" not in out.output
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="Linux descriptor-bound storage")
+def test_stopped_descriptor_bound_container_is_recreated_on_current_storage(tmp_path, daemon):
+    a = manager(tmp_path)
+    a.ensure_qdrant()
+    a.stop("qdrant")
+    old = next(iter(daemon.containers.values()))
+    old["Mounts"][0]["Source"] = "/proc/999999999/fd/17"  # the creating process has exited
+    assert not old["State"]["Running"] and a.status()["qdrant"] is False
+
+    url = manager(tmp_path).ensure_qdrant()
+    assert url
+    assert ["docker", "rm", old["Id"]] in daemon.commands
+    assert not any(c[1] == "start" for c in daemon.commands)
+    (new,) = daemon.containers.values()
+    assert Path(new["Mounts"][0]["Source"]).samefile(tmp_path / "a" / ".argus" / "qdrant-data")
+    assert a.status()["qdrant"] is True
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="Linux descriptor-bound storage")
+def test_stopped_descriptor_bound_container_for_other_storage_is_never_removed(tmp_path, daemon):
+    a = manager(tmp_path)
+    a.ensure_qdrant()
+    a.stop("qdrant")
+    old = next(iter(daemon.containers.values()))
+    old["Mounts"][0]["Source"] = "/proc/999999999/fd/17"
+    old["Config"]["Labels"]["org.argus.qdrant.directory"] = "0:0"
+    before = len(daemon.commands)
+    with pytest.raises(DockerOwnershipError):
+        manager(tmp_path).ensure_qdrant()
+    assert not any(c[1] in {"rm", "start", "run"} for c in daemon.commands[before:])
