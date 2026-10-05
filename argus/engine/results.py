@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -143,7 +144,7 @@ class RunResult:
                     raise OSError("run directory ownership changed")
                 return candidate
             stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
-            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
+            safe = _bounded_name(self.test_file)
             for _ in range(10):
                 candidate = runs_root / f"{stamp}-{self._storage_order:020d}-{self._storage_id}-{safe}"
                 flat = runs_root / f"{candidate.name}.json"
@@ -335,15 +336,37 @@ def valid_run_history(data) -> bool:
     return True
 
 
-def run_history_paths(runs_dir: Path, limit: int = 50) -> List[Path]:
-    """Order new and legacy filenames without reading every result document."""
+# The prefix before the test name is "<stamp>-<order:20>-<uuid:32>-" (70 chars) and
+# the flat history file adds ".json"; keep the whole component well under 255 bytes.
+_MAX_NAME_PART = 120
+
+
+def _bounded_name(test_file: str) -> str:
+    """A filesystem-safe test-name component that can't overflow a path segment."""
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in test_file)
+    if len(safe.encode("utf-8", "surrogatepass")) <= _MAX_NAME_PART:
+        return safe
+    digest = hashlib.sha256(test_file.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    head = safe
+    while len(head.encode("utf-8", "surrogatepass")) > _MAX_NAME_PART - 13:
+        head = head[:-1]
+    return f"{head}-{digest}"
+
+
+def run_history_paths(runs_dir: Path, limit: Optional[int] = None) -> List[Path]:
+    """Order new and legacy filenames without reading every result document.
+
+    Callers that validate documents should take every path and stop once they
+    have ``limit`` valid rows, so malformed newest files can't hide older runs.
+    """
     def order(path):
         match = re.fullmatch(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json", path.name)
         if match:
             return match[1], match[2], path.name
         # A legacy row in the same second predates high-resolution allocation.
         return path.name[:15], "0" * 20, path.name
-    return sorted(runs_dir.glob("*.json"), key=order, reverse=True)[:limit]
+    ordered = sorted(runs_dir.glob("*.json"), key=order, reverse=True)
+    return ordered if limit is None else ordered[:limit]
 
 
 def load_runs(project_dir: Path, limit: int = 50) -> List[dict]:
@@ -351,7 +374,9 @@ def load_runs(project_dir: Path, limit: int = 50) -> List[dict]:
     if not runs_dir.is_dir():
         return []
     out = []
-    for path in run_history_paths(runs_dir, limit):
+    for path in run_history_paths(runs_dir):
+        if len(out) >= limit:
+            break
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if valid_run_history(data):

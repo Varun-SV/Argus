@@ -183,6 +183,17 @@ class ArgusConfig:
     def argus_dir(self) -> Path:
         return self.project_dir / ".argus"
 
+    def knowledge_persist_dir(self) -> Optional[Path]:
+        """The configured graph directory, with a relative path anchored to the project.
+
+        The desktop app can open a project other than its working directory, so a
+        relative ``knowledge.persist_dir`` must never resolve against the process cwd.
+        """
+        if not self.knowledge.persist_dir:
+            return None
+        path = Path(self.knowledge.persist_dir).expanduser()
+        return path if path.is_absolute() else self.project_dir / path
+
     def make_provider(self, tracker: Optional[TokenTracker] = None) -> LLMProvider:
         return create_provider(
             self.provider.type,
@@ -387,7 +398,7 @@ class ArgusConfig:
                 self.project_dir, store_type=kc.type, vector_backend=kc.vector_backend,
                 vector_url=kc.vector_url, embedding_model=kc.embedding_model,
             )
-        persist = Path(kc.persist_dir) if kc.persist_dir else self.argus_dir / "knowledge"
+        persist = self.knowledge_persist_dir()
         backend = kc.type
         if backend == "auto":
             from argus.knowledge import _resolve_auto

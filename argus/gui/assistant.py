@@ -145,6 +145,22 @@ _SLASH_ALIASES = {
 }
 
 
+# Commands that need neither the project config nor the test list, so they work
+# even while .argus/config.yaml or a spec is broken (e.g. stopping a running job).
+_PROJECT_FREE_COMMANDS = ("/help", "/stop")
+
+
+def parse_project_free_slash(text: str) -> Optional[dict]:
+    """Parse ``/stop`` and ``/help`` without project state; None for anything else."""
+    text = (text or "").strip()
+    if not text.startswith("/"):
+        return None
+    head = text.partition(" ")[0].lower()
+    if _SLASH_ALIASES.get(head, head) not in _PROJECT_FREE_COMMANDS:
+        return None
+    return parse_slash(text)
+
+
 def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "") -> Optional[dict]:
     """Parse a ``/command``. Returns None when ``text`` is not a slash command."""
     text = text.strip()

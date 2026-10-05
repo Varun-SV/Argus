@@ -353,6 +353,9 @@ class ArgusAPI:
         text = (text or "").strip()
         if not text:
             return {"intent": "none", "args": {}}
+        early = assistant.parse_project_free_slash(text)
+        if early is not None:
+            return early
         tests = self.list_tests()
         try:
             parsed = assistant.parse_slash(text, tests, self._last_target)
@@ -1031,7 +1034,7 @@ class ArgusAPI:
                 backend += f" · fallback from {kc.type}"
             # List stored graphs from disk: get_stats(None) keys are Path.stem values
             # ("notepad-exe.graph"), which don't round-trip through the store.
-            persist = Path(kc.persist_dir) if kc.persist_dir else cfg.argus_dir / "knowledge"
+            persist = cfg.knowledge_persist_dir() or cfg.argus_dir / "knowledge"
             targets = sorted(path.name[: -len(".graph.json")]
                              for path in persist.glob("*.graph.json"))
             target = (target or "").strip()
@@ -1077,7 +1080,7 @@ class ArgusAPI:
                 return {"ok": False, "error": "The knowledge store is disabled. Enable it before resetting a target."}
             if not kc.persist_dir and not cfg.argus_dir.is_dir():
                 return {"ok": False, "error": "Set up this project with /init before resetting its knowledge store."}
-            persist = (Path(kc.persist_dir) if kc.persist_dir else
+            persist = (cfg.knowledge_persist_dir() if kc.persist_dir else
                        _argus_subdir(cfg, "knowledge", create=False))
             key = target_key(target) if target and target.strip() else ""
             if not key or not any((persist / f"{key}.{suffix}").exists()
@@ -1104,7 +1107,7 @@ class ArgusAPI:
         kc = cfg.knowledge
         try:
             # The default store lives in the project, which may be untrusted: attest it.
-            persist = (Path(kc.persist_dir) if kc.persist_dir
+            persist = (cfg.knowledge_persist_dir() if kc.persist_dir
                        else _argus_subdir(cfg, "knowledge", create=False))
             graph = persist / f"{key}.graph.json"
             if graph.is_symlink():
@@ -1274,7 +1277,9 @@ class ArgusAPI:
         except OSError:
             return []
         out = []
-        for path in run_history_paths(runs_dir, limit):
+        for path in run_history_paths(runs_dir):
+            if len(out) >= limit:
+                break
             try:
                 if path.is_symlink():
                     continue
