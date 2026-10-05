@@ -19,6 +19,7 @@ without an explicit user action.
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Iterable, List, Mapping, Optional, Sequence
 
@@ -284,9 +285,9 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
 def _minutes(value) -> Optional[float]:
     try:
         m = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    if m != m or m <= 0:  # NaN or non-positive
+    if not math.isfinite(m) or m <= 0:
         return None
     return min(m, 240.0)
 
@@ -363,7 +364,7 @@ def extract_json(text: str) -> Optional[dict]:
 
 _ROAM_VERB = re.compile(r"\b(?:roam|explore)\b", re.IGNORECASE)
 _DURATION_UNITS = {"s": 1 / 60, "m": 1.0, "h": 60.0}
-_DURATION = (r"for\s+(?:(?P<n>\d+(?:\.\d+)?)\s*(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
+_DURATION = (r"for\s+(?:(?P<n>[-+]?(?:\d+(?:\.\d+)?|\.\d+))\s*(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
              r"|(?P<one>a\s+minute|an\s+hour))")
 _MEMORY = r"(?P<mem>with|without)\s+memory"
 _ENVIRONMENT = r"(?:(?P<local>locally)|in\s+(?:a\s+)?(?:(?P<cap>hyper-?v|libvirt)\s+)?capsule)"
@@ -433,6 +434,8 @@ def _looks_like_cli_target(target: str) -> bool:
 
 
 def _merge(into: dict, found: dict) -> Optional[str]:
+    if "minutes" in found and found["minutes"] is None:
+        return "Roam duration must be greater than zero. Choose a positive duration, e.g. for 5 minutes."
     for key, value in found.items():
         if key in into and into[key] != value:
             return "You asked for two different settings for this roam, so I didn't start it. " + _QUOTE_HINT

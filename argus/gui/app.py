@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import stat
 import threading
@@ -133,7 +134,8 @@ class ArgusAPI:
         except (OSError, ValueError):
             return {"ok": False, "error": "Could not open that folder. Choose an existing project folder."}
 
-    def _session_view(self, cfg: ArgusConfig, environment: Optional[str] = None) -> dict:
+    def _session_view(self, cfg: ArgusConfig, environment: Optional[str] = None,
+                      capsule_provider: Optional[str] = None) -> dict:
         """The effective environment, resolved the same way make_execution_environment does."""
         forced = _forced_environment()
         env = forced or environment or self._session["environment"] or cfg.execution.environment or "local"
@@ -141,8 +143,13 @@ class ArgusAPI:
         if env not in assistant.ENVIRONMENTS:
             raise EnvironmentConfigurationError(
                 "execution.environment must be local or capsule. Correct .argus/config.yaml or choose a session environment.")
-        cap = (self._session["capsule_provider"] or os.environ.get("ARGUS_CAPSULE_PROVIDER")
+        cap = (capsule_provider or self._session["capsule_provider"] or os.environ.get("ARGUS_CAPSULE_PROVIDER")
                or cfg.execution.capsule.provider or "auto")
+        cap = str(cap).strip().lower()
+        if env == "capsule" and cap not in assistant.CAPSULE_PROVIDERS:
+            raise EnvironmentConfigurationError(
+                "Capsule provider must be auto, hyperv or libvirt. Correct execution.capsule.provider "
+                "or ARGUS_CAPSULE_PROVIDER, or choose a session provider.")
         retain = self._session["retain"]
         if retain is None:
             try:
@@ -161,7 +168,7 @@ class ArgusAPI:
             if requested not in assistant.ENVIRONMENTS:
                 return None, None, None, "Execution environment must be local or capsule."
         try:
-            s = self._session_view(cfg, requested)
+            s = self._session_view(cfg, requested, overrides.get("capsule_provider"))
         except EnvironmentConfigurationError as exc:
             return None, None, None, str(exc)
         env = requested or s["environment"]
@@ -170,7 +177,7 @@ class ArgusAPI:
             return None, None, None, (
                 f"ARGUS_EXECUTION_ENVIRONMENT={forced} is set for this app, so Argus can't run "
                 f"this {env}. Unset it to choose the environment here.")
-        cap = overrides.get("capsule_provider") or s["capsule_provider"]
+        cap = s["capsule_provider"]
         retain = overrides.get("retain", s["retain"])
         return env, cap, bool(retain), None
 
@@ -721,9 +728,15 @@ class ArgusAPI:
         env, cap, retain, err = self._job_environment(cfg, overrides or {})
         if err:
             return {"ok": False, "error": err}
-        s = self._session_view(cfg)
+        s = self._session_view(cfg, env, cap)
         memory = s["memory"] if memory is None else bool(memory)
-        minutes = minutes or cfg.time_minutes or 10
+        minutes = (cfg.time_minutes or 10) if minutes is None else minutes
+        try:
+            minutes = float(minutes)
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "error": "Roam duration must be a positive, finite number of minutes."}
+        if not math.isfinite(minutes) or minutes <= 0:
+            return {"ok": False, "error": "Roam duration must be a positive, finite number of minutes."}
         job = {"id": uuid.uuid4().hex[:12], "kind": "roam", "running": True, "target": target,
                "adapter": adapter, "minutes": float(minutes), "memory": memory,
                "env": env, "capsule_provider": cap, "retain": retain,
@@ -785,8 +798,7 @@ class ArgusAPI:
             job["regressions"] = [_rel(cfg, p) for p in sorted(session_dir.glob("regression-*.test.yaml"))]
             job["stopped_reason"] = session.stopped_reason or ""
             status = str(getattr(session, "execution_status", "") or "")
-            job["status"] = ("stopped" if self._stop.is_set()
-                             else _ROAM_STATUS.get(status, "unknown") if status else "done")
+            job["status"] = _ROAM_STATUS.get(status, "unknown") if status else "done"
             data = {"kind": "roam", "target": job["target"], "status": job["status"],
                     "ates_run_id": getattr(session, "ates_run_id", None),
                     "findings": job["findings"], "report": job["report"],
@@ -1002,7 +1014,6 @@ class ArgusAPI:
 
         cfg = self._config()
         kc = cfg.knowledge
-        backend = f"{kc.type} graph · {kc.vector_backend} vectors · {kc.embedding_model}"
         if kc.enabled and not kc.persist_dir and not cfg.argus_dir.is_dir():
             return {"ok": False, "error": "Set up this project with /init before inspecting its knowledge store."}
         try:
@@ -1013,6 +1024,11 @@ class ArgusAPI:
             return {"ok": False, "error": "The knowledge store is disabled or its extras aren't installed "
                                           "(pip install \"argus-app-testing[knowledge]\")."}
         try:
+            describe = getattr(ks, "backend_info", None)
+            info = describe() if callable(describe) else {}
+            backend = info.get("label", "Knowledge store · capabilities not reported")
+            if info.get("type") == "json" and kc.type in {"local", "docker", "qdrant", "external"}:
+                backend += f" · fallback from {kc.type}"
             # List stored graphs from disk: get_stats(None) keys are Path.stem values
             # ("notepad-exe.graph"), which don't round-trip through the store.
             persist = Path(kc.persist_dir) if kc.persist_dir else cfg.argus_dir / "knowledge"

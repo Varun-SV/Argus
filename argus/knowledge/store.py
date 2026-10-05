@@ -39,6 +39,11 @@ class LocalKnowledgeStore(KnowledgeStore):
 
     # ── backend accessors ───────────────────────────────────────────────────
 
+    def backend_info(self) -> Dict[str, str]:
+        state = {None: "not checked", False: "unavailable", True: "initialized"}[self._chroma_ok]
+        return {"type": "local", "label": (
+            f"JSON graph · Chroma vectors ({state}) · {self._embedder.status_description()}")}
+
     def _chroma(self):
         if self._chroma_ok is None:
             try:

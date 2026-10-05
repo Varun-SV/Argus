@@ -228,6 +228,48 @@ def desktop_browser(tmp_path, monkeypatch):
         server.server_close()
 
 
+def test_invalid_capsule_provider_shows_guidance_before_job_creation(desktop_browser, monkeypatch):
+    page, api, _ = desktop_browser
+    cfg = api._config()
+    cfg.execution.environment = "capsule"
+    cfg.execution.capsule.provider = "typo"
+    monkeypatch.setattr(api, "_config", lambda *args, **kwargs: cfg)
+    page.reload()
+    page.wait_for_function("state.info && !state.info.ok")
+    assert page.locator("#env-btn").inner_text() == "Check environment"
+    page.evaluate("runChip('Run smoke', I('run',{tests:['smoke.test.yaml']}))")
+    page.wait_for_function("state.conv.msgs.some(m=>m.error && m.text.includes('Capsule provider'))")
+    assert api._jobs == {}
+    assert api.set_environment("local")["ok"]
+
+
+def test_zero_duration_chat_shows_explanation_without_starting_roam(desktop_browser, monkeypatch):
+    page, api, _ = desktop_browser
+    monkeypatch.setattr(ArgusConfig, "make_provider", lambda self, tracker=None:
+                        FakeProvider([json.dumps({"intent": "roam", "args": {"target": "notepad.exe"}})]))
+    calls = []
+    monkeypatch.setattr(api, "start_roam", lambda *args, **kwargs: calls.append(args) or {"ok": False})
+    page.evaluate("sendText('roam notepad.exe for 0 minutes')")
+    assert not calls and api._jobs == {}
+    page.get_by_text("Roam duration must be greater than zero", exact=False).wait_for()
+    assert not page.evaluate("state.conv.msgs.some(m=>m.kind==='roam')")
+
+
+def test_knowledge_card_displays_actual_json_fallback(desktop_browser, monkeypatch):
+    page, api, _ = desktop_browser
+    cfg = api._config()
+    cfg.knowledge.enabled = True
+    cfg.knowledge.type = "docker"
+    monkeypatch.setattr(api, "_config", lambda *args, **kwargs: cfg)
+    monkeypatch.setattr("argus.knowledge._start_docker_qdrant", lambda *args, **kwargs: None)
+    graph = cfg.argus_dir / "knowledge" / "notepad-exe.graph.json"
+    graph.parent.mkdir()
+    graph.write_text('{"nodes": {}, "edges": []}')
+    page.evaluate("execute(I('knowledge',{action:'show',target:'notepad.exe'}))")
+    page.get_by_text("JSON graph · keyword retrieval · no vector backend · fallback from docker", exact=True).wait_for()
+    assert page.evaluate("state.conv.msgs.find(m=>m.kind==='knowledge').k.backend").startswith("JSON graph")
+
+
 def test_chat_run_draft_evidence_watch_and_keyboard(desktop_browser):
     page, api, project = desktop_browser
     page.locator("#tools-btn").click()

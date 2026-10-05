@@ -56,6 +56,9 @@ class JsonKnowledgeStore(KnowledgeStore):
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
+    def backend_info(self) -> Dict[str, str]:
+        return {"type": "json", "label": "JSON graph · keyword retrieval · no vector backend"}
+
     def _key(self, target: str) -> str:
         return target_key(target)
 

@@ -33,7 +33,14 @@ class RemoteKnowledgeStore(KnowledgeStore):
         self._vector_url = vector_url
         self._embedder = EmbeddingGenerator(embedding_model)
         self._qdrant = None
+        self._qdrant_ok: Optional[bool] = None
         self._graphs: Dict[str, Any] = {}
+
+    def backend_info(self) -> Dict[str, str]:
+        state = ("client initialized; connectivity not verified" if self._qdrant is not None
+                 else "unavailable" if self._qdrant_ok is False else "not checked")
+        return {"type": "qdrant", "label": (
+            f"JSON graph · Qdrant vectors ({state}) · {self._embedder.status_description()}")}
 
     def _client(self):
         verify = getattr(self._vector_url, "verify", None)
@@ -44,8 +51,9 @@ class RemoteKnowledgeStore(KnowledgeStore):
                 from qdrant_client import QdrantClient
                 options = self._vector_url.client_options() if verify is not None else {}
                 self._qdrant = QdrantClient(url=str(self._vector_url), **options)
+                self._qdrant_ok = True
             except Exception:
-                pass
+                self._qdrant_ok = False
         return self._qdrant
 
     def _graph(self, target: str, *, create: bool = True):

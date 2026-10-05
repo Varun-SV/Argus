@@ -56,6 +56,10 @@ class KnowledgeContext:
 
 
 class KnowledgeStore(ABC):
+    def backend_info(self) -> Dict[str, str]:
+        """Describe existing capabilities without initializing optional backends."""
+        return {"type": "unknown", "label": "Knowledge store · capabilities not reported"}
+
     @abstractmethod
     def record_state(
         self, obs: Observation, target: str, session_id: str, action_index: int

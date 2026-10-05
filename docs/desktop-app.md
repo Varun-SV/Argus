@@ -55,6 +55,8 @@ Drafts are validated before they are displayed. Review their YAML, preview it, a
 
 **Stop** requests cancellation and lets execution perform its normal teardown. Closing a window with an active job requests Stop and keeps the window open until cleanup finishes; close it again after the result settles. Watch mode observes `.argus/*.test.yaml` and re-runs changed files. Stop watching before editing tests you do not want to execute.
 
+A late Stop click does not replace a completed Roam outcome; cancellation is reported only when the engine records it. Explicit Roam durations must be positive and finite. Omitting a duration uses the project default, while duration-like text inside a quoted command stays part of that command.
+
 Watch cards retain the latest 200 completed events and all pending changes. The default knowledge store rejects redirected project directories, including Windows junctions. Explicitly configured external persistence directories remain supported. Switching back to the project's default provider restores its generic `ARGUS_API_KEY`, `ARGUS_MODEL`, and `ARGUS_BASE_URL` settings; another provider uses its own configured settings.
 
 Watch captures its starting file versions before reporting that it is active, so edits immediately after acknowledgement remain observable.
@@ -64,6 +66,8 @@ Managed Docker knowledge uses a separate project-owned Qdrant container and an i
 The old global `argus-qdrant` container is not adopted or stopped automatically. If it is still writing this project's storage, inspect its mount and stop it yourself before starting the new container; preserve the data directory. If a container's ownership or storage cannot be verified, Argus reports guidance and the knowledge factory falls back to JSON. For running Linux containers created through `/proc/PID/fd/FD`, Argus checks the mounted directory's actual filesystem identity with container `stat`, so the creating process's exit or descriptor reuse is not proof of ownership. If this check is unavailable, or a stopped container's old source is gone, operator-verified container removal and recreation may be required against the retained data.
 
 Inspecting default knowledge in a fresh folder asks you to set up the project first. Resetting knowledge while the store is disabled reports an error. If a named test disappears before a run starts, Argus rejects the entire requested list so you can refresh and choose again. Malformed history records are skipped while valid results remain available. A rejected roam launch is an error, and a report path appears only after that report exists.
+
+The Knowledge card describes the actual store, including JSON fallback from optional backends. JSON uses keyword retrieval and has no vector backend. Chroma/Qdrant and embedding labels distinguish unverified initialization from known unavailability. Constructing these labels does not initialize clients, download models, or perform connectivity checks; an initialized Qdrant client alone does not establish service availability.
 
 On macOS and other hosts without secure descriptor-backed directory paths, JSON is the default project knowledge backend when no type is configured. Explicit default Chroma/Docker selection stops with configuration guidance on those hosts; use `knowledge.type: json`, or an explicitly configured, operator-approved `knowledge.persist_dir` for the existing backend behavior. Full native macOS anchoring for these optional backends remains future work.
 
@@ -78,6 +82,8 @@ The environment picker selects Local or Capsule execution for the session. Local
 The effective project/session environment also accepts only `local` or `capsule`. A typo in `.argus/config.yaml` shows **Check environment** before a job is queued. Correct it or choose a valid session environment; an explicit host environment policy remains authoritative.
 
 `/env` distinguishes manually prepared images from verified ISO-derived cache entries and reports configuration blockers. This inspection does not allocate a VM or contact a guest. VM and guest readiness are checked when a run starts.
+
+Capsule sessions accept only `auto`, `hyperv`, or `libvirt` as the effective provider. Invalid selections are rejected before jobs start; choose a valid session provider or correct the project/environment setting. Local execution remains usable when an unused Capsule provider setting is invalid.
 
 ISO-derived images retain the [PR #27 provisioning contracts](os-environment-provisioning.md): digest-pinned offline runtime, immutable image verification, stable Capsule identity, monotonic control generations, fresh TLS/authentication, policy-controlled modes, quarantine, ownership checks, and secure reconnection of the same mutable VM. Advanced construction and reconnect operations remain in configuration and the Python API. The chat model cannot enable provider capabilities or expand execution policy.
 
