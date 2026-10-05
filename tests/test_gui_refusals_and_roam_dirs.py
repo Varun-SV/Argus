@@ -191,3 +191,40 @@ def test_unknown_model_provider_is_reported_instead_of_ready(api, tmp_path, monk
         monkeypatch.setenv("ARGUS_PROVIDER", "typo")
     info = api.app_info()
     assert not info["ok"] and "typo" in info["error"] and "anthropic" in info["error"]
+
+
+@pytest.mark.parametrize("text", [
+    "roam notepad.exe actually cancel that", "roam notepad.exe, never mind",
+    "explore notepad.exe but don't", "roam notepad.exe; scratch that",
+])
+def test_trailing_cancellations_take_the_roam_back(text):
+    routed = validate_intent({"intent": "roam", "args": {"target": split_roam_request(text).target}}, text, {})
+    assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("action,text", [
+    ("stop", "stop the run, actually don't"), ("stop", "stop it, but never mind"),
+    ("save_test", "save this draft, actually no"), ("init", "initialize the Argus project. never mind"),
+    ("write_test", "write a test for login, scratch that"),
+])
+def test_trailing_cancellations_take_simple_actions_back(action, text):
+    assert validate_intent({"intent": action}, text, {"has_draft": True})["intent"] == "chat"
+
+
+@pytest.mark.parametrize("action,text", [
+    ("stop", "stop it, cancel"), ("write_test", "write a test that users don't see errors"),
+    ("write_test", "write a test that the cancel button works"),
+])
+def test_requests_that_merely_mention_cancel_or_dont_still_work(action, text):
+    assert validate_intent({"intent": action}, text, {"has_draft": True})["intent"] == action
+
+
+def test_quoted_test_titles_never_change_run_settings():
+    tests = {"tests": [{"file": "a.test.yaml", "name": "Checkout in a capsule", "adapter": "cli"},
+                       {"file": "b.test.yaml", "name": "Keep failure capsule", "adapter": "cli"}]}
+    for text, wanted in (('run "Checkout in a capsule"', "a.test.yaml"), ('run "Keep failure capsule"', "b.test.yaml")):
+        routed = validate_intent({"intent": "run"}, text, tests)
+        assert routed["intent"] == "run" and routed["args"]["tests"] == [wanted]
+        assert routed["args"].get("environment") is None and routed["args"].get("retain") is None
+    explicit = validate_intent({"intent": "run"}, 'run "Checkout in a capsule" in a capsule', tests)
+    assert explicit["args"]["environment"] == "capsule"

@@ -568,12 +568,12 @@ def run_settings_from_text(text: str) -> tuple:
     local_positive = (
         re.search(
             r"\b(?:run|execute|test|check)\b[^.;!?]{0,120}\s+locally\s*[.!?]?\s*$",
-            text,
+            words,
             re.IGNORECASE,
         )
         or re.search(
             r"^\s*locally\s*[,;:]?\s*(?:please\s+)?(?:run|execute|test|check)\b",
-            text,
+            words,
             re.IGNORECASE,
         )
     )
@@ -584,7 +584,7 @@ def run_settings_from_text(text: str) -> tuple:
     # a negation (handled above).
     for m in re.finditer(
         r"\bin\s+(?:a\s+)?(?:(?P<cap>hyper-?v|libvirt)\s+)?capsule\b",
-        text,
+        words,
         re.IGNORECASE,
     ):
         found = {"environment": "capsule"}
@@ -595,7 +595,7 @@ def run_settings_from_text(text: str) -> tuple:
     if re.search(_SETTING_REFUSAL + r"[^.;!?]{0,40}\b(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?"
                  r"failure\s+capsule\b", words, re.IGNORECASE):
         settings["retain"] = False
-    elif re.search(r"\b(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?failure\s+capsule\b", text, re.IGNORECASE):
+    elif re.search(r"\b(?:keep(?:ing)?|retain(?:ing)?)\s+(?:the\s+)?failure\s+capsule\b", words, re.IGNORECASE):
         settings["retain"] = True
     if "retain" in settings and "environment" not in settings:
         settings["environment"] = "capsule"
@@ -635,10 +635,17 @@ _FUTURE_TIME = re.compile(
 
 
 # A correction after the request ("run checkout, actually don't") takes it back.
+# _TAKE_BACK is safe to apply to free text such as a test description or a roam target;
+# _CANCELLATION also treats a bare "don't"/"but not" after the verb as a take-back.
+_TAKE_BACK = (r"never\s*mind|nevermind|cancel\s+(?:that|it|this)|cancel(?=\s*(?:[.!,;]|$))|"
+              r"scratch\s+that|forget\s+(?:it|that)|on\s+second\s+thoughts?|hold\s+off|"
+              r"actually\s*,?\s*(?:no|not|don'?t|do\s+not)")
+_TAKE_BACK_RE = re.compile(r"(?<![\w-])(?:" + _TAKE_BACK + r")(?![\w-])", re.IGNORECASE)
 _CANCELLATION = re.compile(
-    r"(?<![\w-])(?:don'?t|do\s+not|dont|never\s*mind|nevermind|cancel(?:\s+(?:that|it|this))?|"
-    r"scratch\s+that|forget\s+(?:it|that)|on\s+second\s+thoughts?|hold\s+off|"
-    r"actually\s*,?\s*(?:no|not)|but\s+(?:not|never))(?![\w-])",
+    r"(?<![\w-])(?:" + _TAKE_BACK + r"|don'?t|do\s+not|dont|but\s+(?:not|never))(?![\w-])",
+    re.IGNORECASE)
+_ROAM_TAKE_BACK = re.compile(
+    r"(?<![\w-])(?:" + _TAKE_BACK + r"|but\s+(?:don'?t|do\s+not|not|never))(?![\w-])",
     re.IGNORECASE)
 
 
@@ -773,10 +780,18 @@ def _authorized_simple_action(text: str, action: str) -> bool:
     if not requested:
         return False
     verb = re.search(r"\b(?:" + action_words[action] + r")\b", requested.group(), re.IGNORECASE)
+    verb_end = requested.start() + verb.end()
+    # A take-back after the verb ("stop the run, actually don't") withdraws the request.
+    # A drafted test's description may itself say "don't", so it only honours clear take-backs.
+    # For stop, "cancel" repeats the action ("stop it, cancel"), so it isn't a take-back.
+    trailing = _TAKE_BACK_RE if action == "write_test" else _CANCELLATION
+    if any(not (action == "stop" and m.group().lower().startswith("cancel"))
+           for m in trailing.finditer(command, verb_end)):
+        return False
     return not re.search(
         r"\b(?:don'?t|do\s+not|never|not|no|avoid|can'?t|cannot|won'?t|"
         r"shouldn'?t|mustn'?t|without)\b[^.;!?]*\b(?:" + action_words[action] + r")\b",
-        command[:requested.start() + verb.end()], re.IGNORECASE,
+        command[:verb_end], re.IGNORECASE,
     )
 
 
@@ -1000,6 +1015,9 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         request = split_roam_request(text)
         if request is not None and request.problem:
             return intent("chat", reply=request.problem)
+        verb = _ROAM_VERB.search(text)
+        if verb and _ROAM_TAKE_BACK.search(_without_literals(text).replace("\u2019", "'"), verb.end()):
+            return intent("chat", reply="I didn't start anything: the request was taken back.")
         if _FUTURE_TIME.search(_without_literals(text)):
             return intent("chat", reply=("I didn't start anything: I can't schedule a roam for later. "
                                          "Ask again when you want it to start now."))
