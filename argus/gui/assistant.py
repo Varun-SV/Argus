@@ -606,6 +606,12 @@ def run_settings_from_text(text: str) -> tuple:
 
 def _question_about_action(text: str) -> bool:
     """Questions/advice prompts are not authorization to perform an action."""
+    # Embedded questions: "I want to know whether you can run checkout", "I wonder if ...".
+    if re.search(r"\b(?:want|would\s+like|'d\s+like|need|trying)\s+to\s+(?:know|find\s+out|understand|check\s+whether)\b|"
+                 r"\b(?:wonder(?:ing)?|curious|not\s+sure)\b[^.!?]{0,40}\b(?:whether|if|how|what)\b|"
+                 r"\bwhether\b[^.!?]{0,60}\b(?:you|argus|it|we|i)\s+(?:can|could|should|would|will|may|might)\b",
+                 _without_literals(text).replace("\u2019", "'"), re.IGNORECASE):
+        return True
     if re.match(r"^\s*(?:please\s+)?(?:tell\s+me|explain|describe|show\s+me|"
                 r"teach\s+me|help\s+me\s+understand)\b[^.!?]*\b(?:how|why|when|whether)\b",
                 text, re.IGNORECASE):
@@ -747,10 +753,11 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
                            r"(?:on\s+(?:this\s+)?(?:device|machine)|locally)|"
                            r"(?:keep|retain)(?:ing)?\s+(?:the\s+)?failure\s+capsule)(?![\w.-])",
                            lowered)
-    for setting in settings:
+    # Blank each setting in place (keeping offsets) so tests named after it still count:
+    # "run checkout in a capsule then profile" asks for both.
+    for setting in reversed(list(settings)):
         if not any(a <= setting.start() < b for a, b in quoted):
-            lowered = lowered[:setting.start()]
-            break
+            lowered = lowered[:setting.start()] + " " * (setting.end() - setting.start()) + lowered[setting.end():]
     matches = []
     chosen = []
     for item in tests:

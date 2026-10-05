@@ -313,10 +313,16 @@ class ArgusAPI:
             return {"ok": False, "error": (
                 f"ARGUS_EXECUTION_ENVIRONMENT={forced} is set for this app, so runs stay {forced}. "
                 "Unset it to choose the environment here.")}
+        previous = (self._session["environment"], self._session["capsule_provider"])
         self._session["environment"] = environment
         if capsule_provider:
             self._session["capsule_provider"] = capsule_provider
-        return {"ok": True, **self.app_info()}
+        info = self.app_info()
+        if not info.get("ok"):
+            # A rejected change must not linger as hidden session state the picker doesn't show.
+            self._session["environment"], self._session["capsule_provider"] = previous
+            return {"ok": False, "error": info.get("error") or "That environment isn't ready; the session is unchanged."}
+        return {"ok": True, **info}
 
     def set_retain(self, on: bool) -> dict:
         self._session["retain"] = bool(on)

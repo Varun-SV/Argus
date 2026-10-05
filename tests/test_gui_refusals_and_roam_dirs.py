@@ -457,3 +457,31 @@ def test_a_malformed_provider_entry_never_becomes_the_session_provider(api, tmp_
     assert not out["ok"] and "anthropic" in out["error"]
     assert api._session["provider"] is None and api.app_info()["ok"]
     assert api.set_provider("ollama")["ok"]
+
+
+def test_rejected_environment_change_is_rolled_back(api, tmp_path, monkeypatch):
+    _write_config(tmp_path, "provider: ollama\nexecution:\n  environment: local\n")
+    monkeypatch.setenv("ARGUS_CAPSULE_RETAIN_ON_FAILURE", "maybe")
+    out = api.set_environment("capsule", "libvirt")
+    assert not out["ok"] and "ARGUS_CAPSULE_RETAIN_ON_FAILURE" in out["error"]
+    assert api._session["environment"] is None and api._session["capsule_provider"] is None
+    info = api.app_info()
+    assert info["ok"] and info["environment"] == "local"
+
+
+def test_settings_between_test_names_keep_the_later_tests():
+    tests = {"tests": [{"file": "checkout.test.yaml", "name": "checkout", "adapter": "cli"},
+                       {"file": "profile.test.yaml", "name": "profile", "adapter": "cli"}]}
+    routed = validate_intent({"intent": "run"}, "run checkout in a capsule then profile", tests)
+    assert routed["intent"] == "run" and routed["args"]["environment"] == "capsule"
+    assert routed["args"]["tests"] == ["checkout.test.yaml", "profile.test.yaml"]
+
+
+@pytest.mark.parametrize("intent,text", [
+    ("run", "I want to know whether you can run checkout"), ("run", "I wonder if you can run checkout"),
+    ("roam", "I would like to know whether Argus can roam notepad.exe"),
+    ("stop", "I'm not sure whether you should stop the run"),
+])
+def test_embedded_capability_questions_are_not_authorization(intent, text):
+    args = {"target": "notepad.exe"} if intent == "roam" else {}
+    assert validate_intent({"intent": intent, "args": args}, text, TESTS)["intent"] == "chat"
