@@ -455,3 +455,26 @@ def test_stopped_descriptor_bound_container_for_other_storage_is_never_removed(t
     with pytest.raises(DockerOwnershipError):
         manager(tmp_path).ensure_qdrant()
     assert not any(c[1] in {"rm", "start", "run"} for c in daemon.commands[before:])
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="Linux descriptor-bound storage")
+def test_down_on_an_already_stopped_descriptor_container_succeeds(tmp_path, daemon):
+    a = manager(tmp_path)
+    a.ensure_qdrant()
+    assert a.stop("qdrant")
+    old = next(iter(daemon.containers.values()))
+    old["Mounts"][0]["Source"] = "/proc/999999999/fd/17"  # the creating process has exited
+    before = len(daemon.commands)
+    assert manager(tmp_path).stop("qdrant")
+    assert not any(c[1] in {"stop", "rm", "run"} for c in daemon.commands[before:])
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="Linux descriptor-bound storage")
+def test_down_on_a_stopped_descriptor_container_for_other_storage_fails_closed(tmp_path, daemon):
+    a = manager(tmp_path)
+    a.ensure_qdrant()
+    assert a.stop("qdrant")
+    old = next(iter(daemon.containers.values()))
+    old["Mounts"][0]["Source"] = "/proc/999999999/fd/17"
+    old["Config"]["Labels"]["org.argus.qdrant.directory"] = "0:0"
+    assert not manager(tmp_path).stop("qdrant")

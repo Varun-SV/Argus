@@ -958,7 +958,22 @@ function stash() {
   const c = state.conv;
   if (!c || !c.msgs.length) return;
   state.conversations = [c, ...state.conversations.filter((x) => x.id !== c.id)];
+  boundConversations();
   scheduleSave();
+}
+// Only the newest MAX_CONVERSATIONS are saved (and 12 shown), so keep memory and polling
+// bounded too. A conversation that still owns an active job or watch stays until it ends.
+const MAX_CONVERSATIONS = 30;
+function boundConversations() {
+  if (state.conversations.length <= MAX_CONVERSATIONS) return;
+  const busy = (c) => c === state.conv ||
+    c.msgs.some((m) => isActiveCard(m) || (m.kind === "watch" && m.watch && m.watch.running));
+  const kept = [];
+  for (const [i, c] of state.conversations.entries()) {
+    if (i < MAX_CONVERSATIONS || busy(c)) kept.push(c);
+    else for (const m of c.msgs) nodeCache.delete(m.id);
+  }
+  state.conversations = kept;
 }
 function scheduleSave() {
   clearTimeout(state.saveTimer);
@@ -970,7 +985,8 @@ function flushConversations() {
   clearTimeout(state.saveTimer);
   const c = state.conv;
   if (c && c.msgs.length) state.conversations = [c, ...state.conversations.filter((x) => x.id !== c.id)];
-  const clean = JSON.parse(JSON.stringify(state.conversations.slice(0, 30).map((conv) => Object.assign({}, conv, {
+  boundConversations();
+  const clean = JSON.parse(JSON.stringify(state.conversations.slice(0, MAX_CONVERSATIONS).map((conv) => Object.assign({}, conv, {
     msgs: conv.msgs.filter((m) => m.kind !== "thinking"),
   }))));
   const save = state.saveChain.then(async () => {

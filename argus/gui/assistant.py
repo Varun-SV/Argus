@@ -907,15 +907,25 @@ def _watch_action_from_text(text: str) -> Optional[str]:
                  r"\b(?:watch(?:ing)?|monitor(?:ing)?|start|stop|enable|disable|turn\s+(?:on|off))\b",
                  text, re.IGNORECASE):
         return None
-    if re.search(r"\b(?:stop|disable|turn\s+off)\b[^.!?]{0,40}\bwatch\b|"
-                 r"\bwatch\b[^.!?]{0,40}\b(?:stop|off)\b", text, re.IGNORECASE):
-        return "stop"
-    if re.search(r"\b(?:start|enable|turn\s+on)\b[^.!?]{0,40}\bwatch\b|"
-                 r"^\s*(?:please\s+)?watch\b|"
-                 r"\b(?:watch|monitor)\b[^.!?]{0,60}\b(?:tests?|files?|specs?|changes)\b",
-                 text, re.IGNORECASE):
-        return "start"
-    return None
+    # Watch takes effect now, so a condition or a later take-back withdraws it.
+    words = _without_literals(text)
+    if _CONDITION.search(words):
+        return None
+    stop = re.search(r"\b(?:stop|disable|turn\s+off)\b[^.!?]{0,40}\bwatch\b|"
+                     r"\bwatch\b[^.!?]{0,40}\b(?:stop|off)\b", words, re.IGNORECASE)
+    start = None if stop else re.search(
+        r"\b(?:start|enable|turn\s+on)\b[^.!?]{0,40}\bwatch\b|"
+        r"^\s*(?:please\s+)?watch\b|"
+        r"\b(?:watch|monitor)\b[^.!?]{0,60}\b(?:tests?|files?|specs?|changes)\b",
+        words, re.IGNORECASE)
+    found = stop or start
+    if found is None:
+        return None
+    # "cancel" repeats a stop rather than withdrawing it.
+    if any(not (stop and m.group().lower().startswith("cancel"))
+           for m in _CANCELLATION.finditer(words, found.end())):
+        return None
+    return "stop" if stop else "start"
 
 
 def _mentions_target(text: str, target: str, adapter: str) -> bool:
@@ -1058,7 +1068,10 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
             verb = r"(?:reset|clear|forget)" if action == "reset" else r"export"
             negated = re.search(_REFUSAL + r"[^.;!?]*\b" + verb + r"\b",
                                 text.replace("\u2019", "'"), re.IGNORECASE)
-            if _question_about_action(text) or negated or not (
+            verb_match = re.search(r"\b" + verb + r"\b", text, re.IGNORECASE)
+            taken_back = bool(verb_match and _CANCELLATION.search(
+                _without_literals(text).replace("\u2019", "'"), verb_match.end()))
+            if _question_about_action(text) or negated or taken_back or not (
                 re.search(verb + r"\b[^.!?]{0,60}\bknowledge\b", text, re.IGNORECASE)
                 or re.search(r"\bknowledge\b[^.!?]{0,60}" + verb + r"\b", text, re.IGNORECASE)
             ):

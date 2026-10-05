@@ -666,3 +666,26 @@ def test_close_waits_for_in_flight_poll_before_saving_final_snapshot(desktop_bro
     watch = next(m["watch"] for c in saved for m in c["msgs"] if m.get("kind") == "watch")
     assert watch["events"][-1] == {"file": "latest", "status": "pass"}
     assert not watch["running"] and page.evaluate("state.pollTimer") is None
+
+
+def test_in_memory_conversations_are_bounded_but_keep_active_jobs(desktop_browser):
+    page, api, project = desktop_browser
+    result = page.evaluate("""() => {
+      const active = {id: 'busy', title: 'busy', msgs: [{id: 'busy-run', kind: 'run', job: 'j-busy',
+                      snap: {status: 'running'}, meta: {running: true}}]};
+      state.conversations = [];
+      for (let i = 0; i < 40; i++) {
+        const c = {id: 'c' + i, title: 'c' + i, msgs: [{id: 'm' + i, kind: 'text', role: 'user', text: 'hi'}]};
+        state.conversations.push(c);
+        nodeCache.set('m' + i, {v: 1, node: document.createElement('div')});
+      }
+      state.conversations.push(active);
+      newChat();
+      state.conv.msgs.push({id: 'now', kind: 'text', role: 'user', text: 'current'});
+      newChat();
+      return {count: state.conversations.length, ids: state.conversations.map((c) => c.id),
+              evicted: nodeCache.has('m39')};
+    }""")
+    assert result["count"] == 31  # the 30 newest, plus the one that still owns a running job
+    assert "busy" in result["ids"] and "c39" not in result["ids"]
+    assert not result["evicted"]

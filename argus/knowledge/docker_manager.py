@@ -371,8 +371,14 @@ class DockerManager:
                 name, labels, storage, _ = self._qdrant_scope()
                 info = self._inspect_qdrant(docker, name)
                 if info is not None:
-                    self._verify_qdrant(info, labels, storage)
-                    containers.append(info["Id"])
+                    running = bool((info.get("State") or {}).get("Running"))
+                    # A stopped descriptor-bound container can't have its mount attested
+                    # once its creator has exited; its labels still bind it to this storage,
+                    # and being stopped it is already down. Anything else is fully verified.
+                    self._verify_qdrant(info, labels, storage,
+                                        attest_mount=running or not self._descriptor_bound(info))
+                    if running:
+                        containers.append(info["Id"])
             except FileNotFoundError:
                 pass
             except (OSError, ValueError, subprocess.SubprocessError):

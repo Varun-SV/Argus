@@ -327,3 +327,26 @@ def test_a_multi_test_job_probes_vision_once(api, tmp_path, monkeypatch):
     job = _run_and_wait(api, [f"t{i}.test.yaml" for i in range(3)])
     assert len(job["runs"]) == 3
     assert _ProbeCountingProvider.probes == 1
+
+
+@pytest.mark.parametrize("text", [
+    "start watch when deployment finishes", "watch test files if the build passes",
+    "start watch, actually don't", "start watching the tests. never mind",
+])
+def test_conditional_or_withdrawn_watch_requests_do_nothing(text):
+    assert validate_intent({"intent": "watch", "args": {"action": "start"}}, text, {})["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text,action", [("start watch", "start"), ("watch the tests", "start"), ("stop watch", "stop")])
+def test_plain_watch_requests_still_work(text, action):
+    routed = validate_intent({"intent": "watch"}, text, {})
+    assert routed["intent"] == "watch" and routed["args"]["action"] == action
+
+
+@pytest.mark.parametrize("action,text", [
+    ("export", "export knowledge for notepad.exe, actually don't"),
+    ("reset", "reset knowledge for notepad.exe. never mind"),
+])
+def test_withdrawn_knowledge_mutations_are_not_authorized(action, text):
+    routed = validate_intent({"intent": "knowledge", "args": {"action": action, "target": "notepad.exe"}}, text, {})
+    assert routed["intent"] == "chat"
