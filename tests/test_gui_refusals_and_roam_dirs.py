@@ -350,3 +350,43 @@ def test_plain_watch_requests_still_work(text, action):
 def test_withdrawn_knowledge_mutations_are_not_authorized(action, text):
     routed = validate_intent({"intent": "knowledge", "args": {"action": action, "target": "notepad.exe"}}, text, {})
     assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "export knowledge for notepad.exe after deployment", "export knowledge for notepad.exe tomorrow",
+    "reset knowledge for notepad.exe in 5 minutes", "reset knowledge for notepad.exe once the run ends",
+])
+def test_deferred_knowledge_mutations_are_not_authorized(text):
+    action = "export" if text.startswith("export") else "reset"
+    routed = validate_intent({"intent": "knowledge", "args": {"action": action, "target": "notepad.exe"}}, text, {})
+    assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "switch to local, actually don't", "switch to local after deployment", "switch to local tomorrow",
+    "I would rather not switch to local", "use a capsule when the build passes",
+])
+def test_withdrawn_deferred_or_refused_environment_changes_do_nothing(text):
+    assert validate_intent({"intent": "environment", "args": {"environment": "local"}}, text, {})["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "switch to anthropic, actually don't", "use anthropic tomorrow",
+    "switch to anthropic when the build passes", "you should not switch to anthropic",
+])
+def test_withdrawn_deferred_or_refused_provider_switches_do_nothing(text):
+    ctx = {"providers": ["ollama", "anthropic"]}
+    assert validate_intent({"intent": "switch_provider", "args": {"provider": "anthropic"}}, text, ctx)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("intent,text", [("stop", "stop the run in 5 minutes"), ("watch", "start watch tomorrow")])
+def test_scheduled_stop_and_watch_requests_do_nothing(intent, text):
+    assert validate_intent({"intent": intent}, text, {})["intent"] == "chat"
+
+
+def test_plain_environment_and_provider_changes_still_work():
+    assert validate_intent({"intent": "environment"}, "switch to local", {})["args"]["environment"] == "local"
+    assert validate_intent({"intent": "environment"}, "use a libvirt capsule", {})["args"]["capsule_provider"] == "libvirt"
+    ctx = {"providers": ["ollama", "anthropic"]}
+    for text in ("switch to anthropic", "use anthropic"):
+        assert validate_intent({"intent": "switch_provider", "args": {"provider": "anthropic"}}, text, ctx)["intent"] == "switch_provider"

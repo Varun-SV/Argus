@@ -654,6 +654,19 @@ _ROAM_TAKE_BACK = re.compile(
     re.IGNORECASE)
 
 
+def _deferred_or_withdrawn(text: str, verb_pattern: str) -> bool:
+    """True when an action meant to happen now is conditional, scheduled, or taken back.
+
+    The desktop app can neither wait for a condition nor schedule work, and a take-back
+    after the verb ("switch to local, actually don't") withdraws the request.
+    """
+    words = _without_literals(text).replace("\u2019", "'")
+    if _CONDITION.search(words) or _FUTURE_TIME.search(words):
+        return True
+    verb = re.search(verb_pattern, words, re.IGNORECASE)
+    return bool(verb and _CANCELLATION.search(words, verb.end()))
+
+
 def _without_literals(text: str) -> str:
     """Blank quoted text, URLs, paths and filenames: their words aren't instructions."""
     return re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'|\S*[/\\]\S*|\S+\.[A-Za-z_]\S*',
@@ -794,7 +807,7 @@ def _authorized_simple_action(text: str, action: str) -> bool:
            for m in trailing.finditer(command, verb_end)):
         return False
     # A drafted test's description may say "when ..."; the other actions take effect now.
-    if action != "write_test" and _CONDITION.search(command):
+    if action != "write_test" and (_CONDITION.search(command) or _FUTURE_TIME.search(_without_literals(command))):
         return False
     return not re.search(
         r"\b(?:don'?t|do\s+not|never|not|no|avoid|can'?t|cannot|won'?t|"
@@ -830,10 +843,10 @@ def _environment_change_from_text(text: str) -> tuple:
     if _question_about_action(text):
         return None, None
     if re.search(
-        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:switch|change|set|use|select|choose)\b",
-        text,
+        _REFUSAL + r"[^.;!?]{0,60}\b(?:switch|change|set|use|select|choose)\b",
+        text.replace("\u2019", "'"),
         re.IGNORECASE,
-    ):
+    ) or _deferred_or_withdrawn(text, r"\b(?:switch|change|set|use|select|choose)\b"):
         return None, None
 
     # First establish that the user actually requested a picker change. Provider
@@ -880,10 +893,10 @@ def _provider_change_from_text(text: str, configured: Sequence[str]) -> Optional
     if _question_about_action(text):
         return None
     if re.search(
-        r"\b(?:don'?t|do\s+not|never)\b[^.;!?]{0,60}\b(?:use|switch|change|select|choose)\b",
-        text,
+        _REFUSAL + r"[^.;!?]{0,60}\b(?:use|switch|change|select|choose)\b",
+        text.replace("\u2019", "'"),
         re.IGNORECASE,
-    ):
+    ) or _deferred_or_withdrawn(text, r"\b(?:use|switch|change|select|choose)\b"):
         return None
 
     for provider in configured:
@@ -909,7 +922,7 @@ def _watch_action_from_text(text: str) -> Optional[str]:
         return None
     # Watch takes effect now, so a condition or a later take-back withdraws it.
     words = _without_literals(text)
-    if _CONDITION.search(words):
+    if _CONDITION.search(words) or _FUTURE_TIME.search(words):
         return None
     stop = re.search(r"\b(?:stop|disable|turn\s+off)\b[^.!?]{0,40}\bwatch\b|"
                      r"\bwatch\b[^.!?]{0,40}\b(?:stop|off)\b", words, re.IGNORECASE)
@@ -1068,10 +1081,8 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
             verb = r"(?:reset|clear|forget)" if action == "reset" else r"export"
             negated = re.search(_REFUSAL + r"[^.;!?]*\b" + verb + r"\b",
                                 text.replace("\u2019", "'"), re.IGNORECASE)
-            verb_match = re.search(r"\b" + verb + r"\b", text, re.IGNORECASE)
-            taken_back = bool(verb_match and _CANCELLATION.search(
-                _without_literals(text).replace("\u2019", "'"), verb_match.end()))
-            if _question_about_action(text) or negated or taken_back or not (
+            deferred = _deferred_or_withdrawn(text, r"\b" + verb + r"\b")
+            if _question_about_action(text) or negated or deferred or not (
                 re.search(verb + r"\b[^.!?]{0,60}\bknowledge\b", text, re.IGNORECASE)
                 or re.search(r"\bknowledge\b[^.!?]{0,60}" + verb + r"\b", text, re.IGNORECASE)
             ):
