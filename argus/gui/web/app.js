@@ -366,7 +366,8 @@ async function knowledge(action, target, conv = state.conv) {
   const { push, say, sayError, setFollowups } = inConv(conv);
   if (action === "reset") {
     const k = await api().knowledge(target);
-    const name = k.ok ? k.target : target;
+    if (!k.ok) return sayError(k.error);
+    const name = k.target;
     if (!name) return sayError("Which target's knowledge should I reset?");
     if (!window.confirm(`Delete everything Argus learned about ${name}? This can't be undone.`)) {
       return say(`Kept the knowledge for ${name}.`);

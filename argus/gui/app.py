@@ -979,6 +979,10 @@ class ArgusAPI:
     # ---- knowledge --------------------------------------------------------------
 
     def knowledge(self, target: str = "") -> dict:
+        with self._lock:
+            return self._knowledge(target)
+
+    def _knowledge(self, target: str = "") -> dict:
         from argus.knowledge.fingerprint import target_key
 
         cfg = self._config()
@@ -1018,8 +1022,28 @@ class ArgusAPI:
                 "bugs": s.get("bugs", s.get("bug_nodes", 0)), "sessions": s.get("sessions", 0)}
 
     def knowledge_reset(self, target: str) -> dict:
+        with self._lock:
+            return self._knowledge_reset(target)
+
+    def _knowledge_reset(self, target: str) -> dict:
+        from argus.knowledge.fingerprint import target_key
+
         try:
+            job = self._jobs.get(self._active_job) if self._active_job else None
+            if self._closing or (job and job["running"]) or self._active_ks is not None:
+                return {"ok": False, "error": "Wait for the current job to finish and its knowledge store to close before resetting knowledge."}
             cfg = self._config()
+            kc = cfg.knowledge
+            if not kc.enabled:
+                return {"ok": False, "error": "The knowledge store is disabled. Enable it before resetting a target."}
+            if not kc.persist_dir and not cfg.argus_dir.is_dir():
+                return {"ok": False, "error": "Set up this project with /init before resetting its knowledge store."}
+            persist = (Path(kc.persist_dir) if kc.persist_dir else
+                       _argus_subdir(cfg, "knowledge", create=False))
+            key = target_key(target) if target and target.strip() else ""
+            if not key or not any((persist / f"{key}.{suffix}").exists()
+                                  for suffix in ("graph.json", "states.ndjson", "bugs.ndjson")):
+                return {"ok": False, "error": f"Argus has no knowledge for {target!r} yet."}
             ks = cfg.make_knowledge_store()
             if ks is None:
                 return {"ok": False, "error": "The knowledge store is disabled. Enable it before resetting a target."}
@@ -1033,6 +1057,8 @@ class ArgusAPI:
 
     def knowledge_export(self, target: str) -> dict:
         from argus.knowledge.fingerprint import target_key
+        from argus.knowledge.storage import read_project_knowledge_file
+        from argus.ates.store import AtesStoreError
 
         cfg = self._config()
         key = target_key(target)
@@ -1048,10 +1074,11 @@ class ArgusAPI:
                 return {"ok": False, "error": f"No graph for '{target}' yet."}
             if not graph.resolve().is_relative_to(persist.resolve()):
                 return {"ok": False, "error": f"{_rel(cfg, graph)} escapes the knowledge directory."}
-            data = _read_nofollow(graph)
+            data = (_read_nofollow(graph) if kc.persist_dir else
+                    read_project_knowledge_file(cfg.project_dir, graph.name))
             dest = _argus_subdir(cfg, "exports") / f"{key}.graph.json"
             _write_atomic(dest, data)
-        except OSError as exc:
+        except (OSError, ValueError, AtesStoreError) as exc:
             return {"ok": False, "error": f"Could not export the graph: {exc}"}
         return {"ok": True, "path": _rel(cfg, dest), "target": target}
 

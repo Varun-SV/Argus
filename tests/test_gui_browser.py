@@ -54,6 +54,32 @@ def test_reload_finishes_terminal_restored_job_in_its_owning_conversation(deskto
     assert not page.evaluate("activeJobIds().size")
 
 
+def test_failed_knowledge_inspection_cannot_confirm_or_call_reset(desktop_browser, monkeypatch):
+    page, api, project = desktop_browser
+    monkeypatch.setattr(api, "knowledge", lambda target="": {"ok": False, "error": "No knowledge for typo"})
+    monkeypatch.setattr(api, "knowledge_reset", lambda target: pytest.fail("Failed inspection must not reset"))
+    page.evaluate("() => { window.confirm = () => { throw new Error('Must not confirm failed inspection'); }; }")
+    page.evaluate("execute(I('knowledge', {action:'reset', target:'typo'}))")
+    page.get_by_text("No knowledge for typo", exact=False).wait_for()
+
+
+def test_known_knowledge_reset_confirms_and_deletes_real_graph(desktop_browser, monkeypatch):
+    from argus.config import KnowledgeConfig
+    page, api, project = desktop_browser
+    cfg = api._config()
+    cfg.knowledge = KnowledgeConfig(type="json")
+    monkeypatch.setattr(api, "_config", lambda provider=None: cfg)
+    directory = project / ".argus" / "knowledge"
+    directory.mkdir()
+    graph = directory / "app.graph.json"
+    graph.write_text(json.dumps({"nodes": {}, "edges": []}))
+    page.evaluate("() => { window.confirm = message => { window.resetConfirmation = message; return true; }; }")
+    page.evaluate("execute(I('knowledge', {action:'reset', target:'app'}))")
+    page.get_by_text("Knowledge for app is reset:", exact=False).wait_for()
+    assert "app" in page.evaluate("window.resetConfirmation")
+    assert not graph.exists()
+
+
 @pytest.fixture
 def desktop_browser(tmp_path, monkeypatch):
     playwright = pytest.importorskip("playwright.sync_api")
@@ -115,6 +141,9 @@ def desktop_browser(tmp_path, monkeypatch):
                 page.add_init_script(bridge)
                 page.goto(f"http://127.0.0.1:{server.server_port}")
                 page.wait_for_function("state.info && state.tests.length > 0")
+                # Boot still restores conversations/jobs after loading the sidebar.
+                # Wait for its final focus step before replacing polling or API hooks.
+                page.wait_for_function("document.activeElement === document.getElementById('input')")
                 yield page, api, tmp_path
                 assert errors == []
             finally:

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from argus.adapters.base import Observation
 from argus.knowledge.base import KnowledgeContext, KnowledgeStore, PastBug, SimilarState
+from argus.knowledge.storage import KnowledgeFileError
 from argus.knowledge.fingerprint import fingerprint, semantic_description, summarize_action, target_key
 
 
@@ -65,6 +66,8 @@ class JsonKnowledgeStore(KnowledgeStore):
             if path.exists():
                 try:
                     self._graphs[k] = json.loads(path.read_text(encoding="utf-8"))
+                except KnowledgeFileError:
+                    raise
                 except Exception:
                     pass
             if k not in self._graphs:
@@ -79,6 +82,8 @@ class JsonKnowledgeStore(KnowledgeStore):
         try:
             path = self._dir / f"{k}.graph.json"
             path.write_text(json.dumps(g), encoding="utf-8")
+        except KnowledgeFileError:
+            raise
         except Exception:
             pass
 

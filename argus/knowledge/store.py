@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from argus.adapters.base import Observation
 from argus.knowledge.base import KnowledgeContext, KnowledgeStore, PastBug, SimilarState
+from argus.knowledge.storage import KnowledgeFileError
 from argus.knowledge.embeddings import EmbeddingGenerator
 from argus.knowledge.fingerprint import fingerprint, semantic_description, summarize_action, target_key
 
@@ -79,6 +80,8 @@ class LocalKnowledgeStore(KnowledgeStore):
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
                     G = nx.node_link_graph(data)
+                except KnowledgeFileError:
+                    raise
                 except Exception:
                     pass
             self._graphs[key] = G
@@ -93,6 +96,8 @@ class LocalKnowledgeStore(KnowledgeStore):
             import networkx as nx
             path = self._dir / f"{key}.graph.json"
             path.write_text(json.dumps(nx.node_link_data(G), indent=2), encoding="utf-8")
+        except KnowledgeFileError:
+            raise
         except Exception:
             pass
 
