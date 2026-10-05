@@ -26,7 +26,7 @@ def test_run_matches_only_test_phrase_and_complete_names():
         got = validate_intent({"intent": "run", "args": {"tests": "all"}}, text, context)
         assert got["args"]["tests"] == ["checkout.test.yaml"]
     assert validate_intent({"intent": "run"}, 'run "capsule" and run.test.yaml', context)["args"]["tests"] == [
-        "run.test.yaml", "capsule.test.yaml"]
+        "capsule.test.yaml", "run.test.yaml"]
 
 
 def test_quoted_names_keep_control_words_and_ambiguous_aliases_require_filenames():

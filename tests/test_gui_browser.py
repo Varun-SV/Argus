@@ -369,6 +369,85 @@ def test_close_waits_for_pending_provider_or_knowledge_response(desktop_browser,
     assert any(m.get("text") == "Pending response" for m in messages)
 
 
+@pytest.mark.parametrize("entry", ["card", "followup"])
+@pytest.mark.parametrize("outcome", ["draft", "error"])
+def test_regression_draft_pending_owner_autosave_and_reload(desktop_browser, entry, outcome):
+    page, api, project = desktop_browser
+    page.evaluate("""({entry,outcome}) => {
+      const real=window.pywebview.api;
+      window.stubRelease=null; window.savedDraft=false; window.stubArgs=null;
+      window.pywebview.api=new Proxy(real,{get:(target,key)=>{
+        if(key==='regression_stub') return async(...args)=>{
+          window.stubArgs=args;
+          await new Promise(resolve=>window.stubRelease=resolve);
+          if(outcome==='error') throw new Error('Draft unavailable; try again');
+          return {ok:true,id:'round-five-draft',name:'Regression',filename:'regression.test.yaml',
+            yaml:'name: Regression\\ntarget:\\n  adapter: cli\\n  launch: echo ready\\nsteps:\\n  - assert:\\n      exit_code_is: 0\\n',notes:[]};
+        };
+        if(key==='save_conversations') return async(chats)=>{
+          const r=await target[key](chats);
+          window.savedDraft=chats.some(c=>c.msgs.some(m=>m.kind==='spec' || (m.error && m.text.includes('Draft unavailable'))));
+          return r;
+        };
+        return target[key];
+      }});
+      const snap={id:'roam-round-five',target:'echo ready',adapter:'cli',env_label:'Local',
+        running:false,status:'pass',started_at:1,ended_at:2,minutes:1,tokens:0,memory:true,
+        log:[],findings:[],regressions:['regression.test.yaml']};
+      push({role:'argus',kind:'roam',snap});
+      if(entry==='followup') followupsAfter(state.conv,state.conv.msgs.at(-1));
+    }""", {"entry": entry, "outcome": outcome})
+    owner = page.evaluate("state.conv.id")
+    if entry == "card":
+        page.get_by_role("button", name="Write regression test", exact=True).click()
+    else:
+        page.locator("#followups").get_by_role("button", name="Turn finding 1 into a test", exact=True).click()
+    page.wait_for_function("window.stubRelease !== null")
+    assert page.evaluate("window.stubArgs") == ["roam-round-five", 0]
+    assert page.evaluate("state.pendingActions") == 1
+    assert page.evaluate("state.conv.msgs.some(m=>m.kind==='thinking')")
+    assert page.evaluate("flushConversationsForClose()") == {"ok": False}
+    page.evaluate("newChat()")
+    page.evaluate("window.stubRelease()")
+    page.wait_for_function("state.pendingActions === 0 && window.savedDraft")
+    assert not page.evaluate("state.conv.msgs.some(m=>m.kind==='spec' || m.error)")
+    saved = next(c for c in api.load_conversations() if c["id"] == owner)
+    assert not any(m["kind"] == "thinking" for m in saved["msgs"])
+    if outcome == "draft":
+        draft = next(m["draft"] for m in saved["msgs"] if m["kind"] == "spec")
+        assert draft["id"] == "round-five-draft" and not draft.get("saved")
+        assert any(f.get("intent", {}).get("intent") == "save_test" for f in saved["followups"])
+        assert not (project / ".argus" / "regression.test.yaml").exists()
+    else:
+        assert any(m.get("error") and "Draft unavailable" in m["text"] for m in saved["msgs"])
+    page.reload()
+    page.wait_for_function("id=>state.conversations.some(c=>c.id===id)", arg=owner)
+    restored = page.evaluate("id=>state.conversations.find(c=>c.id===id)", owner)
+    assert restored["msgs"] == saved["msgs"]
+
+
+@pytest.mark.parametrize("known", [False, True])
+def test_knowledge_roam_chip_requires_original_launch_target(desktop_browser, monkeypatch, known):
+    page, api, project = desktop_browser
+    monkeypatch.setattr(api, "knowledge", lambda target="": {
+        "ok": True, "target": "http-localhost-3000", "launch_target": "http://localhost:3000" if known else None,
+        "targets": ["http-localhost-3000"], "backend": "json", "states": 3, "transitions": 2, "bugs": 0, "sessions": 1})
+    monkeypatch.setattr(api, "knowledge_reset", lambda target: {"ok": True, "target": target})
+    page.evaluate("execute(I('knowledge',{action:'show'}))")
+    followups = page.evaluate("state.conv.followups")
+    assert any(f["intent"]["args"].get("action") == "export" for f in followups)
+    roams = [f for f in followups if f["intent"]["intent"] == "roam"]
+    assert len(roams) == int(known)
+    if known:
+        assert roams[0]["intent"]["args"]["target"] == "http://localhost:3000"
+    page.evaluate("() => { window.confirm=()=>true; }")
+    page.evaluate("execute(I('knowledge',{action:'reset'}))")
+    roams = page.evaluate("state.conv.followups")
+    assert len(roams) == int(known)
+    if known:
+        assert roams[0]["intent"]["args"]["target"] == "http://localhost:3000"
+
+
 def test_poll_requests_during_a_delayed_tick_cannot_start_parallel_ticks(desktop_browser):
     page, api, project = desktop_browser
     page.wait_for_function("!state.pollInFlight")

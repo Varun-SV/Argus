@@ -44,19 +44,24 @@ class RemoteKnowledgeStore(KnowledgeStore):
                 pass
         return self._qdrant
 
-    def _graph(self, target: str):
+    def _graph(self, target: str, *, create: bool = True):
         key = target_key(target)
         if key not in self._graphs:
+            path = self._dir / f"{key}.graph.json"
+            if not create and not path.exists():
+                return None
             try:
                 import networkx as nx
                 G = nx.DiGraph()
-                path = self._dir / f"{key}.graph.json"
                 if path.exists():
                     data = json.loads(path.read_text(encoding="utf-8"))
                     G = nx.node_link_graph(data)
-                self._graphs[key] = G
+                if create:
+                    self._graphs[key] = G
+                return G
             except ImportError:
-                self._graphs[key] = None
+                if create:
+                    self._graphs[key] = None
         return self._graphs.get(key)
 
     def _save_graph(self, target: str) -> None:
@@ -318,10 +323,10 @@ class RemoteKnowledgeStore(KnowledgeStore):
             target_map = {target_key(target): target}
         else:
             graph_files = list(self._dir.glob("*.graph.json"))
-            keys = [f.stem for f in graph_files]
-            target_map = {k: k for k in keys}
+            keys = [f.name[:-len(".graph.json")] for f in graph_files]
+            target_map = {k: k + ".graph" for k in keys}
         for key in keys:
-            G = self._graph(target_map[key])
+            G = self._graph(key, create=False)
             stats[target_map[key]] = {
                 "states": len(G.nodes) if G is not None else 0,
                 "transitions": len(G.edges) if G is not None else 0,

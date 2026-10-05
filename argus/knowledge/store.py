@@ -61,9 +61,12 @@ class LocalKnowledgeStore(KnowledgeStore):
         except Exception:
             return None
 
-    def _graph(self, target: str):
+    def _graph(self, target: str, *, create: bool = True):
         key = target_key(target)
         if key not in self._graphs:
+            path = self._dir / f"{key}.graph.json"
+            if not create and not path.exists():
+                return None
             if self._nx_ok is None:
                 try:
                     import networkx  # noqa: F401
@@ -71,11 +74,11 @@ class LocalKnowledgeStore(KnowledgeStore):
                 except ImportError:
                     self._nx_ok = False
             if not self._nx_ok:
-                self._graphs[key] = None
+                if create:
+                    self._graphs[key] = None
                 return None
             import networkx as nx
             G = nx.DiGraph()
-            path = self._dir / f"{key}.graph.json"
             if path.exists():
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
@@ -84,7 +87,9 @@ class LocalKnowledgeStore(KnowledgeStore):
                     raise
                 except Exception:
                     pass
-            self._graphs[key] = G
+            if create:
+                self._graphs[key] = G
+            return G
         return self._graphs.get(key)
 
     def _save_graph(self, target: str) -> None:
@@ -325,11 +330,11 @@ class LocalKnowledgeStore(KnowledgeStore):
             target_map = {target_key(target): target}
         else:
             graph_files = list(self._dir.glob("*.graph.json"))
-            keys = [f.stem for f in graph_files]
-            target_map = {k: k for k in keys}
+            keys = [f.name[:-len(".graph.json")] for f in graph_files]
+            target_map = {k: k + ".graph" for k in keys}
 
         for key in keys:
-            G = self._graph(target_map[key])
+            G = self._graph(key, create=False)
             stats[target_map[key]] = {
                 "states": len(G.nodes) if G is not None else 0,
                 "transitions": len(G.edges) if G is not None else 0,

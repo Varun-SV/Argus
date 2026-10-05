@@ -43,7 +43,7 @@ def test_reset_rejects_active_knowledge_and_reserved_jobs(tmp_path, monkeypatch,
     api, cfg, graph = setup(tmp_path, monkeypatch)
     if phase == "cached store":
         store = cfg.make_knowledge_store()
-        store.get_stats("app")
+        store._store._graph("app")  # Cache it as a writer, not a stats-only reader.
         api._active_ks = store
     else:
         assert api._begin_job({"id": phase, "running": True}) is None

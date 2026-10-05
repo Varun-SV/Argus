@@ -1004,20 +1004,28 @@ class ArgusAPI:
             targets = sorted(path.name[: -len(".graph.json")]
                              for path in persist.glob("*.graph.json"))
             target = (target or "").strip()
+            requested = target
             if target and target_key(target) not in targets:
                 target = _pick_target(target, targets) or target
             chosen = target or self._last_target or (targets[0] if targets else "")
             if not chosen:
                 return {"ok": False, "error": "Argus hasn't learned anything yet. Roam an app to build its state graph."}
             if target_key(chosen) not in targets:
-                # Querying an unknown target makes the store create (and on close, save) an
-                # empty graph for it, so a typo would become a permanent "target".
+                # An inspection typo must not be presented as a learned target.
                 known = f" Known targets: {', '.join(targets)}." if targets else ""
                 return {"ok": False, "error": f"Argus has no knowledge for {chosen!r} yet.{known}"}
             s = ks.get_stats(chosen).get(chosen, {})
+            launch_target = None
+            if (requested and requested.casefold() != target_key(requested) and
+                  target_key(requested) == target_key(chosen)):
+                # A complete command/URL supplied by the user is usable; a graph
+                # filename or a fuzzy match cannot reconstruct its launch target.
+                launch_target = requested
+            elif self._last_target and target_key(self._last_target) == target_key(chosen):
+                launch_target = self._last_target
         finally:
             ks.close()
-        return {"ok": True, "target": chosen, "targets": targets, "backend": backend,
+        return {"ok": True, "target": chosen, "launch_target": launch_target, "targets": targets, "backend": backend,
                 "states": s.get("states", 0), "transitions": s.get("transitions", 0),
                 "bugs": s.get("bugs", s.get("bug_nodes", 0)), "sessions": s.get("sessions", 0)}
 
@@ -1292,6 +1300,18 @@ class ArgusAPI:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 return data if isinstance(data, list) else []
 
+            # Preserve the known old per-user key without overwriting canonical
+            # history or deleting any saved copy from another path spelling.
+            legacy_key = _conversation_path(cfg, legacy=True)
+            if legacy_key != path and not legacy_key.is_symlink() and legacy_key.is_file():
+                data = json.loads(legacy_key.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    data = data[:30]
+                    with self._persist_lock:
+                        if not path.exists():
+                            _write_atomic(path, json.dumps(data).encode("utf-8"))
+                    return data
+
             # One-time migration from the PR's earlier project-local location.
             # The legacy path is attested before reading and removed only after
             # the user-data copy succeeds.
@@ -1413,11 +1433,12 @@ def _run_notes(data: dict) -> List[str]:
     return notes
 
 
-def _conversation_path(cfg: ArgusConfig) -> Path:
+def _conversation_path(cfg: ArgusConfig, *, legacy: bool = False) -> Path:
     """Per-user GUI state path, keyed by project without storing chats in its repo."""
     root = gui_state_root()
 
-    project = str(Path(cfg.project_dir).resolve())
+    project = (str(Path(cfg.project_dir).resolve()) if legacy else
+               project_identity(cfg.project_dir))
     project_key = hashlib.sha256(project.encode("utf-8")).hexdigest()[:24]
     directory = root / "projects" / project_key
     directory.mkdir(parents=True, exist_ok=True)

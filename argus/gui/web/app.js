@@ -206,6 +206,11 @@ async function execute(res, conv = state.conv) {
         showDraft(draft, conv);
         return;
       }
+      case "regression_stub": {
+        const draft = await withThinking(() => api().regression_stub(a.job, a.index || 0));
+        showDraft(draft, conv);
+        return;
+      }
       case "save_test": {
         const r = await api().save_test(a.draft || null);
         if (!r.ok) return sayError(r.error);
@@ -375,7 +380,9 @@ async function knowledge(action, target, conv = state.conv) {
     const r = await api().knowledge_reset(name);
     if (!r.ok) return sayError(r.error);
     say(`Knowledge for ${name} is reset: 0 states, 0 transitions, 0 bug zones. The next roam starts from a blank graph.`);
-    setFollowups([{ label: `Roam ${name} for 5 minutes`, intent: I("roam", { target: name, minutes: 5 }) }]);
+    setFollowups(k.launch_target
+      ? [{ label: `Roam ${k.launch_target} for 5 minutes`, intent: I("roam", { target: k.launch_target, minutes: 5 }) }]
+      : []);
     return;
   }
   if (action === "export") {
@@ -389,8 +396,8 @@ async function knowledge(action, target, conv = state.conv) {
   push({ role: "argus", kind: "knowledge", k });
   setFollowups([
     { label: `Export knowledge for ${k.target}`, intent: I("knowledge", { action: "export", target: k.target }) },
-    { label: `Roam ${k.target} for 5 minutes`, intent: I("roam", { target: k.target, minutes: 5 }) },
-  ]);
+    k.launch_target ? { label: `Roam ${k.launch_target} for 5 minutes`, intent: I("roam", { target: k.launch_target, minutes: 5 }) } : null,
+  ].filter(Boolean));
 }
 
 async function switchProvider(name, conv = state.conv) {
@@ -547,9 +554,7 @@ function followupsAfter(conv, last) {
 }
 
 async function regressionStub(job, index, conv = state.conv) {
-  const draft = await api().regression_stub(job, index || 0);
-  if (!draft.ok && !draft.yaml) return sayIn(conv, draft.error, { error: true });
-  showDraft(draft, conv);
+  return execute(I("regression_stub", { job, index }), conv);
 }
 
 /* ---------------------------------------------------------- live panel --- */

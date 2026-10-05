@@ -657,13 +657,18 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
         if any(start < b and end > a and (start, end) != (a, b) for a, b in occupied):
             continue
         occupied.append((start, end))
-        chosen.append(file)
+        chosen.append((start, end, file))
     for start, end in occupied:
         if len({file for a, b, file in matches if (a, b) == (start, end)}) > 1:
             return None, "That name matches multiple tests. Use the exact filename of each test you want to run."
     if not chosen:
         return None, "Which test should I run? Name a test from the sidebar, or say 'run all tests'."
-    return [str(item["file"]) for item in tests if str(item["file"]) in chosen], None
+    ordered = [file for start, end, file in sorted(set(chosen))]
+    # Repeated sequential mentions authorize repeated runs; ordinary duplicate
+    # mentions still select each test once, preserving their first occurrence.
+    if not re.search(r"\b(?:then|followed\s+by|in\s+(?:this\s+)?order)\b", lowered):
+        ordered = list(dict.fromkeys(ordered))
+    return ordered, None
 
 
 def _authorized_simple_action(text: str, action: str) -> bool:
