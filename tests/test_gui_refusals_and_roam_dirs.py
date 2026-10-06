@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -880,3 +881,88 @@ def test_windows_lock_retries_only_contention_and_is_bounded(tmp_path, monkeypat
                     assert calls == ["nb"]
         finally:
             monkeypatch.setattr(results.os, "name", original)  # before pytest itself looks at os.name
+
+
+def test_hard_linked_order_counter_never_rewrites_the_outside_file(tmp_path):
+    from argus.engine.results import reserve_storage_order
+    project = tmp_path / "project"
+    (project / ".argus" / "runs").mkdir(parents=True)
+    sentinel = tmp_path / "outside.txt"
+    sentinel.write_bytes(b"unrelated host data")
+    try:
+        os.link(sentinel, project / ".argus" / "runs" / ".storage-order")
+    except OSError:
+        pytest.skip("hard links unavailable")
+    with pytest.raises(OSError, match="singly linked regular file"):
+        reserve_storage_order(project)
+    assert sentinel.read_bytes() == b"unrelated host data"
+
+
+def test_counter_replaced_by_another_file_after_open_is_refused(tmp_path, monkeypatch):
+    from argus.engine import results
+    runs = tmp_path / ".argus" / "runs"
+    runs.mkdir(parents=True)
+    (runs / ".storage-order").write_bytes(b"5")
+    other = tmp_path / "other"
+    other.write_bytes(b"7")
+    real_lstat = os.lstat
+    monkeypatch.setattr(results.os, "lstat", lambda p, *a, **k: real_lstat(other if str(p).endswith(".storage-order") else p))
+    with pytest.raises(OSError, match="singly linked regular file"):
+        results.reserve_storage_order(tmp_path)
+    assert other.read_bytes() == b"7"
+
+
+def _prior_pass_then_unreservable(tmp_path, monkeypatch):
+    from argus.engine import results
+    from argus.engine.results import RunResult
+    prior = RunResult(test_name="b", test_file="b.test.yaml", adapter="cli", provider="fake", status="pass")
+    prior.claim_project_order(tmp_path)
+    prior.save(tmp_path)
+    monkeypatch.setattr(results, "_last_storage_order", 0)
+    monkeypatch.setattr(results.time, "time_ns", lambda: 1)
+    counter = tmp_path / ".argus" / "runs" / ".storage-order"
+    counter.unlink()
+    counter.mkdir()
+
+
+def test_unreserved_error_result_is_not_published_under_an_unverified_order(tmp_path, monkeypatch):
+    from argus.engine import runner_impl
+    from argus.engine.results import UnreservedRunError, load_runs
+    _prior_pass_then_unreservable(tmp_path, monkeypatch)
+    spec = type("Spec", (), {"name": "b", "file_name": "b.test.yaml", "adapter": "cli", "launch": "echo"})()
+    result = runner_impl.run_test(spec, type("P", (), {"describe": lambda self: "fake"})(), object(),
+                                  project_dir=tmp_path)
+    assert result.status == "error"
+    with pytest.raises(UnreservedRunError, match="Not added to run history"):
+        result.save(tmp_path)
+    assert [r["status"] for r in load_runs(tmp_path)] == ["pass"]
+
+
+def test_cli_reports_an_unreserved_result_instead_of_saving_or_crashing(tmp_path, monkeypatch, capsys):
+    from argus import cli
+    from argus.engine.results import RunResult, load_runs
+    _prior_pass_then_unreservable(tmp_path, monkeypatch)
+    result = RunResult(test_name="b", test_file="b.test.yaml", adapter="cli", provider="fake", status="error")
+    with pytest.raises(OSError):
+        result.claim_project_order(tmp_path)
+    cli._save_result(result, tmp_path)
+    assert "Not added to run history" in capsys.readouterr().out
+    assert [r["status"] for r in load_runs(tmp_path)] == ["pass"]
+
+
+def test_gui_run_without_a_reservation_reports_and_keeps_history_ordered(api, tmp_path, monkeypatch):
+    from argus.config import ArgusConfig
+    from argus.engine.results import load_runs
+    from tests.conftest import FakeProvider
+    from tests.test_gui_api import CLI_SPEC, _wait
+    cfg = api._config()
+    cfg.knowledge.enabled = False
+    monkeypatch.setattr(api, "_config", lambda *args, **kwargs: cfg)
+    monkeypatch.setattr(ArgusConfig, "make_provider", lambda *args, **kwargs: FakeProvider([]))
+    (cfg.argus_dir / "b.test.yaml").write_text(CLI_SPEC)
+    _prior_pass_then_unreservable(tmp_path, monkeypatch)
+    job = _wait(api, api.run_tests(["b.test.yaml"])["job"]["id"])
+    run = job["runs"][0]
+    assert run["status"] == "error"
+    assert any("Not added to run history" in note for note in run["notes"])
+    assert [r["status"] for r in load_runs(tmp_path)] == ["pass"]

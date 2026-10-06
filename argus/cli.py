@@ -170,12 +170,21 @@ def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]
             ks.close()
         if result.error:
             console.print(f"[orange3]✗ {result.error}[/orange3]")
-        result.save(cfg.project_dir)
+        _save_result(result, cfg.project_dir)
         _print_summary(result)
         exit_code = max(exit_code, result.exit_code)
 
     tracker.persist(cfg.project_dir)
     sys.exit(exit_code)
+
+
+def _save_result(result, project_dir: Path) -> None:
+    """Save to run history; a result without a reserved history place is reported, not saved."""
+    from argus.engine.results import UnreservedRunError
+    try:
+        result.save(project_dir)
+    except UnreservedRunError as exc:
+        console.print(f"[yellow]![/yellow] {exc}")
 
 
 def _print_step(sr: StepResult) -> None:
@@ -371,7 +380,7 @@ def _run_all(test: Optional[str], cfg, minutes, max_tokens) -> None:
             warn=lambda m: console.print(f"[yellow]![/yellow] {m}"),
             project_dir=cfg.project_dir,
         )
-        result.save(cfg.project_dir)
+        _save_result(result, cfg.project_dir)
         _print_summary(result)
 
 

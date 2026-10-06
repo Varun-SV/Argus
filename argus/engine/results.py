@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import stat
 import threading
 import time
 import uuid
@@ -33,6 +34,7 @@ _HISTORY_NAME = re.compile(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json")
 
 
 _ORDER_FILE = ".storage-order"
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 _LOCK_WAIT_S = 30.0
@@ -90,29 +92,53 @@ def reserve_storage_order(project_dir: Path) -> int:
     counter, read and advanced under an OS file lock, makes every reservation unique
     and later than all persisted history.
     """
-    global _last_storage_order
     runs_root = _runs_root(project_dir)
     path = runs_root / _ORDER_FILE
     if path.is_symlink():
         raise OSError(f"run order counter cannot be a symlink: {path}")
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-    with _storage_order_lock, open(os.open(path, flags, 0o600), "r+b") as stream, _file_locked(stream):
-        stream.seek(0)
-        try:
-            counter = int(stream.read(32).decode("ascii").strip() or 0)
-        except (UnicodeError, ValueError):
-            counter = 0
-        # History written before the counter existed (or with it deleted) still counts.
-        names = [entry.name for entry in runs_root.glob("*.json")]
-        persisted = max((int(m[2]) for m in map(_HISTORY_NAME.fullmatch, names) if m), default=0)
-        order = max(time.time_ns(), counter + 1, persisted + 1, _last_storage_order + 1)
-        stream.seek(0)
-        stream.truncate()
-        stream.write(str(order).encode("ascii"))
-        stream.flush()
-        os.fsync(stream.fileno())
-        _last_storage_order = order
-        return order
+    with _storage_order_lock, open(os.open(path, flags, 0o600), "r+b") as stream:
+        _require_private_counter(stream, path)
+        with _file_locked(stream):
+            return _advance_counter(stream, runs_root)
+
+
+def _require_private_counter(stream, path: Path) -> None:
+    """Refuse a counter that is (or leads to) anything but this project's own file.
+
+    It is rewritten on every run, so a hard link, reparse point or symlink planted at
+    the path would let a run overwrite an unrelated file. The checks bind to the opened
+    handle: the path must still name exactly that singly linked regular file.
+    """
+    opened = os.fstat(stream.fileno())
+    named = os.lstat(path)
+    if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+            or stat.S_ISLNK(named.st_mode)
+            or getattr(named, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+            or getattr(opened, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+            or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)):
+        raise OSError(f"run order counter must be a singly linked regular file in the project: {path}")
+
+
+def _advance_counter(stream, runs_root: Path) -> int:
+    """Read, advance and durably write the counter; the caller holds the file lock."""
+    global _last_storage_order
+    stream.seek(0)
+    try:
+        counter = int(stream.read(32).decode("ascii").strip() or 0)
+    except (UnicodeError, ValueError):
+        counter = 0
+    # History written before the counter existed (or with it deleted) still counts.
+    names = [entry.name for entry in runs_root.glob("*.json")]
+    persisted = max((int(m[2]) for m in map(_HISTORY_NAME.fullmatch, names) if m), default=0)
+    order = max(time.time_ns(), counter + 1, persisted + 1, _last_storage_order + 1)
+    stream.seek(0)
+    stream.truncate()
+    stream.write(str(order).encode("ascii"))
+    stream.flush()
+    os.fsync(stream.fileno())
+    _last_storage_order = order
+    return order
 
 
 def _runs_root(project_dir: Path) -> Path:
@@ -142,6 +168,10 @@ def _runs_root(project_dir: Path) -> Path:
     except ValueError as exc:
         raise OSError(f".argus/runs escapes .argus: {runs_dir}") from exc
     return resolved
+
+
+class UnreservedRunError(OSError):
+    """A result whose cross-process history order was never reserved can't be saved."""
 
 
 @dataclass
@@ -189,12 +219,22 @@ class RunResult:
         self._storage_lock = threading.RLock()
         self._owned_run_dirs = {}
         self._owned_history_files = {}
+        self._unreserved: Optional[str] = None
 
     def claim_project_order(self, project_dir: Path) -> None:
-        """Take a cross-process order from the project counter before the first save."""
+        """Take a cross-process order from the project counter before the first save.
+
+        If that fails the result keeps no trustworthy place in history, so ``save``
+        refuses it rather than publish it under this process's unverified order.
+        """
         with self._storage_lock:
             if not self._owned_run_dirs:
-                self._storage_order = reserve_storage_order(project_dir)
+                try:
+                    self._storage_order = reserve_storage_order(project_dir)
+                except OSError as exc:
+                    self._unreserved = str(exc)
+                    raise
+                self._unreserved = None
 
     @property
     def passed(self) -> int:
@@ -264,6 +304,9 @@ class RunResult:
 
     def save(self, project_dir: Path) -> Path:
         with self._storage_lock:
+            if self._unreserved is not None:
+                raise UnreservedRunError(
+                    f"Not added to run history: its place could not be reserved ({self._unreserved}).")
             run_dir = self.run_dir(project_dir)
             data = json.dumps(self.to_dict(), indent=2)
             (run_dir / "result.json").write_text(data, encoding="utf-8")
