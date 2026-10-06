@@ -175,7 +175,9 @@ def test_cli_without_project_storage_keeps_separate_neo4j_shutdown(tmp_path, dae
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(main, ["knowledge", "docker", "down"])
     assert result.exit_code == 0
-    assert daemon.commands == [["docker", "stop", "argus-neo4j"]]
+    # Only a read-only lookup for a still-running project Qdrant, then the Neo4j stop.
+    assert [c[1] for c in daemon.commands] == ["ps", "stop"]
+    assert daemon.commands[-1] == ["docker", "stop", "argus-neo4j"]
     assert not (tmp_path / ".argus").exists()
 
 
@@ -513,3 +515,21 @@ def test_missing_storage_without_a_running_container_is_stopped(tmp_path, daemon
         _remove_storage(tmp_path)
     assert manager(tmp_path).status()["qdrant"] is False
     assert manager(tmp_path).stop("qdrant")
+
+
+@pytest.mark.parametrize("command", ["down", "status"])
+def test_cli_with_the_whole_argus_directory_gone_still_finds_running_qdrant(tmp_path, daemon, monkeypatch, command):
+    from click.testing import CliRunner
+    from argus.cli import main
+    project = tmp_path / "a"
+    manager(tmp_path).ensure_qdrant()
+    (project / ".argus").rename(project / "argus-moved")
+    monkeypatch.chdir(project)
+    before = len(daemon.commands)
+    result = CliRunner().invoke(main, ["knowledge", "docker", command])
+    assert not any(c[1] == "stop" and c[2] != "argus-neo4j" for c in daemon.commands[before:])
+    assert next(iter(daemon.containers.values()))["State"]["Running"]
+    if command == "down":
+        assert result.exit_code == 1 and "Could not confirm" in result.output
+    else:
+        assert "qdrant: unknown" in result.output

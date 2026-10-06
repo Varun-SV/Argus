@@ -84,13 +84,17 @@ def _file_locked(stream, timeout: float = _LOCK_WAIT_S):
         release()
 
 
-def reserve_storage_order(project_dir: Path) -> int:
+def reserve_storage_order(project_dir: Path, keep: Optional[int] = None) -> int:
     """Atomically reserve the project's next run order, across processes.
 
     The in-process counter can't see other ``argus run`` processes, and after a clock
     rollback two of them would otherwise pick the same next order. A project-scoped
     counter, read and advanced under an OS file lock, makes every reservation unique
     and later than all persisted history.
+
+    ``keep`` is an order this process already allocated. It is kept when it is still
+    above everything other processes have reserved, so results saved out of creation
+    order still list in creation order; otherwise a fresh order is taken.
     """
     runs_root = _runs_root(project_dir)
     path = runs_root / _ORDER_FILE
@@ -100,7 +104,7 @@ def reserve_storage_order(project_dir: Path) -> int:
     with _storage_order_lock, open(os.open(path, flags, 0o600), "r+b") as stream:
         _require_private_counter(stream, path)
         with _file_locked(stream):
-            return _advance_counter(stream, runs_root)
+            return _advance_counter(stream, runs_root, keep)
 
 
 def _require_private_counter(stream, path: Path) -> None:
@@ -120,7 +124,12 @@ def _require_private_counter(stream, path: Path) -> None:
         raise OSError(f"run order counter must be a singly linked regular file in the project: {path}")
 
 
-def _advance_counter(stream, runs_root: Path) -> int:
+# Per runs root: the counter value this process last wrote, and the highest order any
+# other process (or pre-counter history) is known to hold.
+_counter_sync: dict = {}
+
+
+def _advance_counter(stream, runs_root: Path, keep: Optional[int] = None) -> int:
     """Read, advance and durably write the counter; the caller holds the file lock."""
     global _last_storage_order
     stream.seek(0)
@@ -128,16 +137,25 @@ def _advance_counter(stream, runs_root: Path) -> int:
         counter = int(stream.read(32).decode("ascii").strip() or 0)
     except (UnicodeError, ValueError):
         counter = 0
-    # History written before the counter existed (or with it deleted) still counts.
-    names = [entry.name for entry in runs_root.glob("*.json")]
-    persisted = max((int(m[2]) for m in map(_HISTORY_NAME.fullmatch, names) if m), default=0)
-    order = max(time.time_ns(), counter + 1, persisted + 1, _last_storage_order + 1)
+    sync = _counter_sync.setdefault(runs_root, {"ours": None, "others": 0})
+    if counter != sync["ours"]:
+        # Someone else advanced it (or this is first contact): everything they hold, and
+        # history written before the counter existed, now sits below our next order.
+        names = [entry.name for entry in runs_root.glob("*.json")]
+        persisted = max((int(m[2]) for m in map(_HISTORY_NAME.fullmatch, names) if m), default=0)
+        sync["others"] = max(sync["others"], counter, persisted)
+    if keep is not None and keep > sync["others"]:
+        order = keep
+    else:
+        order = max(time.time_ns(), sync["others"] + 1, counter + 1, _last_storage_order + 1)
+    written = max(counter, order)
     stream.seek(0)
     stream.truncate()
-    stream.write(str(order).encode("ascii"))
+    stream.write(str(written).encode("ascii"))
     stream.flush()
     os.fsync(stream.fileno())
-    _last_storage_order = order
+    sync["ours"] = written
+    _last_storage_order = max(_last_storage_order, order)
     return order
 
 
@@ -220,6 +238,7 @@ class RunResult:
         self._owned_run_dirs = {}
         self._owned_history_files = {}
         self._unreserved: Optional[str] = None
+        self._reserved_roots = set()
 
     def claim_project_order(self, project_dir: Path) -> None:
         """Take a cross-process order from the project counter before the first save.
@@ -230,11 +249,13 @@ class RunResult:
         with self._storage_lock:
             if not self._owned_run_dirs:
                 try:
+                    runs_root = _runs_root(project_dir)
                     self._storage_order = reserve_storage_order(project_dir)
                 except OSError as exc:
                     self._unreserved = str(exc)
                     raise
                 self._unreserved = None
+                self._reserved_roots.add(runs_root)
 
     @property
     def passed(self) -> int:
@@ -277,6 +298,15 @@ class RunResult:
                 if (st.st_dev, st.st_ino) != identity or not candidate.is_dir():
                     raise OSError("run directory ownership changed")
                 return candidate
+            if runs_root not in self._reserved_roots:
+                # Never claimed (e.g. run_test without project_dir): reserve now, for this
+                # destination, so no result is published under a process-local order.
+                try:
+                    self._storage_order = reserve_storage_order(project_dir, keep=self._storage_order)
+                except OSError as exc:
+                    self._unreserved = str(exc)
+                    raise
+                self._reserved_roots.add(runs_root)
             stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
             safe = _bounded_name(self.test_file)
             for _ in range(10):

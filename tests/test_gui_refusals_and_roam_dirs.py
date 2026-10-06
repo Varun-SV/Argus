@@ -966,3 +966,68 @@ def test_gui_run_without_a_reservation_reports_and_keeps_history_ordered(api, tm
     assert run["status"] == "error"
     assert any("Not added to run history" in note for note in run["notes"])
     assert [r["status"] for r in load_runs(tmp_path)] == ["pass"]
+
+
+def test_a_never_claimed_result_reserves_at_save_after_a_clock_rollback(tmp_path, monkeypatch):
+    from argus.engine import results
+    from argus.engine.results import RunResult, load_runs
+    earlier = RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake", status="pass")
+    earlier.save(tmp_path)  # an earlier process
+    # A new process whose clock is behind: run_test(...) without project_dir, then save(project).
+    monkeypatch.setattr(results, "_counter_sync", {})
+    monkeypatch.setattr(results, "_last_storage_order", 0)
+    monkeypatch.setattr(results.time, "time_ns", lambda: 1)
+    later = RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake", status="fail")
+    assert later._storage_order == 1
+    later.save(tmp_path)
+    assert later._storage_order > earlier._storage_order
+    assert [r["status"] for r in load_runs(tmp_path)] == ["fail", "pass"]
+
+
+def test_save_time_reservation_failure_is_not_published(tmp_path, monkeypatch):
+    from argus.engine.results import RunResult, UnreservedRunError, load_runs
+    counter = tmp_path / ".argus" / "runs" / ".storage-order"
+    counter.mkdir(parents=True)
+    result = RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake", status="pass")
+    with pytest.raises(OSError):
+        result.save(tmp_path)
+    with pytest.raises(UnreservedRunError):
+        result.save(tmp_path)
+    assert load_runs(tmp_path) == []
+
+
+def _watch_project(tmp_path):
+    project = tmp_path / "project"
+    (project / ".argus").mkdir(parents=True)
+    outside = tmp_path / "outside.test.yaml"
+    outside.write_text("name: outside\n", encoding="utf-8")
+    return project, outside
+
+
+def test_watch_never_versions_a_symlinked_spec(tmp_path):
+    project, outside = _watch_project(tmp_path)
+    try:
+        (project / ".argus" / "linked.test.yaml").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    (project / ".argus" / "own.test.yaml").write_text("name: own\n", encoding="utf-8")
+    before = gui_app._test_versions(project)
+    assert before["linked.test.yaml"] is None and before["own.test.yaml"] is not None
+    outside.write_text("name: outside\ntarget:\n  launch: something-else\n", encoding="utf-8")
+    after = gui_app._test_versions(project, before)
+    assert after["linked.test.yaml"] is None  # never a change the watch re-runs
+    with pytest.raises(OSError, match="symlink"):
+        gui_app._test_version(project / ".argus" / "linked.test.yaml")
+
+
+def test_watch_ignores_specs_under_a_linked_argus_directory(tmp_path):
+    project, outside = _watch_project(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "x.test.yaml").write_text("name: x\n", encoding="utf-8")
+    (project / ".argus").rmdir()
+    try:
+        (project / ".argus").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    assert gui_app._test_versions(project) == {}

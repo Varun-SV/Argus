@@ -1740,7 +1740,10 @@ def _run_card_status(data: dict) -> str:
 
 def _test_version(path: Path) -> tuple:
     """Hash a stable regular-file snapshot, including equal-size/mtime edits."""
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    if _redirected_entry(path):
+        raise OSError("Test file cannot be a symlink or reparse point")
+    flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) |
+             getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(os.open(path, flags), "rb") as handle:
         before = os.fstat(handle.fileno())
         if not stat.S_ISREG(before.st_mode):
@@ -1749,7 +1752,7 @@ def _test_version(path: Path) -> tuple:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
         after = os.fstat(handle.fileno())
-        named = path.stat()
+        named = os.lstat(path)  # the entry itself: a swapped-in link fails the identity check
         def metadata(value):
             return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
         # Windows fstat and path.stat can disagree on ctime's meaning. Compare
@@ -1761,9 +1764,32 @@ def _test_version(path: Path) -> tuple:
         return after.st_mtime_ns, after.st_size, digest.hexdigest()
 
 
+def _redirected_entry(path: Path) -> bool:
+    """A symlink or Windows reparse point (junction, link) rather than the entry itself."""
+    info = os.lstat(path)
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
 def _test_versions(project_dir: Path, previous: Optional[dict] = None) -> Dict[str, Optional[tuple]]:
+    """Versions of the project's own specs, for watch.
+
+    A spec that is a link (or a linked .argus) points outside the project: edits to its
+    target must never trigger a run, so it is listed without a version and never re-run.
+    """
     out = {}
+    try:
+        if _redirected_entry(project_dir / ".argus"):
+            return out
+    except OSError:
+        return out
     for path in discover_tests(project_dir):
+        try:
+            if _redirected_entry(path):
+                out[path.name] = None
+                continue
+        except OSError:
+            out[path.name] = (previous or {}).get(path.name)
+            continue
         try:
             out[path.name] = _test_version(path)
         except OSError:

@@ -613,7 +613,9 @@ def knowledge_docker_down() -> None:
     cfg = load_config()
     try:
         with project_docker_manager(cfg.project_dir) as mgr:
-            stopped = mgr.stop() if mgr is not None else DockerManager(cfg.argus_dir).stop("neo4j")
+            # Without project storage the project's Qdrant may still be running (its name is
+            # project-derived), so the full stop still looks it up; it then fails closed.
+            stopped = (mgr or DockerManager(cfg.argus_dir)).stop()
     except (ValueError, OSError) as exc:
         raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
     if not stopped:
@@ -630,8 +632,7 @@ def knowledge_docker_status() -> None:
     cfg = load_config()
     try:
         with project_docker_manager(cfg.project_dir) as mgr:
-            s = mgr.status() if mgr is not None else {
-                "qdrant": False, "neo4j": DockerManager(cfg.argus_dir)._container_running(DockerManager.NEO4J_CONTAINER)}
+            s = (mgr or DockerManager(cfg.argus_dir)).status()
     except (ValueError, OSError) as exc:
         raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
     for name, running in s.items():
