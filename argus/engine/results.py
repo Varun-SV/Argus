@@ -482,6 +482,10 @@ def valid_run_history(data) -> bool:
     """Accept old result documents while rejecting shapes history readers cannot use."""
     if not isinstance(data, dict):
         return False
+    # Identity and outcome are required: an empty document is not a run, and counting it
+    # toward the history limits would let malformed files hide real runs.
+    if not isinstance(data.get("test_file"), str) or not isinstance(data.get("status"), str):
+        return False
     for name in ("test_file", "test_name", "status", "provider", "adapter"):
         if name in data and not isinstance(data[name], str):
             return False

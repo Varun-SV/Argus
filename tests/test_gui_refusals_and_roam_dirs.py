@@ -1159,3 +1159,97 @@ def test_dry_run_reports_an_unreadable_entry_and_keeps_healthy_items(api, tmp_pa
     items = {i["file"]: i for i in out["items"]}
     assert items["good.test.yaml"]["error"] is None and items["good.test.yaml"]["steps"]
     assert "could not read" in items["bad.test.yaml"]["error"]
+
+
+@pytest.mark.parametrize("text", [
+    "The CI will run checkout", "The system can run checkout", "we run checkout nightly in CI",
+    "our pipeline executes checkout on merge",
+])
+def test_descriptive_run_statements_never_execute(text):
+    assert validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}, text, TESTS)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "run checkout", "Run checkout locally", "please run checkout", "can you run checkout?",
+    "Argus, run checkout", "I want you to run checkout", "let's run checkout", "now rerun checkout",
+    "in a capsule, run checkout",
+])
+def test_requests_to_run_still_execute(text):
+    assert validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}, text, TESTS)["intent"] == "run"
+
+
+@pytest.mark.parametrize("text", [
+    "The app will stop responding at login", "The run tends to abort on timeout", "it keeps stopping",
+])
+def test_descriptive_stop_statements_never_stop(text):
+    assert validate_intent({"intent": "stop"}, text, {})["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", ["stop", "Stop!", "stop the run", "please stop", "can you stop it", "cancel the roam"])
+def test_requests_to_stop_still_stop(text):
+    assert validate_intent({"intent": "stop"}, text, {})["intent"] == "stop"
+
+
+@pytest.mark.parametrize("doc", [{}, {"steps": [], "tokens": {}}, {"status": "pass"}, {"test_file": "a.test.yaml"}])
+def test_history_records_need_identity_and_status(doc):
+    from argus.engine.results import valid_run_history
+    assert not valid_run_history(doc)
+
+
+def test_malformed_newest_history_cannot_hide_real_runs(tmp_path):
+    import json
+    from argus.engine.results import RunResult, load_runs
+    RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake", status="pass").save(tmp_path)
+    runs = tmp_path / ".argus" / "runs"
+    for i in range(3):
+        (runs / f"29991231-235959-{99999999999999999990 + i:020d}-{'f' * 32}-x.json").write_text(
+            json.dumps({"steps": [], "tokens": {}}))
+    assert [r["status"] for r in load_runs(tmp_path, 1)] == ["pass"]
+
+
+class _RemoteOnlyStore:
+    def __init__(self, has):
+        self.has, self.cleared, self.closed = has, [], False
+
+    def has_remote_target(self, target):
+        return self.has
+
+    def clear_target(self, target):
+        self.cleared.append(target)
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("has", [True, False])
+def test_remote_only_knowledge_can_be_reset(api, monkeypatch, has):
+    from argus.config import ArgusConfig, KnowledgeConfig
+    cfg = api._config()
+    cfg.knowledge = KnowledgeConfig(type="external", vector_url="http://127.0.0.1:1")
+    store = _RemoteOnlyStore(has)
+    monkeypatch.setattr(api, "_config", lambda *args, **kwargs: cfg)
+    monkeypatch.setattr(ArgusConfig, "make_knowledge_store", lambda self: store)
+    result = api.knowledge_reset("notepad.exe")
+    assert result["ok"] is has and store.closed
+    assert store.cleared == (["notepad.exe"] if has else [])
+
+
+def test_remote_store_reports_collections_for_a_target(monkeypatch):
+    from types import SimpleNamespace
+    from argus.knowledge.remote import RemoteKnowledgeStore
+    store = object.__new__(RemoteKnowledgeStore)
+    names = [SimpleNamespace(name="notepad-exe_states"), SimpleNamespace(name="other_bugs")]
+    client = SimpleNamespace(get_collections=lambda: SimpleNamespace(collections=names))
+    monkeypatch.setattr(store, "_client", lambda: client, raising=False)
+    assert store.has_remote_target("notepad.exe")
+    assert not store.has_remote_target("calc.exe")
+
+
+def test_live_screenshots_stay_fresh_when_the_clock_moves_back(api, monkeypatch):
+    clock = iter([2_000_000_000.0, 1_000_000_000.0])
+    monkeypatch.setattr(gui_app.time, "time", lambda: next(clock, 1.0))
+    api._set_screenshot(b"first")
+    shown = api.capture_live(0)["ts"]
+    api._set_screenshot(b"second")
+    newer = api.capture_live(shown)
+    assert newer["ts"] > shown and newer["b64"]

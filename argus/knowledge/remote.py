@@ -348,6 +348,19 @@ class RemoteKnowledgeStore(KnowledgeStore):
             }
         return stats
 
+    def has_remote_target(self, target: str) -> bool:
+        """Whether the vector service holds collections for ``target``.
+
+        A session can upsert vectors and then be interrupted before its local graph is
+        written, so the remote side may hold knowledge with no local file at all.
+        """
+        client = self._client()
+        if client is None:
+            return False
+        key = target_key(target)
+        names = {c.name for c in client.get_collections().collections}
+        return any(f"{key}_{suffix}" in names for suffix in ("states", "bugs"))
+
     def clear_target(self, target: str) -> None:
         # Verify remote authority before mutating either local or remote state.
         client = self._client()

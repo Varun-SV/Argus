@@ -1002,8 +1002,10 @@ class ArgusAPI:
         return {"b64": base64.b64encode(png).decode("ascii"), "ts": ts}
 
     def _set_screenshot(self, png: bytes) -> None:
+        # A per-job version, not wall-clock time: a clock moving backwards must not make a
+        # new screenshot look older than the one already shown. (The UI resets per job.)
         self._latest_screenshot = png
-        self._latest_screenshot_ts = time.time()
+        self._latest_screenshot_ts += 1
 
     def live_stats(self, target: str = "") -> dict:
         """Return live knowledge counts for ``target`` from the active session's store."""
@@ -1218,13 +1220,25 @@ class ArgusAPI:
             persist = (cfg.knowledge_persist_dir() if kc.persist_dir else
                        _argus_subdir(cfg, "knowledge", create=False))
             key = target_key(target) if target and target.strip() else ""
-            if not key or not any((persist / f"{key}.{suffix}").exists()
-                                  for suffix in ("graph.json", "states.ndjson", "bugs.ndjson")):
+            if not key:
+                return {"ok": False, "error": f"Argus has no knowledge for {target!r} yet."}
+            local = any((persist / f"{key}.{suffix}").exists()
+                        for suffix in ("graph.json", "states.ndjson", "bugs.ndjson"))
+            # Only a project that can hold vectors remotely is worth opening a store for
+            # when nothing is on disk; otherwise an unknown target is refused untouched.
+            remote_capable = kc.type in ("docker", "qdrant", "external") or (
+                kc.type == "auto" and (cfg.argus_dir / "qdrant-data").is_dir())
+            if not local and not remote_capable:
                 return {"ok": False, "error": f"Argus has no knowledge for {target!r} yet."}
             ks = cfg.make_knowledge_store()
             if ks is None:
                 return {"ok": False, "error": "The knowledge store is disabled. Enable it before resetting a target."}
             try:
+                # An interrupted remote session can leave vectors with no local graph yet;
+                # those must still be clearable, or later roams keep retrieving them.
+                remote = getattr(ks, "has_remote_target", None)
+                if not local and not (callable(remote) and remote(target)):
+                    return {"ok": False, "error": f"Argus has no knowledge for {target!r} yet."}
                 ks.clear_target(target)
             finally:
                 ks.close()

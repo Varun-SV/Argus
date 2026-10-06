@@ -733,7 +733,7 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
         return None, "I didn't run anything: alternatives or uncertainty need an explicit test list. Name the tests you want to run."
 
     executes = (
-        re.search(r"\b(?:run|execute|rerun|re-run)\b", command, re.IGNORECASE)
+        _requested(command, r"run|execute|rerun|re-run")
         or re.search(
             r"(?:^|\b(?:please|can\s+you|could\s+you|would\s+you|i\s+want\s+you\s+to)\s+)"
             r"(?:test|check)\b",
@@ -811,6 +811,22 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     return ordered, None
 
 
+# Where an instruction to Argus can start: the start of the message or a clause, after a
+# connective or "please", or after a direct request ("can you", "I want you to"). A verb
+# anywhere else ("the CI will run checkout", "the app will stop responding") describes
+# something; it doesn't ask Argus to act.
+_REQUEST_LEAD = (r"(?:^|(?<=[.!?;:,])|\b(?:and|then|now|so|ok(?:ay)?|also|just|go\s+ahead\s+and|"
+                 r"let'?s|please|kindly|argus)\b|\b(?:can|could|would|will)\s+you\b|"
+                 r"\bi(?:'d|\s+would)?\s+(?:want|need|like)\s+(?:you\s+|argus\s+)?to\b|"
+                 r"\b(?:time|ready)\s+to\b)")
+_REQUEST_ADVERBS = r"(?:\s*\b(?:please|just|also|now|quickly|immediately|again|kindly)\b)*"
+
+
+def _requested(command: str, verbs: str):
+    """The first of ``verbs`` used as a request to Argus, or None."""
+    return re.search(_REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*\b(?:" + verbs + r")\b", command, re.IGNORECASE)
+
+
 def _authorized_simple_action(text: str, action: str) -> bool:
     if _question_about_action(text):
         return False
@@ -821,7 +837,7 @@ def _authorized_simple_action(text: str, action: str) -> bool:
         "write_test": r"write|draft|create|make",
     }
     patterns = {
-        "stop": r"\b(?:stop|cancel|abort)\b",
+        "stop": _REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*(?:stop|cancel|abort)\b",
         "save_test": (
             r"^\s*(?:please\s+)?(?:save|persist)\s*[.!]?\s*$|"
             r"\b(?:save|persist)\b\s+(?:(?:this|that)\s+|(?:the\s+)?current\s+|the\s+)?"
