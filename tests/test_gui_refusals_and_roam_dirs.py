@@ -1319,3 +1319,22 @@ def test_reset_reports_a_failed_remote_deletion(api, monkeypatch):
     monkeypatch.setattr(ArgusConfig, "make_knowledge_store", lambda self: store)
     result = api.knowledge_reset("notepad.exe")
     assert not result["ok"] and "Could not delete the remote knowledge" in result["error"]
+
+
+TWO_TESTS = {"tests": [{"file": "checkout.test.yaml", "name": "checkout", "adapter": "cli"},
+                       {"file": "smoke.test.yaml", "name": "smoke", "adapter": "cli"}]}
+
+
+@pytest.mark.parametrize("text", ["The CI says: please test checkout", "The log says: can you check checkout"])
+def test_reported_test_or_check_requests_never_run(text):
+    routed = validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}, text, TWO_TESTS)
+    assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("routed", [["smoke.test.yaml"], ["checkout.test.yaml"]])
+@pytest.mark.parametrize("text", [
+    "The CI says: run checkout, but please run smoke", "The CI says: run checkout. Please run smoke",
+])
+def test_a_later_explicit_request_survives_reported_speech(text, routed):
+    got = validate_intent({"intent": "run", "args": {"tests": routed}}, text, TWO_TESTS)
+    assert got == {"intent": "run", "args": {"tests": ["smoke.test.yaml"]}}

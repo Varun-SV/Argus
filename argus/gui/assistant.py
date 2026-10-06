@@ -737,7 +737,7 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
         or re.search(
             r"(?:^|\b(?:please|can\s+you|could\s+you|would\s+you|i\s+want\s+you\s+to)\s+)"
             r"(?:test|check)\b",
-            command,
+            _without_reported_speech(command),
             re.IGNORECASE,
         )
     )
@@ -827,7 +827,10 @@ _REQUEST_ADVERBS = r"(?:\s*\b(?:please|just|also|now|quickly|immediately|again|k
 # reporting verb is blanked (offsets kept) before looking for a request.
 _REPORTED_SPEECH = re.compile(
     r"\b(?:says?|said|saying|asks?|asked|reads?|writes?|wrote|told\s+\w+|tells?\s+\w+|"
-    r"explain|describe|means?|meant|quotes?|quoted)\s*[:,][^.!?;\n]*",
+    r"explain|describe|means?|meant|quotes?|quoted)\s*[:,]"
+    # ... up to the end of the clause: a sentence break, or a turn back to the user's own
+    # words ("..., but please run smoke"), which is then read as a request again.
+    r"(?:(?!,?\s*\b(?:but|however|then|also|so|now|and\s+then)\b)[^.!?;\n])*",
     re.IGNORECASE)
 
 
