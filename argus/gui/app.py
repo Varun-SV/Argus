@@ -94,6 +94,7 @@ class ArgusAPI:
         self._lock = threading.RLock()
         self._persist_lock = threading.Lock()
         self._stop = threading.Event()
+        self._watch_scope = threading.local()  # set while the watch worker starts a run
         self._usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
         self._job_tracker: Optional[TokenTracker] = None
         self._jobs: Dict[str, dict] = {}
@@ -600,8 +601,14 @@ class ArgusAPI:
             self._latest_screenshot_ts = 0.0
         return None
 
-    def run_tests(self, tests="all", overrides: Optional[dict] = None) -> dict:
-        """Start running ``tests`` ("all" or a list of file names) in one background job."""
+    def run_tests(self, tests="all", overrides: Optional[dict] = None, own_files_only: bool = False) -> dict:
+        """Start running ``tests`` ("all" or a list of file names) in one background job.
+
+        ``own_files_only`` (always on for watch-started runs) parses each spec from one
+        attested read of the project's own file, so a link swapped in after the watch
+        scan is refused, never followed.
+        """
+        own_files_only = own_files_only or getattr(self._watch_scope, "active", False)
         cfg = self._config()
         overrides = overrides or {}
         paths = discover_tests(cfg.project_dir)
@@ -622,7 +629,7 @@ class ArgusAPI:
         specs = {}
         for path in paths:
             try:
-                spec = load_spec(path)
+                spec = _load_own_spec(path) if own_files_only else load_spec(path)
                 specs[len(runs)] = spec
                 steps = [{"text": st.describe() if isinstance(st, AssertStep) else st.text,
                           "kind": st.kind} for st in spec.steps]
@@ -633,6 +640,11 @@ class ArgusAPI:
                 runs.append({"file": path.name, "name": path.stem, "adapter": "?", "launch": "",
                              "planned": [], "steps": [], "status": "error", "result": None,
                              "key": None, "notes": [f"spec error: {exc}"]})
+            except OSError as exc:
+                # A directory, dangling link or vanished file fails only its own run.
+                runs.append({"file": path.name, "name": path.stem, "adapter": "?", "launch": "",
+                             "planned": [], "steps": [], "status": "error", "result": None,
+                             "key": None, "notes": [f"could not read {path.name}: {exc.strerror or exc}"]})
         job = {"id": uuid.uuid4().hex[:12], "kind": "run", "running": True, "runs": runs,
                "env": env, "capsule_provider": cap, "retain": retain,
                "env_label": self._env_label(env, cap),
@@ -1055,7 +1067,11 @@ class ArgusAPI:
                 if not watch["running"]:
                     break
                 event = pending[name]
-                started = self.run_tests([name])
+                self._watch_scope.active = True
+                try:
+                    started = self.run_tests([name])
+                finally:
+                    self._watch_scope.active = False
                 if not started.get("ok"):
                     active = self._jobs.get(self._active_job) if self._active_job else None
                     if active and active["running"]:
@@ -1740,6 +1756,23 @@ def _run_card_status(data: dict) -> str:
 
 def _test_version(path: Path) -> tuple:
     """Hash a stable regular-file snapshot, including equal-size/mtime edits."""
+    return _spec_snapshot(path)[0]
+
+
+def _load_own_spec(path: Path):
+    """Parse a spec from one attested read of the project's own file (never a link)."""
+    if _redirected_entry(path.parent):
+        raise OSError(".argus cannot be a symlink or reparse point")
+    data = _spec_snapshot(path)[1]
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("cp1252", errors="replace")
+    return parse_spec(text, path=path)
+
+
+def _spec_snapshot(path: Path) -> tuple:
+    """(version, bytes) of a stable read of a regular, unlinked spec file."""
     if _redirected_entry(path):
         raise OSError("Test file cannot be a symlink or reparse point")
     flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) |
@@ -1749,8 +1782,10 @@ def _test_version(path: Path) -> tuple:
         if not stat.S_ISREG(before.st_mode):
             raise OSError("Test file is not a regular file")
         digest = hashlib.sha256()
+        chunks = []
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
+            chunks.append(chunk)
         after = os.fstat(handle.fileno())
         named = os.lstat(path)  # the entry itself: a swapped-in link fails the identity check
         def metadata(value):
@@ -1761,7 +1796,7 @@ def _test_version(path: Path) -> tuple:
         if (metadata(before) != metadata(after) or before.st_ctime_ns != after.st_ctime_ns or
                 metadata(after) != metadata(named)):
             raise OSError("Test file changed while being read")
-        return after.st_mtime_ns, after.st_size, digest.hexdigest()
+        return (after.st_mtime_ns, after.st_size, digest.hexdigest()), b"".join(chunks)
 
 
 def _redirected_entry(path: Path) -> bool:

@@ -1031,3 +1031,99 @@ def test_watch_ignores_specs_under_a_linked_argus_directory(tmp_path):
     except OSError:
         pytest.skip("symlinks unavailable")
     assert gui_app._test_versions(project) == {}
+
+
+def test_null_capsule_hardware_keeps_defaults_and_still_loads(tmp_path, monkeypatch):
+    from argus.config import load_config
+    monkeypatch.delenv("ARGUS_CAPSULE_MEMORY_MB", raising=False)
+    monkeypatch.delenv("ARGUS_CAPSULE_CPU_COUNT", raising=False)
+    (tmp_path / ".argus").mkdir()
+    (tmp_path / ".argus" / "config.yaml").write_text(
+        "provider: ollama\nexecution:\n  environment: local\n  capsule:\n    memory_mb: null\n    cpu_count: null\n",
+        encoding="utf-8")
+    cfg = load_config(tmp_path)
+    assert cfg.execution.capsule.memory_mb is None and cfg.execution.capsule.cpu_count is None
+
+
+@pytest.mark.parametrize("text", [
+    "stop watching", "cancel watch mode", "stop the watch", "turn off watch mode", "stop the watcher",
+])
+def test_watch_only_stops_never_become_the_global_stop(text):
+    assert validate_intent({"intent": "stop"}, text, {}) == {"intent": "watch", "args": {"action": "stop"}}
+    assert validate_intent({"intent": "watch"}, text, {}) == {"intent": "watch", "args": {"action": "stop"}}
+
+
+@pytest.mark.parametrize("text", ["stop the run", "stop everything", "stop the run and the watch", "please stop"])
+def test_run_stops_stay_global(text):
+    assert validate_intent({"intent": "stop"}, text, {})["intent"] == "stop"
+
+
+@pytest.mark.parametrize("text", ["don't stop watching", "stop watching tomorrow", "should I stop watching?"])
+def test_watch_stop_refusals_stop_nothing(text):
+    assert validate_intent({"intent": "stop"}, text, {})["intent"] == "chat"
+
+
+def test_start_watching_phrasing_starts_the_watch():
+    assert validate_intent({"intent": "watch"}, "start watching tests", {}) == {"intent": "watch", "args": {"action": "start"}}
+
+
+def _gui_runner(api, monkeypatch):
+    from argus.config import ArgusConfig
+    from tests.conftest import FakeProvider
+    cfg = api._config()
+    cfg.knowledge.enabled = False
+    monkeypatch.setattr(api, "_config", lambda *args, **kwargs: cfg)
+    monkeypatch.setattr(ArgusConfig, "make_provider", lambda *args, **kwargs: FakeProvider([]))
+    return cfg
+
+
+def test_an_unreadable_entry_fails_only_its_own_run(api, monkeypatch):
+    from tests.test_gui_api import CLI_SPEC, _wait
+    cfg = _gui_runner(api, monkeypatch)
+    for stale in cfg.argus_dir.glob("*.test.yaml"):
+        stale.unlink()
+    (cfg.argus_dir / "good.test.yaml").write_text(CLI_SPEC)
+    (cfg.argus_dir / "broken.test.yaml").mkdir()
+    started = api.run_tests("all")
+    assert started["ok"]
+    job = _wait(api, started["job"]["id"])
+    runs = {r["file"]: r for r in job["runs"]}
+    assert runs["good.test.yaml"]["status"] == "pass"
+    assert runs["broken.test.yaml"]["status"] == "error" and "could not read" in runs["broken.test.yaml"]["notes"][0]
+
+
+def test_watch_runs_refuse_a_spec_swapped_for_a_link(api, tmp_path, monkeypatch):
+    import yaml
+    from tests.test_gui_api import _wait
+    cfg = _gui_runner(api, monkeypatch)
+    marker = tmp_path / "outside-ran"
+    outside = tmp_path / "outside.test.yaml"
+    outside.write_text(yaml.safe_dump({
+        "name": "outside", "target": {"adapter": "cli", "launch": (
+            f'"{sys.executable}" -c "open(r\'{marker}\', \'w\').close()"')},
+        "steps": [{"assert": {"exit_code_is": 0}}]}), encoding="utf-8")
+    try:
+        (cfg.argus_dir / "swapped.test.yaml").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    api._watch_scope.active = True  # as the watch worker starts it
+    try:
+        job = _wait(api, api.run_tests(["swapped.test.yaml"])["job"]["id"])
+    finally:
+        api._watch_scope.active = False
+    assert job["runs"][0]["status"] == "error" and not marker.exists()
+
+
+def test_watch_worker_runs_with_own_files_only(api, monkeypatch):
+    calls = []
+
+    def fake_run(tests):
+        calls.append(api._watch_scope.active)
+        watch["running"] = False
+        return {"ok": False, "error": "stop here"}
+
+    watch = {"running": True, "events": [], "settled_count": 0}
+    monkeypatch.setattr(api, "run_tests", fake_run)
+    monkeypatch.setattr(gui_app, "_test_versions", lambda project, seen=None: {"a.test.yaml": ("new",)})
+    api._watch_worker(watch, api._config().project_dir, poll=0, initial_versions={"a.test.yaml": ("old",)})
+    assert calls == [True] and not api._watch_scope.active

@@ -563,8 +563,9 @@ def load_config(
             image=str(capsule_raw.get("image") or ""),
             switch_name=str(capsule_raw.get("switch_name") or ""),
             vm_root=str(capsule_raw.get("vm_root") or ""),
-            memory_mb=int(capsule_raw["memory_mb"]) if "memory_mb" in capsule_raw else None,
-            cpu_count=int(capsule_raw["cpu_count"]) if "cpu_count" in capsule_raw else None,
+            # An explicit null means omitted, as before: keep the provisioned default.
+            memory_mb=int(capsule_raw["memory_mb"]) if capsule_raw.get("memory_mb") is not None else None,
+            cpu_count=int(capsule_raw["cpu_count"]) if capsule_raw.get("cpu_count") is not None else None,
             guest_port=int(capsule_raw.get("guest_port") or 8765),
             guest_token_env=CAPSULE_GUEST_TOKEN_ENV,
             guest_token_ref=str(capsule_raw.get("guest_token_ref") or ""),

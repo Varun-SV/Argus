@@ -996,6 +996,14 @@ def _provider_change_from_text(text: str, configured: Sequence[str]) -> Optional
     return None
 
 
+def _watch_only_stop(text: str) -> bool:
+    """A stop aimed at the watcher alone, not at a run, roam or everything."""
+    words = _without_literals(text)
+    return bool(re.search(r"\bwatch(?:ing|er|es)?\b", words, re.IGNORECASE)
+                and not re.search(r"\b(?:runs?|running\s+tests?|tests?|roam(?:ing)?|jobs?|everything|all|both)\b",
+                                  words, re.IGNORECASE))
+
+
 def _watch_action_from_text(text: str) -> Optional[str]:
     text = text.replace("\u2019", "'")
     if _question_about_action(text):
@@ -1008,12 +1016,12 @@ def _watch_action_from_text(text: str) -> Optional[str]:
     words = _without_literals(text)
     if _CONDITION.search(words) or _FUTURE_TIME.search(words):
         return None
-    stop = re.search(r"\b(?:stop|disable|turn\s+off)\b[^.!?]{0,40}\bwatch\b|"
-                     r"\bwatch\b[^.!?]{0,40}\b(?:stop|off)\b", words, re.IGNORECASE)
+    stop = re.search(r"\b(?:stop|disable|cancel|end|quit|turn\s+off)\b[^.!?]{0,40}\bwatch(?:ing|er)?\b|"
+                     r"\bwatch(?:ing|er)?\b[^.!?]{0,40}\b(?:stop|off)\b", words, re.IGNORECASE)
     start = None if stop else re.search(
-        r"\b(?:start|enable|turn\s+on)\b[^.!?]{0,40}\bwatch\b|"
+        r"\b(?:start|enable|turn\s+on)\b[^.!?]{0,40}\bwatch(?:ing|er)?\b|"
         r"^\s*(?:please\s+)?watch\b|"
-        r"\b(?:watch|monitor)\b[^.!?]{0,60}\b(?:tests?|files?|specs?|changes)\b",
+        r"\b(?:watch(?:ing)?|monitor(?:ing)?)\b[^.!?]{0,60}\b(?:tests?|files?|specs?|changes)\b",
         words, re.IGNORECASE)
     found = stop or start
     if found is None:
@@ -1125,6 +1133,12 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
         if _authorized_explain(text):
             return intent("explain")
         return intent("chat", reply="Ask me explicitly to explain a failure, e.g. 'why did the last test fail?'.")
+
+    if name == "stop" and _watch_only_stop(text):
+        # The global stop also aborts the running test; "stop watching" stops only the watcher.
+        if _watch_action_from_text(text) == "stop":
+            return intent("watch", action="stop")
+        return intent("chat", reply="Say 'stop watch' to stop watching, or 'stop the run' to stop the current run.")
 
     if name in ("stop", "save_test", "init"):
         if _authorized_simple_action(text, name):
