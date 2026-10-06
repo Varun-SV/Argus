@@ -654,6 +654,9 @@ def _strip_suffixes(candidate: str, modifiers: dict) -> tuple:
                 problem = problem or _merge(modifiers, _roam_modifier(m))
                 stripped.append(m.group(0).strip().rstrip(".!"))
                 candidate = candidate[:m.start()].rstrip()
+                # "roam notepad.exe, for 5 minutes": the separator comma goes with the modifier.
+                if candidate.endswith(","):
+                    candidate = candidate[:-1].rstrip()
                 changed = True
     return candidate, stripped, problem
 
@@ -723,6 +726,11 @@ _SETTING_REFUSAL = (r"(?<![\w-])(?:don'?t|do\s+not|never|not|no|avoid(?:ing)?|ca
                     r"shouldn'?t|mustn'?t|without)(?![\w-])")
 
 
+# "on this machine", "on my computer", "on the local host": Local, said in other words.
+_ON_THIS_MACHINE = (r"(?:on\s+(?:this|my|the\s+local|the\s+same)\s+(?:machine|computer|pc|device|host|box)|"
+                    r"on\s+the\s+local\s*host)")
+
+
 def run_settings_from_text(text: str) -> tuple:
     """Execution settings explicitly and positively requested in free text.
 
@@ -733,12 +741,13 @@ def run_settings_from_text(text: str) -> tuple:
     """
     settings: dict = {}
     problem = None
-    # Quoted titles and filenames are data; curly apostrophes are still apostrophes.
-    words = _without_literals(text).replace("\u2019", "'")
+    # Quoted titles and filenames are data; curly apostrophes are still apostrophes. Settings
+    # quoted from elsewhere ("the README says to run it in a capsule") aren't the user's.
+    words = _without_literals(_without_reported_speech(text)).replace("\u2019", "'")
 
     negated_environment = re.search(
         _SETTING_REFUSAL + r"[^.;!?]{0,80}"
-        r"(?:locally|local(?![\w-])(?:\s+(?:host|machine))?|"
+        r"(?:locally|local(?![\w-])(?:\s+(?:host|machine))?|" + _ON_THIS_MACHINE + r"|"
         r"in\s+(?:a\s+)?(?:hyper-?v\s+|libvirt\s+)?capsule)\b",
         words,
         re.IGNORECASE,
@@ -760,6 +769,8 @@ def run_settings_from_text(text: str) -> tuple:
             words,
             re.IGNORECASE,
         )
+        or re.search(r"\b(?:run|execute|test|check)\b[^.;!?]{0,120}" + _ON_THIS_MACHINE + r"\b",
+                     words, re.IGNORECASE)
     )
     if local_positive:
         settings["environment"] = "local"
@@ -898,7 +909,7 @@ def _mentioned_tests(text: str, tests: Sequence[Mapping]) -> List[str]:
         aliases = {str(item.get("file") or "").casefold(), _test_stem(str(item.get("file") or "")),
                    str(item.get("name") or "").casefold()} - {""}
         positions = [m.start() for alias in aliases
-                     for m in re.finditer(r"(?<![\w.-])" + re.escape(alias) + r"(?![\w.-])", lowered)]
+                     for m in re.finditer(r"(?<![\w.-])" + re.escape(alias) + r"(?![\w-]|\.[\w-])", lowered)]
         if positions:
             found.append((min(positions), str(item["file"])))
     return [file for _, file in sorted(found)]
@@ -965,7 +976,7 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     lowered = _without_reported_speech(text)[executes.end():].casefold()
     quoted = [(m.start(), m.end()) for m in re.finditer(r'"[^"]*"|\'[^\']*\'', lowered)]
     settings = re.finditer(r"\b(?:in\s+(?:a\s+)?(?:(?:hyper-?v|libvirt)\s+)?capsule|"
-                           r"(?:on\s+(?:this\s+)?(?:device|machine)|locally)|"
+                           r"(?:" + _ON_THIS_MACHINE + r"|on\s+(?:this\s+)?(?:device|machine)|locally)|"
                            r"(?:keep|retain)(?:ing)?\s+(?:the\s+)?failure\s+capsule)(?![\w.-])",
                            lowered)
     # Blank each setting in place (keeping offsets) so tests named after it still count:
@@ -983,7 +994,7 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
         }
         aliases.discard("")
         for alias in aliases:
-            for match in re.finditer(r"(?<![\w.-])" + re.escape(alias) + r"(?![\w.-])", lowered):
+            for match in re.finditer(r"(?<![\w.-])" + re.escape(alias) + r"(?![\w-]|\.[\w-])", lowered):
                 matches.append((match.start(), match.end(), str(item["file"])))
     # A complete filename or longer title takes precedence over a short alias
     # contained within it. Equal spans remain explicit ambiguous selections.
@@ -1062,7 +1073,7 @@ def _authorized_simple_action(text: str, action: str) -> bool:
             r"(?:draft|test|spec|it)\b"
         ),
         "init": r"\b(?:init|initialize|initialise|setup|set\s+up|scaffold)\b[^.!?]{0,80}\b(?:argus|project|workspace)\b",
-        "write_test": r"\b(?:write|draft|create|make)\b[^.!?]{0,80}\b(?:test|spec)\b",
+        "write_test": _REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*(?:write|draft|create|make)\b[^.!?]{0,80}\b(?:test|spec)\b",
     }
     # Quoted descriptions are data. Scope negation to the requested action,
     # so "write a test ensuring users cannot create accounts" remains a draft.
@@ -1106,11 +1117,21 @@ def _authorized_explain(text: str) -> bool:
         re.IGNORECASE,
     ):
         return False
-    return bool(
-        re.search(r"\b(?:explain|analy[sz]e)\b[^.!?]{0,100}\b(?:failure|failed|error|why)\b", text, re.IGNORECASE)
-        or re.search(r"\bwhy\b[^.!?]{0,100}\b(?:fail(?:ed|ure)?|error(?:ed)?)\b", text, re.IGNORECASE)
-        or re.search(r"\b(?:why|explain)\s+(?:did\s+)?(?:it|that|the\s+test|the\s+run)\s+fail\b", text, re.IGNORECASE)
+    # The request must be the user's own and for now: not reported ("the report explains
+    # why it failed"), described ("the CI will explain ..."), postponed or taken back.
+    words = _without_reported_speech(text).replace("\u2019", "'")
+    if _FUTURE_TIME.search(_without_literals(words)):
+        return False
+    failure = r"\b(?:fail(?:ed|ure|s|ing)?|error(?:ed|s)?|broke|broken)\b"
+    asked = (
+        # A direct why-question: "why did the last test fail?"
+        re.match(r"^\s*(?:(?:so|and|but|ok(?:ay)?|hmm)\s*,?\s*)?why\b[^.!?]{0,100}" + failure, words, re.IGNORECASE)
+        or re.search(_REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*(?:explain|analy[sz]e|tell\s+me|show\s+me)\b"
+                     r"[^.!?]{0,100}(?:" + failure + r"|\bwhy\b)", words, re.IGNORECASE)
     )
+    if not asked:
+        return False
+    return not _CANCELLATION.search(words, asked.end())
 
 
 def _environment_change_from_text(text: str) -> tuple:

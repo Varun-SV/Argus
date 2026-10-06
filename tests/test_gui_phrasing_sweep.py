@@ -161,3 +161,53 @@ def test_dry_run_scope_defaults():
     assert validate_intent({"intent": "dry_run", "args": {"tests": "all"}}, "do a dry run", CONTEXT)["args"] == {"tests": "all"}
     assert validate_intent({"intent": "dry_run", "args": {"tests": "draft"}}, "dry run the draft", CONTEXT)["args"] == {"tests": "draft"}
     assert validate_intent({"intent": "dry_run", "args": {"tests": ["smoke.test.yaml"]}}, "do a dry run", CONTEXT)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", ["The CI will write a test for login", "Our pipeline creates a test for login"])
+def test_drafting_descriptions_are_not_requests(text):
+    assert _route("write_test", text, {"description": text}) != "write_test"
+
+
+@pytest.mark.parametrize("text", ["Could you draft a spec for signup", "I'd like to write a test for login",
+                                  "let's create a test for login"])
+def test_drafting_requests_in_other_words(text):
+    assert _route("write_test", text, {"description": text}) == "write_test"
+
+
+@pytest.mark.parametrize("text", ["why did the last test fail?", "explain the failure", "Why did it fail?",
+                                  "can you explain why checkout failed?", "tell me why it failed"])
+def test_explain_requests(text):
+    assert _route("explain", text, {}) == "explain"
+
+
+@pytest.mark.parametrize("text", ["The CI will explain why the last test failed", "The report explains why the run failed",
+                                  "explain the failure later", "explain why it failed, actually never mind"])
+def test_explain_non_requests(text):
+    assert _route("explain", text, {}) != "explain"
+
+
+@pytest.mark.parametrize("text", ["run checkout.", "run checkout.test.yaml."])
+def test_a_sentence_period_after_a_test_name(text):
+    assert validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}, text, CONTEXT)["args"]["tests"] == ["checkout.test.yaml"]
+    assert validate_intent({"intent": "dry_run", "args": {"tests": "all"}}, "dry " + text, CONTEXT)["args"]["tests"] == ["checkout.test.yaml"]
+
+
+def test_reported_settings_dont_change_a_run():
+    got = validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}},
+                          "Run checkout; the README says to run it in a capsule and keep the failure capsule", CONTEXT)
+    assert got == {"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}
+
+
+@pytest.mark.parametrize("text", ["Run checkout on this machine", "run checkout on my computer", "run checkout on the local host"])
+def test_local_said_in_other_words(text):
+    got = validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}, text, CONTEXT)
+    assert got["args"] == {"tests": ["checkout.test.yaml"], "environment": "local"}
+
+
+@pytest.mark.parametrize("suffix,expected", [
+    (", for 5 minutes", {"minutes": 5.0}), (", with memory", {"memory": True}), (", in a capsule", {"environment": "capsule"}),
+])
+def test_a_separator_comma_before_a_roam_modifier(suffix, expected):
+    got = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}}, "roam notepad.exe" + suffix, CONTEXT)
+    assert got["intent"] == "roam" and got["args"]["target"] == "notepad.exe"
+    assert all(got["args"][k] == v for k, v in expected.items())
