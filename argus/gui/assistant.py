@@ -928,6 +928,50 @@ def _environment_change_from_text(text: str) -> tuple:
     return None, None
 
 
+_PROVIDER_SUBJECT = (r"provider|model|llm|connection|connectivity|vision|api(?:\s+key)?|key|"
+                     r"openai|anthropic|claude|gpt|gemini|ollama")
+
+
+def _authorized_provider_check(text: str, configured: Sequence[str] = ()) -> bool:
+    """A provider ping must be asked for now, about the provider, and not refused."""
+    words = _without_literals(text).replace("\u2019", "'")
+    names = "|".join(re.escape(str(p)) for p in configured if str(p).strip())
+    subject = r"\b(?:" + _PROVIDER_SUBJECT + (r"|" + names if names else "") + r")\b"
+    if not re.search(subject, words, re.IGNORECASE):
+        return False
+    verbs = r"\b(?:check(?:ing)?|test(?:ing)?|ping(?:ing)?|probe|probing|verify(?:ing)?|validate|try|call|contact)\b"
+    if re.search(_REFUSAL + r"[^.;!?]{0,60}" + verbs, words, re.IGNORECASE) or re.search(
+            r"\b(?:skip|no\s+need)\b[^.;!?]{0,60}(?:" + verbs + "|" + subject + ")", words, re.IGNORECASE):
+        return False
+    # Advice and how-to questions ask about the check; "is my provider working?" asks for it.
+    if re.match(r"^\s*(?:how|why|when|where|should|shall)\b|^\s*what\s+(?:happens|does|would|will)\b",
+                words, re.IGNORECASE) or re.search(
+            r"\b(?:want|would\s+like|'d\s+like|need)\s+to\s+(?:know|understand)\s+how\b|"
+            r"\b(?:wonder(?:ing)?|curious|not\s+sure)\b[^.!?]{0,40}\b(?:whether|if|how)\b[^.!?]{0,40}"
+            r"\b(?:should|need)\b", words, re.IGNORECASE):
+        return False
+    anchor = re.search(verbs, words, re.IGNORECASE) or re.search(subject, words, re.IGNORECASE)
+    if _CONDITION.search(words) or _FUTURE_TIME.search(words):
+        return False
+    return not _CANCELLATION.search(words, anchor.end())
+
+
+def _environment_inspection(text: str) -> bool:
+    """A read-only request to see where runs execute ("where will tests run?")."""
+    words = _without_literals(text).replace("\u2019", "'")
+    if re.search(r"\b(?:switch|change|set|select|choose|toggle)\b", words, re.IGNORECASE):
+        return False
+    if re.search(_REFUSAL + r"[^.;!?]{0,40}\b(?:show|display|tell|see)\b", words, re.IGNORECASE):
+        return False
+    return bool(re.search(
+        r"\b(?:show|display|see|view|check|tell\s+me|what|which|current)\b[^.!?]{0,60}"
+        r"\b(?:environment|env|capsule|isolation|sandbox)\b|"
+        r"\bwhere\b[^.!?]{0,40}\b(?:tests?|runs?|specs?)\b[^.!?]{0,20}\b(?:run|execute|go)\b|"
+        r"\bwhere\s+(?:do|does|will|would|are|is)\b[^.!?]{0,20}\b(?:run|runs|running|execut\w*)\b|"
+        r"\b(?:run|running)\s+(?:locally|in\s+a\s+capsule)\s*\?",
+        words, re.IGNORECASE))
+
+
 def _provider_change_from_text(text: str, configured: Sequence[str]) -> Optional[str]:
     """Return the explicitly requested provider; descriptive mentions do not switch."""
     if _question_about_action(text):
@@ -1067,8 +1111,14 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
     if name not in INTENTS:
         return intent("chat", reply="I'm not sure what to do with that. Type /help to see what Argus can do.")
 
-    if name in ("help", "evidence", "report", "tokens", "providers"):
+    if name in ("help", "evidence", "report", "tokens"):
         return intent(name)
+
+    if name == "providers":
+        # Unlike the passive cards, this pings the model (a billed call, maybe a vision probe).
+        if _authorized_provider_check(text, context.get("providers") or []):
+            return intent("providers")
+        return intent("chat", reply="Ask me to check the provider connection when you want me to ping the model.")
 
     if name == "explain":
         if _authorized_explain(text):
@@ -1190,6 +1240,8 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
 
     if name == "environment":
         settings, problem = _environment_change_from_text(text)
+        if not problem and not settings and _environment_inspection(text):
+            return intent("environment")
         if problem or not settings:
             return intent(
                 "chat",

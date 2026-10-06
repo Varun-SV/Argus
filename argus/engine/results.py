@@ -27,6 +27,26 @@ def _next_storage_order() -> int:
         return _last_storage_order
 
 
+_HISTORY_NAME = re.compile(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json")
+
+
+def seed_storage_order(project_dir: Path) -> None:
+    """Allocate after the newest persisted run, even from a fresh process.
+
+    The counter itself is process-local, so a later process whose clock is behind
+    the persisted history would otherwise sort its new runs below older ones.
+    """
+    global _last_storage_order
+    runs_dir = Path(project_dir) / ".argus" / "runs"
+    try:
+        names = [path.name for path in runs_dir.glob("*.json")] if runs_dir.is_dir() else []
+    except OSError:
+        return
+    persisted = max((int(m[2]) for m in map(_HISTORY_NAME.fullmatch, names) if m), default=0)
+    with _storage_order_lock:
+        _last_storage_order = max(_last_storage_order, persisted)
+
+
 def _runs_root(project_dir: Path) -> Path:
     """Return the canonical runs root and reject project-boundary escapes."""
     project_root = Path(project_dir).resolve(strict=True)
@@ -360,7 +380,7 @@ def run_history_paths(runs_dir: Path, limit: Optional[int] = None) -> List[Path]
     have ``limit`` valid rows, so malformed newest files can't hide older runs.
     """
     def order(path):
-        match = re.fullmatch(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json", path.name)
+        match = _HISTORY_NAME.fullmatch(path.name)
         if match:
             # The monotonic allocation order is authoritative: it survives a wall clock
             # that moved backwards, which the formatted stamp does not.

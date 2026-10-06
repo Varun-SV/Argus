@@ -478,3 +478,38 @@ def test_down_on_a_stopped_descriptor_container_for_other_storage_fails_closed(t
     old["Mounts"][0]["Source"] = "/proc/999999999/fd/17"
     old["Config"]["Labels"]["org.argus.qdrant.directory"] = "0:0"
     assert not manager(tmp_path).stop("qdrant")
+
+
+def _remove_storage(tmp_path):
+    storage = tmp_path / "a" / ".argus" / "qdrant-data"
+    storage.rename(storage.with_name("qdrant-data-moved"))
+
+
+def test_missing_storage_with_running_container_is_unverified_not_stopped(tmp_path, daemon):
+    a = manager(tmp_path)
+    a.ensure_qdrant()
+    _remove_storage(tmp_path)
+    before = len(daemon.commands)
+    assert manager(tmp_path).status()["qdrant"] is None
+    assert not manager(tmp_path).stop("qdrant")
+    assert not any(c[1] == "stop" for c in daemon.commands[before:])  # unverified: left alone
+    assert next(iter(daemon.containers.values()))["State"]["Running"]
+
+
+def test_missing_storage_with_failed_lookup_is_unverified(tmp_path, daemon):
+    manager(tmp_path).ensure_qdrant()
+    _remove_storage(tmp_path)
+    daemon.fail.add("ps")
+    assert manager(tmp_path).status()["qdrant"] is None
+    assert not manager(tmp_path).stop("qdrant")
+
+
+@pytest.mark.parametrize("state", ["stopped", "absent"])
+def test_missing_storage_without_a_running_container_is_stopped(tmp_path, daemon, state):
+    if state == "stopped":
+        a = manager(tmp_path)
+        a.ensure_qdrant()
+        assert a.stop("qdrant")
+        _remove_storage(tmp_path)
+    assert manager(tmp_path).status()["qdrant"] is False
+    assert manager(tmp_path).stop("qdrant")

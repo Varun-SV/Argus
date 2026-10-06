@@ -57,8 +57,7 @@ class DockerManager:
             source.mkdir(parents=True, exist_ok=True)
         storage = source.resolve(strict=True)
         info = storage.stat()
-        project = os.path.normcase(str(self._data_dir.resolve()))
-        scope = hashlib.sha256(project.encode("utf-8")).hexdigest()
+        scope = self._qdrant_project_scope()
         labels = {
             "org.argus.qdrant.project": scope,
             "org.argus.qdrant.storage": hashlib.sha256(
@@ -67,6 +66,25 @@ class DockerManager:
             "org.argus.qdrant.schema": "1",
         }
         return f"{self.QDRANT_CONTAINER}-{scope[:32]}", labels, storage, source
+
+    def _qdrant_project_scope(self) -> str:
+        project = os.path.normcase(str(self._data_dir.resolve()))
+        return hashlib.sha256(project.encode("utf-8")).hexdigest()
+
+    def _orphaned_qdrant_running(self, docker: Optional[str]) -> bool:
+        """With the storage gone, ownership can't be attested; is a container still up?
+
+        The container name is project-derived, so it can be found without the storage.
+        A failed lookup counts as running: it can't be shown to be stopped.
+        """
+        if not docker:
+            return False
+        name = f"{self.QDRANT_CONTAINER}-{self._qdrant_project_scope()[:32]}"
+        try:
+            info = self._inspect_qdrant(docker, name)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return True
+        return bool(info is not None and (info.get("State") or {}).get("Running"))
 
     @staticmethod
     def _docker_command(docker: str, *args, timeout: int = 10, env=None):
@@ -380,7 +398,10 @@ class DockerManager:
                     if running:
                         containers.append(info["Id"])
             except FileNotFoundError:
-                pass
+                if self._orphaned_qdrant_running(docker):
+                    log.warning("Qdrant is running but its project storage is missing, so it can't be "
+                                "verified as this project's. Inspect Docker resources before retrying.")
+                    ownership_confirmed = False
             except (OSError, ValueError, subprocess.SubprocessError):
                 log.warning("Qdrant stop could not verify project ownership. Inspect Docker resources before retrying.")
                 ownership_confirmed = False
@@ -414,7 +435,9 @@ class DockerManager:
                 self._verify_qdrant(info, labels, storage)
                 qdrant = True
         except FileNotFoundError:
-            pass
+            # Missing storage: a still-running container can't be called this project's or stopped.
+            if self._orphaned_qdrant_running(shutil.which("docker")):
+                qdrant = None
         except (OSError, ValueError, subprocess.SubprocessError):
             log.warning("Qdrant status could not verify project ownership. Inspect Docker resources before retrying.")
             qdrant = None

@@ -16,6 +16,7 @@ import json
 import math
 import os
 import stat
+import re
 import threading
 import time
 import uuid
@@ -448,6 +449,9 @@ class ArgusAPI:
                 entry.update(name=spec.name, steps=len(spec.steps), adapter=spec.adapter)
             except assistant.SPEC_ERRORS as exc:
                 entry["error"] = str(exc)
+            except OSError as exc:
+                # A directory, dangling symlink or vanished file is one bad entry, not a failed list.
+                entry["error"] = f"could not read {path.name}: {exc.strerror or exc}"
             out.append(entry)
         return out
 
@@ -891,15 +895,29 @@ class ArgusAPI:
             job["action"] = "Session finished" if job["status"] == "done" else job["status"].capitalize()
             self._retire_finished_job(job["id"])
 
-    def regression_stub(self, job_id: str, index: int = 0) -> dict:
-        """Load a roam finding's regression stub as a draft the user can save."""
+    def regression_stub(self, job_id: str, index: int = 0, path: Optional[str] = None) -> dict:
+        """Load a roam finding's regression stub as a draft the user can save.
+
+        A restored chat card outlives its in-memory job (app restart, bounded job list), so
+        the card may pass the stub's path; it is accepted only as a roam regression file.
+        """
         cfg = self._config()
         job = self._jobs.get(job_id)
-        if not job or job.get("kind") != "roam" or not job.get("regressions"):
+        if job and job.get("kind") == "roam" and job.get("regressions"):
+            index = max(0, min(int(index), len(job["regressions"]) - 1))
+            relative = job["regressions"][index]
+        elif isinstance(path, str) and path.strip():
+            relative = path
+        else:
             return {"ok": False, "error": "That roam didn't produce regression stubs."}
-        index = max(0, min(int(index), len(job["regressions"]) - 1))
-        path = (cfg.project_dir / job["regressions"][index]).resolve()
-        if not path.is_relative_to((cfg.argus_dir / "roam").resolve()) or not path.is_file():
+        candidate = Path(relative)
+        if candidate.is_absolute() or not re.fullmatch(r"regression-.*\.test\.yaml", candidate.name):
+            return {"ok": False, "error": "That isn't a roam regression stub."}
+        try:
+            path = (cfg.project_dir / candidate).resolve()
+        except (OSError, RuntimeError):
+            path = None
+        if path is None or not path.is_relative_to((cfg.argus_dir / "roam").resolve()) or not path.is_file():
             return {"ok": False, "error": "The regression stub is no longer on disk."}
         existing = [p.name for p in discover_tests(cfg.project_dir)]
         draft = assistant.check_draft(path.read_text(encoding="utf-8"), existing)

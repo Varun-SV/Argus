@@ -211,7 +211,7 @@ async function execute(res, conv = state.conv) {
         return;
       }
       case "regression_stub": {
-        const draft = await withThinking(() => api().regression_stub(a.job, a.index || 0));
+        const draft = await withThinking(() => api().regression_stub(a.job, a.index || 0, a.path || null));
         showDraft(draft, conv);
         return;
       }
@@ -551,15 +551,16 @@ function followupsAfter(conv, last) {
   } else if (last.kind === "roam") {
     const s = last.snap;
     const list = [];
-    if (s.regressions && s.regressions.length) list.push({ label: "Turn finding 1 into a test", stub: { job: s.id, index: 0 } });
+    if (s.regressions && s.regressions.length) list.push({ label: "Turn finding 1 into a test", stub: { job: s.id, index: 0, path: s.regressions[0] } });
     list.push({ label: `Show knowledge for ${s.target}`, intent: I("knowledge", { action: "show", target: s.target }) });
     list.push({ label: "Roam it again for 10 minutes", intent: I("roam", { target: s.target, adapter: s.adapter, minutes: 10 }) });
     setFollowups(list);
   }
 }
 
-async function regressionStub(job, index, conv = state.conv) {
-  return execute(I("regression_stub", { job, index }), conv);
+// The stub's path rides along so a restored card still works once its job is gone.
+async function regressionStub(job, index, path = null, conv = state.conv) {
+  return execute(I("regression_stub", { job, index, path }), conv);
 }
 
 /* ---------------------------------------------------------- live panel --- */
@@ -817,7 +818,7 @@ function renderRoam(m) {
         h("span", { class: "grow lbl", text: `${running ? liveFindings : findings.length} findings · ${s.log.length} events · ${fmt(s.tokens)} tokens` }),
         running ? h("button", { class: "btn danger hov", text: "Stop", onClick: () => execute(I("stop")) }) : null,
         !running ? h("button", { class: "btn hov", text: "Knowledge", onClick: () => runChip(`Show knowledge for ${s.target}`, I("knowledge", { action: "show", target: s.target })) }) : null,
-        !running && s.regressions && s.regressions.length ? h("button", { class: "btn dark", text: "Write regression test", onClick: () => { push({ role: "user", kind: "user", text: "Turn finding 1 into a test" }); regressionStub(s.id, 0); } }) : null),
+        !running && s.regressions && s.regressions.length ? h("button", { class: "btn dark", text: "Write regression test", onClick: () => { push({ role: "user", kind: "user", text: "Turn finding 1 into a test" }); regressionStub(s.id, 0, s.regressions[0]); } }) : null),
       !running && s.report ? h("div", { class: "summary", text: s.report + (s.stopped_reason ? ` · ${s.stopped_reason}` : "") }) : null));
 }
 
@@ -870,7 +871,7 @@ function renderFollowups() {
 }
 function followup(f) {
   if (f.prefill) return prefill(f.prefill);
-  if (f.stub) { push({ role: "user", kind: "user", text: f.label }); setFollowups([]); return regressionStub(f.stub.job, f.stub.index); }
+  if (f.stub) { push({ role: "user", kind: "user", text: f.label }); setFollowups([]); return regressionStub(f.stub.job, f.stub.index, f.stub.path || null); }
   if (f.intent && f.intent.intent === "stop") return execute(f.intent);
   return runChip(f.label, f.intent);
 }

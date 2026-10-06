@@ -554,7 +554,7 @@ def test_regression_draft_pending_owner_autosave_and_reload(desktop_browser, ent
     else:
         page.locator("#followups").get_by_role("button", name="Turn finding 1 into a test", exact=True).click()
     page.wait_for_function("window.stubRelease !== null")
-    assert page.evaluate("window.stubArgs") == ["roam-round-five", 0]
+    assert page.evaluate("window.stubArgs") == ["roam-round-five", 0, "regression.test.yaml"]
     assert page.evaluate("state.pendingActions") == 1
     assert page.evaluate("state.conv.msgs.some(m=>m.kind==='thinking')")
     assert page.evaluate("flushConversationsForClose()") == {"ok": False}

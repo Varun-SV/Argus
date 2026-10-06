@@ -610,3 +610,122 @@ def test_finished_foreground_jobs_are_bounded(api):
     assert "f1" not in api._jobs and "r1" not in api._results
     assert f"f{total - 1}" in api._jobs
     assert len([j for j in api._finished_jobs if j != "live"]) == gui_app._FINISHED_JOBS_KEPT
+
+
+def test_a_fresh_process_allocates_after_persisted_history_despite_clock_rollback(tmp_path, monkeypatch):
+    from argus.engine import results
+    from argus.engine.results import RunResult, load_runs, seed_storage_order
+    clock = iter([2_000_000_000_000_000_000, 1_000_000_000_000_000_000])
+    monkeypatch.setattr(results.time, "time_ns", lambda: next(clock))
+    monkeypatch.setattr(results, "_last_storage_order", 0)
+    RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake",
+              started_at=1_800_000_000.0, status="pass").save(tmp_path)
+    # A new `argus run` process: the in-memory counter starts over and the clock is behind.
+    monkeypatch.setattr(results, "_last_storage_order", 0)
+    seed_storage_order(tmp_path)
+    RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake",
+              started_at=1_800_000_000.0 - 3600, status="fail").save(tmp_path)
+    assert [r["status"] for r in load_runs(tmp_path)] == ["fail", "pass"]
+
+
+def test_run_test_seeds_allocation_from_the_project_history(tmp_path, monkeypatch):
+    from argus.engine import results, runner_impl
+    seen = []
+    monkeypatch.setattr(runner_impl, "seed_storage_order", lambda project: seen.append(project))
+    monkeypatch.setattr(runner_impl, "RunResult", lambda **kw: (_ for _ in ()).throw(RuntimeError("stop")))
+    with pytest.raises(RuntimeError, match="stop"):
+        runner_impl.run_test(type("Spec", (), {"name": "a", "file_name": "a.test.yaml", "adapter": "cli"})(),
+                             type("P", (), {"describe": lambda self: "fake"})(), object(), project_dir=tmp_path)
+    assert seen == [tmp_path]
+    assert results.seed_storage_order(tmp_path / "missing") is None  # no history: no-op
+
+
+@pytest.mark.parametrize("text", [
+    "don't check the provider connection", "do not ping the model", "no need to check my provider",
+    "skip the provider check", "never test the model connection",
+    "how do I check my provider connection?", "should I check my provider?",
+    "check my provider connection later", "check the provider after this run",
+    "check my provider connection, actually don't", "check the model, never mind",
+    "hello there",
+])
+def test_provider_pings_need_a_present_unrefused_request(text):
+    routed = validate_intent({"intent": "providers"}, text, {"providers": ["openai"]})
+    assert routed["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "check my provider connection", "is my provider working?", "can you check the model connection?",
+    "does my model support vision?", "ping openai",
+])
+def test_explicit_provider_checks_still_route(text):
+    assert validate_intent({"intent": "providers"}, text, {"providers": ["openai"]})["intent"] == "providers"
+
+
+@pytest.mark.parametrize("text", [
+    "show me the current environment", "where will tests run?", "what environment am I using?",
+    "which environment is selected?", "where do my tests execute?",
+])
+def test_environment_inspection_returns_the_current_setting(text):
+    assert validate_intent({"intent": "environment", "args": {"environment": "capsule"}}, text, {}) == {
+        "intent": "environment", "args": {}}
+
+
+@pytest.mark.parametrize("text", [
+    "should I switch to local?", "switch to a capsule tomorrow", "don't show the environment", "hello",
+])
+def test_environment_changes_keep_their_guards(text):
+    assert validate_intent({"intent": "environment", "args": {"environment": "local"}}, text, {})["intent"] == "chat"
+
+
+def _write_stub(api):
+    cfg = api._config()
+    session = cfg.argus_dir / "roam" / "session-1"
+    session.mkdir(parents=True)
+    stub = session / "regression-1.test.yaml"
+    stub.write_text("name: Regression\ntarget:\n  adapter: cli\n  launch: echo ready\n"
+                    "steps:\n  - assert:\n      exit_code_is: 0\n", encoding="utf-8")
+    return stub.relative_to(cfg.project_dir).as_posix()
+
+
+def test_regression_stub_works_from_a_restored_card_without_its_job(api):
+    relative = _write_stub(api)
+    assert "gone-job" not in api._jobs
+    draft = api.regression_stub("gone-job", 0, relative)
+    assert draft["ok"] and draft["from_finding"] and draft["name"] == "Regression"
+
+
+@pytest.mark.parametrize("path", [
+    ".argus/config.yaml", "../outside/regression-1.test.yaml", ".argus/roam/session-1/notes.test.yaml",
+    ".argus/regression-x.test.yaml", None,
+])
+def test_regression_stub_card_path_is_only_a_roam_regression_file(api, tmp_path, path):
+    _write_stub(api)
+    (tmp_path / ".argus" / "regression-x.test.yaml").write_text("name: x\n", encoding="utf-8")
+    assert not api.regression_stub("gone-job", 0, path)["ok"]
+
+
+def test_regression_stub_rejects_an_absolute_card_path(api):
+    relative = _write_stub(api)
+    absolute = str(api._config().project_dir / relative)
+    assert not api.regression_stub("gone-job", 0, absolute)["ok"]
+
+
+@pytest.mark.parametrize("kind", ["directory", "dangling"])
+def test_unreadable_test_entry_is_reported_without_hiding_healthy_tests(api, tmp_path, kind):
+    argus_dir = tmp_path / ".argus"
+    (argus_dir / "good.test.yaml").write_text(
+        "name: good\ntarget:\n  adapter: cli\n  launch: echo ok\nsteps:\n  - assert:\n      exit_code_is: 0\n",
+        encoding="utf-8")
+    bad = argus_dir / "broken.test.yaml"
+    if kind == "directory":
+        bad.mkdir()
+    else:
+        try:
+            bad.symlink_to(argus_dir / "missing.yaml")
+        except OSError:
+            pytest.skip("symlinks unavailable")
+    if bad.name not in [p.name for p in gui_app.discover_tests(tmp_path)]:
+        pytest.skip("discovery already skips this entry")
+    entries = {e["file"]: e for e in api.list_tests()}
+    assert entries["good.test.yaml"]["error"] is None and entries["good.test.yaml"]["name"] == "good"
+    assert entries["broken.test.yaml"]["error"]
