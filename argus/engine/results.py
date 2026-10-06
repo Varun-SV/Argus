@@ -2,13 +2,161 @@
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
+import math
+import os
+import re
+import stat
+import threading
 import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 STATUSES = ("pass", "fail", "error", "running", "skipped")
+_storage_order_lock = threading.Lock()
+_last_storage_order = 0
+
+
+def _next_storage_order() -> int:
+    """Keep local allocation order increasing across clock ties or rollback."""
+    global _last_storage_order
+    with _storage_order_lock:
+        _last_storage_order = max(time.time_ns(), _last_storage_order + 1)
+        return _last_storage_order
+
+
+_HISTORY_NAME = re.compile(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json")
+
+
+_ORDER_FILE = ".storage-order"
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+_LOCK_WAIT_S = 30.0
+
+
+@contextmanager
+def _file_locked(stream, timeout: float = _LOCK_WAIT_S):
+    """Hold an exclusive OS lock on ``stream`` (shared by every process on this project).
+
+    Only contention is retried, for at most ``timeout`` seconds; any other locking
+    error (unsupported filesystem, bad handle) raises at once so callers fail closed.
+    """
+    deadline = time.monotonic() + timeout
+    if os.name == "nt":
+        import msvcrt
+        busy = {errno.EACCES, errno.EDEADLK, getattr(errno, "EDEADLOCK", errno.EDEADLK)}
+
+        def acquire():
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+
+        def release():
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        busy = {errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES}
+
+        def acquire():
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def release():
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    while True:
+        try:
+            acquire()
+            break
+        except OSError as exc:
+            if exc.errno not in busy:
+                raise
+            if time.monotonic() >= deadline:
+                raise OSError(errno.ETIMEDOUT, "Timed out waiting for the run history lock") from exc
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        release()
+
+
+def reserve_storage_order(project_dir: Path, keep: Optional[int] = None) -> int:
+    """Atomically reserve the project's next run order, across processes.
+
+    The in-process counter can't see other ``argus run`` processes, and after a clock
+    rollback two of them would otherwise pick the same next order. A project-scoped
+    counter, read and advanced under an OS file lock, makes every reservation unique
+    and later than all persisted history.
+
+    ``keep`` is an order this process already allocated. It is kept when it is still
+    above everything other processes have reserved, so results saved out of creation
+    order still list in creation order; otherwise a fresh order is taken.
+    """
+    runs_root = _runs_root(project_dir)
+    path = runs_root / _ORDER_FILE
+    if path.is_symlink():
+        raise OSError(f"run order counter cannot be a symlink: {path}")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    with _storage_order_lock, open(os.open(path, flags, 0o600), "r+b") as stream:
+        _require_private_counter(stream, path)
+        with _file_locked(stream):
+            return _advance_counter(stream, runs_root, keep)
+
+
+def _require_private_counter(stream, path: Path) -> None:
+    """Refuse a counter that is (or leads to) anything but this project's own file.
+
+    It is rewritten on every run, so a hard link, reparse point or symlink planted at
+    the path would let a run overwrite an unrelated file. The checks bind to the opened
+    handle: the path must still name exactly that singly linked regular file.
+    """
+    opened = os.fstat(stream.fileno())
+    named = os.lstat(path)
+    if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+            or stat.S_ISLNK(named.st_mode)
+            or getattr(named, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+            or getattr(opened, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+            or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)):
+        raise OSError(f"run order counter must be a singly linked regular file in the project: {path}")
+
+
+# Per runs root: the counter value this process last wrote, and the highest order any
+# other process (or pre-counter history) is known to hold.
+_counter_sync: dict = {}
+
+
+def _advance_counter(stream, runs_root: Path, keep: Optional[int] = None) -> int:
+    """Read, advance and durably write the counter; the caller holds the file lock."""
+    global _last_storage_order
+    stream.seek(0)
+    try:
+        counter = int(stream.read(32).decode("ascii").strip() or 0)
+    except (UnicodeError, ValueError):
+        counter = 0
+    sync = _counter_sync.setdefault(runs_root, {"ours": None, "others": 0})
+    if counter != sync["ours"]:
+        # Someone else advanced it (or this is first contact): everything they hold, and
+        # history written before the counter existed, now sits below our next order.
+        names = [entry.name for entry in runs_root.glob("*.json")]
+        persisted = max((int(m[2]) for m in map(_HISTORY_NAME.fullmatch, names) if m), default=0)
+        sync["others"] = max(sync["others"], counter, persisted)
+    if keep is not None and keep > sync["others"]:
+        order = keep
+    else:
+        order = max(time.time_ns(), sync["others"] + 1, counter + 1, _last_storage_order + 1)
+    written = max(counter, order)
+    stream.seek(0)
+    stream.truncate()
+    stream.write(str(written).encode("ascii"))
+    stream.flush()
+    os.fsync(stream.fileno())
+    sync["ours"] = written
+    _last_storage_order = max(_last_storage_order, order)
+    return order
 
 
 def _runs_root(project_dir: Path) -> Path:
@@ -38,6 +186,10 @@ def _runs_root(project_dir: Path) -> Path:
     except ValueError as exc:
         raise OSError(f".argus/runs escapes .argus: {runs_dir}") from exc
     return resolved
+
+
+class UnreservedRunError(OSError):
+    """A result whose cross-process history order was never reserved can't be saved."""
 
 
 @dataclass
@@ -76,6 +228,35 @@ class RunResult:
     failure_capsule: Optional[dict] = None
     failure_capsule_error: Optional[dict] = None
 
+    def __post_init__(self):
+        # Storage identity is private: it is not an ATES/Capsule identifier or
+        # part of the public result document. Allocation order keeps same-second
+        # history chronological, even when the test filename repeats.
+        self._storage_order = _next_storage_order()
+        self._storage_id = uuid.uuid4().hex
+        self._storage_lock = threading.RLock()
+        self._owned_run_dirs = {}
+        self._owned_history_files = {}
+        self._unreserved: Optional[str] = None
+        self._reserved_roots = set()
+
+    def claim_project_order(self, project_dir: Path) -> None:
+        """Take a cross-process order from the project counter before the first save.
+
+        If that fails the result keeps no trustworthy place in history, so ``save``
+        refuses it rather than publish it under this process's unverified order.
+        """
+        with self._storage_lock:
+            if not self._owned_run_dirs:
+                try:
+                    runs_root = _runs_root(project_dir)
+                    self._storage_order = reserve_storage_order(project_dir)
+                except OSError as exc:
+                    self._unreserved = str(exc)
+                    raise
+                self._unreserved = None
+                self._reserved_roots.add(runs_root)
+
     @property
     def passed(self) -> int:
         return sum(1 for s in self.steps if s.status == "pass")
@@ -106,30 +287,74 @@ class RunResult:
         return asdict(self)
 
     def run_dir(self, project_dir: Path) -> Path:
-        runs_root = _runs_root(project_dir)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        candidate = runs_root / f"{stamp}-{safe}"
-        if candidate.is_symlink():
-            raise OSError(f"run directory cannot be a symlink: {candidate}")
-        candidate.mkdir(exist_ok=True)
-        resolved = candidate.resolve(strict=True)
-        try:
-            resolved.relative_to(runs_root)
-        except ValueError as exc:
-            raise OSError(f"run directory escapes .argus/runs: {candidate}") from exc
-        return resolved
+        with self._storage_lock:
+            runs_root = _runs_root(project_dir)
+            owned = self._owned_run_dirs.get(runs_root)
+            if owned is not None:
+                candidate, identity = owned
+                if candidate.is_symlink():
+                    raise OSError(f"run directory cannot be a symlink: {candidate}")
+                st = candidate.stat()
+                if (st.st_dev, st.st_ino) != identity or not candidate.is_dir():
+                    raise OSError("run directory ownership changed")
+                return candidate
+            if runs_root not in self._reserved_roots:
+                # Never claimed (e.g. run_test without project_dir): reserve now, for this
+                # destination, so no result is published under a process-local order.
+                try:
+                    self._storage_order = reserve_storage_order(project_dir, keep=self._storage_order)
+                except OSError as exc:
+                    self._unreserved = str(exc)
+                    raise
+                self._reserved_roots.add(runs_root)
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
+            safe = _bounded_name(self.test_file)
+            for _ in range(10):
+                candidate = runs_root / f"{stamp}-{self._storage_order:020d}-{self._storage_id}-{safe}"
+                flat = runs_root / f"{candidate.name}.json"
+                if flat.exists() or flat.is_symlink():
+                    self._storage_id = uuid.uuid4().hex
+                    continue
+                try:
+                    candidate.mkdir(exist_ok=False)
+                except FileExistsError:
+                    self._storage_id = uuid.uuid4().hex
+                    continue
+                if candidate.is_symlink():
+                    raise OSError(f"run directory cannot be a symlink: {candidate}")
+                resolved = candidate.resolve(strict=True)
+                try:
+                    resolved.relative_to(runs_root)
+                except ValueError as exc:
+                    raise OSError(f"run directory escapes .argus/runs: {candidate}") from exc
+                st = resolved.stat()
+                self._owned_run_dirs[runs_root] = (resolved, (st.st_dev, st.st_ino))
+                return resolved
+            raise OSError("Could not reserve a unique run directory")
 
     def save(self, project_dir: Path) -> Path:
-        runs_root = _runs_root(project_dir)
-        run_dir = self.run_dir(project_dir)
-        (run_dir / "result.json").write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        write_report(self, run_dir)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.test_file)
-        flat = runs_root / f"{stamp}-{safe}.json"
-        flat.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        return run_dir / "result.json"
+        with self._storage_lock:
+            if self._unreserved is not None:
+                raise UnreservedRunError(
+                    f"Not added to run history: its place could not be reserved ({self._unreserved}).")
+            run_dir = self.run_dir(project_dir)
+            data = json.dumps(self.to_dict(), indent=2)
+            (run_dir / "result.json").write_text(data, encoding="utf-8")
+            write_report(self, run_dir)
+            flat = run_dir.parent / f"{run_dir.name}.json"
+            identity = self._owned_history_files.get(flat)
+            # Reserve history exclusively on the first save. Re-saving may
+            # update only the same file this result instance originally created.
+            with flat.open("x" if identity is None else "r+", encoding="utf-8") as stream:
+                st = os.fstat(stream.fileno())
+                current = (st.st_dev, st.st_ino)
+                if identity is not None and current != identity:
+                    raise OSError("run history ownership changed")
+                self._owned_history_files[flat] = current
+                stream.seek(0)
+                stream.truncate()
+                stream.write(data)
+            return run_dir / "result.json"
 
 
 def write_report(result: RunResult, run_dir: Path) -> Path:
@@ -253,14 +478,83 @@ def write_report(result: RunResult, run_dir: Path) -> Path:
     return path
 
 
+def valid_run_history(data) -> bool:
+    """Accept old result documents while rejecting shapes history readers cannot use."""
+    if not isinstance(data, dict):
+        return False
+    # Identity and outcome are required: an empty document is not a run, and counting it
+    # toward the history limits would let malformed files hide real runs.
+    test_file, status = data.get("test_file"), data.get("status")
+    if not isinstance(test_file, str) or not test_file.strip() or status not in STATUSES:
+        return False
+    for name in ("test_file", "test_name", "status", "provider", "adapter"):
+        if name in data and not isinstance(data[name], str):
+            return False
+    steps = data.get("steps", [])
+    tokens = data.get("tokens", {})
+    if not isinstance(steps, list) or not isinstance(tokens, dict):
+        return False
+    if any(not isinstance(step, dict) or
+           ("status" in step and not isinstance(step["status"], str)) for step in steps):
+        return False
+    for value in (data.get("duration_s", 0), tokens.get("total_tokens", 0)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        try:
+            if not math.isfinite(value):
+                return False
+        except OverflowError:
+            return False
+    return True
+
+
+# The prefix before the test name is "<stamp>-<order:20>-<uuid:32>-" (70 chars) and
+# the flat history file adds ".json"; keep the whole component well under 255 bytes.
+_MAX_NAME_PART = 120
+
+
+def _bounded_name(test_file: str) -> str:
+    """A filesystem-safe test-name component that can't overflow a path segment."""
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in test_file)
+    if len(safe.encode("utf-8", "surrogatepass")) <= _MAX_NAME_PART:
+        return safe
+    digest = hashlib.sha256(test_file.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    head = safe
+    while len(head.encode("utf-8", "surrogatepass")) > _MAX_NAME_PART - 13:
+        head = head[:-1]
+    return f"{head}-{digest}"
+
+
+def run_history_paths(runs_dir: Path, limit: Optional[int] = None) -> List[Path]:
+    """Order new and legacy filenames without reading every result document.
+
+    Callers that validate documents should take every path and stop once they
+    have ``limit`` valid rows, so malformed newest files can't hide older runs.
+    """
+    def order(path):
+        match = _HISTORY_NAME.fullmatch(path.name)
+        if match:
+            # The monotonic allocation order is authoritative: it survives a wall clock
+            # that moved backwards, which the formatted stamp does not.
+            return 1, match[2], path.name
+        # Legacy rows predate high-resolution allocation, so they sort before every new row.
+        return 0, path.name[:15], path.name
+    ordered = sorted(runs_dir.glob("*.json"), key=order, reverse=True)
+    return ordered if limit is None else ordered[:limit]
+
+
 def load_runs(project_dir: Path, limit: int = 50) -> List[dict]:
     runs_dir = project_dir / ".argus" / "runs"
     if not runs_dir.is_dir():
         return []
     out = []
-    for path in sorted(runs_dir.glob("*.json"), reverse=True)[:limit]:
+    for path in run_history_paths(runs_dir):
+        if len(out) >= limit:
+            break
         try:
-            out.append(json.loads(path.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, OSError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if valid_run_history(data):
+                out.append(data)
+        except (json.JSONDecodeError, UnicodeError, OSError):
             continue
     return out

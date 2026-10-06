@@ -161,6 +161,12 @@ argus report                             # run history
 argus gui                                # native desktop app
 ```
 
+The desktop app (`pip install "argus-app-testing[gui]"`, then `argus gui`) is a conversation with Argus. Open a project folder using the button beside the project name; each project opens in its own window. Choose **Set up this project** for a new folder, then run `smoke.test.yaml` to check local execution and evidence without a model call. Existing configuration and tests are preserved.
+
+Ask in your own words ("run checkout in a Capsule", "roam http://localhost:3000 for 5 minutes", "write a test for the login page") or use slash commands such as `/run`, `/roam`, `/write`, `/evidence` and `/help`. Slash commands skip the model-based intent routing that free text goes through. Commands that need a model still use it: `/write` and `/explain` call your provider, and `/run` and `/roam` use it for natural-language steps. Run settings in free text (Local or a Capsule, memory, duration) are read from your own words; to roam a command that has arguments, quote it: `roam "python tool.py --flag" in a Capsule for 5 minutes`.
+
+See the [desktop app guide](docs/desktop-app.md) for provider setup, saved conversations, error recovery, and Capsule readiness. ISO image construction and retained-Capsule reconnection use the existing configuration and Python API described in the [OS provisioning guide](docs/os-environment-provisioning.md). Windows ISO-derived production images remain blocked until protected bootstrap-media delivery passes native validation; the desktop app keeps that security gate intact.
+
 ---
 
 ## Adapters versus execution environments

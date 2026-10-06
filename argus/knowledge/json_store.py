@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from argus.adapters.base import Observation
 from argus.knowledge.base import KnowledgeContext, KnowledgeStore, PastBug, SimilarState
+from argus.knowledge.storage import KnowledgeFileError
 from argus.knowledge.fingerprint import fingerprint, semantic_description, summarize_action, target_key
 
 
@@ -55,21 +56,28 @@ class JsonKnowledgeStore(KnowledgeStore):
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
+    def backend_info(self) -> Dict[str, str]:
+        return {"type": "json", "label": "JSON graph · keyword retrieval · no vector backend"}
+
     def _key(self, target: str) -> str:
         return target_key(target)
 
-    def _graph(self, target: str) -> Dict[str, Any]:
+    def _graph(self, target: str, *, create: bool = True) -> Dict[str, Any]:
         k = self._key(target)
-        if k not in self._graphs:
-            path = self._dir / f"{k}.graph.json"
-            if path.exists():
-                try:
-                    self._graphs[k] = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-            if k not in self._graphs:
-                self._graphs[k] = {"nodes": {}, "edges": []}
-        return self._graphs[k]
+        if k in self._graphs:
+            return self._graphs[k]
+        path = self._dir / f"{k}.graph.json"
+        graph = {"nodes": {}, "edges": []}
+        if path.exists():
+            try:
+                graph = json.loads(path.read_text(encoding="utf-8"))
+            except KnowledgeFileError:
+                raise
+            except Exception:
+                pass
+        if create:
+            self._graphs[k] = graph
+        return graph
 
     def _save_graph(self, target: str) -> None:
         k = self._key(target)
@@ -79,6 +87,8 @@ class JsonKnowledgeStore(KnowledgeStore):
         try:
             path = self._dir / f"{k}.graph.json"
             path.write_text(json.dumps(g), encoding="utf-8")
+        except KnowledgeFileError:
+            raise
         except Exception:
             pass
 
@@ -282,7 +292,7 @@ class JsonKnowledgeStore(KnowledgeStore):
         stats: Dict[str, Any] = {}
 
         def _stats_for(tgt: str) -> Dict[str, Any]:
-            g = self._graph(tgt)
+            g = self._graph(tgt, create=False)
             nodes = g.get("nodes", {})
             bugs_path = self._dir / f"{self._key(tgt)}.bugs.ndjson"
             bugs = self._read_ndjson(bugs_path)
@@ -301,8 +311,8 @@ class JsonKnowledgeStore(KnowledgeStore):
             stats[target] = _stats_for(target)
         else:
             for p in self._dir.glob("*.graph.json"):
-                tgt = p.stem  # already a target_key
-                stats[tgt] = _stats_for(tgt)
+                key = p.name[:-len(".graph.json")]
+                stats[p.stem] = _stats_for(key)
         return stats
 
     def clear_target(self, target: str) -> None:

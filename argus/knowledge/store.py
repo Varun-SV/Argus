@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from argus.adapters.base import Observation
 from argus.knowledge.base import KnowledgeContext, KnowledgeStore, PastBug, SimilarState
+from argus.knowledge.storage import KnowledgeFileError
 from argus.knowledge.embeddings import EmbeddingGenerator
 from argus.knowledge.fingerprint import fingerprint, semantic_description, summarize_action, target_key
 
@@ -38,12 +39,17 @@ class LocalKnowledgeStore(KnowledgeStore):
 
     # ── backend accessors ───────────────────────────────────────────────────
 
+    def backend_info(self) -> Dict[str, str]:
+        state = {None: "not checked", False: "unavailable", True: "initialized"}[self._chroma_ok]
+        return {"type": "local", "label": (
+            f"JSON graph · Chroma vectors ({state}) · {self._embedder.status_description()}")}
+
     def _chroma(self):
         if self._chroma_ok is None:
             try:
                 import chromadb
                 self._chroma_client = chromadb.PersistentClient(
-                    path=str(self._dir / "chroma")
+                    path=str(getattr(self, "_chroma_path", self._dir / "chroma"))
                 )
                 self._chroma_ok = True
             except Exception:
@@ -60,9 +66,12 @@ class LocalKnowledgeStore(KnowledgeStore):
         except Exception:
             return None
 
-    def _graph(self, target: str):
+    def _graph(self, target: str, *, create: bool = True):
         key = target_key(target)
         if key not in self._graphs:
+            path = self._dir / f"{key}.graph.json"
+            if not create and not path.exists():
+                return None
             if self._nx_ok is None:
                 try:
                     import networkx  # noqa: F401
@@ -70,18 +79,22 @@ class LocalKnowledgeStore(KnowledgeStore):
                 except ImportError:
                     self._nx_ok = False
             if not self._nx_ok:
-                self._graphs[key] = None
+                if create:
+                    self._graphs[key] = None
                 return None
             import networkx as nx
             G = nx.DiGraph()
-            path = self._dir / f"{key}.graph.json"
             if path.exists():
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
                     G = nx.node_link_graph(data)
+                except KnowledgeFileError:
+                    raise
                 except Exception:
                     pass
-            self._graphs[key] = G
+            if create:
+                self._graphs[key] = G
+            return G
         return self._graphs.get(key)
 
     def _save_graph(self, target: str) -> None:
@@ -93,6 +106,8 @@ class LocalKnowledgeStore(KnowledgeStore):
             import networkx as nx
             path = self._dir / f"{key}.graph.json"
             path.write_text(json.dumps(nx.node_link_data(G), indent=2), encoding="utf-8")
+        except KnowledgeFileError:
+            raise
         except Exception:
             pass
 
@@ -320,11 +335,11 @@ class LocalKnowledgeStore(KnowledgeStore):
             target_map = {target_key(target): target}
         else:
             graph_files = list(self._dir.glob("*.graph.json"))
-            keys = [f.stem for f in graph_files]
-            target_map = {k: k for k in keys}
+            keys = [f.name[:-len(".graph.json")] for f in graph_files]
+            target_map = {k: k + ".graph" for k in keys}
 
         for key in keys:
-            G = self._graph(target_map[key])
+            G = self._graph(key, create=False)
             stats[target_map[key]] = {
                 "states": len(G.nodes) if G is not None else 0,
                 "transitions": len(G.edges) if G is not None else 0,

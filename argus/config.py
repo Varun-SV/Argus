@@ -183,6 +183,17 @@ class ArgusConfig:
     def argus_dir(self) -> Path:
         return self.project_dir / ".argus"
 
+    def knowledge_persist_dir(self) -> Optional[Path]:
+        """The configured graph directory, with a relative path anchored to the project.
+
+        The desktop app can open a project other than its working directory, so a
+        relative ``knowledge.persist_dir`` must never resolve against the process cwd.
+        """
+        if not self.knowledge.persist_dir:
+            return None
+        path = Path(self.knowledge.persist_dir).expanduser()
+        return path if path.is_absolute() else self.project_dir / path
+
     def make_provider(self, tracker: Optional[TokenTracker] = None) -> LLMProvider:
         return create_provider(
             self.provider.type,
@@ -203,6 +214,9 @@ class ArgusConfig:
         A provisioned environment verifies cached image bytes and ATES evidence
         before binding Capsule settings. Static credentials are only read for
         the legacy image path. Model requests cannot expand host mode policy.
+
+        Per-session Capsule overrides are limited to provider and failure
+        retention; selecting a provider must still match the image contract.
         """
         from argus.execution import create_execution_environment
 
@@ -376,10 +390,31 @@ class ArgusConfig:
     def make_knowledge_store(self):
         from argus.knowledge import create_knowledge_store
         kc = self.knowledge
-        persist = Path(kc.persist_dir) if kc.persist_dir else self.argus_dir / "knowledge"
+        if not kc.enabled:
+            return None
+        if not kc.persist_dir:
+            from argus.knowledge.storage import create_project_knowledge_store
+            return create_project_knowledge_store(
+                self.project_dir, store_type=kc.type, vector_backend=kc.vector_backend,
+                vector_url=kc.vector_url, embedding_model=kc.embedding_model,
+            )
+        persist = self.knowledge_persist_dir()
+        backend = kc.type
+        if backend == "auto":
+            from argus.knowledge import _resolve_auto
+            backend = _resolve_auto(persist.parent, interactive=True)
+        if backend in ("docker", "qdrant"):
+            # Explicit graph persistence does not authorize redirected project
+            # storage for the managed Docker service.
+            from argus.knowledge.storage import create_project_knowledge_store
+            return create_project_knowledge_store(
+                self.project_dir, graph_persist_dir=persist, store_type=backend,
+                vector_backend=kc.vector_backend, vector_url=kc.vector_url,
+                embedding_model=kc.embedding_model,
+            )
         return create_knowledge_store(
             enabled=kc.enabled,
-            store_type=kc.type,
+            store_type=backend,
             vector_backend=kc.vector_backend,
             vector_url=kc.vector_url,
             persist_dir=persist,
@@ -388,8 +423,8 @@ class ArgusConfig:
         )
 
 
-def _resolve_api_key(entry: dict) -> str:
-    if os.environ.get("ARGUS_API_KEY"):
+def _resolve_api_key(entry: dict, allow_generic_env: bool = True) -> str:
+    if allow_generic_env and os.environ.get("ARGUS_API_KEY"):
         return os.environ["ARGUS_API_KEY"]
     if entry.get("api_key"):
         return str(entry["api_key"])
@@ -435,19 +470,43 @@ def _env_cidrs(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
-def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
+def load_config(
+    project_dir: Optional[Path] = None,
+    provider: Optional[str] = None,
+) -> ArgusConfig:
+    """Load project configuration.
+
+    ``provider`` selects one of the configured ``providers:`` entries for this
+    load only (the desktop app's per-session model picker); the file on disk
+    is never modified. ``ARGUS_PROVIDER`` is a process-level pin and takes
+    precedence over that session selection.
+    """
     project_dir = (project_dir or Path.cwd()).resolve()
     cfg_path = project_dir / ".argus" / "config.yaml"
     raw: dict = {}
     if cfg_path.exists():
-        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        if loaded is not None and not isinstance(loaded, dict):
+            raise ValueError("Argus configuration must be a YAML mapping")
+        raw = loaded or {}
 
-    active = os.environ.get("ARGUS_PROVIDER") or raw.get("provider") or "ollama"
+    env_provider = (os.environ.get("ARGUS_PROVIDER") or "").strip()
+    # ARGUS_PROVIDER is an explicit process-level pin and remains authoritative.
+    # A GUI session override may choose another configured provider only when no
+    # process pin exists. Session overrides must not inherit the generic ARGUS_*
+    # model/base-url/key values, which may belong to a different provider.
+    active = env_provider or provider or raw.get("provider") or "ollama"
+    session_override = (provider is not None and not env_provider
+                        and provider != (raw.get("provider") or "ollama"))
+    allow_generic_env = not session_override
+
     providers = raw.get("providers") or {}
     entry = dict(providers.get(active) or {})
 
-    model = os.environ.get("ARGUS_MODEL") or entry.get("model") or _default_model(active)
-    base_url = os.environ.get("ARGUS_BASE_URL") or entry.get("base_url")
+    model = ((os.environ.get("ARGUS_MODEL") if allow_generic_env else None)
+             or entry.get("model") or _default_model(active))
+    base_url = ((os.environ.get("ARGUS_BASE_URL") if allow_generic_env else None)
+                or entry.get("base_url"))
 
     budgets = raw.get("budgets") or {}
     time_minutes = budgets.get("time_minutes", 10)
@@ -456,7 +515,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
     kc_raw = raw.get("knowledge") or {}
     knowledge = KnowledgeConfig(
         enabled=bool(kc_raw.get("enabled", True)),
-        type=str(kc_raw.get("type", "local")),
+        type=str(kc_raw.get("type", "local" if os.name == "nt" or Path("/proc/self/fd").is_dir() else "json")),
         vector_backend=str(kc_raw.get("vector_backend", "chroma")),
         vector_url=kc_raw.get("vector_url") or None,
         persist_dir=kc_raw.get("persist_dir") or None,
@@ -504,8 +563,9 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             image=str(capsule_raw.get("image") or ""),
             switch_name=str(capsule_raw.get("switch_name") or ""),
             vm_root=str(capsule_raw.get("vm_root") or ""),
-            memory_mb=int(capsule_raw["memory_mb"]) if "memory_mb" in capsule_raw else None,
-            cpu_count=int(capsule_raw["cpu_count"]) if "cpu_count" in capsule_raw else None,
+            # An explicit null means omitted, as before: keep the provisioned default.
+            memory_mb=int(capsule_raw["memory_mb"]) if capsule_raw.get("memory_mb") is not None else None,
+            cpu_count=int(capsule_raw["cpu_count"]) if capsule_raw.get("cpu_count") is not None else None,
             guest_port=int(capsule_raw.get("guest_port") or 8765),
             guest_token_env=CAPSULE_GUEST_TOKEN_ENV,
             guest_token_ref=str(capsule_raw.get("guest_token_ref") or ""),
@@ -558,7 +618,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
         provider=ProviderConfig(
             type=active,
             model=str(model),
-            api_key=_resolve_api_key(entry),
+            api_key=_resolve_api_key(entry, allow_generic_env=allow_generic_env),
             base_url=base_url,
         ),
         knowledge=knowledge,
@@ -578,7 +638,7 @@ def _default_model(provider_type: str) -> str:
     }.get(provider_type, "gemma3:9b")
 
 
-def init_project(project_dir: Optional[Path] = None) -> Path:
+def init_project(project_dir: Optional[Path] = None, *, create_example: bool = True) -> Path:
     project_dir = (project_dir or Path.cwd()).resolve()
     argus_dir = project_dir / ".argus"
     argus_dir.mkdir(parents=True, exist_ok=True)
@@ -590,7 +650,7 @@ def init_project(project_dir: Optional[Path] = None) -> Path:
         cfg.write_text(DEFAULT_CONFIG, encoding="utf-8")
 
     example = argus_dir / "notepad.test.yaml"
-    if not example.exists():
+    if create_example and not example.exists():
         example.write_text(EXAMPLE_TEST, encoding="utf-8")
     return argus_dir
 

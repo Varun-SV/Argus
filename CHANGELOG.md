@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Desktop app redesigned as a chat with Argus (Claude-style design): warm ivory layout, sidebar with tests and recent conversations, result cards for runs, roams, drafted specs, dry runs, providers, tokens, history, knowledge, ATES evidence, execution environment and watch mode, and a live-view panel with the latest screenshot
+- Free-text messages in the desktop app are routed through the configured provider to a fixed, validated intent set; slash commands (`/run`, `/roam`, `/write`, `/evidence`, …) skip that routing call
+- Free text never changes anything by itself: a run, roam, stop, save, setup, watch, provider/environment change, provider check or knowledge reset/export comes back as a proposal showing the exact slash command, and only clicking it (or typing the command) acts. `/run` accepts several test files plus `--env local|capsule|hyperv|libvirt` and `--retain`/`--no-retain`; `/env` accepts `--retain`/`--no-retain`
+- Draft `.test.yaml` specs from plain English (validated with the spec parser, never saved without confirmation), explain failed runs, and turn roam findings into regression tests from the desktop app
+- Per-session provider, Local/Capsule environment, Failure Capsule retention and roam memory pickers in the desktop app (`.argus/config.yaml` is not modified)
+- Bundled SIL OFL fonts for the desktop app (Newsreader, IBM Plex Sans, IBM Plex Mono)
+- Redesigned project website (`index.html`) in the same design language
+### Fixed
+- Hyper-V session-storage removal retries briefly on transient Windows sharing violations (e.g. antivirus holding the new session disk) instead of reporting a cleanup failure
+- Integrated ISO-backed provisioning and secure Capsule generation/reconnect contracts from PR #27 while preserving the desktop theme and session provider picker
+- Desktop project selection opens isolated project windows; setup creates a cross-platform CLI sample without overwriting existing files
+- Configuration and conversation-saving failures are visible; malformed saved result cards no longer prevent startup, and window reloads reconnect to existing jobs and watch mode
+- Desktop menus support keyboard navigation and active windows wait for job cancellation/cleanup before closing
+- Desktop app no longer double-counts project token usage when several runs happen in one session
 - Hybrid knowledge engine (`argus/knowledge/`) — persistent graph + vector store that accumulates learning across sessions
 - `LocalKnowledgeStore`: ChromaDB (vectors) + NetworkX (state graph), zero-config, disk-backed at `.argus/knowledge/`
 - `RemoteKnowledgeStore`: Qdrant vector DB + NetworkX graph for higher-throughput workloads

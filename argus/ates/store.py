@@ -238,7 +238,7 @@ def _run_authority_filename(run_id: RunId) -> str:
     return f".ates-authority-{_run_directory_key(run_id)}.lock"
 
 
-def _windows_handle_info(path: Path, *, directory: bool, create: bool = False):
+def _windows_handle_info(path: Path, *, directory: bool, create: bool = False, writable: bool = True):
     """Open and validate a non-reparse Windows filesystem handle."""
     import ctypes
     from ctypes import wintypes
@@ -274,7 +274,7 @@ def _windows_handle_info(path: Path, *, directory: bool, create: bool = False):
     get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation)]
     get_info.restype = wintypes.BOOL
 
-    desired_access = 0 if directory else 0x80000000 | 0x40000000  # read | write
+    desired_access = 0 if directory else 0x80000000 | (0x40000000 if writable else 0)
     # Keep read/write sharing for normal readers and locking, but deliberately
     # omit FILE_SHARE_DELETE so the pinned object cannot be renamed/replaced.
     share_mode = 0x00000001 | 0x00000002

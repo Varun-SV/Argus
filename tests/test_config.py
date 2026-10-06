@@ -93,6 +93,24 @@ def test_env_overrides(tmp_path, monkeypatch):
     assert cfg.provider.api_key == "sk-test"
 
 
+@pytest.mark.parametrize("default,other", [("openai", "anthropic"), ("anthropic", "openai"),
+                                         ("ollama", "openai")])
+def test_switch_back_to_default_restores_generic_provider_environment(tmp_path, monkeypatch, default, other):
+    init_project(tmp_path)
+    path = tmp_path / ".argus" / "config.yaml"
+    path.write_text(f"provider: {default}\nproviders:\n  {other}:\n    model: other-model\n    api_key: other-key\n")
+    monkeypatch.delenv("ARGUS_PROVIDER", raising=False)
+    monkeypatch.setenv("ARGUS_API_KEY", "default-key")
+    monkeypatch.setenv("ARGUS_MODEL", "default-model")
+    monkeypatch.setenv("ARGUS_BASE_URL", "https://default.invalid")
+    switched = load_config(tmp_path, provider=other)
+    assert switched.provider.model == "other-model" and switched.provider.api_key == "other-key"
+    assert switched.provider.base_url != "https://default.invalid"
+    restored = load_config(tmp_path, provider=default)
+    assert restored.provider.model == "default-model" and restored.provider.api_key == "default-key"
+    assert restored.provider.base_url == "https://default.invalid"
+
+
 def test_ollama_budget_ignores_tokens(tmp_path, monkeypatch):
     monkeypatch.delenv("ARGUS_PROVIDER", raising=False)
     init_project(tmp_path)
@@ -110,3 +128,27 @@ def test_paid_provider_budget_keeps_tokens(tmp_path, monkeypatch):
     cfg = load_config(tmp_path)
     budget = cfg.make_budget(TokenTracker(), time_minutes=5, max_tokens=1000)
     assert budget.max_tokens == 1000
+
+
+def test_session_provider_override_never_reuses_generic_credentials(tmp_path, monkeypatch):
+    init_project(tmp_path)
+    monkeypatch.setenv("ARGUS_PROVIDER", "openai")
+    monkeypatch.setenv("ARGUS_MODEL", "gpt-env-model")
+    monkeypatch.setenv("ARGUS_BASE_URL", "https://openai.example/v1")
+    monkeypatch.setenv("ARGUS_API_KEY", "openai-secret")
+
+    # The process-level provider pin wins over a GUI/session override.
+    pinned = load_config(tmp_path, provider="anthropic")
+    assert pinned.provider.type == "openai"
+    assert pinned.provider.model == "gpt-env-model"
+    assert pinned.provider.base_url == "https://openai.example/v1"
+    assert pinned.provider.api_key == "openai-secret"
+
+    # Without the provider pin, an explicit session override uses that provider's
+    # own configured settings and does not inherit generic credentials/model/url.
+    monkeypatch.delenv("ARGUS_PROVIDER")
+    switched = load_config(tmp_path, provider="anthropic")
+    assert switched.provider.type == "anthropic"
+    assert switched.provider.model == "claude-sonnet-4-6"
+    assert switched.provider.base_url is None
+    assert switched.provider.api_key != "openai-secret"

@@ -95,7 +95,7 @@ argus-guest-runtime-build = "argus.provisioning.build_guest_runtime:main"
 include = ["argus*"]
 
 [tool.setuptools.package-data]
-"argus.gui" = ["web/*"]
+"argus.gui" = ["web/*", "web/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

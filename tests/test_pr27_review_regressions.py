@@ -223,3 +223,30 @@ def test_stable_libvirt_network_survives_restart_and_is_removed_with_owned_vm(tm
         provider.destroy(restarted)
     assert state["network"] == state["domain"] == state["filter"] == ""
     assert any(argv[3] == "net-undefine" for argv in calls if len(argv) > 3)
+
+
+def test_session_storage_removal_retries_transient_windows_locks(tmp_path, monkeypatch):
+    from argus.capsule import hyperv
+    calls = []
+
+    def flaky(path):
+        calls.append(path)
+        if len(calls) < 3:
+            raise PermissionError("in use by another process")
+
+    monkeypatch.setattr(hyperv.shutil, "rmtree", flaky)
+    monkeypatch.setattr(hyperv.time, "sleep", lambda _: None)
+    hyperv._remove_tree(tmp_path / "session")
+    assert len(calls) == 3
+
+
+def test_session_storage_removal_reports_a_lasting_lock(tmp_path, monkeypatch):
+    from argus.capsule import hyperv
+
+    def locked(path):
+        raise PermissionError("in use by another process")
+
+    monkeypatch.setattr(hyperv.shutil, "rmtree", locked)
+    monkeypatch.setattr(hyperv.time, "sleep", lambda _: None)
+    with pytest.raises(PermissionError):
+        hyperv._remove_tree(tmp_path / "session", attempts=3)

@@ -170,12 +170,21 @@ def run(test: Optional[str], minutes: Optional[float], max_tokens: Optional[int]
             ks.close()
         if result.error:
             console.print(f"[orange3]✗ {result.error}[/orange3]")
-        result.save(cfg.project_dir)
+        _save_result(result, cfg.project_dir)
         _print_summary(result)
         exit_code = max(exit_code, result.exit_code)
 
     tracker.persist(cfg.project_dir)
     sys.exit(exit_code)
+
+
+def _save_result(result, project_dir: Path) -> None:
+    """Save to run history; a result without a reserved history place is reported, not saved."""
+    from argus.engine.results import UnreservedRunError
+    try:
+        result.save(project_dir)
+    except UnreservedRunError as exc:
+        console.print(f"[yellow]![/yellow] {exc}")
 
 
 def _print_step(sr: StepResult) -> None:
@@ -371,7 +380,7 @@ def _run_all(test: Optional[str], cfg, minutes, max_tokens) -> None:
             warn=lambda m: console.print(f"[yellow]![/yellow] {m}"),
             project_dir=cfg.project_dir,
         )
-        result.save(cfg.project_dir)
+        _save_result(result, cfg.project_dir)
         _print_summary(result)
 
 
@@ -579,14 +588,16 @@ def knowledge_docker() -> None:
 @knowledge_docker.command("up")
 def knowledge_docker_up() -> None:
     """Start argus-qdrant Docker container."""
-    from argus.knowledge.docker_manager import DockerManager
+    from argus.knowledge.storage import project_docker_manager
     cfg = load_config()
-    mgr = DockerManager(cfg.argus_dir)
-    if not mgr.available():
-        console.print("[red]✗[/red] Docker is not available on this system.")
-        sys.exit(1)
-    with console.status("Starting argus-qdrant…"):
-        url = mgr.ensure_qdrant()
+    try:
+        with project_docker_manager(cfg.project_dir, create=True) as mgr:
+            if not mgr.available():
+                raise click.ClickException("Docker is not available on this system.")
+            with console.status("Starting project Qdrant…"):
+                url = mgr.ensure_qdrant()
+    except (ValueError, OSError) as exc:
+        raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
     if url:
         console.print(f"[green]✓[/green] Qdrant running at {url}")
     else:
@@ -597,21 +608,38 @@ def knowledge_docker_up() -> None:
 @knowledge_docker.command("down")
 def knowledge_docker_down() -> None:
     """Stop argus-qdrant Docker container."""
+    from argus.knowledge.storage import project_docker_manager
     from argus.knowledge.docker_manager import DockerManager
     cfg = load_config()
-    mgr = DockerManager(cfg.argus_dir)
-    mgr.stop()
+    try:
+        with project_docker_manager(cfg.project_dir) as mgr:
+            # Without project storage the project's Qdrant may still be running (its name is
+            # project-derived), so the full stop still looks it up; it then fails closed.
+            stopped = (mgr or DockerManager(cfg.argus_dir)).stop()
+    except (ValueError, OSError) as exc:
+        raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
+    if not stopped:
+        console.print("[red]✗[/red] Could not confirm knowledge services stopped. Inspect Docker ownership and retry.")
+        sys.exit(1)
     console.print("[green]✓[/green] Knowledge Docker services stopped.")
 
 
 @knowledge_docker.command("status")
 def knowledge_docker_status() -> None:
     """Show running state of knowledge Docker containers."""
+    from argus.knowledge.storage import project_docker_manager
     from argus.knowledge.docker_manager import DockerManager
     cfg = load_config()
-    mgr = DockerManager(cfg.argus_dir)
-    s = mgr.status()
+    try:
+        with project_docker_manager(cfg.project_dir) as mgr:
+            s = (mgr or DockerManager(cfg.argus_dir)).status()
+    except (ValueError, OSError) as exc:
+        raise click.ClickException("Could not verify project Docker storage. " + str(exc)) from None
     for name, running in s.items():
+        if running is None:
+            console.print(f"  [yellow]?[/yellow]  {name}: unknown — could not verify the container's "
+                          "project ownership; inspect Docker resources")
+            continue
         glyph = "[green]●[/green]" if running else "[dim]○[/dim]"
         state = "running" if running else "stopped"
         console.print(f"  {glyph}  {name}: {state}")

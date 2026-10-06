@@ -1,8 +1,28 @@
 import json
 
+import pytest
+
 from argus.engine.roam import roam
 from argus.tokens import Budget
 from tests.conftest import FakeAdapter, FakeProvider
+
+
+@pytest.mark.parametrize("message", ["missing executable", "stopped by user.exe is missing"])
+def test_launch_failure_is_an_error_and_nonzero_exit(tmp_path, message):
+    from argus.adapters.base import AdapterError
+    from argus.engine.roam import roam_exit_code
+
+    class MissingTarget(FakeAdapter):
+        def launch(self, target):
+            raise AdapterError(message)
+
+    provider = FakeProvider([])
+    session = roam(target="missing", provider=provider, adapter=MissingTarget(),
+                   budget=Budget(max_seconds=1, tracker=provider.tracker), session_dir=tmp_path / "s")
+    assert session.execution_status == "error"
+    assert roam_exit_code(session) != 0
+    assert not (tmp_path / "s" / "report.md").exists()
+    assert not provider.calls
 
 
 def _action(**kw):
