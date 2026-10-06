@@ -785,3 +785,22 @@ def test_a_proposal_runs_only_when_its_command_chip_is_clicked(desktop_browser):
     page.locator("#followups").get_by_role("button", name="/report", exact=True).click()
     page.wait_for_function("window.ranReport === 1")
     assert page.evaluate("state.conv.msgs.some(m => m.kind === 'user' && m.text === '/report')")
+
+
+def test_a_chat_whose_job_finishes_late_is_ranked_new_and_kept(desktop_browser):
+    page, api, project = desktop_browser
+    kept = page.evaluate("""() => {
+      state.conversations = [];
+      for (let i = 0; i < 35; i++) state.conversations.push(
+        {id: 'c' + i, title: 'c' + i, updated: 1000 - i, msgs: [{id: 'm' + i, kind: 'text', role: 'user', text: 'hi'}]});
+      const run = {id: 'old-run', kind: 'run', job: 'j-old', idx: 0, snap: {status: 'running'}, meta: {running: true}};
+      const old = {id: 'old', title: 'old', updated: 1, msgs: [run]};
+      state.conversations.push(old);
+      boundConversations();
+      const whileBusy = state.conversations.includes(old);
+      run.snap = {status: 'pass', file: 'a.test.yaml'}; run.meta = {running: false};
+      onFinished([[old, run]]);
+      boundConversations();
+      return {whileBusy, after: state.conversations.includes(old), saved: persistedConversations().includes(old)};
+    }""")
+    assert kept == {"whileBusy": True, "after": True, "saved": True}

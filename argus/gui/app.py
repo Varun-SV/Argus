@@ -88,6 +88,12 @@ class ArgusAPI:
                  project_opener=None) -> None:
         self._project_dir = project_dir
         self._conversation_project = Path(project_dir or Path.cwd()).resolve()
+        # The chat-history key is fixed when the window opens, so renaming or deleting the
+        # project folder later can't stop this window from saving (and closing).
+        try:
+            self._conversation_identity: Optional[str] = project_identity(self._conversation_project)
+        except OSError:
+            self._conversation_identity = None
         self._project_required = project_required
         self._project_opener = project_opener
         self._startup_error = None
@@ -1483,12 +1489,17 @@ class ArgusAPI:
 
     # ---- conversations -----------------------------------------------------------
 
+    def _conversation_key(self) -> str:
+        if self._conversation_identity is None:
+            self._conversation_identity = project_identity(self._conversation_project)
+        return self._conversation_identity
+
     def load_conversations(self) -> list:
         if self._project_required:
             return []
         cfg = SimpleNamespace(project_dir=self._conversation_project)
         try:
-            path = _conversation_path(cfg)
+            path = _conversation_path(cfg, identity=self._conversation_key())
             if path.is_symlink():
                 return []
             if path.is_file():
@@ -1533,7 +1544,8 @@ class ArgusAPI:
         if self._project_required:
             return {"ok": False, "error": "Open a project folder before saving conversations."}
         try:
-            path = _conversation_path(SimpleNamespace(project_dir=self._conversation_project))
+            path = _conversation_path(SimpleNamespace(project_dir=self._conversation_project),
+                                      identity=self._conversation_key())
             with self._persist_lock:
                 _write_atomic(path, json.dumps(_bounded_conversations(conversations)).encode("utf-8"))
         except (OSError, TypeError, ValueError):
@@ -1638,12 +1650,12 @@ def _run_notes(data: dict) -> List[str]:
     return notes
 
 
-def _conversation_path(cfg: ArgusConfig, *, legacy: bool = False) -> Path:
+def _conversation_path(cfg: ArgusConfig, *, legacy: bool = False, identity: Optional[str] = None) -> Path:
     """Per-user GUI state path, keyed by project without storing chats in its repo."""
     root = gui_state_root()
 
     project = (str(Path(cfg.project_dir).resolve()) if legacy else
-               project_identity(cfg.project_dir))
+               identity or project_identity(cfg.project_dir))
     project_key = hashlib.sha256(project.encode("utf-8")).hexdigest()[:24]
     directory = root / "projects" / project_key
     directory.mkdir(parents=True, exist_ok=True)

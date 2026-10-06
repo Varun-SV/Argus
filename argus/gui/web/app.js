@@ -110,6 +110,7 @@ function removeIn(conv, msg) {
 const sayIn = (conv, text, extra) => pushIn(conv, Object.assign({ role: "argus", kind: "text", text }, extra || {}));
 function followupsIn(conv, list) {
   conv.followups = list || [];
+  if (conv.followups.length) conv.updated = Date.now();  // a finished job's follow-ups are activity
   if (conv === state.conv) renderFollowups();
 }
 async function thinkingIn(conv, fn) {
@@ -534,7 +535,7 @@ function onFinished(items) {
   scheduleSave();
   // Follow-ups go to the conversation that owns each finished job, once the job is done.
   const done = new Map();  // job id -> [conv, last finished msg]
-  for (const [c, m] of items) done.set(m.job, [c, m]);
+  for (const [c, m] of items) { done.set(m.job, [c, m]); c.updated = Date.now(); }
   const stillActive = activeJobIds();
   for (const [jobId, [conv, last]] of done) {
     if (!stillActive.has(jobId)) followupsAfter(conv, last);
@@ -986,7 +987,11 @@ const busyConversation = (c) => c === state.conv || (convPending.get(c) || 0) > 
 // The saved set: newest first, capped at MAX_CONVERSATIONS idle chats, plus every
 // conversation that still owns an active job, watch or pending reply (however many) so a
 // reload can reconnect its card. Busy ones are flagged so the store keeps them beyond the cap.
+// Most recent activity first (stable), so a chat whose job just finished counts as new.
+const byActivity = (list) => list.map((c, i) => [c, i])
+  .sort((a, b) => ((b[0].updated || 0) - (a[0].updated || 0)) || (a[1] - b[1])).map(([c]) => c);
 function persistedConversations() {
+  state.conversations = byActivity(state.conversations);
   const busy = state.conversations.filter(busyConversation);
   const room = Math.max(0, MAX_CONVERSATIONS - busy.length);
   const idle = state.conversations.filter((c) => !busy.includes(c)).slice(0, room);
@@ -995,6 +1000,7 @@ function persistedConversations() {
 }
 function boundConversations() {
   if (state.conversations.length <= MAX_CONVERSATIONS) return;
+  state.conversations = byActivity(state.conversations);
   const busy = busyConversation;
   const kept = [];
   for (const [i, c] of state.conversations.entries()) {

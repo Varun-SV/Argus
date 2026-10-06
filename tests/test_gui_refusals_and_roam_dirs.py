@@ -1382,3 +1382,14 @@ def test_remote_reset_keeps_the_local_graph_when_remote_deletion_fails(tmp_path)
     with pytest.raises(RuntimeError):
         store.clear_target("notepad.exe")
     assert graph.exists()
+
+
+def test_conversations_still_save_after_the_project_folder_moves(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGUS_GUI_STATE_DIR", str(tmp_path / "user-state"))
+    project = tmp_path / "project"
+    project.mkdir()
+    api = gui_app.ArgusAPI(project)
+    assert api.save_conversations([{"id": "a", "title": "t", "msgs": []}])["ok"]
+    project.rename(tmp_path / "moved")
+    assert api.save_conversations([{"id": "b", "title": "t", "msgs": []}])["ok"]
+    assert [c["id"] for c in api.load_conversations()] == ["b"]

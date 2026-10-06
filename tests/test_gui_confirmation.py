@@ -23,6 +23,10 @@ ROUND_TRIP = [
     intent("roam", target="C:\\Program Files\\App\\app.exe", adapter="desktop-gui", minutes=None, memory=True),
     intent("roam", target="https://example.test/a?q=1", adapter="browser", minutes=2.5, memory=None),
     intent("roam", target='say "hi"', adapter="cli", minutes=None, memory=None),
+    intent("roam", target="notepad.exe", adapter="desktop-gui", minutes=None, memory=None,
+           environment="capsule", capsule_provider="hyperv"),
+    intent("roam", target="notepad.exe", adapter="desktop-gui", minutes=3.0, memory=None, environment="local"),
+    intent("run", tests=["checkout.test.yaml", "checkout.test.yaml"]),
     intent("environment", environment="local"),
     intent("environment", environment="capsule", capsule_provider="libvirt", retain=False),
     intent("environment", environment="capsule", capsule_provider="auto"),
@@ -115,3 +119,17 @@ def test_free_text_stop_never_stops_by_itself(api, monkeypatch):
 def test_slash_commands_still_act_directly(api):
     assert api.interpret("/stop") == intent("stop")
     assert api.interpret("/run smoke") == intent("run", tests=["smoke.test.yaml"])
+
+
+@pytest.mark.parametrize("command", ["/roam notepad.exe --env", "/roam notepad.exe --env moon",
+                                     "/roam notepad.exe --env local --env hyperv"])
+def test_roam_env_flag_rejects_bad_values(command):
+    with pytest.raises(IntentError):
+        parse_slash(command, TESTS)
+
+
+def test_free_text_roam_in_a_capsule_proposes_the_capsule():
+    from argus.gui.assistant import validate_intent
+    routed = validate_intent({"intent": "roam", "args": {"target": "notepad.exe"}},
+                             "roam notepad.exe in a hyper-v capsule", {})
+    assert to_slash(routed).endswith("--env hyperv") and parse_slash(to_slash(routed), TESTS) == routed

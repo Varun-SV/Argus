@@ -184,8 +184,8 @@ def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "")
         known = {str(t["file"]).casefold(): str(t["file"]) for t in tests}
         words = rest.split()
         if len(words) > 1 and all(w.casefold() in known for w in words):
-            # Several complete file names: exactly those tests, in the order given.
-            return intent(name, tests=list(dict.fromkeys(known[w.casefold()] for w in words)), **settings)
+            # Several complete file names: exactly those tests, in the order given (repeats too).
+            return intent(name, tests=[known[w.casefold()] for w in words], **settings)
         matches = resolve_tests(rest, tests)
         if not matches:
             raise IntentError(f"No test matches '{rest}'. Try /run all, or check the Tests list.")
@@ -347,6 +347,10 @@ def to_slash(routed: Mapping) -> Optional[str]:
             parts += ["--minutes", f"{float(a['minutes']):g}"]
         if isinstance(a.get("memory"), bool):
             parts.append("--memory" if a["memory"] else "--no-memory")
+        if a.get("environment") == "local":
+            parts.append("--env local")
+        elif a.get("environment") == "capsule":
+            parts.append("--env " + {"hyperv": "hyperv", "libvirt": "libvirt"}.get(a.get("capsule_provider"), "capsule"))
         return " ".join(parts)
     if name == "environment":
         if a.get("environment") == "local":
@@ -411,7 +415,7 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
     # Argus's own options are --minutes/-m N, --adapter X and --[no-]memory; every other
     # token belongs to the target command, e.g. `/roam python tool.py --check`, and is
     # kept verbatim (quotes included) for the adapter to split.
-    words, adapter, minutes, memory = [], None, None, None
+    words, adapter, minutes, memory, env = [], None, None, None, {}
     i = 0
     while i < len(parts):
         p = parts[i]
@@ -437,7 +441,19 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
                 minutes = duration
             i += 2
             continue
-        if p.startswith(("--minutes=", "--adapter=", "-m=")):
+        if p == "--env":
+            if i + 1 >= len(parts):
+                raise IntentError("--env needs local, capsule, hyperv or libvirt.")
+            choice = _unquote(parts[i + 1]).lower()
+            chosen = {"environment": "local"} if choice == "local" else _ENV_CHOICES.get(choice)
+            if chosen is None:
+                raise IntentError("--env needs local, capsule, hyperv or libvirt.")
+            if env and env != chosen:
+                raise IntentError("Choose one environment for this roam.")
+            env = chosen
+            i += 2
+            continue
+        if p.startswith(("--minutes=", "--adapter=", "-m=", "--env=")):
             raise IntentError("Separate the option and value with a space, e.g. --minutes 5 --adapter cli.")
         if p in ("--no-memory", "--memory"):
             if memory is not None and memory != (p == "--memory"):
@@ -458,7 +474,7 @@ def _parse_roam_args(rest: str, last_target: str) -> dict:
     adapter = adapter or adapter_for(target)
     if adapter not in ADAPTERS:
         raise IntentError(f"Unknown adapter {adapter!r}; use one of {', '.join(ADAPTERS)}.")
-    return intent("roam", target=target, adapter=adapter, minutes=minutes, memory=memory)
+    return intent("roam", target=target, adapter=adapter, minutes=minutes, memory=memory, **env)
 
 
 def _minutes(value) -> Optional[float]:
@@ -874,6 +890,20 @@ _RETENTION_CLAUSE = re.compile(
     re.IGNORECASE)
 
 
+def _mentioned_tests(text: str, tests: Sequence[Mapping]) -> List[str]:
+    """Tests named in ``text`` (file, stem or title), in the order they appear."""
+    lowered = text.casefold()
+    found = []
+    for item in tests:
+        aliases = {str(item.get("file") or "").casefold(), _test_stem(str(item.get("file") or "")),
+                   str(item.get("name") or "").casefold()} - {""}
+        positions = [m.start() for alias in aliases
+                     for m in re.finditer(r"(?<![\w.-])" + re.escape(alias) + r"(?![\w.-])", lowered)]
+        if positions:
+            found.append((min(positions), str(item["file"])))
+    return [file for _, file in sorted(found)]
+
+
 def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
     """Return the test scope explicitly authorized by the user's own words."""
     # Literal quoted titles and complete filenames are data, not instructions.
@@ -1087,6 +1117,10 @@ def _environment_change_from_text(text: str) -> tuple:
     """Return an explicitly requested session-environment change, or (None, problem)."""
     if _question_about_action(text):
         return None, None
+    # Retention ("... and don't keep the failure capsule") is a separate setting read by
+    # run_settings_from_text(); its "don't" is not a take-back of the environment change.
+    text = _RETENTION_CLAUSE.sub(lambda m: " " * len(m.group()), text)
+    text = re.sub(r"(?:\s*(?:,|\band\b|\bbut\b))?\s*$", "", text)
     if re.search(
         _REFUSAL + r"[^.;!?]{0,60}\b(?:switch|change|set|use|select|choose)\b",
         text.replace("\u2019", "'"),
@@ -1385,15 +1419,19 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
             out["args"].update(settings)
             return out
 
-        if wanted == "all" or wanted == "draft":
-            chosen = wanted
-        else:
-            names = [str(n) for n in (wanted if isinstance(wanted, list) else [wanted])]
-            chosen = []
-            for n in names:
-                chosen.extend([n] if n in {t["file"] for t in tests} else resolve_tests(n, tests))
-            chosen = list(dict.fromkeys(chosen))
-        return intent("dry_run", tests=chosen)
+        # Only what the user named is shown: the router can't widen "dry run checkout" to
+        # other specs (and their launch commands).
+        words = _without_reported_speech(text)
+        if wanted == "draft":
+            if re.search(r"\b(?:draft|it|this|that)\b", words, re.IGNORECASE):
+                return intent("dry_run", tests="draft")
+            return intent("chat", reply="Which test should I dry-run? Name it, say 'the draft', or say 'all'.")
+        named = _mentioned_tests(words, tests)
+        if named:
+            return intent("dry_run", tests=named)
+        if re.search(r"\b(?:all|every(?:thing)?|whole|full|suite)\b", words, re.IGNORECASE) or wanted == "all":
+            return intent("dry_run", tests="all")
+        return intent("chat", reply="Which test should I dry-run? Name it, or say 'all'.")
 
     if name == "roam":
         if _question_about_action(text):
@@ -1478,6 +1516,14 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
                 "chat",
                 reply=problem or "Ask me explicitly to switch the session environment, e.g. 'switch to local' or 'use a libvirt capsule'.",
             )
+        # "switch to a capsule and retain the failure capsule" sets both, or neither.
+        extra, retention_problem = run_settings_from_text(text)
+        if retention_problem:
+            return intent("chat", reply=retention_problem)
+        if "retain" in extra:
+            if settings.get("environment") == "local":
+                return intent("chat", reply="Keeping a failed Capsule only applies to Capsule runs, not Local.")
+            settings["retain"] = extra["retain"]
         return intent("environment", **settings)
 
     if name == "watch":

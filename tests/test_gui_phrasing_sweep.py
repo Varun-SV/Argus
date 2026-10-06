@@ -139,3 +139,25 @@ def test_roam_requests_after_modifiers(text):
 @pytest.mark.parametrize("text", ["The CI starts watching tests", "The service is monitoring spec changes"])
 def test_watch_descriptions_are_not_requests(text):
     assert _route("watch", text) != "watch"
+
+
+def test_environment_change_keeps_requested_retention():
+    got = validate_intent({"intent": "environment", "args": {}},
+                          "switch to a capsule and retain the failure capsule", CONTEXT)
+    assert got == {"intent": "environment",
+                   "args": {"environment": "capsule", "capsule_provider": "auto", "retain": True}}
+    got = validate_intent({"intent": "environment", "args": {}},
+                          "use a libvirt capsule and don't keep the failure capsule", CONTEXT)
+    assert got["args"].get("retain") is False and got["args"]["capsule_provider"] == "libvirt"
+
+
+@pytest.mark.parametrize("routed", [["smoke.test.yaml"], "all", ["checkout.test.yaml"]])
+def test_dry_run_shows_only_what_the_user_named(routed):
+    got = validate_intent({"intent": "dry_run", "args": {"tests": routed}}, "dry run checkout", CONTEXT)
+    assert got == {"intent": "dry_run", "args": {"tests": ["checkout.test.yaml"]}}
+
+
+def test_dry_run_scope_defaults():
+    assert validate_intent({"intent": "dry_run", "args": {"tests": "all"}}, "do a dry run", CONTEXT)["args"] == {"tests": "all"}
+    assert validate_intent({"intent": "dry_run", "args": {"tests": "draft"}}, "dry run the draft", CONTEXT)["args"] == {"tests": "draft"}
+    assert validate_intent({"intent": "dry_run", "args": {"tests": ["smoke.test.yaml"]}}, "do a dry run", CONTEXT)["intent"] == "chat"
