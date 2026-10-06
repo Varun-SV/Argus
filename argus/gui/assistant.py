@@ -657,7 +657,8 @@ _FUTURE_TIME = re.compile(
     r"in\s+a\s+(?:bit|while|moment)|"
     r"(?:an?|a\s+few|a\s+couple\s+(?:of\s+)?|half\s+an?|another|\d+(?:\.\d+)?|"
     r"one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty|fifty|sixty)"
-    r"(?:\s+and\s+a\s+half)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)\s+from\s+now|"
+    r"(?:\s+and\s+a\s+half)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)"
+    r"(?:\s+and\s+a\s+half)?\s+from\s+now|"
     r"at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|at\s+(?:noon|midnight))\b",
     re.IGNORECASE)
 

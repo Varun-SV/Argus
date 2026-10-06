@@ -509,6 +509,11 @@ class ArgusAPI:
             except assistant.SPEC_ERRORS as exc:
                 items.append({"file": path.name, "adapter": "?", "launch": "", "steps": [], "error": str(exc)})
                 continue
+            except OSError as exc:
+                # A directory, dangling link or vanished file is one bad item, not a failed dry run.
+                items.append({"file": path.name, "adapter": "?", "launch": "", "steps": [],
+                              "error": f"could not read {path.name}: {exc.strerror or exc}"})
+                continue
             items.append({"file": path.name, "adapter": spec.adapter, "launch": spec.launch,
                           "steps": assistant.describe_steps(spec.steps), "error": None})
         return {"ok": True, "items": items}

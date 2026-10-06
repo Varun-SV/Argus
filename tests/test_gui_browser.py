@@ -743,3 +743,26 @@ def test_every_busy_conversation_is_saved_and_restored_beyond_the_cap(desktop_br
     assert [c["id"] for c in saved if c["id"] != page.evaluate("state.conv.id")] == busy
     restored = page.evaluate("saved => restoreConversations(saved).map((c) => c.id)", saved)
     assert set(busy) <= set(restored)
+
+
+def test_close_save_reconciles_a_job_that_finished_after_the_last_poll(desktop_browser):
+    page, api, project = desktop_browser
+    page.evaluate("""() => {
+      const real = window.pywebview.api;
+      window.pywebview.api = new Proxy(real, {get: (target, key) => {
+        if (key === 'job_status') return async (id) => ({ok: true, id, kind: 'run', running: false,
+          env_label: 'Local', provider: 'fake', tokens: 0,
+          runs: [{file: 'late.test.yaml', name: 'late', status: 'pass', key: null, result: null,
+                  steps: [], planned: [], notes: []}]});
+        return target[key];
+      }});
+      state.conv.msgs.push({id: 'late-user', role: 'user', kind: 'user', text: 'run late'});
+      state.conv.msgs.push({id: 'late-run', role: 'argus', kind: 'run', job: 'j-late', idx: 0,
+        snap: {file: 'late.test.yaml', status: 'running'}, meta: {running: true}});
+    }""")
+    owner = page.evaluate("state.conv.id")
+    assert page.evaluate("flushConversationsForClose()") == {"ok": True}
+    saved = next(c for c in api.load_conversations() if c["id"] == owner)
+    card = next(m for m in saved["msgs"] if m["id"] == "late-run")
+    assert card["snap"]["status"] == "pass" and not card["meta"]["running"]
+    assert saved["followups"]

@@ -1127,3 +1127,35 @@ def test_watch_worker_runs_with_own_files_only(api, monkeypatch):
     monkeypatch.setattr(gui_app, "_test_versions", lambda project, seen=None: {"a.test.yaml": ("new",)})
     api._watch_worker(watch, api._config().project_dir, poll=0, initial_versions={"a.test.yaml": ("old",)})
     assert calls == [True] and not api._watch_scope.active
+
+
+@pytest.mark.parametrize("when", [
+    "an hour and a half from now", "one hour and a half from now", "a minute and a half from now",
+    "two hours and a half from now",
+])
+@pytest.mark.parametrize("intent,command", [
+    ("run", "run checkout"), ("stop", "stop the run"),
+])
+def test_unit_first_and_a_half_delays_never_act_now(intent, command, when):
+    args = {"tests": ["checkout.test.yaml"]} if intent == "run" else {}
+    assert validate_intent({"intent": intent, "args": args}, f"{command} {when}", TESTS)["intent"] == "chat"
+
+
+def test_unit_first_and_a_half_delay_never_exports_knowledge_now():
+    routed = validate_intent({"intent": "knowledge", "args": {"action": "export", "target": "notepad.exe"}},
+                             "export knowledge for notepad.exe an hour and a half from now", {})
+    assert routed["intent"] == "chat"
+
+
+def test_dry_run_reports_an_unreadable_entry_and_keeps_healthy_items(api, tmp_path):
+    from tests.test_gui_api import CLI_SPEC
+    argus_dir = tmp_path / ".argus"
+    for stale in argus_dir.glob("*.test.yaml"):
+        stale.unlink()
+    (argus_dir / "good.test.yaml").write_text(CLI_SPEC)
+    (argus_dir / "bad.test.yaml").mkdir()
+    out = api.dry_run("all")
+    assert out["ok"]
+    items = {i["file"]: i for i in out["items"]}
+    assert items["good.test.yaml"]["error"] is None and items["good.test.yaml"]["steps"]
+    assert "could not read" in items["bad.test.yaml"]["error"]

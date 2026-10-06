@@ -1044,6 +1044,8 @@ async function flushConversationsForClose() {
   if (state.info && state.info.project_required) return { ok: true };
   try {
     if (state.pollDone) await state.pollDone;
+    // A job can finish after the last poll; save its terminal card, not a stale "running" one.
+    await reconcileActiveJobs();
     const watch = await api().watch_status();
     state.watchOn = !!watch.running;
     applyWatchSnapshot(watch);
@@ -1224,7 +1226,8 @@ function restoreConversations(saved) {
   });
 }
 
-async function restoreJobs() {
+// Bring every active card up to date with its job; finished jobs get their follow-ups.
+async function reconcileActiveJobs() {
   const finished = [];
   for (const id of activeJobIds()) {
     let job;
@@ -1239,13 +1242,17 @@ async function restoreJobs() {
       if (job.ok && m.kind === "roam" && !job.running) finished.push([c, m]);
     }
   }
+  if (finished.length) onFinished(finished);
+}
+
+async function restoreJobs() {
+  await reconcileActiveJobs();
   let watch;
   try { watch = await api().watch_status(); } catch (e) { watch = { running: false }; }
   state.watchOn = !!watch.running;
   for (const c of allConversations()) for (const m of c.msgs) if (m.kind === "watch") {
     m.watch = watch.running && watch.id === m.watch.id ? watch : Object.assign({}, m.watch, { running: false });
   }
-  if (finished.length) onFinished(finished);
 }
 
 async function boot() {
