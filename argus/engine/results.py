@@ -362,9 +362,11 @@ def run_history_paths(runs_dir: Path, limit: Optional[int] = None) -> List[Path]
     def order(path):
         match = re.fullmatch(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json", path.name)
         if match:
-            return match[1], match[2], path.name
-        # A legacy row in the same second predates high-resolution allocation.
-        return path.name[:15], "0" * 20, path.name
+            # The monotonic allocation order is authoritative: it survives a wall clock
+            # that moved backwards, which the formatted stamp does not.
+            return 1, match[2], path.name
+        # Legacy rows predate high-resolution allocation, so they sort before every new row.
+        return 0, path.name[:15], path.name
     ordered = sorted(runs_dir.glob("*.json"), key=order, reverse=True)
     return ordered if limit is None else ordered[:limit]
 

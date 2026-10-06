@@ -183,6 +183,10 @@ def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "")
         matches = resolve_tests(rest, tests)
         if not matches:
             raise IntentError(f"No test matches '{rest}'. Try /run all, or check the Tests list.")
+        if len(matches) > 1:
+            # A slash command runs what it names; a partial or shared name is not a choice.
+            raise IntentError(f"'{rest}' matches {len(matches)} tests ({', '.join(matches)}). "
+                              f"Name one by its file, e.g. /run {matches[0]}, or use /run all.")
         return intent(name, tests=matches)
     if cmd == "/roam":
         return _parse_roam_args(rest, last_target)

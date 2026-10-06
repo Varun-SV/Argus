@@ -562,3 +562,51 @@ def test_memory_off_roams_get_no_knowledge_store(api, monkeypatch, memory, expec
         assert time.time() < deadline
         time.sleep(0.05)
     assert (seen["store"] is sentinel) is expect_store and bool(made) is expect_store
+
+
+def test_ambiguous_slash_run_is_refused_instead_of_running_every_match():
+    from argus.gui.assistant import IntentError, parse_slash
+    tests = [{"file": "checkout.test.yaml", "name": "checkout", "adapter": "cli"},
+             {"file": "checkout-destructive.test.yaml", "name": "checkout destructive", "adapter": "cli"}]
+    with pytest.raises(IntentError, match="matches 2 tests"):
+        parse_slash("/run check", tests)
+    with pytest.raises(IntentError, match="matches 2 tests"):
+        parse_slash("/dry-run check", tests)
+    assert parse_slash("/run checkout", tests)["args"]["tests"] == ["checkout.test.yaml"]
+    assert parse_slash("/run checkout-destructive.test.yaml", tests)["args"]["tests"] == ["checkout-destructive.test.yaml"]
+    assert parse_slash("/run all", tests)["args"]["tests"] == "all"
+
+
+def test_history_follows_allocation_order_even_when_the_clock_moves_back(tmp_path, monkeypatch):
+    from argus.engine import results
+    from argus.engine.results import RunResult, load_runs
+    monkeypatch.setattr(results, "_last_storage_order", 0)
+    clock = iter([2_000_000_000_000_000_000, 1_000_000_000_000_000_000])
+    monkeypatch.setattr(results.time, "time_ns", lambda: next(clock))
+    first = RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake",
+                      started_at=1_800_000_000.0, status="pass")
+    # The wall clock moved back an hour, so the later run has an earlier stamp.
+    second = RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake",
+                       started_at=1_800_000_000.0 - 3600, status="fail")
+    first.save(tmp_path)
+    second.save(tmp_path)
+    assert [r["status"] for r in load_runs(tmp_path)] == ["fail", "pass"]
+
+
+def test_finished_foreground_jobs_are_bounded(api):
+    total = gui_app._FINISHED_JOBS_KEPT + 7
+    for i in range(total):
+        api._jobs[f"f{i}"] = {"id": f"f{i}", "running": False, "kind": "run", "runs": [{"key": f"r{i}"}]}
+        api._job_trackers[f"f{i}"] = [object()]
+        api._results[f"r{i}"] = {"status": "pass"}
+    api._last_failed = "r0"
+    running = {"id": "live", "running": True, "kind": "roam", "key": None}
+    api._jobs["live"] = running
+    api._retire_finished_job("live")
+    for i in range(total):
+        api._retire_finished_job(f"f{i}")
+    assert "live" in api._jobs  # a running job is never dropped
+    assert "f0" not in api._jobs and "r0" in api._results  # explain target survives
+    assert "f1" not in api._jobs and "r1" not in api._results
+    assert f"f{total - 1}" in api._jobs
+    assert len([j for j in api._finished_jobs if j != "live"]) == gui_app._FINISHED_JOBS_KEPT

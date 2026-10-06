@@ -39,6 +39,7 @@ WEB_DIR = Path(__file__).parent / "web"
 
 _MAX_LOG_LINES = 400
 _WATCH_JOBS_KEPT = 20
+_FINISHED_JOBS_KEPT = 50
 _CAPSULE_LABELS = {"auto": "auto", "hyperv": "Hyper-V", "libvirt": "libvirt/KVM"}
 # Roam engine execution_status -> card status.
 _ROAM_STATUS = {"pass": "done", "fail": "fail", "error": "error", "cancelled": "stopped",
@@ -98,6 +99,7 @@ class ArgusAPI:
         self._job_specs: Dict[str, dict] = {}       # job id -> {run index: TestSpec} parsed at start
         self._job_trackers: Dict[str, list] = {}    # job id -> TokenTrackers used by that job
         self._watch_jobs: List[str] = []            # finished watch-created jobs, oldest first
+        self._finished_jobs: List[str] = []         # every finished run/roam job, oldest first
         self._job_vision: Dict[str, bool] = {}      # job id -> model vision capability, probed once
         self._active_job: Optional[str] = None
         self._closing = False
@@ -657,6 +659,7 @@ class ArgusAPI:
             job["ended_at"] = time.time()
             job["running"] = False
             job["action"] = "Finished"
+            self._retire_finished_job(job["id"])
 
     def _execute_run(self, job: dict, run: dict, spec, cfg: ArgusConfig) -> None:
         """Run ``spec`` — parsed when the job was created, so edits made meanwhile don't apply."""
@@ -886,6 +889,7 @@ class ArgusAPI:
             job["ended_at"] = time.time()
             job["running"] = False
             job["action"] = "Session finished" if job["status"] == "done" else job["status"].capitalize()
+            self._retire_finished_job(job["id"])
 
     def regression_stub(self, job_id: str, index: int = 0) -> dict:
         """Load a roam finding's regression stub as a draft the user can save."""
@@ -1067,22 +1071,36 @@ class ArgusAPI:
         except a result that explain/evidence still points at.
         """
         with self._lock:
-            self._watch_jobs.append(job_id)
-            keep = []
-            while len(self._watch_jobs) > _WATCH_JOBS_KEPT:
-                old = self._watch_jobs.pop(0)
-                job = self._jobs.get(old)
-                if old == self._active_job or (job is not None and job.get("running")):
-                    keep.append(old)
-                    continue
-                self._jobs.pop(old, None)
-                self._job_specs.pop(old, None)
-                self._job_trackers.pop(old, None)
-                for run in (job or {}).get("runs", []):
-                    key = run.get("key")
-                    if key and key not in (self._last_finished, self._last_failed):
-                        self._results.pop(key, None)
-            self._watch_jobs[:0] = keep
+            self._bound_jobs(self._watch_jobs, job_id, _WATCH_JOBS_KEPT)
+
+    def _retire_finished_job(self, job_id: str) -> None:
+        """Bound memory held by finished run and roam jobs in a long-running session.
+
+        Saved cards keep their own snapshots, and a reload treats a job the backend no
+        longer knows as finished, so only the newest jobs need to stay in memory.
+        """
+        with self._lock:
+            self._bound_jobs(self._finished_jobs, job_id, _FINISHED_JOBS_KEPT)
+
+    def _bound_jobs(self, order: List[str], job_id: str, limit: int) -> None:
+        if job_id not in order:
+            order.append(job_id)
+        keep = []
+        while len(order) > limit:
+            old = order.pop(0)
+            job = self._jobs.get(old)
+            if old == self._active_job or (job is not None and job.get("running")):
+                keep.append(old)
+                continue
+            self._jobs.pop(old, None)
+            self._job_specs.pop(old, None)
+            self._job_trackers.pop(old, None)
+            runs = (job or {}).get("runs", []) or ([job] if job else [])
+            for run in runs:
+                key = run.get("key")
+                if key and key not in (self._last_finished, self._last_failed):
+                    self._results.pop(key, None)
+        order[:0] = keep
 
     # ---- knowledge --------------------------------------------------------------
 
