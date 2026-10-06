@@ -703,3 +703,23 @@ def test_saved_conversations_always_include_ones_with_active_jobs(desktop_browse
     }""")
     assert len(saved) == 30 and "busy" in saved
     assert saved[:29] == [f"c{i}" for i in range(29)]
+
+
+def test_eviction_keeps_conversations_with_in_flight_requests(desktop_browser):
+    page, api, project = desktop_browser
+    kept = page.evaluate("""() => {
+      state.conversations = [];
+      for (let i = 0; i < 35; i++) state.conversations.push(
+        {id: 'c' + i, title: 'c' + i, msgs: [{id: 'm' + i, kind: 'text', role: 'user', text: 'hi'}]});
+      const routing = {id: 'routing', title: 'routing', msgs: [{id: 'r1', kind: 'user', role: 'user', text: 'run it'},
+                       {id: 'r2', kind: 'thinking', role: 'argus'}]};
+      const acting = {id: 'acting', title: 'acting', msgs: [{id: 'a1', kind: 'user', role: 'user', text: 'draft'}]};
+      state.conversations.push(routing, acting);
+      convPending.set(acting, 1);
+      boundConversations();
+      const ids = state.conversations.map((c) => c.id);
+      const saved = persistedConversations().map((c) => c.id);
+      return {ids, saved};
+    }""")
+    assert "routing" in kept["ids"] and "acting" in kept["ids"]
+    assert "routing" in kept["saved"] and "acting" in kept["saved"] and len(kept["saved"]) == 30

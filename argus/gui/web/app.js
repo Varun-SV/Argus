@@ -158,9 +158,13 @@ async function runChip(label, intentObj) {
   await execute(intentObj, conv);
 }
 
+// In-flight actions per conversation (not persisted), so eviction never drops a chat
+// whose response is still coming back.
+const convPending = new WeakMap();
 async function execute(res, conv = state.conv) {
   if (state.closing) return;
   state.pendingActions++;
+  convPending.set(conv, (convPending.get(conv) || 0) + 1);
   const a = res.args || {};
   const { push, say, sayError, setFollowups, withThinking } = inConv(conv);
   try {
@@ -313,6 +317,7 @@ async function execute(res, conv = state.conv) {
     sayError(String(e && e.message ? e.message : e));
   } finally {
     state.pendingActions--;
+    convPending.set(conv, (convPending.get(conv) || 1) - 1);
     scheduleSave();
   }
 }
@@ -964,8 +969,8 @@ function stash() {
 // Only the newest MAX_CONVERSATIONS are saved (and 12 shown), so keep memory and polling
 // bounded too. A conversation that still owns an active job or watch stays until it ends.
 const MAX_CONVERSATIONS = 30;
-const busyConversation = (c) => c === state.conv ||
-  c.msgs.some((m) => isActiveCard(m) || (m.kind === "watch" && m.watch && m.watch.running));
+const busyConversation = (c) => c === state.conv || (convPending.get(c) || 0) > 0 ||
+  c.msgs.some((m) => isActiveCard(m) || m.kind === "thinking" || (m.kind === "watch" && m.watch && m.watch.running));
 // The saved set: newest first, capped at MAX_CONVERSATIONS, but a conversation that still
 // owns an active job or watch always takes a slot so a reload can reconnect its card.
 function persistedConversations() {

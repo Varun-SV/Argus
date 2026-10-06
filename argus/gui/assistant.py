@@ -604,13 +604,25 @@ def run_settings_from_text(text: str) -> tuple:
     return settings, problem
 
 
+# Verbs that name an action Argus can take; text before the first one frames the request.
+_ACTION_VERB = re.compile(
+    r"\b(?:run|execute|rerun|re-run|stop|cancel|abort|save|persist|init|initiali[sz]e|set\s+up|setup|"
+    r"scaffold|write|draft|create|roam|explore|switch|select|choose|start|watch|enable|disable|"
+    r"export|reset|clear|forget|explain)\b", re.IGNORECASE)
+
+
 def _question_about_action(text: str) -> bool:
     """Questions/advice prompts are not authorization to perform an action."""
     # Embedded questions: "I want to know whether you can run checkout", "I wonder if ...".
-    if re.search(r"\b(?:want|would\s+like|'d\s+like|need|trying)\s+to\s+(?:know|find\s+out|understand|check\s+whether)\b|"
+    # Only the wording before the first action verb counts, so a request whose *subject* is
+    # a question ("write a test to check whether I can log in") is still a request.
+    words = _without_literals(text).replace("\u2019", "'")
+    verb = _ACTION_VERB.search(words)
+    lead = words[:verb.start()] if verb else words
+    if re.search(r"\b(?:want|would\s+like|'d\s+like|need|trying)\s+to\s+(?:know|find\s+out|understand)\b|"
                  r"\b(?:wonder(?:ing)?|curious|not\s+sure)\b[^.!?]{0,40}\b(?:whether|if|how|what)\b|"
                  r"\bwhether\b[^.!?]{0,60}\b(?:you|argus|it|we|i)\s+(?:can|could|should|would|will|may|might)\b",
-                 _without_literals(text).replace("\u2019", "'"), re.IGNORECASE):
+                 lead, re.IGNORECASE):
         return True
     if re.match(r"^\s*(?:please\s+)?(?:tell\s+me|explain|describe|show\s+me|"
                 r"teach\s+me|help\s+me\s+understand)\b[^.!?]*\b(?:how|why|when|whether)\b",
@@ -983,6 +995,32 @@ def _mentions_target(text: str, target: str, adapter: str) -> bool:
     return bool(candidate.endswith((".", "!")) and candidate[:-1].casefold() == wanted)
 
 
+_DEICTIC_KNOWLEDGE = re.compile(
+    r"^(?:it|that|this|them|the\s+(?:last|previous|same|current)(?:\s+(?:app|target|one))?|"
+    r"(?:the\s+)?(?:last|previous)\s+(?:app|target|one))$", re.IGNORECASE)
+
+
+def _knowledge_target_from_text(text: str, verb: str) -> Optional[str]:
+    """The knowledge target the user named ("export knowledge for notepad.exe"), if any.
+
+    A deictic reference ("export its knowledge", "... for the last app") names nothing,
+    so the caller keeps its default of the last roamed target.
+    """
+    quoted = re.search(r'"([^"\n]+)"|(?<!\w)\'([^\'\n]+)\'', text)
+    if quoted:
+        return (quoted.group(1) or quoted.group(2)).strip() or None
+    m = (re.search(r"\bknowledge(?:\s+graph)?\s+(?:for|of|about|on)\s+(?P<t>.+?)\s*[.!?]*\s*$", text, re.IGNORECASE)
+         or re.search(r"\b" + verb + r"\s+(?:the\s+)?(?P<t>(?!(?:the|a|an|my|its|this|that|all|our|your)\b)\S+?)(?:'s)?\s+knowledge\b",
+                      text, re.IGNORECASE))
+    if not m:
+        return None
+    found = re.sub(r"(?:[\s,]+(?:please|now|thanks|thank\s+you))+\s*$", "", m.group("t"), flags=re.IGNORECASE).strip()
+    found = _unquote(found.rstrip(",;"))
+    if not found or _DEICTIC_KNOWLEDGE.match(found):
+        return None
+    return found
+
+
 def _names_knowledge_target(text: str, target: str) -> bool:
     """True when the user's message itself names ``target`` (as written or by its key)."""
     # Whole mentions only: "app" must not match "happy.exe", nor "notepad" match "notepad.exe".
@@ -1110,15 +1148,21 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
             negated = re.search(_REFUSAL + r"[^.;!?]*\b" + verb + r"\b",
                                 text.replace("\u2019", "'"), re.IGNORECASE)
             deferred = _deferred_or_withdrawn(text, r"\b" + verb + r"\b")
+            # Filenames/URLs are blanked so "export notepad.exe knowledge" isn't cut at the dot.
+            words = _without_literals(text)
             if _question_about_action(text) or negated or deferred or not (
-                re.search(verb + r"\b[^.!?]{0,60}\bknowledge\b", text, re.IGNORECASE)
-                or re.search(r"\bknowledge\b[^.!?]{0,60}" + verb + r"\b", text, re.IGNORECASE)
+                re.search(verb + r"\b[^.!?]{0,60}\bknowledge\b", words, re.IGNORECASE)
+                or re.search(r"\bknowledge\b[^.!?]{0,60}" + verb + r"\b", words, re.IGNORECASE)
             ):
                 return intent("chat", reply=f"I won't {action} knowledge unless you explicitly ask me to.")
             target = _unquote(str(args.get("target") or "").strip())
             # The model picks the action, not whose graph is exported or deleted.
             if target and not _names_knowledge_target(text, target):
                 return intent("chat", reply=f"Which target should I {action} knowledge for? Name it exactly as you roamed it.")
+            if not target:
+                # A dropped target must not fall back to the last roamed app when the user
+                # named one: take it from their own words.
+                target = _knowledge_target_from_text(text, verb) or ""
             return intent("knowledge", action=action, target=target)
         return intent("knowledge", action=action, target=str(args.get("target") or "").strip())
 

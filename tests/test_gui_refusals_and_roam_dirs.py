@@ -485,3 +485,35 @@ def test_settings_between_test_names_keep_the_later_tests():
 def test_embedded_capability_questions_are_not_authorization(intent, text):
     args = {"target": "notepad.exe"} if intent == "roam" else {}
     assert validate_intent({"intent": intent, "args": args}, text, TESTS)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", [
+    "write a test to check whether I can log in",
+    "draft a test that verifies whether users can reset passwords",
+    "write a test to find out if checkout works",
+])
+def test_drafts_about_questions_are_still_draft_requests(text):
+    routed = validate_intent({"intent": "write_test"}, text, {})
+    assert routed["intent"] == "write_test" and routed["args"]["description"] == text
+
+
+def test_questions_about_drafting_are_still_questions():
+    assert validate_intent({"intent": "write_test"}, "I want to know whether you can write a test", {})["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text,action,target", [
+    ("export knowledge for notepad.exe", "export", "notepad.exe"),
+    ("export knowledge for notepad.exe please", "export", "notepad.exe"),
+    ("reset the knowledge graph for http://localhost:3000.", "reset", "http://localhost:3000"),
+    ("export notepad.exe knowledge", "export", "notepad.exe"),
+    ('export knowledge for "Visual Studio Code"', "export", "Visual Studio Code"),
+])
+def test_dropped_knowledge_target_is_taken_from_the_users_words(text, action, target):
+    routed = validate_intent({"intent": "knowledge", "args": {"action": action}}, text, {})
+    assert routed["intent"] == "knowledge" and routed["args"]["target"] == target
+
+
+@pytest.mark.parametrize("text", ["export the knowledge", "export knowledge for the last app", "export knowledge for it"])
+def test_unnamed_knowledge_targets_keep_the_last_target_default(text):
+    routed = validate_intent({"intent": "knowledge", "args": {"action": "export"}}, text, {})
+    assert routed["intent"] == "knowledge" and routed["args"]["target"] == ""
