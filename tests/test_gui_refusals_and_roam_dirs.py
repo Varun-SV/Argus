@@ -794,3 +794,89 @@ def test_unreadable_test_entry_is_reported_without_hiding_healthy_tests(api, tmp
     entries = {e["file"]: e for e in api.list_tests()}
     assert entries["good.test.yaml"]["error"] is None and entries["good.test.yaml"]["name"] == "good"
     assert entries["broken.test.yaml"]["error"]
+
+
+def test_inaccessible_order_counter_fails_the_run_instead_of_running_unordered(tmp_path):
+    from argus.engine import runner_impl
+    (tmp_path / ".argus" / "runs" / ".storage-order").mkdir(parents=True)  # can't be opened as a file
+
+    class Adapter:
+        def launch(self, target):
+            raise AssertionError("the test must not run without a history reservation")
+
+    spec = type("Spec", (), {"name": "a", "file_name": "a.test.yaml", "adapter": "cli", "launch": "echo"})()
+    result = runner_impl.run_test(spec, type("P", (), {"describe": lambda self: "fake"})(), Adapter(),
+                                  project_dir=tmp_path)
+    assert result.status == "error" and "run history" in result.error and "not run" in result.error
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock")
+def test_unsupported_locking_raises_at_once_instead_of_spinning(tmp_path, monkeypatch):
+    import errno
+    import fcntl
+    from argus.engine import results
+    calls = []
+
+    def flock(fd, op):
+        calls.append(op)
+        raise OSError(errno.ENOLCK, "no locks available")
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    with pytest.raises(OSError) as raised:
+        results.reserve_storage_order(tmp_path)
+    assert raised.value.errno == errno.ENOLCK and len(calls) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock")
+def test_contended_lock_waits_a_bounded_time(tmp_path):
+    import errno
+    import fcntl
+    from argus.engine import results
+    path = tmp_path / "counter"
+    path.write_bytes(b"")
+    with open(path, "r+b") as holder, open(path, "r+b") as waiter:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        with pytest.raises(OSError) as raised:
+            with results._file_locked(waiter, timeout=0.2):
+                pass
+    assert raised.value.errno == errno.ETIMEDOUT
+
+
+@pytest.mark.parametrize("failures,expect", [
+    ([], "locked"), (["busy", "busy"], "locked"), (["bad"], "raise"), (["busy"] * 1000, "timeout"),
+])
+def test_windows_lock_retries_only_contention_and_is_bounded(tmp_path, monkeypatch, failures, expect):
+    import errno
+    from types import SimpleNamespace
+    from argus.engine import results
+    pending = list(failures)
+    calls = []
+
+    def locking(fd, mode, size):
+        calls.append(mode)
+        if mode == "nb" and pending:
+            kind = pending.pop(0)
+            raise OSError(errno.EACCES if kind == "busy" else errno.EINVAL, kind)
+
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(LK_NBLCK="nb", LK_UNLCK="un", locking=locking))
+    monkeypatch.setattr(results.time, "sleep", lambda _: None)
+    path = tmp_path / "counter"
+    path.write_bytes(b"")
+    original = results.os.name
+    with open(path, "r+b") as stream:
+        monkeypatch.setattr(results.os, "name", "nt")
+        try:
+            if expect == "locked":
+                with results._file_locked(stream):
+                    pass
+                assert calls[-1] == "un" and calls.count("nb") == len(failures) + 1
+            else:
+                with pytest.raises(OSError) as raised:
+                    with results._file_locked(stream, timeout=0 if expect == "timeout" else 30):
+                        pass
+                want = errno.EINVAL if expect == "raise" else errno.ETIMEDOUT
+                assert raised.value.errno == want and "un" not in calls
+                if expect == "raise":
+                    assert calls == ["nb"]
+        finally:
+            monkeypatch.setattr(results.os, "name", original)  # before pytest itself looks at os.name

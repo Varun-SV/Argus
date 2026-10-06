@@ -285,8 +285,12 @@ def run_test(
     if project_dir is not None:
         try:
             result.claim_project_order(project_dir)
-        except OSError:
-            pass  # history ordering falls back to this process's counter; saving reports the problem
+        except OSError as exc:
+            # Without a project reservation, concurrent runs could misorder history, so
+            # nothing executes: the run is reported as an error instead.
+            result.status = "error"
+            result.error = f"Could not reserve this run's place in run history ({exc}); the test was not run."
+            return result
     started = time.monotonic()
     session_id = str(_uuid.uuid4())[:8]
     target = spec.launch or spec.name

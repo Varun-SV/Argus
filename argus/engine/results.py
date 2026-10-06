@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
@@ -34,30 +35,51 @@ _HISTORY_NAME = re.compile(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json")
 _ORDER_FILE = ".storage-order"
 
 
+_LOCK_WAIT_S = 30.0
+
+
 @contextmanager
-def _file_locked(stream):
-    """Hold an exclusive OS lock on ``stream`` (shared by every process on this project)."""
+def _file_locked(stream, timeout: float = _LOCK_WAIT_S):
+    """Hold an exclusive OS lock on ``stream`` (shared by every process on this project).
+
+    Only contention is retried, for at most ``timeout`` seconds; any other locking
+    error (unsupported filesystem, bad handle) raises at once so callers fail closed.
+    """
+    deadline = time.monotonic() + timeout
     if os.name == "nt":
         import msvcrt
-        stream.seek(0)
-        while True:
-            try:
-                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
-                break
-            except OSError:  # LK_LOCK gives up after ~10 seconds; keep waiting
-                continue
-        try:
-            yield
-        finally:
+        busy = {errno.EACCES, errno.EDEADLK, getattr(errno, "EDEADLOCK", errno.EDEADLK)}
+
+        def acquire():
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+
+        def release():
             stream.seek(0)
             msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
+        busy = {errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES}
+
+        def acquire():
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def release():
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    while True:
+        try:
+            acquire()
+            break
+        except OSError as exc:
+            if exc.errno not in busy:
+                raise
+            if time.monotonic() >= deadline:
+                raise OSError(errno.ETIMEDOUT, "Timed out waiting for the run history lock") from exc
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        release()
 
 
 def reserve_storage_order(project_dir: Path) -> int:
