@@ -815,7 +815,9 @@ class ArgusAPI:
         self._job_trackers.setdefault(job["id"], []).append(tracker)
         ks = None
         try:
-            ks = cfg.make_knowledge_store()
+            # Memory off means no cross-session memory at all: no graph retrieval and
+            # nothing recorded under .argus/knowledge, not just no legacy memory_dir.
+            ks = cfg.make_knowledge_store() if job["memory"] else None
             self._active_ks = ks
             provider = cfg.make_provider(tracker)
             capsule = ({"provider": job["capsule_provider"], "retain_on_failure": job["retain"]}

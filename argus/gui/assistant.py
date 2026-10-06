@@ -651,6 +651,9 @@ _FUTURE_TIME = re.compile(
     r"one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty|fifty|sixty)"
     r"(?:\s+and\s+a\s+half)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)|"
     r"in\s+a\s+(?:bit|while|moment)|"
+    r"(?:an?|a\s+few|a\s+couple\s+(?:of\s+)?|half\s+an?|another|\d+(?:\.\d+)?|"
+    r"one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty|fifty|sixty)"
+    r"(?:\s+and\s+a\s+half)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)\s+from\s+now|"
     r"at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|at\s+(?:noon|midnight))\b",
     re.IGNORECASE)
 
@@ -1006,15 +1009,20 @@ def _knowledge_target_from_text(text: str, verb: str) -> Optional[str]:
     A deictic reference ("export its knowledge", "... for the last app") names nothing,
     so the caller keeps its default of the last roamed target.
     """
-    quoted = re.search(r'"([^"\n]+)"|(?<!\w)\'([^\'\n]+)\'', text)
-    if quoted:
-        return (quoted.group(1) or quoted.group(2)).strip() or None
-    m = (re.search(r"\bknowledge(?:\s+graph)?\s+(?:for|of|about|on)\s+(?P<t>.+?)\s*[.!?]*\s*$", text, re.IGNORECASE)
-         or re.search(r"\b" + verb + r"\s+(?:the\s+)?(?P<t>(?!(?:the|a|an|my|its|this|that|all|our|your)\b)\S+?)(?:'s)?\s+knowledge\b",
-                      text, re.IGNORECASE))
+    # Only the target position counts: a quoted aside elsewhere ("... because "I need a
+    # backup"") is not a target, and the clause ends at "because/and/so/..." or punctuation.
+    quoted = r'"(?P<q1>[^"\n]+)"|(?<!\w)\'(?P<q2>[^\'\n]+)\''
+    clause = r"(?P<t>.+?)(?=\s*(?:[,;!?]|\.(?:\s|$)|\s+(?:because|since|so|and|then|as|but|please|now)\b|$))"
+    m = (re.search(r"\bknowledge(?:\s+graph)?\s+(?:for|of|about|on)\s+(?:" + quoted + "|" + clause + ")", text, re.IGNORECASE)
+         or re.search(r"\b" + verb + r"\s+(?:the\s+)?(?:" + quoted + r"|(?P<w>(?!(?:the|a|an|my|its|this|that|all|our|your)\b)\S+?))"
+                      r"(?:'s)?\s+knowledge\b", text, re.IGNORECASE))
     if not m:
         return None
-    found = re.sub(r"(?:[\s,]+(?:please|now|thanks|thank\s+you))+\s*$", "", m.group("t"), flags=re.IGNORECASE).strip()
+    groups = m.groupdict()
+    if groups.get("q1") or groups.get("q2"):
+        return (groups.get("q1") or groups.get("q2")).strip() or None
+    found = re.sub(r"(?:[\s,]+(?:please|now|thanks|thank\s+you))+\s*$", "", groups.get("t") or groups.get("w") or "",
+                   flags=re.IGNORECASE).strip()
     found = _unquote(found.rstrip(",;"))
     if not found or _DEICTIC_KNOWLEDGE.match(found):
         return None

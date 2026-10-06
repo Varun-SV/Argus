@@ -517,3 +517,48 @@ def test_dropped_knowledge_target_is_taken_from_the_users_words(text, action, ta
 def test_unnamed_knowledge_targets_keep_the_last_target_default(text):
     routed = validate_intent({"intent": "knowledge", "args": {"action": "export"}}, text, {})
     assert routed["intent"] == "knowledge" and routed["args"]["target"] == ""
+
+
+@pytest.mark.parametrize("intent,text", [
+    ("run", "run checkout two hours from now"), ("run", "run checkout 5 minutes from now"),
+    ("run", "run checkout an hour from now"), ("stop", "stop the run ten minutes from now"),
+    ("environment", "switch to local 5 minutes from now"),
+])
+def test_delays_written_as_from_now_are_deferred(intent, text):
+    assert validate_intent({"intent": intent}, text, TESTS)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text,action", [
+    ('export knowledge for notepad.exe because "I need a backup"', "export"),
+    ('reset knowledge for notepad.exe and note "cleanup"', "reset"),
+])
+def test_quoted_asides_are_not_knowledge_targets(text, action):
+    routed = validate_intent({"intent": "knowledge", "args": {"action": action}}, text, {})
+    assert routed["intent"] == "knowledge" and routed["args"]["target"] == "notepad.exe"
+
+
+@pytest.mark.parametrize("memory,expect_store", [(False, False), (True, True)])
+def test_memory_off_roams_get_no_knowledge_store(api, monkeypatch, memory, expect_store):
+    import time
+    from argus.engine.roam_impl import RoamSession
+
+    seen, made = {}, []
+    sentinel = type("Store", (), {"close": lambda self: None, "get_stats": lambda self, t=None: {}})()
+
+    def fake_roam(**kwargs):
+        seen["store"] = kwargs["knowledge_store"]
+        session = RoamSession(target=kwargs["target"], provider="fake")
+        session.execution_status = "pass"
+        return session
+
+    monkeypatch.setattr("argus.engine.roam.roam", fake_roam)
+    monkeypatch.setattr(gui_app.ArgusConfig, "make_execution_environment", lambda self, a, e=None, c=None: object())
+    monkeypatch.setattr(gui_app.ArgusConfig, "make_knowledge_store", lambda self: made.append(1) or sentinel)
+    monkeypatch.setattr(gui_app.ArgusConfig, "make_provider", lambda self, tracker=None: _ProbeCountingProvider.make())
+    started = api.start_roam("notepad.exe", minutes=0.1, memory=memory)
+    assert started["ok"], started
+    deadline = time.time() + 30
+    while api.job_status(started["job"]["id"])["running"]:
+        assert time.time() < deadline
+        time.sleep(0.05)
+    assert (seen["store"] is sentinel) is expect_store and bool(made) is expect_store
