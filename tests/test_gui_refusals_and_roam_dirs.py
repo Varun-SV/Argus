@@ -1361,3 +1361,24 @@ def test_sequencing_words_stay_inside_reported_stop_instructions(text):
 def test_reported_instructions_never_widen_an_explicit_run(text, routed):
     got = validate_intent({"intent": "run", "args": {"tests": routed}}, text, TWO_TESTS)
     assert got == {"intent": "run", "args": {"tests": ["smoke.test.yaml"]}}
+
+
+def test_remote_reset_without_a_client_changes_nothing(tmp_path):
+    from argus.knowledge.remote import RemoteKnowledgeStore
+    store = object.__new__(RemoteKnowledgeStore)
+    store._dir, store._graphs = tmp_path, {"notepad-exe": object()}
+    store._client = lambda: None
+    graph = tmp_path / "notepad-exe.graph.json"
+    graph.write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="nothing for 'notepad.exe' was reset"):
+        store.clear_target("notepad.exe")
+    assert graph.exists() and "notepad-exe" in store._graphs
+
+
+def test_remote_reset_keeps_the_local_graph_when_remote_deletion_fails(tmp_path):
+    store = _remote_store(tmp_path, _Collections({"notepad-exe_states"}, fail=True))
+    graph = tmp_path / "notepad-exe.graph.json"
+    graph.write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        store.clear_target("notepad.exe")
+    assert graph.exists()

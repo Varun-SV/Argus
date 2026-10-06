@@ -669,6 +669,10 @@ def split_roam_request(text: str) -> Optional[RoamRequest]:
     # Checked after the modifiers are removed, so "without memory, roam X" is not a refusal.
     if _ROAM_REFUSAL.search(prefix.replace("\u2019", "'") + match.group(0)):
         return RoamRequest("", {}, "I won't roam a target when the instruction is negated.")
+    # The verb must be asked of Argus ("roam X", "please explore X", "in a capsule, roam X"),
+    # not part of a description ("the CI will roam X").
+    if not re.search(r"(?:" + _REQUEST_LEAD + r")" + _REQUEST_ADVERBS + r"\s*$", prefix, re.IGNORECASE):
+        return None
     leftover = _MODIFIER_WORDS.search(prefix)
     if leftover and not problem:
         problem = f'I couldn\'t tell how "{leftover.group(0)}" should apply to this roam. ' + _QUOTE_HINT
@@ -978,7 +982,7 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
 # something; it doesn't ask Argus to act.
 _REQUEST_LEAD = (r"(?:^|(?<=[.!?;,])|\b(?:and|then|now|so|ok(?:ay)?|also|just|go\s+ahead\s+and|"
                  r"let'?s|please|kindly|argus)\b|\b(?:can|could|would|will)\s+you\b|"
-                 r"\bi(?:'d|\s+would)?\s+(?:want|need|like)\s+(?:you\s+|argus\s+)?to\b|"
+                 r"\b(?:i|we)(?:'d|\s+would)?\s+(?:want|need|like)\s+(?:you\s+|argus\s+)?to\b|"
                  r"\b(?:time|ready)\s+to\b)")
 _REQUEST_ADVERBS = r"(?:\s*\b(?:please|just|also|now|quickly|immediately|again|kindly)\b)*"
 
@@ -987,8 +991,13 @@ _REQUEST_ADVERBS = r"(?:\s*\b(?:please|just|also|now|quickly|immediately|again|k
 # introduces someone else's words, not an instruction to Argus. The clause after the
 # reporting verb is blanked (offsets kept) before looking for a request.
 _REPORTED_SPEECH = re.compile(
-    r"\b(?:says?|said|saying|asks?|asked|reads?|writes?|wrote|told\s+\w+|tells?\s+\w+|"
-    r"explain|describe|means?|meant|quotes?|quoted)\s*[:,]"
+    r"(?:\b(?:says?|said|saying|asks?|asked|reads?|writes?|wrote|told\s+\w+|tells?\s+\w+|"
+    r"explain|describe|means?|meant|quotes?|quoted)\s*[:,]|"
+    # "the CI says to run X", "the README asks us to run X", "it told me to stop"
+    # ("I want you to run X" is the user's own request, so not when the subject is I/we.)
+    r"\b(?:says?|said|asks?|asked|tells?|told|(?<!\bi\s)(?<!\bwe\s)(?:wants?|wanted)|"
+    r"instructs?|instructed|recommends?|suggests?)"
+    r"(?:\s+(?:us|me|you|them|people|users|everyone))?\s+to\b)"
     # ... up to the end of the clause: a sentence break, or a contrastive turn back to the
     # user's own words ("..., but please run smoke"), which is read as a request again.
     # Sequencing words ("first run checkout, then run smoke", "now stop") stay reported.
@@ -1145,6 +1154,12 @@ def _authorized_provider_check(text: str, configured: Sequence[str] = ()) -> boo
             r"\b(?:want|would\s+like|'d\s+like|need)\s+to\s+(?:know|understand)\s+how\b|"
             r"\b(?:wonder(?:ing)?|curious|not\s+sure)\b[^.!?]{0,40}\b(?:whether|if|how)\b[^.!?]{0,40}"
             r"\b(?:should|need)\b", words, re.IGNORECASE):
+        return False
+    # Asked of Argus ("check my provider", "can you test the model connection") or a direct
+    # status question ("is my provider working?"); a description ("the CI checks the provider",
+    # "I checked it") is not a request for a billed ping.
+    if not (re.search(_REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*" + verbs, words, re.IGNORECASE)
+            or re.match(r"^\s*(?:is|are|does|do|can)\b(?!\s+(?:you|argus|i|we)\b)", words, re.IGNORECASE)):
         return False
     anchor = re.search(verbs, words, re.IGNORECASE) or re.search(subject, words, re.IGNORECASE)
     if _CONDITION.search(words) or _FUTURE_TIME.search(words):

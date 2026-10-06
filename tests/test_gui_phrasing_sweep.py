@@ -101,3 +101,41 @@ def test_reported_knowledge_actions_are_not_requests(action, wrapper):
 ])
 def test_drafting_requests(text, drafts):
     assert (_route("write_test", text, {"description": text}) == "write_test") is drafts
+
+
+@pytest.mark.parametrize("text", ["The CI says to please run checkout", "The README asks us to please run checkout",
+                                  "The CI wants us to run checkout", "It told me to run checkout"])
+def test_reported_instructions_without_punctuation(text):
+    assert _route("run", text) != "run"
+
+
+@pytest.mark.parametrize("text", ["I want you to run checkout", "We want you to run checkout",
+                                  "I'd like you to run checkout"])
+def test_first_person_wants_are_requests(text):
+    assert _route("run", text) == "run"
+
+
+@pytest.mark.parametrize("text", ["The CI checks the provider connection", "I checked the provider connection",
+                                  "The system will check OpenAI"])
+def test_provider_descriptions_are_not_requests(text):
+    assert _route("providers", text) != "providers"
+
+
+@pytest.mark.parametrize("text", ["ping openai", "does my model support vision?", "can you check the model connection?"])
+def test_provider_requests_and_status_questions(text):
+    assert _route("providers", text) == "providers"
+
+
+@pytest.mark.parametrize("text", ["The CI will roam notepad.exe", "Our nightly job explores notepad.exe"])
+def test_roam_descriptions_are_not_requests(text):
+    assert _route("roam", text) != "roam"
+
+
+@pytest.mark.parametrize("text", ["with memory roam notepad.exe", "In a capsule, roam notepad.exe", "please explore notepad.exe"])
+def test_roam_requests_after_modifiers(text):
+    assert _route("roam", text) == "roam"
+
+
+@pytest.mark.parametrize("text", ["The CI starts watching tests", "The service is monitoring spec changes"])
+def test_watch_descriptions_are_not_requests(text):
+    assert _route("watch", text) != "watch"
