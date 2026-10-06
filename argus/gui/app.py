@@ -1499,10 +1499,20 @@ class ArgusAPI:
         try:
             path = _conversation_path(SimpleNamespace(project_dir=self._conversation_project))
             with self._persist_lock:
-                _write_atomic(path, json.dumps(list(conversations or [])[:30]).encode("utf-8"))
+                _write_atomic(path, json.dumps(_bounded_conversations(conversations)).encode("utf-8"))
         except (OSError, TypeError, ValueError):
             return {"ok": False, "error": "Could not save conversations. Check your user-data folder permissions and retry."}
         return {"ok": True}
+
+
+def _bounded_conversations(conversations) -> list:
+    """The newest 30 chats, plus any the UI flagged busy (a pending reply, job or watch).
+
+    Busy chats are bounded by the work actually in flight; dropping one would lose the
+    card a reload needs to reconnect its job or late response.
+    """
+    return [c for i, c in enumerate(list(conversations or []))
+            if i < 30 or (isinstance(c, dict) and c.get("busy") is True)]
 
 
 class _ScreenshotCapturingAdapter:

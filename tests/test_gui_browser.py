@@ -723,3 +723,23 @@ def test_eviction_keeps_conversations_with_in_flight_requests(desktop_browser):
     }""")
     assert "routing" in kept["ids"] and "acting" in kept["ids"]
     assert "routing" in kept["saved"] and "acting" in kept["saved"] and len(kept["saved"]) == 30
+
+
+def test_every_busy_conversation_is_saved_and_restored_beyond_the_cap(desktop_browser):
+    page, api, project = desktop_browser
+    result = page.evaluate("""async () => {
+      state.conversations = [];
+      for (let i = 0; i < 31; i++) state.conversations.push({id: 'b' + i, title: 'b' + i, msgs: [
+        {id: 'bm' + i, kind: 'run', job: 'j' + i, snap: {status: 'running'}, meta: {running: true}}]});
+      for (let i = 0; i < 5; i++) state.conversations.push(
+        {id: 'i' + i, title: 'i' + i, msgs: [{id: 'im' + i, kind: 'text', role: 'user', text: 'hi'}]});
+      const persisted = persistedConversations().map((c) => c.id);
+      const r = await flushConversations();
+      return {persisted, ok: r.ok};
+    }""")
+    busy = [f"b{i}" for i in range(31)]
+    assert result["ok"] and result["persisted"] == busy
+    saved = api.load_conversations()
+    assert [c["id"] for c in saved if c["id"] != page.evaluate("state.conv.id")] == busy
+    restored = page.evaluate("saved => restoreConversations(saved).map((c) => c.id)", saved)
+    assert set(busy) <= set(restored)

@@ -21,7 +21,7 @@ from argus.engine.ates_runtime import (
     AtesRuntimeRecorder,
     resolve_runtime_project_dir,
 )
-from argus.engine.results import RunResult, StepResult, seed_storage_order
+from argus.engine.results import RunResult, StepResult
 from argus.engine.spec import AssertStep, NLStep, TestSpec
 from argus.providers.base import LLMProvider, ProviderError
 from argus.tokens import Budget
@@ -275,8 +275,6 @@ def run_test(
     # ``shots_dir`` remains in the public API for compatibility, but normal
     # ATES runtime no longer writes raw screenshots into that legacy directory.
     _ = shots_dir
-    if project_dir is not None:
-        seed_storage_order(project_dir)
     result = RunResult(
         test_name=spec.name,
         test_file=spec.file_name,
@@ -284,6 +282,11 @@ def run_test(
         provider=provider.describe(),
         **_execution_fields(adapter),
     )
+    if project_dir is not None:
+        try:
+            result.claim_project_order(project_dir)
+        except OSError:
+            pass  # history ordering falls back to this process's counter; saving reports the problem
     started = time.monotonic()
     session_id = str(_uuid.uuid4())[:8]
     target = spec.launch or spec.name

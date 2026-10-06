@@ -1058,9 +1058,10 @@ def _knowledge_target_from_text(text: str, verb: str) -> Optional[str]:
     so the caller keeps its default of the last roamed target.
     """
     # Only the target position counts: a quoted aside elsewhere ("... because "I need a
-    # backup"") is not a target, and the clause ends at "because/and/so/..." or punctuation.
+    # backup"") is not a target, and the clause ends at "because/and/so/..." or punctuation
+    # that ends a sentence; "?" or "," inside a URL ("search?q=one") is part of the target.
     quoted = r'"(?P<q1>[^"\n]+)"|(?<!\w)\'(?P<q2>[^\'\n]+)\''
-    clause = r"(?P<t>.+?)(?=\s*(?:[,;!?]|\.(?:\s|$)|\s+(?:because|since|so|and|then|as|but|please|now)\b|$))"
+    clause = r"(?P<t>.+?)(?=\s*(?:[,;!?](?:\s|$)|\.(?:\s|$)|\s+(?:because|since|so|and|then|as|but|please|now)\b|$))"
     m = (re.search(r"\bknowledge(?:\s+graph)?\s+(?:for|of|about|on)\s+(?:" + quoted + "|" + clause + ")", text, re.IGNORECASE)
          or re.search(r"\b" + verb + r"\s+(?:the\s+)?(?:" + quoted + r"|(?P<w>(?!(?:the|a|an|my|its|this|that|all|our|your)\b)\S+?))"
                       r"(?:'s)?\s+knowledge\b", text, re.IGNORECASE))

@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -30,21 +31,66 @@ def _next_storage_order() -> int:
 _HISTORY_NAME = re.compile(r"(\d{8}-\d{6})-(\d{20})-[0-9a-f]{32}-(.*)\.json")
 
 
-def seed_storage_order(project_dir: Path) -> None:
-    """Allocate after the newest persisted run, even from a fresh process.
+_ORDER_FILE = ".storage-order"
 
-    The counter itself is process-local, so a later process whose clock is behind
-    the persisted history would otherwise sort its new runs below older ones.
+
+@contextmanager
+def _file_locked(stream):
+    """Hold an exclusive OS lock on ``stream`` (shared by every process on this project)."""
+    if os.name == "nt":
+        import msvcrt
+        stream.seek(0)
+        while True:
+            try:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+                break
+            except OSError:  # LK_LOCK gives up after ~10 seconds; keep waiting
+                continue
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def reserve_storage_order(project_dir: Path) -> int:
+    """Atomically reserve the project's next run order, across processes.
+
+    The in-process counter can't see other ``argus run`` processes, and after a clock
+    rollback two of them would otherwise pick the same next order. A project-scoped
+    counter, read and advanced under an OS file lock, makes every reservation unique
+    and later than all persisted history.
     """
     global _last_storage_order
-    runs_dir = Path(project_dir) / ".argus" / "runs"
-    try:
-        names = [path.name for path in runs_dir.glob("*.json")] if runs_dir.is_dir() else []
-    except OSError:
-        return
-    persisted = max((int(m[2]) for m in map(_HISTORY_NAME.fullmatch, names) if m), default=0)
-    with _storage_order_lock:
-        _last_storage_order = max(_last_storage_order, persisted)
+    runs_root = _runs_root(project_dir)
+    path = runs_root / _ORDER_FILE
+    if path.is_symlink():
+        raise OSError(f"run order counter cannot be a symlink: {path}")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    with _storage_order_lock, open(os.open(path, flags, 0o600), "r+b") as stream, _file_locked(stream):
+        stream.seek(0)
+        try:
+            counter = int(stream.read(32).decode("ascii").strip() or 0)
+        except (UnicodeError, ValueError):
+            counter = 0
+        # History written before the counter existed (or with it deleted) still counts.
+        names = [entry.name for entry in runs_root.glob("*.json")]
+        persisted = max((int(m[2]) for m in map(_HISTORY_NAME.fullmatch, names) if m), default=0)
+        order = max(time.time_ns(), counter + 1, persisted + 1, _last_storage_order + 1)
+        stream.seek(0)
+        stream.truncate()
+        stream.write(str(order).encode("ascii"))
+        stream.flush()
+        os.fsync(stream.fileno())
+        _last_storage_order = order
+        return order
 
 
 def _runs_root(project_dir: Path) -> Path:
@@ -121,6 +167,12 @@ class RunResult:
         self._storage_lock = threading.RLock()
         self._owned_run_dirs = {}
         self._owned_history_files = {}
+
+    def claim_project_order(self, project_dir: Path) -> None:
+        """Take a cross-process order from the project counter before the first save."""
+        with self._storage_lock:
+            if not self._owned_run_dirs:
+                self._storage_order = reserve_storage_order(project_dir)
 
     @property
     def passed(self) -> int:

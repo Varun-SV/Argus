@@ -614,30 +614,95 @@ def test_finished_foreground_jobs_are_bounded(api):
 
 def test_a_fresh_process_allocates_after_persisted_history_despite_clock_rollback(tmp_path, monkeypatch):
     from argus.engine import results
-    from argus.engine.results import RunResult, load_runs, seed_storage_order
-    clock = iter([2_000_000_000_000_000_000, 1_000_000_000_000_000_000])
+    from argus.engine.results import RunResult, load_runs
+    clock = iter([2_000_000_000_000_000_000, 2_000_000_000_000_000_000,
+                  1_000_000_000_000_000_000, 1_000_000_000_000_000_000])
     monkeypatch.setattr(results.time, "time_ns", lambda: next(clock))
     monkeypatch.setattr(results, "_last_storage_order", 0)
-    RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake",
-              started_at=1_800_000_000.0, status="pass").save(tmp_path)
+    first = RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake",
+                      started_at=1_800_000_000.0, status="pass")
+    first.claim_project_order(tmp_path)
+    first.save(tmp_path)
     # A new `argus run` process: the in-memory counter starts over and the clock is behind.
     monkeypatch.setattr(results, "_last_storage_order", 0)
-    seed_storage_order(tmp_path)
-    RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake",
-              started_at=1_800_000_000.0 - 3600, status="fail").save(tmp_path)
+    second = RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake",
+                       started_at=1_800_000_000.0 - 3600, status="fail")
+    second.claim_project_order(tmp_path)
+    second.save(tmp_path)
     assert [r["status"] for r in load_runs(tmp_path)] == ["fail", "pass"]
 
 
-def test_run_test_seeds_allocation_from_the_project_history(tmp_path, monkeypatch):
-    from argus.engine import results, runner_impl
+def test_order_counter_counts_history_written_before_it_existed(tmp_path, monkeypatch):
+    from argus.engine import results
+    from argus.engine.results import RunResult, reserve_storage_order
+    monkeypatch.setattr(results, "_last_storage_order", 0)
+    RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake").save(tmp_path)
+    newest = max(int(results._HISTORY_NAME.fullmatch(p.name)[2])
+                 for p in (tmp_path / ".argus" / "runs").glob("*.json"))
+    (tmp_path / ".argus" / "runs" / ".storage-order").unlink(missing_ok=True)
+    monkeypatch.setattr(results, "_last_storage_order", 0)
+    monkeypatch.setattr(results.time, "time_ns", lambda: 1)
+    assert reserve_storage_order(tmp_path) == newest + 1
+
+
+def _reserve_in_fresh_process(args):
+    project, count = args
+    from pathlib import Path
+    from argus.engine import results
+    results.time.time_ns = lambda: 1  # every process's clock is behind the history
+    return [results.reserve_storage_order(Path(project)) for _ in range(count)]
+
+
+def test_concurrent_processes_reserve_unique_orders_after_clock_rollback(tmp_path):
+    import multiprocessing
+    from argus.engine.results import RunResult, reserve_storage_order
+    RunResult(test_name="a", test_file="a.test.yaml", adapter="cli", provider="fake").save(tmp_path)
+    floor = reserve_storage_order(tmp_path)
+    with multiprocessing.get_context("spawn").Pool(4) as pool:
+        batches = pool.map(_reserve_in_fresh_process, [(str(tmp_path), 25)] * 4)
+    orders = [o for batch in batches for o in batch]
+    assert len(set(orders)) == 100 and min(orders) > floor
+    assert all(batch == sorted(batch) for batch in batches)
+
+
+def test_run_test_claims_the_project_order(tmp_path, monkeypatch):
+    from argus.engine import runner_impl
     seen = []
-    monkeypatch.setattr(runner_impl, "seed_storage_order", lambda project: seen.append(project))
-    monkeypatch.setattr(runner_impl, "RunResult", lambda **kw: (_ for _ in ()).throw(RuntimeError("stop")))
+
+    class Result:
+        def __init__(self, **kw):
+            pass
+
+        def claim_project_order(self, project):
+            seen.append(project)
+            raise RuntimeError("stop")
+
+    monkeypatch.setattr(runner_impl, "RunResult", Result)
     with pytest.raises(RuntimeError, match="stop"):
         runner_impl.run_test(type("Spec", (), {"name": "a", "file_name": "a.test.yaml", "adapter": "cli"})(),
                              type("P", (), {"describe": lambda self: "fake"})(), object(), project_dir=tmp_path)
     assert seen == [tmp_path]
-    assert results.seed_storage_order(tmp_path / "missing") is None  # no history: no-op
+
+
+@pytest.mark.parametrize("text,target", [
+    ("export knowledge for https://example.test/search?q=one", "https://example.test/search?q=one"),
+    ("export knowledge for https://example.test/search?q=one&page=2, please", "https://example.test/search?q=one&page=2"),
+    ("export knowledge for https://example.test/a,b?x=1 now", "https://example.test/a,b?x=1"),
+    ("export knowledge for notepad.exe?", "notepad.exe"),
+])
+def test_url_query_markers_stay_in_knowledge_targets(text, target):
+    for routed_target in ("", target):
+        got = validate_intent({"intent": "knowledge", "args": {"action": "export", "target": routed_target}}, text, {})
+        assert got == {"intent": "knowledge", "args": {"action": "export", "target": target}}
+
+
+def test_saved_conversations_keep_busy_ones_beyond_the_cap(api):
+    convs = [{"id": f"c{i}", "title": "t", "msgs": [], "busy": i >= 25} for i in range(45)]
+    assert api.save_conversations(convs)["ok"]
+    saved = [c["id"] for c in api.load_conversations()]
+    assert saved == [f"c{i}" for i in range(45)]
+    assert api.save_conversations([{"id": f"c{i}", "title": "t", "msgs": []} for i in range(45)])["ok"]
+    assert len(api.load_conversations()) == 30
 
 
 @pytest.mark.parametrize("text", [

@@ -972,11 +972,12 @@ function stash() {
 const MAX_CONVERSATIONS = 30;
 const busyConversation = (c) => c === state.conv || (convPending.get(c) || 0) > 0 ||
   c.msgs.some((m) => isActiveCard(m) || m.kind === "thinking" || (m.kind === "watch" && m.watch && m.watch.running));
-// The saved set: newest first, capped at MAX_CONVERSATIONS, but a conversation that still
-// owns an active job or watch always takes a slot so a reload can reconnect its card.
+// The saved set: newest first, capped at MAX_CONVERSATIONS idle chats, plus every
+// conversation that still owns an active job, watch or pending reply (however many) so a
+// reload can reconnect its card. Busy ones are flagged so the store keeps them beyond the cap.
 function persistedConversations() {
-  const busy = state.conversations.filter(busyConversation).slice(0, MAX_CONVERSATIONS);
-  const room = MAX_CONVERSATIONS - busy.length;
+  const busy = state.conversations.filter(busyConversation);
+  const room = Math.max(0, MAX_CONVERSATIONS - busy.length);
   const idle = state.conversations.filter((c) => !busy.includes(c)).slice(0, room);
   const keep = new Set([...busy, ...idle]);
   return state.conversations.filter((c) => keep.has(c));
@@ -1003,7 +1004,7 @@ function flushConversations() {
   if (c && c.msgs.length) state.conversations = [c, ...state.conversations.filter((x) => x.id !== c.id)];
   boundConversations();
   const clean = JSON.parse(JSON.stringify(persistedConversations().map((conv) => Object.assign({}, conv, {
-    msgs: conv.msgs.filter((m) => m.kind !== "thinking"),
+    msgs: conv.msgs.filter((m) => m.kind !== "thinking"), busy: busyConversation(conv),
   }))));
   const save = state.saveChain.then(async () => {
     try {
@@ -1209,7 +1210,8 @@ function markUnconfirmed(m) {
 
 function restoreConversations(saved) {
   if (!Array.isArray(saved)) return [];
-  return saved.filter((c) => c && typeof c.id === "string" && Array.isArray(c.msgs)).slice(0, 30).map((c) => {
+  return saved.filter((c) => c && typeof c.id === "string" && Array.isArray(c.msgs))
+    .filter((c, i) => i < MAX_CONVERSATIONS || c.busy === true).map((c) => {
     const msgs = c.msgs.filter((m) => m && typeof m.id === "string" && m.kind !== "thinking").map((m) => {
       try { renderMsg(m); return m; }
       catch (e) {
