@@ -1253,3 +1253,69 @@ def test_live_screenshots_stay_fresh_when_the_clock_moves_back(api, monkeypatch)
     api._set_screenshot(b"second")
     newer = api.capture_live(shown)
     assert newer["ts"] > shown and newer["b64"]
+
+
+@pytest.mark.parametrize("text", [
+    "The CI says: run checkout", "Please explain: run checkout", "The CI says, run checkout",
+    "The README says run checkout",
+])
+def test_reported_or_quoted_instructions_never_run(text):
+    assert validate_intent({"intent": "run", "args": {"tests": ["checkout.test.yaml"]}}, text, TESTS)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", ["The log says: stop the run", "Explain: stop"])
+def test_reported_stop_instructions_never_stop(text):
+    assert validate_intent({"intent": "stop"}, text, {})["intent"] == "chat"
+
+
+@pytest.mark.parametrize("doc", [
+    {"test_file": "", "status": ""}, {"test_file": "   ", "status": "pass"},
+    {"test_file": "a.test.yaml", "status": ""}, {"test_file": "a.test.yaml", "status": "maybe"},
+])
+def test_history_records_need_a_named_test_and_a_known_status(doc):
+    from argus.engine.results import valid_run_history
+    assert not valid_run_history(doc)
+    assert valid_run_history({"test_file": "a.test.yaml", "status": "pass"})
+
+
+def _remote_store(tmp_path, client):
+    from argus.knowledge.remote import RemoteKnowledgeStore
+    store = object.__new__(RemoteKnowledgeStore)
+    store._dir, store._graphs = tmp_path, {}
+    store._client = lambda: client
+    return store
+
+
+class _Collections:
+    def __init__(self, names, fail):
+        self.names, self.fail = set(names), fail
+
+    def get_collections(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(collections=[SimpleNamespace(name=n) for n in sorted(self.names)])
+
+    def delete_collection(self, name):
+        if self.fail:
+            raise ConnectionError("qdrant unavailable")
+        self.names.discard(name)
+
+
+def test_remote_clear_raises_when_collections_survive(tmp_path):
+    client = _Collections({"notepad-exe_states", "notepad-exe_bugs"}, fail=True)
+    with pytest.raises(RuntimeError, match="Could not delete the remote knowledge"):
+        _remote_store(tmp_path, client).clear_target("notepad.exe")
+    ok = _Collections({"notepad-exe_states"}, fail=False)
+    _remote_store(tmp_path, ok).clear_target("notepad.exe")
+    assert ok.names == set()
+
+
+def test_reset_reports_a_failed_remote_deletion(api, monkeypatch):
+    from argus.config import ArgusConfig, KnowledgeConfig
+    cfg = api._config()
+    cfg.knowledge = KnowledgeConfig(type="external", vector_url="http://127.0.0.1:1")
+    store = _remote_store(cfg.argus_dir, _Collections({"notepad-exe_states"}, fail=True))
+    store.close = lambda: None
+    monkeypatch.setattr(api, "_config", lambda *args, **kwargs: cfg)
+    monkeypatch.setattr(ArgusConfig, "make_knowledge_store", lambda self: store)
+    result = api.knowledge_reset("notepad.exe")
+    assert not result["ok"] and "Could not delete the remote knowledge" in result["error"]

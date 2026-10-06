@@ -370,11 +370,25 @@ class RemoteKnowledgeStore(KnowledgeStore):
             path.unlink()
         self._graphs.pop(key, None)
         if client:
+            failures = {}
             for suffix in ("states", "bugs"):
+                name = f"{key}_{suffix}"
                 try:
-                    client.delete_collection(f"{key}_{suffix}")
+                    if client.delete_collection(name) is False:
+                        failures[name] = "the server refused the deletion"
+                except Exception as exc:
+                    failures[name] = str(exc)
+            if failures:
+                # A failed delete is fine only if the collection doesn't exist; vectors left
+                # behind would be retrieved by later roams, so the reset must not look done.
+                try:
+                    existing = {c.name for c in client.get_collections().collections}
                 except Exception:
-                    pass
+                    existing = set(failures)  # can't confirm they're gone: treat as remaining
+                remaining = sorted(name for name in failures if name in existing)
+                if remaining:
+                    detail = "; ".join(f"{name}: {failures[name]}" for name in remaining)
+                    raise RuntimeError(f"Could not delete the remote knowledge for {target!r} ({detail}). Retry the reset.")
 
     def confidence_for_state(self, state_id: str) -> int:
         for g in self._graphs.values():

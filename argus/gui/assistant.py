@@ -815,16 +815,30 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
 # connective or "please", or after a direct request ("can you", "I want you to"). A verb
 # anywhere else ("the CI will run checkout", "the app will stop responding") describes
 # something; it doesn't ask Argus to act.
-_REQUEST_LEAD = (r"(?:^|(?<=[.!?;:,])|\b(?:and|then|now|so|ok(?:ay)?|also|just|go\s+ahead\s+and|"
+_REQUEST_LEAD = (r"(?:^|(?<=[.!?;,])|\b(?:and|then|now|so|ok(?:ay)?|also|just|go\s+ahead\s+and|"
                  r"let'?s|please|kindly|argus)\b|\b(?:can|could|would|will)\s+you\b|"
                  r"\bi(?:'d|\s+would)?\s+(?:want|need|like)\s+(?:you\s+|argus\s+)?to\b|"
                  r"\b(?:time|ready)\s+to\b)")
 _REQUEST_ADVERBS = r"(?:\s*\b(?:please|just|also|now|quickly|immediately|again|kindly)\b)*"
 
 
+# Reported or quoted speech ("the CI says: run checkout", "please explain, run checkout")
+# introduces someone else's words, not an instruction to Argus. The clause after the
+# reporting verb is blanked (offsets kept) before looking for a request.
+_REPORTED_SPEECH = re.compile(
+    r"\b(?:says?|said|saying|asks?|asked|reads?|writes?|wrote|told\s+\w+|tells?\s+\w+|"
+    r"explain|describe|means?|meant|quotes?|quoted)\s*[:,][^.!?;\n]*",
+    re.IGNORECASE)
+
+
+def _without_reported_speech(text: str) -> str:
+    return _REPORTED_SPEECH.sub(lambda m: " " * len(m.group()), text)
+
+
 def _requested(command: str, verbs: str):
     """The first of ``verbs`` used as a request to Argus, or None."""
-    return re.search(_REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*\b(?:" + verbs + r")\b", command, re.IGNORECASE)
+    return re.search(_REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*\b(?:" + verbs + r")\b",
+                     _without_reported_speech(command), re.IGNORECASE)
 
 
 def _authorized_simple_action(text: str, action: str) -> bool:
@@ -851,7 +865,7 @@ def _authorized_simple_action(text: str, action: str) -> bool:
     command = text.replace("\u2019", "'")
     command = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'',
                      lambda m: " " * len(m.group()), command)
-    requested = re.search(patterns[action], command, re.IGNORECASE)
+    requested = re.search(patterns[action], _without_reported_speech(command), re.IGNORECASE)
     if not requested:
         return False
     verb = re.search(r"\b(?:" + action_words[action] + r")\b", requested.group(), re.IGNORECASE)

@@ -292,9 +292,13 @@ def test_existing_store_cannot_follow_a_reallocated_port_even_during_request(tmp
             reuse()
             return client
         monkeypatch.setattr(store, "_client", client_before_race)
-        result = operation_call()
         if operation == "retrieve":
-            assert result.similar_states == []
+            assert operation_call().similar_states == []
+        else:
+            # The rebound container refuses the deletion; a reset must report that rather
+            # than look successful while the original project's vectors may remain.
+            with pytest.raises(RuntimeError, match="Could not delete the remote knowledge"):
+                operation_call()
     else:
         reuse()
         with pytest.raises(DockerOwnershipError):

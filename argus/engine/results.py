@@ -484,7 +484,8 @@ def valid_run_history(data) -> bool:
         return False
     # Identity and outcome are required: an empty document is not a run, and counting it
     # toward the history limits would let malformed files hide real runs.
-    if not isinstance(data.get("test_file"), str) or not isinstance(data.get("status"), str):
+    test_file, status = data.get("test_file"), data.get("status")
+    if not isinstance(test_file, str) or not test_file.strip() or status not in STATUSES:
         return False
     for name in ("test_file", "test_name", "status", "provider", "adapter"):
         if name in data and not isinstance(data[name], str):
