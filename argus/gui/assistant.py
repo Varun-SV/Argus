@@ -757,17 +757,18 @@ def _run_scope_from_text(text: str, tests: Sequence[Mapping]) -> tuple:
         return None, ("I didn't run anything: I can't schedule runs for later. "
                       "Ask again when you want the tests to run now.")
 
+    # Reported instructions ("the README says: run all tests") can't widen the scope either.
     if re.search(
         r"\b(?:all\s+(?:the\s+)?tests?|every\s+test|everything|(?:whole|full)\s+suite|"
         r"(?:run|execute|rerun|re-run)\s+(?:them\s+)?all)\b",
-        command,
+        _without_reported_speech(command),
         re.IGNORECASE,
     ):
         return "all", None
 
     # Only the requested test phrase can authorize tests. Command and execution
     # settings are not names, even when a test happens to share their vocabulary.
-    lowered = text[executes.end():].casefold()
+    lowered = _without_reported_speech(text)[executes.end():].casefold()
     quoted = [(m.start(), m.end()) for m in re.finditer(r'"[^"]*"|\'[^\']*\'', lowered)]
     settings = re.finditer(r"\b(?:in\s+(?:a\s+)?(?:(?:hyper-?v|libvirt)\s+)?capsule|"
                            r"(?:on\s+(?:this\s+)?(?:device|machine)|locally)|"
@@ -828,9 +829,10 @@ _REQUEST_ADVERBS = r"(?:\s*\b(?:please|just|also|now|quickly|immediately|again|k
 _REPORTED_SPEECH = re.compile(
     r"\b(?:says?|said|saying|asks?|asked|reads?|writes?|wrote|told\s+\w+|tells?\s+\w+|"
     r"explain|describe|means?|meant|quotes?|quoted)\s*[:,]"
-    # ... up to the end of the clause: a sentence break, or a turn back to the user's own
-    # words ("..., but please run smoke"), which is then read as a request again.
-    r"(?:(?!,?\s*\b(?:but|however|then|also|so|now|and\s+then)\b)[^.!?;\n])*",
+    # ... up to the end of the clause: a sentence break, or a contrastive turn back to the
+    # user's own words ("..., but please run smoke"), which is read as a request again.
+    # Sequencing words ("first run checkout, then run smoke", "now stop") stay reported.
+    r"(?:(?!,?\s*\b(?:but|however)\b)[^.!?;\n])*",
     re.IGNORECASE)
 
 

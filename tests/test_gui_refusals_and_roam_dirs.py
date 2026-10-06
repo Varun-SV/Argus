@@ -1338,3 +1338,26 @@ def test_reported_test_or_check_requests_never_run(text):
 def test_a_later_explicit_request_survives_reported_speech(text, routed):
     got = validate_intent({"intent": "run", "args": {"tests": routed}}, text, TWO_TESTS)
     assert got == {"intent": "run", "args": {"tests": ["smoke.test.yaml"]}}
+
+
+@pytest.mark.parametrize("text,routed", [
+    ("The CI says: first run checkout, then run smoke", ["smoke.test.yaml"]),
+    ("The CI says: now run checkout", ["checkout.test.yaml"]),
+    ("The CI says: run checkout, then run smoke", ["checkout.test.yaml", "smoke.test.yaml"]),
+])
+def test_sequencing_words_stay_inside_reported_run_instructions(text, routed):
+    assert validate_intent({"intent": "run", "args": {"tests": routed}}, text, TWO_TESTS)["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text", ["The log says: wait briefly, then stop the run", "The log says: now stop"])
+def test_sequencing_words_stay_inside_reported_stop_instructions(text):
+    assert validate_intent({"intent": "stop"}, text, {})["intent"] == "chat"
+
+
+@pytest.mark.parametrize("text,routed", [
+    ("Please run smoke; the README says: run all tests", "all"),
+    ("Please run smoke; the README says: run checkout", ["smoke.test.yaml", "checkout.test.yaml"]),
+])
+def test_reported_instructions_never_widen_an_explicit_run(text, routed):
+    got = validate_intent({"intent": "run", "args": {"tests": routed}}, text, TWO_TESTS)
+    assert got == {"intent": "run", "args": {"tests": ["smoke.test.yaml"]}}
