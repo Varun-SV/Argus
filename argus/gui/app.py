@@ -423,7 +423,8 @@ class ArgusAPI:
         tracker = TokenTracker()
         try:
             provider = cfg.make_provider(tracker)
-            return assistant.route_with_llm(provider, text, context)
+            # Free text proposes; it never runs, stops or changes anything by itself.
+            return assistant.confirmation(assistant.route_with_llm(provider, text, context))
         except ProviderError as exc:
             return {"intent": "error", "args": {"text": (
                 f"I couldn't reach {cfg.provider.type} to understand that ({exc}). "

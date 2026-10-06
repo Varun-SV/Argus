@@ -766,3 +766,22 @@ def test_close_save_reconciles_a_job_that_finished_after_the_last_poll(desktop_b
     card = next(m for m in saved["msgs"] if m["id"] == "late-run")
     assert card["snap"]["status"] == "pass" and not card["meta"]["running"]
     assert saved["followups"]
+
+
+def test_a_proposal_runs_only_when_its_command_chip_is_clicked(desktop_browser):
+    page, api, project = desktop_browser
+    page.evaluate("""() => {
+      const real = window.pywebview.api;
+      window.ranReport = 0;
+      window.pywebview.api = new Proxy(real, {get: (target, key) => {
+        if (key === 'recent_runs') return async () => { window.ranReport++; return []; };
+        return target[key];
+      }});
+      return execute({intent: 'confirm', args: {proposed: {intent: 'report', args: {}},
+                                               command: '/report', summary: 'Show recent runs'}});
+    }""")
+    assert page.evaluate("window.ranReport") == 0
+    assert page.evaluate("state.conv.followups.map(f => f.label)") == ["/report", "Never mind"]
+    page.locator("#followups").get_by_role("button", name="/report", exact=True).click()
+    page.wait_for_function("window.ranReport === 1")
+    assert page.evaluate("state.conv.msgs.some(m => m.kind === 'user' && m.text === '/report')")

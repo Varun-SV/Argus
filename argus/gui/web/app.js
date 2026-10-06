@@ -172,6 +172,17 @@ async function execute(res, conv = state.conv) {
       case "none": return;
       case "error": sayError(a.text || "Something went wrong."); return;
       case "chat": say(a.reply || ""); return;
+      case "confirm": {
+        // Free text only proposes an action that changes something; the click (or typing
+        // the slash command) is what runs it.
+        const cmd = a.command;
+        say(cmd ? `${a.summary}? Click to confirm, or type ${cmd}.` : `${a.summary}? Click to confirm.`);
+        setFollowups([
+          { label: cmd || a.summary, intent: a.proposed },
+          { label: "Never mind", intent: I("chat", { reply: "Okay, nothing was changed." }) },
+        ]);
+        return;
+      }
       case "help": {
         const r = await api().help();
         push({ role: "argus", kind: "help", groups: r.groups });

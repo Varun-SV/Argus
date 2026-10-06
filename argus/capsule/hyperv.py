@@ -22,6 +22,25 @@ from argus.capsule.base import (
 )
 
 
+def _remove_tree(root: Path, attempts: int = 5, delay: float = 0.1) -> None:
+    """Remove session storage, retrying Windows sharing violations briefly.
+
+    A file Argus just wrote (the session disk) can be held open for a moment by
+    antivirus or the indexer; that transient lock must not turn a clean rollback into
+    a cleanup failure. A lock that outlasts the retries is still reported.
+    """
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(root)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * 2 ** attempt)
+
+
 def _ps_quote(value: str) -> str:
     """Return a PowerShell single-quoted literal."""
     return "'" + str(value).replace("'", "''") + "'"
@@ -374,7 +393,7 @@ class HyperVProvider(CapsuleProvider):
                 f"VM removal failed: {exc}; session storage preserved at {root}"
             )
         try:
-            shutil.rmtree(root)
+            _remove_tree(root)
         except FileNotFoundError:
             pass
         except OSError as exc:
@@ -394,7 +413,7 @@ class HyperVProvider(CapsuleProvider):
                 f"VM removal failed: {exc}; session storage preserved at {root}"
             ) from exc
         try:
-            shutil.rmtree(root)
+            _remove_tree(root)
         except FileNotFoundError:
             pass
         except OSError as exc:

@@ -1,0 +1,103 @@
+"""Phrasing families for every free-text action: requests pass, everything else doesn't.
+
+Free text only proposes these actions (the GUI asks for a click or the slash command), but a
+proposal should still match what the user asked for, so each family is checked as a whole.
+"""
+import pytest
+
+from argus.gui.assistant import validate_intent
+
+CONTEXT = {"tests": [{"file": "checkout.test.yaml", "name": "checkout", "adapter": "cli"},
+                     {"file": "smoke.test.yaml", "name": "smoke", "adapter": "cli"}],
+           "providers": ["openai", "ollama"]}
+
+ARGS = {
+    "run": {"tests": ["checkout.test.yaml"]}, "stop": {}, "roam": {"target": "notepad.exe"}, "save_test": {},
+    "init": {}, "watch": {"action": "start"}, "switch_provider": {"provider": "openai"},
+    "environment": {"environment": "local"}, "knowledge": {"action": "reset", "target": "notepad.exe"},
+    "providers": {},
+}
+
+REQUESTS = {
+    "run": ["run checkout", "please run checkout", "can you run checkout", "run checkout now", "go ahead and run checkout",
+            "rerun checkout", "execute checkout", "Run checkout!", "ok run checkout", "run checkout please",
+            "run checkout locally", "i need you to run checkout", "run the checkout test"],
+    "stop": ["stop", "stop it", "stop the run", "please stop", "cancel the run", "abort", "stop now", "halt the run"],
+    "roam": ["roam notepad.exe", "explore notepad.exe", "please roam notepad.exe", "can you explore notepad.exe"],
+    "save_test": ["save", "save it", "save this draft", "please save the test"],
+    "init": ["init the project", "set up argus in this project", "initialize the argus project"],
+    "watch": ["start watching tests", "watch the tests", "turn on watch", "stop watching"],
+    "switch_provider": ["switch to openai", "use openai", "switch the provider to openai", "change model to openai"],
+    "environment": ["switch to local", "use local", "change the environment to local"],
+    "knowledge": ["reset knowledge for notepad.exe", "clear the knowledge for notepad.exe"],
+    "providers": ["check my provider connection", "is my provider working?", "test the model connection"],
+}
+
+NOT_REQUESTS = {
+    "run": ["don't run checkout", "never run checkout", "should I run checkout?", "how do I run checkout?",
+            "run checkout tomorrow", "run checkout if it fails", "run checkout, actually don't", "the CI runs checkout",
+            "the CI says: run checkout", "I ran checkout yesterday", "why did checkout run?",
+            "what happens if I run checkout?", "checkout runs fine", "maybe run checkout", "run checkout later",
+            "nobody should run checkout", "Running checkout is slow"],
+    "stop": ["don't stop", "the app stops responding", "it stopped", "should I stop it?", "stop it if it hangs",
+             "stop it later", "why did it stop?", "the log says: stop"],
+    "roam": ["don't roam notepad.exe", "should I roam notepad.exe?", "roam notepad.exe tomorrow",
+             "roam notepad.exe if it crashes", "the docs say: roam notepad.exe", "I roamed notepad.exe yesterday"],
+    "save_test": ["don't save", "should I save it?", "save it later", "the draft was saved", "save it if it passes"],
+    "init": ["don't initialize the project", "how do I set up the project?", "initialize the project tomorrow"],
+    "watch": ["don't watch tests", "should I watch tests?", "watch tests tomorrow", "I was watching tests",
+              "the docs say: watch tests", "we monitor tests in CI"],
+    "switch_provider": ["don't switch to openai", "should I switch to openai?", "switch to openai tomorrow",
+                        "openai is slow"],
+    "environment": ["don't switch to local", "should I switch to local?", "switch to local tomorrow"],
+    "knowledge": ["don't reset knowledge for notepad.exe", "should I reset knowledge for notepad.exe?",
+                  "reset knowledge for notepad.exe tomorrow"],
+    "providers": ["don't check the provider", "how do I check my provider?", "check the provider later"],
+}
+
+# Every request, wrapped as someone else's words, a condition, a delay, a take-back or a question.
+WRAPPERS = ["The README says: {}", "The log says, {}", "My colleague asked: {}",
+            "The docs say: first {}, then continue", "Note to self: {} tomorrow", "If it fails, {}", "{} later",
+            "{}, actually don't", "Should I {}?", "I don't want you to {}"]
+WRAPPED = [("run", "run checkout"), ("stop", "stop the run"), ("roam", "roam notepad.exe"),
+           ("save_test", "save the draft"), ("init", "initialize the argus project"),
+           ("watch", "start watching tests"), ("switch_provider", "switch to openai"),
+           ("environment", "switch to local"), ("knowledge", "reset knowledge for notepad.exe"),
+           ("providers", "check my provider connection")]
+
+
+def _route(action, text, args=None):
+    return validate_intent({"intent": action, "args": dict(args if args is not None else ARGS[action])},
+                           text, CONTEXT)["intent"]
+
+
+@pytest.mark.parametrize("action,text", [(a, t) for a, ts in REQUESTS.items() for t in ts])
+def test_requests_are_recognised(action, text):
+    assert _route(action, text) == action
+
+
+@pytest.mark.parametrize("action,text", [(a, t) for a, ts in NOT_REQUESTS.items() for t in ts])
+def test_non_requests_are_not(action, text):
+    assert _route(action, text) != action
+
+
+@pytest.mark.parametrize("wrapper", WRAPPERS)
+@pytest.mark.parametrize("action,request_text", WRAPPED)
+def test_wrapped_requests_are_not_the_users_own(action, request_text, wrapper):
+    assert _route(action, wrapper.format(request_text)) != action
+
+
+@pytest.mark.parametrize("action", ["reset", "export"])
+@pytest.mark.parametrize("wrapper", WRAPPERS[:4])
+def test_reported_knowledge_actions_are_not_requests(action, wrapper):
+    text = wrapper.format(f"{action} knowledge for notepad.exe")
+    assert _route("knowledge", text, {"action": action, "target": "notepad.exe"}) != "knowledge"
+
+
+@pytest.mark.parametrize("text,drafts", [
+    ("write a test for login", True), ("draft a test that checks login", True),
+    ("create a test to verify signup", True), ("the README says: write a test for login", False),
+    ("I wrote a test for login", False), ("don't write a test for login", False), ("should I write a test?", False),
+])
+def test_drafting_requests(text, drafts):
+    assert (_route("write_test", text, {"description": text}) == "write_test") is drafts

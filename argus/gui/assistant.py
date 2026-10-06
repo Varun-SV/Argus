@@ -176,10 +176,16 @@ def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "")
         return intent("stop")
     if cmd in ("/run", "/dry-run"):
         name = "run" if cmd == "/run" else "dry_run"
+        rest, settings = _run_flags(rest) if name == "run" else (rest, {})
         if not rest or rest.lower() in ("all", "everything", "suite"):
-            return intent(name, tests="all")
+            return intent(name, tests="all", **settings)
         if name == "dry_run" and rest.lower() in ("draft", "it"):
             return intent(name, tests="draft")
+        known = {str(t["file"]).casefold(): str(t["file"]) for t in tests}
+        words = rest.split()
+        if len(words) > 1 and all(w.casefold() in known for w in words):
+            # Several complete file names: exactly those tests, in the order given.
+            return intent(name, tests=list(dict.fromkeys(known[w.casefold()] for w in words)), **settings)
         matches = resolve_tests(rest, tests)
         if not matches:
             raise IntentError(f"No test matches '{rest}'. Try /run all, or check the Tests list.")
@@ -187,7 +193,7 @@ def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "")
             # A slash command runs what it names; a partial or shared name is not a choice.
             raise IntentError(f"'{rest}' matches {len(matches)} tests ({', '.join(matches)}). "
                               f"Name one by its file, e.g. /run {matches[0]}, or use /run all.")
-        return intent(name, tests=matches)
+        return intent(name, tests=matches, **settings)
     if cmd == "/roam":
         return _parse_roam_args(rest, last_target)
     if cmd == "/write":
@@ -214,18 +220,30 @@ def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "")
             return intent("switch_provider", provider=rest.lower())
         return intent("providers")
     if cmd == "/env":
-        choice = rest.lower()
+        words = rest.lower().split()
+        retain = None
+        for flag in [w for w in words if w in ("--retain", "--no-retain")]:
+            if retain is not None and retain != (flag == "--retain"):
+                raise IntentError("Choose either --retain or --no-retain.")
+            retain = flag == "--retain"
+        words = [w for w in words if w not in ("--retain", "--no-retain")]
+        if len(words) > 1:
+            raise IntentError("Use /env local, /env capsule, /env hyperv or /env libvirt.")
+        choice = words[0] if words else ""
+        extra = {} if retain is None else {"retain": retain}
         if not choice:
+            if extra:
+                # Failure retention only applies to Capsule runs.
+                return intent("environment", environment="capsule", **extra)
             return intent("environment")
         if choice == "local":
+            if extra:
+                raise IntentError("--retain keeps a failed Capsule; it doesn't apply to /env local.")
             return intent("environment", environment="local")
-        if choice in ("capsule", "auto"):
-            return intent("environment", environment="capsule", capsule_provider="auto")
-        if choice in ("hyperv", "hyper-v"):
-            return intent("environment", environment="capsule", capsule_provider="hyperv")
-        if choice in ("libvirt", "kvm"):
-            return intent("environment", environment="capsule", capsule_provider="libvirt")
-        raise IntentError("Use /env local, /env capsule, /env hyperv or /env libvirt.")
+        settings = _ENV_CHOICES.get(choice)
+        if settings is None:
+            raise IntentError("Use /env local, /env capsule, /env hyperv or /env libvirt.")
+        return intent("environment", **settings, **extra)
     if cmd == "/init":
         return intent("init")
     if cmd == "/watch":
@@ -234,6 +252,147 @@ def parse_slash(text: str, tests: Sequence[Mapping] = (), last_target: str = "")
             raise IntentError("Use /watch, /watch start or /watch stop.")
         return intent("watch", action=action or "start")
     raise IntentError(f"Unknown command {head}. Type /help to see what Argus can do.")
+
+
+_ENV_CHOICES = {
+    "capsule": {"environment": "capsule", "capsule_provider": "auto"},
+    "auto": {"environment": "capsule", "capsule_provider": "auto"},
+    "hyperv": {"environment": "capsule", "capsule_provider": "hyperv"},
+    "hyper-v": {"environment": "capsule", "capsule_provider": "hyperv"},
+    "libvirt": {"environment": "capsule", "capsule_provider": "libvirt"},
+    "kvm": {"environment": "capsule", "capsule_provider": "libvirt"},
+}
+
+
+def _run_flags(rest: str) -> tuple:
+    """Split ``/run`` execution flags (--env X, --retain/--no-retain) from the test names."""
+    words, settings = [], {}
+    parts = rest.split()
+    i = 0
+    while i < len(parts):
+        part = parts[i].lower()
+        if part == "--env":
+            if i + 1 >= len(parts):
+                raise IntentError("--env needs local, capsule, hyperv or libvirt.")
+            choice = parts[i + 1].lower()
+            chosen = {"environment": "local"} if choice == "local" else _ENV_CHOICES.get(choice)
+            if chosen is None:
+                raise IntentError("--env needs local, capsule, hyperv or libvirt.")
+            if any(settings.get(k, v) != v for k, v in chosen.items()):
+                raise IntentError("Choose one environment for this run.")
+            settings.update(chosen)
+            i += 2
+            continue
+        if part in ("--retain", "--no-retain"):
+            if settings.get("retain", part == "--retain") != (part == "--retain"):
+                raise IntentError("Choose either --retain or --no-retain.")
+            settings["retain"] = part == "--retain"
+        else:
+            words.append(parts[i])
+        i += 1
+    if settings.get("retain") is not None and settings.get("environment") == "local":
+        raise IntentError("--retain keeps a failed Capsule; it doesn't apply to --env local.")
+    return " ".join(words), settings
+
+
+# --------------------------------------------------------- confirmation ----
+
+# Free text never changes anything by itself. These intents come back as a proposal that
+# shows the equivalent slash command; only a click on it, or typing the command, acts.
+# Reading, explaining and drafting (a draft is never saved without /save) stay direct.
+CONFIRM_INTENTS = ("run", "roam", "stop", "save_test", "init", "switch_provider", "watch", "providers")
+
+
+def needs_confirmation(routed: Mapping) -> bool:
+    name, args = routed.get("intent"), routed.get("args") or {}
+    if name in CONFIRM_INTENTS:
+        return True
+    if name == "environment":
+        return any(k in args for k in ("environment", "capsule_provider", "retain"))
+    return name == "knowledge" and args.get("action") in ("reset", "export")
+
+
+def _slash_token(value: str) -> Optional[str]:
+    """``value`` as one /roam token, or None when no quoting can carry it unchanged."""
+    if value and not re.search(r"\s|[\"']", value) and not value.startswith("-"):
+        return value
+    for quote in ('"', "'"):
+        if quote not in value:
+            return quote + value + quote
+    return None
+
+
+def to_slash(routed: Mapping) -> Optional[str]:
+    """The slash command that does exactly what ``routed`` does, or None if none can."""
+    name, a = routed.get("intent"), routed.get("args") or {}
+    if name == "run":
+        tests = a.get("tests", "all")
+        if tests != "all" and len(tests) > 1 and any(re.search(r"\s", t) for t in tests):
+            return None  # several names, one with a space: no unambiguous /run form
+        parts = ["/run", "all" if tests == "all" else " ".join(tests)]
+        env = a.get("environment")
+        if env == "local":
+            parts.append("--env local")
+        elif env == "capsule":
+            parts.append("--env " + {"hyperv": "hyperv", "libvirt": "libvirt"}.get(a.get("capsule_provider"), "capsule"))
+        if isinstance(a.get("retain"), bool):
+            parts.append("--retain" if a["retain"] else "--no-retain")
+        return " ".join(parts)
+    if name == "roam":
+        target = _slash_token(str(a.get("target") or ""))
+        if target is None:
+            return None
+        parts = ["/roam", target, "--adapter", str(a.get("adapter") or adapter_for(str(a.get("target") or "")))]
+        if a.get("minutes") is not None:
+            parts += ["--minutes", f"{float(a['minutes']):g}"]
+        if isinstance(a.get("memory"), bool):
+            parts.append("--memory" if a["memory"] else "--no-memory")
+        return " ".join(parts)
+    if name == "environment":
+        if a.get("environment") == "local":
+            command = "/env local"
+        elif a.get("environment") == "capsule":
+            command = "/env " + {"hyperv": "hyperv", "libvirt": "libvirt"}.get(a.get("capsule_provider"), "capsule")
+        else:
+            command = "/env"
+        if isinstance(a.get("retain"), bool):
+            command += " --retain" if a["retain"] else " --no-retain"
+        return command
+    if name == "knowledge":
+        return f"/knowledge {a.get('action', 'show')} {a.get('target') or ''}".rstrip()
+    if name == "switch_provider":
+        return f"/providers {a.get('provider', '')}".rstrip()
+    if name == "watch":
+        return f"/watch {a.get('action', 'start')}"
+    return {"stop": "/stop", "save_test": "/save", "init": "/init", "providers": "/providers"}.get(name)
+
+
+def _describe(routed: Mapping) -> str:
+    name, a = routed.get("intent"), routed.get("args") or {}
+    if name == "run":
+        tests = a.get("tests", "all")
+        return "Run all tests" if tests == "all" else "Run " + ", ".join(tests)
+    if name == "roam":
+        minutes = f" for {float(a['minutes']):g} minutes" if a.get("minutes") is not None else ""
+        return f"Roam {a.get('target', '')}{minutes}"
+    if name == "environment":
+        return {"local": "Run tests locally"}.get(a.get("environment"), "Run tests in a Capsule") \
+            if a.get("environment") else "Change failure-capsule retention"
+    if name == "knowledge":
+        return f"{a.get('action', 'show').capitalize()} the knowledge for {a.get('target') or 'the last target'}"
+    if name == "watch":
+        return "Stop watching tests" if a.get("action") == "stop" else "Watch tests and re-run them on change"
+    if name == "switch_provider":
+        return f"Switch the model provider to {a.get('provider', '')}"
+    return {"stop": "Stop the current job", "save_test": "Save the draft to .argus",
+            "init": "Set up Argus in this project", "providers": "Check the provider connection"}.get(name, name)
+
+
+def confirmation(routed: dict) -> dict:
+    """Turn a state-changing free-text intent into a proposal; pass everything else through."""
+    if not needs_confirmation(routed):
+        return routed
+    return intent("confirm", proposed=routed, command=to_slash(routed), summary=_describe(routed))
 
 
 # A token is a quoted run or any run of non-space characters. Backslashes are kept as
@@ -495,7 +654,8 @@ def split_roam_request(text: str) -> Optional[RoamRequest]:
     can't be read unambiguously is a problem, so nothing runs with settings the user didn't
     choose. Returns None when the message has no roam/explore verb.
     """
-    match = _ROAM_VERB.search(text)
+    # A roam verb inside reported speech ("the docs say: roam X") isn't the user's request.
+    match = _ROAM_VERB.search(_without_reported_speech(text))
     if not match:
         return None
     modifiers: dict = {}
@@ -850,13 +1010,13 @@ def _authorized_simple_action(text: str, action: str) -> bool:
     if _question_about_action(text):
         return False
     action_words = {
-        "stop": r"stop|cancel|abort",
+        "stop": r"stop|cancel|abort|halt",
         "save_test": r"save|persist",
         "init": r"init|initialize|initialise|setup|set\s+up|scaffold",
         "write_test": r"write|draft|create|make",
     }
     patterns = {
-        "stop": _REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*(?:stop|cancel|abort)\b",
+        "stop": _REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*(?:stop|cancel|abort|halt)\b",
         "save_test": (
             r"^\s*(?:please\s+)?(?:save|persist)\s*[.!]?\s*$|"
             r"\b(?:save|persist)\b\s+(?:(?:this|that)\s+|(?:the\s+)?current\s+|the\s+)?"
@@ -970,7 +1130,7 @@ _PROVIDER_SUBJECT = (r"provider|model|llm|connection|connectivity|vision|api(?:\
 
 def _authorized_provider_check(text: str, configured: Sequence[str] = ()) -> bool:
     """A provider ping must be asked for now, about the provider, and not refused."""
-    words = _without_literals(text).replace("\u2019", "'")
+    words = _without_literals(_without_reported_speech(text)).replace("\u2019", "'")
     names = "|".join(re.escape(str(p)) for p in configured if str(p).strip())
     subject = r"\b(?:" + _PROVIDER_SUBJECT + (r"|" + names if names else "") + r")\b"
     if not re.search(subject, words, re.IGNORECASE):
@@ -1052,12 +1212,16 @@ def _watch_action_from_text(text: str) -> Optional[str]:
     words = _without_literals(text)
     if _CONDITION.search(words) or _FUTURE_TIME.search(words):
         return None
-    stop = re.search(r"\b(?:stop|disable|cancel|end|quit|turn\s+off)\b[^.!?]{0,40}\bwatch(?:ing|er)?\b|"
-                     r"\bwatch(?:ing|er)?\b[^.!?]{0,40}\b(?:stop|off)\b", words, re.IGNORECASE)
+    # The verb must be the user's request ("start watching tests"), not a description
+    # ("I was watching tests") or someone else's words ("the docs say: watch tests").
+    words = _without_reported_speech(words)
+    lead = _REQUEST_LEAD + _REQUEST_ADVERBS + r"\s*"
+    stop = re.search(lead + r"(?:stop|disable|cancel|end|quit|turn\s+off)\b[^.!?]{0,40}\bwatch(?:ing|er)?\b|"
+                     + lead + r"(?:turn|switch)\s+(?:the\s+)?watch(?:er)?\s+off\b", words, re.IGNORECASE)
     start = None if stop else re.search(
-        r"\b(?:start|enable|turn\s+on)\b[^.!?]{0,40}\bwatch(?:ing|er)?\b|"
-        r"^\s*(?:please\s+)?watch\b|"
-        r"\b(?:watch(?:ing)?|monitor(?:ing)?)\b[^.!?]{0,60}\b(?:tests?|files?|specs?|changes)\b",
+        lead + r"(?:start|enable|turn\s+on)\b[^.!?]{0,40}\bwatch(?:ing|er)?\b|"
+        + lead + r"(?:watch|monitor)\b[^.!?]{0,60}\b(?:tests?|files?|specs?|changes)\b|"
+        r"^\s*(?:please\s+)?watch\b",
         words, re.IGNORECASE)
     found = stop or start
     if found is None:
@@ -1261,8 +1425,9 @@ def validate_intent(raw: Mapping, text: str, context: Mapping) -> dict:
             negated = re.search(_REFUSAL + r"[^.;!?]*\b" + verb + r"\b",
                                 text.replace("\u2019", "'"), re.IGNORECASE)
             deferred = _deferred_or_withdrawn(text, r"\b" + verb + r"\b")
-            # Filenames/URLs are blanked so "export notepad.exe knowledge" isn't cut at the dot.
-            words = _without_literals(text)
+            # Filenames/URLs are blanked so "export notepad.exe knowledge" isn't cut at the dot,
+            # and reported speech ("the README says: reset knowledge ...") isn't the user's ask.
+            words = _without_literals(_without_reported_speech(text))
             if _question_about_action(text) or negated or deferred or not (
                 re.search(verb + r"\b[^.!?]{0,60}\bknowledge\b", words, re.IGNORECASE)
                 or re.search(r"\bknowledge\b[^.!?]{0,60}" + verb + r"\b", words, re.IGNORECASE)
