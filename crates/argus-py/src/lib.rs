@@ -1,8 +1,18 @@
-//! `argus._native`: the PyO3 extension module behind the documented Argus Python API
+//! `argus_next._native`: the PyO3 extension module behind the documented Argus Python API
 //! (docs/rearchitecture/specification.md §10, parity inventory §10).
 //!
-//! Phase P0 skeleton: it exposes only `version()`. The packaging work package owns this crate
-//! and the maturin wheel build.
+//! # Names during migration
+//!
+//! Until G-SWITCH (spec §12) the Python package `argus` from the `argus-app-testing`
+//! distribution is the shipped product and must not be shadowed. This extension is therefore
+//! packaged as `argus_next._native` in the preview distribution `argus-next` (see
+//! `python/pyproject.toml`). At G-SWITCH the module becomes `argus._native` in
+//! `argus-app-testing`; only the `module-name` in the maturin configuration and the Python
+//! package directory change, not this crate. The `#[pymodule]` below is named `_native` for
+//! that reason: the init symbol (`PyInit__native`) is the same under both package names.
+//!
+//! Phase P0 exposes only `version()`. The provisioning API listed in the parity inventory §10
+//! is added in P8.
 //!
 //! # Unsafe code policy
 //!
@@ -17,7 +27,11 @@
 
 use pyo3::prelude::*;
 
-/// Version of the native core, returned to Python as `argus._native.version()`.
+/// Version of the native core, returned to Python as `argus_next._native.version()`.
+///
+/// It is the workspace version, which is also the version of the Python distribution
+/// (maturin reads it from `Cargo.toml`), so `argus_next.native_version()` and
+/// `importlib.metadata.version("argus-next")` agree.
 #[must_use]
 pub fn native_version() -> &'static str {
     argus_core::PREVIEW_VERSION
@@ -41,5 +55,12 @@ mod tests {
     #[test]
     fn native_version_is_core_version() {
         assert_eq!(super::native_version(), argus_core::PREVIEW_VERSION);
+    }
+
+    #[test]
+    fn native_version_is_workspace_version() {
+        // argus-py inherits `version.workspace = true`, so its package version is the
+        // workspace version that maturin writes into the wheel metadata.
+        assert_eq!(super::native_version(), env!("CARGO_PKG_VERSION"));
     }
 }
