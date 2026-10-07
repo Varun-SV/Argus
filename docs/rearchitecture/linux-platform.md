@@ -81,7 +81,7 @@ A **usable X11 display** is one where Argus can connect with the available Xauth
 
 **CLI.** Command mode and the persistent interactive mode use a POSIX PTY (`openpty` via `portable-pty`), as specified in main specification §6.1. The process-group rules from §3.4 apply. Interactive mode has no version restriction on Linux.
 
-**Browser discovery.** A configured browser path comes first, as on every platform (main specification §6.2). Otherwise Argus looks for an installed browser in this order: `google-chrome-stable`, `chromium`, `chromium-browser`, `microsoft-edge-stable`. On aarch64, where Google Chrome may be unavailable, it uses Chromium. If none is found, it downloads a pinned Chromium and verifies its hash.
+**Browser discovery.** A configured browser path comes first, as on every platform (main specification §6.2). Otherwise Argus looks for an installed browser in this order: `google-chrome-stable`, `chromium`, `chromium-browser`, `microsoft-edge-stable`. On aarch64, where Google Chrome may be unavailable, it uses Chromium. If none is found, it downloads a pinned Chromium with the operator's consent and verifies its hash (main specification §6.2).
 
 **Snap and Flatpak browsers.** Ubuntu's `chromium` is a Snap. A confined browser may not accept Argus's profile directory or the `--remote-debugging-pipe` file descriptors.
 - Argus detects a Snap- or Flatpak-wrapped browser.
