@@ -5,7 +5,7 @@ Status: **planned; documentation only**
 Implementation gate: **PR #27 and PR #28 are merged. Do not begin implementation until the plan is reconciled with their final APIs and Fleet contracts, and prerequisite stabilization acceptance gates are met.**
 
 - PR #27: ISO-backed OS environment provisioning
-- PR #28: Claude-style desktop GUI and website redesign
+- PR #28: desktop GUI and website redesign
 
 This document records the intended design for review against those merged prerequisites. It is not an implementation contract yet; details may be refined against the merged APIs, but the architectural boundaries below should be preserved.
 

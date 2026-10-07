@@ -62,7 +62,7 @@ Exit codes, the `rich` console summaries (✓/✗ lines, step durations, summary
 | `browser` | Playwright Chromium, headless | Fix: Argus-owned CDP session, one observation-scoped element map, owned teardown, prefer installed Chrome/Edge (ARG-06, ARG-07, ARG-13, ACT-01…07) |
 | `desktop-gui` on Windows | pywinauto UIA tree, `mss` screenshots, safe semantic input | Fix: UIA through COM, actionability checked before dispatch (ARG-08, ACT-03, ACT-04) |
 | `desktop-gui` / `linux-gui` on Linux | X11 or auto-started Xvfb `:99`; `xdotool` input and window title, `scrot` screenshots; coordinates only; X session escape chords blocked | Keep and Fix: native X11 input/screenshots, owned Xvfb on a free display, AT-SPI elements with pre-dispatch actionability, process-group teardown, Wayland guidance ([Linux platform §3](linux-platform.md#3-desktop-gui-adapter)) |
-| Target guessing (`adapter_for`) and roam target parsing | Keep, Fix (ARG-03 exact executable paths with spaces) |
+| Target guessing (`adapter_for`) and roam target parsing | Heuristic: URLs and `localhost` → `browser`; scripts, `./` paths, known command names and absolute executable paths → `cli`; anything else → `desktop-gui` | Keep, Fix (ARG-03 exact executable paths with spaces) |
 
 ## 5. Engine
 
