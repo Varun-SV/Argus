@@ -81,7 +81,7 @@ Design costs found in the code, independent of language:
 3. **Browsers:** Chromium family only (Chrome, Edge, Chromium) over the Chrome DevTools Protocol. Argus prefers an installed Chrome/Edge and downloads a pinned Chromium only when none is found. No Node driver.
 4. **Sequencing:** the PR #29 stabilization issues (ARG-01…ARG-13) become acceptance gates of the new implementation instead of being fixed twice. The current Python release receives only critical fixes until the switch.
 
-The specification's open questions were answered the same day ([specification §16](specification.md#16-operator-decisions-on-the-open-questions-2026-10-07)). The minimum host is Windows 10 1809 or Windows Server 2019, because XP, Vista, 7, 8 and 8.1 cannot run a Rust/Tauri 2 build (specification §10.1). New projects default to graph-only knowledge. Capsule images get the native agent only on request or when a test needs it. PyPI switches in place at `0.2.0`.
+The specification's open questions were answered the same day ([specification §16](specification.md#16-operator-decisions-on-the-open-questions-2026-10-07)). The minimum Windows host is Windows 10 (any release) or Windows Server 2016, with interactive CLI mode needing Windows 10 1809 or later. XP, Vista, 7, 8 and 8.1 cannot run a Rust/Tauri 2 build (specification §10.1). New projects default to graph-only knowledge. Capsule images get the native agent only on request or when a test needs it. PyPI switches in place at `0.2.0`.
 
 ## 6. Consequences
 

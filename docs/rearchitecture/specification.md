@@ -107,7 +107,7 @@ C-07. CLI commands, options and exit codes stay as listed in the parity inventor
 ### 6.1 CLI (closes ARG-04, ARG-05)
 
 - **Command mode:** explicit argv, working directory, environment policy, timeout, bounded stdout/stderr captured independently, exit code. Normal non-zero exit is not a crash (CLI-01, CLI-07).
-- **Interactive mode:** an owned PTY (POSIX) or ConPTY (Windows) session with operations `send`, `read_until(text | prompt | timeout)`, `status`, `close`. Output is bounded and streamed into ATES under the privacy policy (CLI-02…06).
+- **Interactive mode:** an owned PTY (POSIX) or ConPTY (Windows 10 version 1809 or later, see §10.1) session with operations `send`, `read_until(text | prompt | timeout)`, `status`, `close`. Output is bounded and streamed into ATES under the privacy policy (CLI-02…06).
 - A launch with no arguments is classified as interactive or rejected with guidance. It never hangs until classified as a crash (CLI-03).
 - Inside a Capsule the same operations run in `argus-guest` over the authenticated control channel. There is never a separate shell channel (CLI-06).
 
@@ -170,19 +170,21 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 
 | Component | Minimum |
 |---|---|
-| Windows host: `argus`, `argus-gui`, `argus serve` | Windows 10 version 1809 or later, Windows 11, Windows Server 2019 or later; x64 and ARM64 |
-| Hyper-V Capsules | as above, on an edition with Hyper-V (Pro, Enterprise, Education or Server) |
+| Windows host: `argus`, `argus-gui`, `argus serve` | **Windows 10** (any release, including LTSB/LTSC), Windows 11, Windows Server 2016 or later; x64 and ARM64 |
+| Interactive CLI mode on Windows (ConPTY, §6.1) | Windows 10 version 1809, Windows Server 2019 or later. On older Windows 10 builds every other feature works, including CLI command mode; preflight rejects an interactive-mode test before it starts and names the required version |
+| Hyper-V Capsules | as above, on an edition with Hyper-V (Pro, Enterprise, Education or Server). Preflight checks the Hyper-V features a Capsule needs (for example a virtual TPM for Windows 11 guests) by probing them, not by trusting a version number (ARG-02) |
 | Windows desktop app | also needs the WebView2 Evergreen runtime (included in Windows 11; the installer bootstraps it on Windows 10) |
 | macOS | 10.15 or later (Tauri 2 minimum), universal2 |
 | Linux CLI and `argus serve` | glibc 2.28 or later (`manylinux_2_28`), x86_64 and aarch64 |
 | Linux desktop app | WebKitGTK 4.1 (Ubuntu 22.04, Debian 12, Fedora 36 or later) |
 | Native guest agent (`argus-guest`) | the guest systems that image provisioning already supports (Windows 11 23H2/24H2 unattended profiles, the pinned Ubuntu profiles) |
 
+Windows 10 is the minimum because it is the oldest Windows that Rust's standard targets and WebView2 both support. TLS uses `rustls` (§14), not the Windows TLS stack, so model providers, Capsule control and Fleet work the same on every supported Windows build. Microsoft no longer supports most Windows 10 releases; Argus still runs on them, but bugs that occur only there are fixed on a best-effort basis.
+
 Why Windows XP, Vista, 7, 8 and 8.1 cannot be supported:
 
 - Rust's standard Windows targets need Windows 10 or later. Windows 7 and 8 were dropped in Rust 1.78 (2024) and now have only unsupported tier-3 targets. No Rust target supports XP.
 - Tauri 2 needs WebView2. Microsoft stopped WebView2 support for Windows 7, 8 and 8.1 in 2023, and it never supported XP.
-- The interactive terminal (ConPTY, ARG-04) exists only from Windows 10 version 1809.
 - XP has no usable TLS 1.2 or 1.3 stack, so it cannot reach model providers, verify Capsule TLS or take part in Fleet.
 - The Chromium-family browser adapter needs a current Chrome or Edge. Chrome stopped supporting XP at version 49 (2016) and Windows 7 at version 109 (2023).
 - The current Python product cannot run there either: Python 3.10, its minimum, needs Windows 8.1 or later.
@@ -191,7 +193,7 @@ Testing applications that run on old Windows is a different question from runnin
 
 ## 11. Performance budgets and how they are measured
 
-Baselines are the Python numbers in [ADR-001 §2](tech-stack-decision.md#2-what-actually-costs-resources-today). Targets are acceptance gates (G-PERF) checked on Windows 11 x64 and Ubuntu 24.04 x64 with a committed benchmark harness. The harness samples whole-process-tree RSS at 50 ms and reports median of 5 runs.
+Baselines are the Python numbers in [ADR-001 §2](tech-stack-decision.md#2-what-actually-costs-resources-today). Targets are acceptance gates (G-PERF) checked on Windows 11 x64 and Ubuntu 24.04 x64. A Windows 10 test host (LTSC 2016, version 1607, the oldest Windows 10 release still under Microsoft support when this was written) runs the conformance suite to prove the minimum (§10.1). G-PERF is measured with a committed benchmark harness. The harness samples whole-process-tree RSS at 50 ms and reports median of 5 runs.
 
 | Scenario | Python baseline | Target |
 |---|---|---|
@@ -272,7 +274,7 @@ The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is im
 
 ## 16. Operator decisions on the open questions (2026-10-07)
 
-1. **Minimum OS (P0).** The operator asked whether Windows support could reach back to XP. It cannot, for the reasons in §10.1. The minimum is Windows 10 version 1809 or Windows Server 2019, on x64 and ARM64; the other platforms are listed in §10.1. Testing applications on old Windows inside Capsules is possible later as a separate feature, and only when the operator requests it.
+1. **Minimum OS (P0).** The operator asked whether Windows support could reach back to XP. It cannot, for the reasons in §10.1. The operator then set the minimum to **Windows 10** (any release) and Windows Server 2016, on x64 and ARM64. The one exception is the interactive CLI mode, which needs ConPTY and therefore Windows 10 version 1809 or later; on older builds it is rejected at preflight with a clear message. The other platforms are listed in §10.1. Testing applications on old Windows inside Capsules is possible later as a separate feature, and only when the operator requests it.
 2. **Default embedding backend (P4).** The operator had no preference. The default for new projects is `none` (graph only): it needs no download and no running server, and it reports its limits honestly. When an Ollama provider is configured and reachable, Argus offers `ollama` embeddings as a confirmed change (§7). It never switches silently.
 3. **Republishing Capsule images with the native guest agent (P6).** Images are republished in two cases only:
    - the operator asks for it, by provisioning an image with the `native` runtime kind through the provisioning API;
