@@ -388,24 +388,52 @@ def _run_all(test: Optional[str], cfg, minutes, max_tokens) -> None:
 
 
 @main.command()
-@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Address to bind. Non-loopback addresses need --allow-remote.")
 @click.option("--port", default=5000, show_default=True)
-@click.option("--debug", is_flag=True)
-def serve(host: str, port: int, debug: bool) -> None:
-    """Start the Argus web dashboard (requires Flask)."""
+@click.option("--allow-remote", is_flag=True,
+              help="Allow binding a non-loopback address. The access token and "
+                   "Origin check still apply.")
+@click.option("--debug", is_flag=True,
+              help="Verbose request and diagnostic logging (never an interactive "
+                   "debugger or reloader).")
+def serve(host: str, port: int, allow_remote: bool, debug: bool) -> None:
+    """Start the Argus web dashboard (requires Flask).
+
+    A new access token is printed once at startup; sign in with it at /login or
+    send it in an "Authorization: Bearer" header.
+    """
+    from argus.serve.app import create_app, generate_access_token, is_loopback_host
+
+    if not allow_remote and not is_loopback_host(host):
+        raise click.UsageError(
+            f"--host {host} is not a loopback address; pass --allow-remote to "
+            "serve the dashboard on a non-loopback address."
+        )
+    cfg = load_config()
+    token = generate_access_token()
     try:
-        from argus.serve.app import create_app
+        app = create_app(cfg, token, host=host, port=port, allow_remote=allow_remote,
+                         verbose=debug)
     except ImportError:
         _die(
             "Flask is required for `argus serve` — "
             "install with: pip install argus-app-testing[serve]"
         )
-    cfg = load_config()
-    app = create_app(cfg)
+    url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
     console.print(
-        f"[green]✓[/green] Argus dashboard at [cyan]http://{host}:{port}[/cyan]"
+        f"[green]✓[/green] Argus dashboard at [cyan]http://{url_host}:{port}[/cyan]"
     )
-    app.run(host=host, port=port, debug=debug)
+    if allow_remote:
+        console.print(
+            "[yellow]![/yellow] remote access allowed: traffic is plain HTTP unless "
+            "a TLS proxy is in front"
+        )
+    console.print(f"  sign in at [cyan]http://{url_host}:{port}/login[/cyan]")
+    console.print("  access token (valid until the server stops):")
+    click.echo(f"  {token}")
+    app.run(host=host, port=port, debug=False, use_reloader=False,
+            use_debugger=False, use_evalex=False)
 
 
 # ----------------------------------------------------------- providers ----

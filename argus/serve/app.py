@@ -3,21 +3,29 @@
 Remote workflow: ``argus serve`` keeps running after you close your SSH/RDP
 session (use tmux/screen/nohup). Then reconnect from any browser to start or
 monitor a roam session via the /roam control page.
+
+Every route except ``/login`` requires the per-launch access token, either as the
+session cookie issued by ``POST /login`` or as an ``Authorization: Bearer`` header.
+State-changing requests must also pass an ``Origin`` check, and unless remote
+access is allowed the ``Host`` header must name the loopback address being served.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
-import time
+import logging
+import secrets
 import threading
-from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+import time
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from argus.config import ArgusConfig
 
 # Module-level live state for in-process roam/run sessions.
 _live_lock = threading.Lock()
-_live_png: Optional[bytes] = None
+_live_png: bytes | None = None
 _live_log: list = []
 
 
@@ -30,6 +38,61 @@ def set_live_screenshot(png: bytes) -> None:
 def append_live_event(line: str) -> None:
     with _live_lock:
         _live_log.append(line)
+
+
+# ── access control ─────────────────────────────────────────────────────────
+
+_MIN_TOKEN_LEN = 32
+_STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_PUBLIC_ENDPOINTS = frozenset({"login_page", "login_submit"})
+_LOOPBACK_NAMES = ("localhost", "127.0.0.1", "[::1]")
+
+_log = logging.getLogger("argus.serve")
+
+
+def generate_access_token() -> str:
+    """Return a fresh random access token for one ``argus serve`` launch."""
+    return secrets.token_urlsafe(32)
+
+
+def is_loopback_host(host: str) -> bool:
+    """True for 127.0.0.0/8, ::1, or ``localhost`` when it resolves only to loopback."""
+    import ipaddress
+    import socket
+
+    name = host.strip()
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        pass
+    if name.lower() != "localhost":
+        return False
+    try:
+        infos = socket.getaddrinfo(name, None)
+    except OSError:
+        return False
+    addrs = {info[4][0].split("%", 1)[0] for info in infos}
+    try:
+        return bool(addrs) and all(ipaddress.ip_address(a).is_loopback for a in addrs)
+    except ValueError:
+        return False
+
+
+def _host_header_name(host: str) -> str:
+    host = host.strip().lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return host
+
+
+def _allowed_hosts(host: str, port: int) -> frozenset:
+    names = {*_LOOPBACK_NAMES, _host_header_name(host)}
+    allowed = {f"{name}:{port}" for name in names}
+    if port == 80:
+        allowed |= names
+    return frozenset(allowed)
 
 
 # ── HTML templates ─────────────────────────────────────────────────────────
@@ -245,9 +308,54 @@ function esc(s) {
 </html>"""
 
 
+_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Argus — Sign in</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;background:#0d1117;color:#c9d1d9;
+       display:flex;align-items:center;justify-content:center;min-height:100vh}
+  form{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1.5rem;
+       width:min(360px,90vw);display:flex;flex-direction:column;gap:.75rem}
+  h1{color:#58a6ff;font-size:1.2rem;margin:0}
+  p{font-size:.85rem;color:#8b949e;margin:0}
+  input{padding:.5rem .75rem;background:#0d1117;border:1px solid #30363d;
+        border-radius:6px;color:#c9d1d9;font-size:.9rem}
+  button{padding:.5rem 1.2rem;border-radius:6px;border:none;cursor:pointer;
+         font-weight:600;background:#1f6feb;color:#fff}
+  .error{color:#f85149}
+</style>
+</head>
+<body>
+<form method="post" action="/login">
+  <h1>Argus Dashboard</h1>
+  <p>Paste the access token that <code>argus serve</code> printed when it started.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <input type="password" name="token" autocomplete="off" autofocus required
+         aria-label="Access token">
+  <button type="submit">Sign in</button>
+</form>
+</body>
+</html>"""
+
+
 # ── Flask app ──────────────────────────────────────────────────────────────
 
-def create_app(cfg: "ArgusConfig"):
+def create_app(
+    cfg: ArgusConfig,
+    token: str | None = None,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 5000,
+    allow_remote: bool = False,
+    verbose: bool = False,
+):
+    """Build the dashboard app guarded by ``token`` (generated when omitted).
+
+    ``host`` and ``port`` are the bound address used for the ``Host`` check, which
+    ``allow_remote`` disables. ``verbose`` turns on request diagnostics only.
+    """
     try:
         from flask import Flask
         from jinja2 import Template
@@ -259,12 +367,119 @@ def create_app(cfg: "ArgusConfig"):
 
     from argus.engine.results import load_runs
 
+    if token is None:
+        token = generate_access_token()
+    if not isinstance(token, str) or len(token) < _MIN_TOKEN_LEN:
+        raise ValueError(f"access token must be at least {_MIN_TOKEN_LEN} characters")
+
     flask_app = Flask(__name__)
+    flask_app.debug = False
+    flask_app.config["ARGUS_ACCESS_TOKEN"] = token
     dashboard_tmpl = Template(_DASHBOARD_HTML)
+    login_tmpl = Template(_LOGIN_HTML, autoescape=True)
+
+    token_bytes = token.encode("utf-8")
+    session_value = hmac.new(token_bytes, b"argus-serve-session-v1", hashlib.sha256).hexdigest()
+    cookie_name = f"argus_session_{port}"
+    allowed_hosts = _allowed_hosts(host, port)
+    if verbose:
+        _log.setLevel(logging.DEBUG)
+        if not _log.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(asctime)s argus.serve %(message)s"))
+            _log.addHandler(handler)
 
     # Per-app roam session state (shared across requests in the same process).
     _roam: dict = {"running": False, "log": [], "report": None, "findings": 0, "stop": False}
     _roam_lock = threading.Lock()
+
+    # ── access control ─────────────────────────────────────────────────────
+
+    def _bearer_ok() -> bool:
+        from flask import request
+        scheme, _, value = request.headers.get("Authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not value.strip():
+            return False
+        return hmac.compare_digest(value.strip().encode("utf-8"), token_bytes)
+
+    def _cookie_ok() -> bool:
+        from flask import request
+        value = request.cookies.get(cookie_name, "")
+        return bool(value) and hmac.compare_digest(
+            value.encode("utf-8"), session_value.encode("utf-8")
+        )
+
+    def _deny(status: int, error: str):
+        from flask import jsonify
+        resp = jsonify({"ok": False, "error": error})
+        resp.status_code = status
+        if status == 401:
+            resp.headers["WWW-Authenticate"] = "Bearer"
+        return resp
+
+    @flask_app.before_request
+    def _guard():
+        from flask import redirect, request
+
+        if not allow_remote and request.host.lower() not in allowed_hosts:
+            _log.debug("rejected host %r for %s %s", request.host, request.method,
+                       request.path)
+            return _deny(403, "host not allowed")
+
+        bearer = _bearer_ok()
+        if request.method in _STATE_CHANGING:
+            origin = request.headers.get("Origin")
+            if origin is None:
+                if not bearer:
+                    _log.debug("rejected %s %s: no Origin", request.method, request.path)
+                    return _deny(403, "missing Origin header")
+            elif origin.lower() != f"{request.scheme}://{request.host}".lower():
+                _log.debug("rejected %s %s: foreign Origin", request.method, request.path)
+                return _deny(403, "cross-origin request refused")
+
+        if request.endpoint in _PUBLIC_ENDPOINTS:
+            return None
+        if bearer or _cookie_ok():
+            return None
+        _log.debug("unauthenticated %s %s", request.method, request.path)
+        if request.method in ("GET", "HEAD") and not request.path.startswith("/api/"):
+            return redirect("/login")
+        return _deny(401, "authentication required")
+
+    if verbose:
+        @flask_app.after_request
+        def _log_request(resp):
+            from flask import request
+            _log.debug("%s %s %s -> %s", request.remote_addr, request.method,
+                       request.path, resp.status_code)
+            return resp
+
+    @flask_app.route("/login", methods=["GET"])
+    def login_page():
+        from flask import Response
+        return Response(login_tmpl.render(error=None), mimetype="text/html")
+
+    @flask_app.route("/login", methods=["POST"])
+    def login_submit():
+        from flask import Response, jsonify, redirect, request
+        as_json = request.is_json
+        if as_json:
+            supplied = (request.get_json(silent=True) or {}).get("token")
+        else:
+            supplied = request.form.get("token")
+        ok = isinstance(supplied, str) and hmac.compare_digest(
+            supplied.strip().encode("utf-8"), token_bytes
+        )
+        if not ok:
+            _log.debug("login failed from %s", request.remote_addr)
+            if as_json:
+                return _deny(401, "invalid access token")
+            return Response(login_tmpl.render(error="Invalid access token."),
+                            status=401, mimetype="text/html")
+        resp = jsonify({"ok": True}) if as_json else redirect("/", code=303)
+        resp.set_cookie(cookie_name, session_value, path="/", httponly=True,
+                        samesite="Strict", secure=request.is_secure)
+        return resp
 
     # ── pages ──────────────────────────────────────────────────────────────
 

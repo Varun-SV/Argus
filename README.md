@@ -376,9 +376,20 @@ Fleet deliberately preserves `ExecutionEnvironment -> Capsule -> Adapter`. Sched
 
 ```bash
 pip install "argus-app-testing[serve]"
-argus serve
-argus serve --host 0.0.0.0 --port 8080
+argus serve                                    # http://127.0.0.1:5000
+argus serve --port 8080
+argus serve --host 0.0.0.0 --allow-remote      # non-loopback bind, see below
 ```
+
+Every page and API call requires the access token that `argus serve` prints once when it starts. A new token is generated on every launch, so restarting the server signs everyone out.
+
+- **Browser:** open the printed address, go to `/login` and paste the token. The dashboard then keeps you signed in with an `HttpOnly`, `SameSite=Strict` cookie until the server stops.
+- **Scripts:** send the token as a header, for example `curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5000/api/roam/status`. Requests that change state (`POST` and friends) must either carry the Bearer header or come from the dashboard's own origin.
+- The token is never accepted in a URL query string, so do not put it in links or bookmarks.
+
+By default the dashboard binds `127.0.0.1` and only answers requests addressed to the loopback name and port it is serving, which blocks DNS-rebinding attacks. Binding any non-loopback address, such as `--host 0.0.0.0`, exits with an error unless you also pass `--allow-remote`. With `--allow-remote` the token and the `Origin` check still apply, but traffic is plain HTTP, so put a TLS reverse proxy or an SSH tunnel (`ssh -L 5000:127.0.0.1:5000 host`) in front of it rather than exposing it directly.
+
+`--debug` turns on verbose request and diagnostic logging. It never enables the Flask interactive debugger or the code reloader.
 
 The current dashboard shows run history and roam-session summaries. The Fleet Observer described above is a future architecture and should not be confused with the existing dashboard.
 
