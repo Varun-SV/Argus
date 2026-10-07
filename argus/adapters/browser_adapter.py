@@ -1,9 +1,22 @@
 """Browser adapter using Playwright — cross-platform web testing."""
 from __future__ import annotations
 
-from typing import List, Optional
+import contextlib
 
 from argus.adapters.base import Adapter, AdapterError, Observation, UIElement
+
+_OBSERVED_SELECTOR = "a, button, input, select, textarea, h1, h2, h3, [aria-label], [role]"
+_MAX_ELEMENTS = 150
+_PROBE_JS = """e => ({
+    connected: e.isConnected,
+    tag: e.tagName.toLowerCase(),
+    type: e.tagName === 'INPUT' ? String(e.type || 'text').toLowerCase() : '',
+    contentEditable: !!e.isContentEditable,
+})"""
+_FILLABLE_INPUT_TYPES = frozenset({
+    "text", "password", "email", "number", "search", "tel", "url",
+    "date", "time", "datetime-local", "month", "week", "color", "range",
+})
 
 
 class BrowserAdapter(Adapter):
@@ -17,6 +30,9 @@ class BrowserAdapter(Adapter):
         self._pw = None
         self._browser = None
         self._page = None
+        # Observation-scoped id -> element handle map. Every element-targeted
+        # action resolves through it; it is replaced wholesale by observe().
+        self._elements: dict[int, object] = {}
 
     def capabilities(self) -> dict:
         return {
@@ -47,12 +63,14 @@ class BrowserAdapter(Adapter):
         launcher = getattr(self._pw, self._browser_type)
         self._browser = launcher.launch(headless=self._headless)
         self._page = self._browser.new_page()
+        self._reset_elements()
         try:
             self._page.goto(target, wait_until="domcontentloaded", timeout=30000)
         except Exception as exc:
             raise AdapterError(f"failed to navigate to '{target}': {exc}") from exc
 
     def observe(self, include_screenshot: bool = True) -> Observation:
+        self._reset_elements()
         if not self._page:
             return Observation(window_title="(no page)", process_alive=False)
         try:
@@ -68,15 +86,14 @@ class BrowserAdapter(Adapter):
             except Exception:
                 pass
 
-        elements: List[UIElement] = []
+        elements: list[UIElement] = []
+        mapping: dict[int, object] = {}
         try:
-            handles = self._page.query_selector_all(
-                "a, button, input, select, textarea, h1, h2, h3, [aria-label], [role]"
-            )
-            for i, el in enumerate(handles[:150]):
+            handles = self._page.query_selector_all(_OBSERVED_SELECTOR)
+            for i, el in enumerate(handles[:_MAX_ELEMENTS]):
                 try:
                     text = (el.inner_text() or el.get_attribute("aria-label") or "")[:80]
-                    tag = el.evaluate("e => e.tagName").lower()
+                    tag = str(el.evaluate(_PROBE_JS)["tag"]).lower()
                     box = el.bounding_box() or {}
                     rect = (
                         int(box.get("x", 0)), int(box.get("y", 0)),
@@ -84,10 +101,12 @@ class BrowserAdapter(Adapter):
                         int(box.get("y", 0) + box.get("height", 0)),
                     )
                     elements.append(UIElement(element_id=i, control_type=tag, name=text, rect=rect))
+                    mapping[i] = el
                 except Exception:
                     continue
         except Exception:
-            pass
+            elements, mapping = [], {}
+        self._elements = mapping
 
         return Observation(
             window_title=title,
@@ -97,6 +116,103 @@ class BrowserAdapter(Adapter):
             url=url,
         )
 
+    def _reset_elements(self) -> None:
+        old, self._elements = self._elements, {}
+        for handle in old.values():
+            with contextlib.suppress(Exception):
+                handle.dispose()
+
+    def _resolve(self, element_id, operation: str) -> tuple[object, dict]:
+        """Return the observed handle for *element_id* if it can take *operation*.
+
+        Raises before any input is dispatched when the id is not part of the
+        current observation, the node has been detached or replaced, or it
+        cannot receive the requested operation.
+        """
+        try:
+            key = int(element_id)
+        except (TypeError, ValueError) as exc:
+            raise AdapterError(
+                f"unknown element_id {element_id!r} — re-observe and use a listed id"
+            ) from exc
+        handle = self._elements.get(key)
+        if handle is None:
+            raise AdapterError(
+                f"element {key} is not in the current observation — re-observe and use a listed id"
+            )
+        try:
+            probe = handle.evaluate(_PROBE_JS)
+        except Exception:
+            probe = None
+        if not probe or not probe.get("connected"):
+            raise AdapterError(
+                f"element {key} is stale (detached by navigation or DOM replacement) — re-observe"
+            )
+        try:
+            visible = bool(handle.is_visible())
+            enabled = bool(handle.is_enabled())
+        except Exception as exc:
+            raise AdapterError(
+                f"element {key} is stale ({type(exc).__name__}) — re-observe"
+            ) from exc
+        if not visible:
+            raise AdapterError(f"element {key} cannot {operation}: it is not visible")
+        if not enabled:
+            raise AdapterError(f"element {key} cannot {operation}: it is disabled")
+        if operation == "type":
+            tag = probe.get("tag")
+            fillable = (
+                bool(probe.get("contentEditable"))
+                or tag == "textarea"
+                or (tag == "input" and probe.get("type") in _FILLABLE_INPUT_TYPES)
+            )
+            try:
+                editable = fillable and bool(handle.is_editable())
+            except Exception:
+                editable = False
+            if not editable:
+                kind = f"input[type={probe.get('type')}]" if tag == "input" else tag
+                raise AdapterError(f"element {key} ({kind}) is not editable — cannot type into it")
+        return handle, probe
+
+    def validate_action(self, action: dict) -> None:
+        kind = (action.get("action") or "").lower()
+        if self._page and kind in {"click", "type"} and "element_id" in action:
+            self._resolve(action["element_id"], kind)
+
+    def _type_into(self, element_id, text: str) -> str:
+        el, probe = self._resolve(element_id, "type")
+        secret = probe.get("type") == "password"
+        label = f"element {element_id}" + (" (password field)" if secret else "")
+        try:
+            el.fill(text)
+        except Exception as exc:
+            if secret:
+                raise AdapterError(f"type into {label} failed: {type(exc).__name__}") from None
+            raise AdapterError(f"type into {label} failed: {exc}") from exc
+        try:
+            if probe.get("tag") in {"input", "textarea"}:
+                actual = el.input_value()
+            else:
+                actual = el.inner_text().replace("\xa0", " ").rstrip("\n")
+        except Exception as exc:
+            raise AdapterError(
+                f"type into {label} could not be verified: value read-back failed "
+                f"({type(exc).__name__})"
+            ) from None
+        if _normalize(actual, probe) != _normalize(text, probe):
+            if secret:
+                raise AdapterError(
+                    f"type into {label} did not match the intended text (value not shown)"
+                )
+            raise AdapterError(
+                f"type into {label} did not match: intended {text[:80]!r}, "
+                f"element holds {actual[:80]!r}"
+            )
+        if secret:
+            return f"filled {label} with {len(text)} characters"
+        return f"filled element {element_id} with {text!r}"
+
     def act(self, action: dict) -> str:
         if not self._page:
             raise AdapterError("no page loaded — call launch() first")
@@ -104,31 +220,20 @@ class BrowserAdapter(Adapter):
 
         if kind == "click":
             if "element_id" in action:
+                el, _ = self._resolve(action["element_id"], "click")
                 try:
-                    handles = self._page.query_selector_all(
-                        "a, button, input, select, textarea, h1, h2, h3, [aria-label], [role]"
-                    )
-                    el = handles[int(action["element_id"])]
                     el.click()
-                    return f"clicked element {action['element_id']}"
                 except Exception as exc:
                     raise AdapterError(f"click failed: {exc}") from exc
+                return f"clicked element {action['element_id']}"
             x, y = action.get("x", 0), action.get("y", 0)
             self._page.mouse.click(float(x), float(y))
             return f"clicked ({x},{y})"
 
         if kind == "type":
-            text = action.get("text", "")
+            text = str(action.get("text", ""))
             if "element_id" in action:
-                try:
-                    handles = self._page.query_selector_all(
-                        "a, button, input, select, textarea, [aria-label]"
-                    )
-                    el = handles[int(action["element_id"])]
-                    el.fill(text)
-                    return f"filled element {action['element_id']} with {text!r}"
-                except Exception:
-                    pass
+                return self._type_into(action["element_id"], text)
             self._page.keyboard.type(text)
             return f"typed {text!r}"
 
@@ -139,6 +244,7 @@ class BrowserAdapter(Adapter):
 
         if kind == "navigate":
             url = action.get("url", "")
+            self._reset_elements()
             self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             return f"navigated to {url}"
 
@@ -169,6 +275,14 @@ class BrowserAdapter(Adapter):
         except Exception:
             pass
         self._page = self._browser = self._pw = None
+        self._elements = {}
+
+
+def _normalize(value: str, probe: dict) -> str:
+    value = str(value).replace("\r\n", "\n")
+    if probe.get("type") == "color":
+        value = value.lower()
+    return value
 
 
 def _to_playwright_key(combo: str) -> str:

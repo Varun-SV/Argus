@@ -116,7 +116,7 @@ class FakeHandle:
     def is_editable(self):
         self._check_attached()
         if not self._fillable() and self.tag not in {"select"}:
-            raise RuntimeError("Element is not an <input>, <textarea>, <select> or [contenteditable]")
+            raise RuntimeError("Element is not an <input>, <select> or [contenteditable]")
         return self.enabled and not self.readonly
 
     def click(self, **kwargs):
@@ -398,7 +398,7 @@ def test_rejection_happens_in_prepare_action_before_dispatch():
     field.connected = False
 
     dispatched = []
-    inner.dispatch_prepared_action = lambda action: dispatched.append(action)
+    inner.dispatch_prepared_action = dispatched.append
     with pytest.raises(AdapterError, match="stale"):
         guarded.prepare_action({"action": "type", "element_id": 1, "text": "hello"})
     with pytest.raises(AdapterError, match="not in the current observation"):
@@ -418,7 +418,7 @@ def test_prepare_action_accepts_a_valid_observed_target():
 
 
 def test_value_mismatch_after_type_is_a_failure():
-    page, _, field, _ = _fixture_page(maxlength=3)
+    page, *_ = _fixture_page(maxlength=3)
     adapter = _adapter(page)
     adapter.observe(include_screenshot=False)
     with pytest.raises(AdapterError, match="did not match"):
@@ -515,7 +515,8 @@ _orig_launch = BrowserType.launch
 
 
 def _local_chromium():
-    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.expanduser("~/.cache/ms-playwright")
+    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    root = root or os.path.expanduser("~/.cache/ms-playwright")
     for pattern in ("chromium-*/chrome-linux*/chrome", "chromium_headless_shell-*/chrome-*/*shell"):
         hits = sorted(glob.glob(os.path.join(root, pattern)))
         if hits:
@@ -575,6 +576,7 @@ def _run_browser(body: str) -> dict:
             capture_output=True,
             text=True,
             timeout=120,
+            check=False,
             env=dict(os.environ),
         )
     except subprocess.TimeoutExpired:
