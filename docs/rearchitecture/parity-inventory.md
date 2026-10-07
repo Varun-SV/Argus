@@ -21,7 +21,7 @@ Legend: **Keep** = same behaviour and same user-visible contract. **Fix** = keep
 | `argus run [TEST]` | `--minutes`, `--max-tokens`, `--dry-run` | Keep |
 | `argus roam TARGET` | `--minutes`, `--max-tokens`, `--no-regressions`, `--adapter`, `--memory/--no-memory` | Fix (ARG-03, ARG-05, ARG-07) |
 | `argus watch` | `--minutes`, `--max-tokens` | Keep (native file watcher) |
-| `argus serve` | `--host`, `--port`, `--debug` | **Fix**: serves the PR #28 UI over HTTP instead of the Flask templates (see [specification §8](specification.md#8-argus-serve-uses-the-same-ui)) |
+| `argus serve` | `--host`, `--port`, `--debug`; new `--allow-remote` | **Fix**: serves the PR #28 UI over HTTP instead of the Flask templates, with a per-launch access token and an `Origin` check (see [specification §8](specification.md#8-argus-serve-uses-the-same-ui)). `--host` and `--port` keep their meaning. Documented behaviour change (C-07): a non-loopback `--host` such as `0.0.0.0` requires `--allow-remote`, and without it the command exits non-zero naming that flag. `--debug` is verbose logging only, with no debugger or reloader |
 | `argus gui` / `argus-gui` | – | Keep (Tauri app) |
 | `argus providers` | – | Fix (ARG-01: readiness states) |
 | `argus report` | `--limit` | Keep |
@@ -37,13 +37,13 @@ Exit codes, the `rich` console summaries (✓/✗ lines, step durations, summary
 
 | Item | Parity |
 |---|---|
-| `.argus/config.yaml`: `provider`, per-provider blocks (`ollama`, `anthropic`, `openai`), budgets (`time_minutes`, `max_tokens`), `knowledge`, `execution` (`environment`, `capsule.*`) | Keep. The same files load unchanged; compatibility rules from CFG-07 apply |
+| `.argus/config.yaml`: `provider`, per-provider blocks (`ollama`, `anthropic`, `openai`), budgets (`time_minutes`, `max_tokens`), `knowledge`, `execution` (`environment`, `capsule.*`) | Keep. The same files load unchanged; compatibility rules from CFG-07 apply. `knowledge` settings map as in [specification §7.1](specification.md#71-migration-of-existing-knowledge-configuration) |
 | `*.test.yaml`: `name`, `target` (`adapter`, `launch`), `steps` (natural language + `assert`), `setup`, `teardown`, `retries`, `staging`, `collect` | Keep, including the strict validation of programmatic step metadata |
 | Assertions: `text_visible`, `window_title_contains`, `element_exists`, `process_running`, `dialog_open`, `stdout_contains`, `stderr_contains`, `exit_code_is`, `url_contains`, `page_title_contains` | Keep, all ten |
 | Run history `.argus/runs/` (result JSON, flat history, `report.md`, allocation-ordered names, project order counter) | Keep. Existing history must load and sort identically |
 | Token usage persistence | Keep |
 | Desktop conversation store (per-user state root, keyed by project identity, busy-chat retention) | Keep. Existing saved chats must load |
-| Knowledge files (`<key>.graph.json`, `states.ndjson`, `bugs.ndjson`) | Keep. Existing graphs must load |
+| Knowledge files (`<key>.graph.json`, `states.ndjson`, `bugs.ndjson`) | Keep. Existing graph, states and bugs files must load unchanged. Existing chromadb vector indexes are not loaded: they are reported as "re-index required" and rebuilt from `states.ndjson`/`bugs.ndjson` only after the operator confirms; the chromadb files are never modified or deleted ([specification §7.1](specification.md#71-migration-of-existing-knowledge-configuration)) |
 
 ## 3. Action vocabulary and policy
 
@@ -85,10 +85,12 @@ Exit codes, the `rich` console summaries (✓/✗ lines, step durations, summary
 | Token tracking per call, per job, per session, per project | Keep |
 | Provider readiness | Fix (ARG-01, CFG-01…04: parsed / credential / reachable / model / capability) |
 | Embedding role separate from chat role | Fix (ARG-09, CFG-04…06) |
+| Local embeddings: `vector_backend: chroma` with `embedding_model: all-MiniLM-L6-v2` (today's defaults; sentence-transformers) | Superseded by the `onnx` backend, enabled only after explicit operator consent to the model download and hash check; until then graph-only with the reason shown. No silent download or backend switch ([specification §7.1](specification.md#71-migration-of-existing-knowledge-configuration)) |
+| Remote vectors: `type: docker` or `qdrant`, `vector_url` | Keep (same meaning, `qdrant` / `external` backends) |
 
 ## 7. ATES evidence (must stay byte-compatible)
 
-All of ATES v0.1 is kept, and **existing evidence written by the Python implementation must verify unchanged under the Rust implementation** (gate G-ATES in the specification):
+All of ATES v0.1 is kept, and **existing evidence written by the Python implementation must verify unchanged under the Rust implementation** (gate G-ATES in the specification). Fields added by Rust-only or post-switch features are additive, opt-in and version-gated ([specification C-03](specification.md#5-compatibility-contracts)):
 
 - durable ordered event store, run identities (`RunId` etc.), runtime lifecycle evidence;
 - durable action dispatch and uncertainty fencing;
@@ -106,7 +108,7 @@ All of ATES v0.1 is kept, and **existing evidence written by the Python implemen
 | Hyper-V Capsules, isolated Hyper-V, libvirt/QEMU/KVM | Keep (libvirt contract and Linux guest rules in [Linux platform §5–6](linux-platform.md#5-libvirt-capsules)) |
 | Secure guest control: pinned HTTPS, per-generation credentials, bearer rotation, network isolation, Hyper-V side-channel restrictions | Keep |
 | Guest agent, secure guest agent, target worker (non-admin target user), Windows target-user bootstrap | Keep; **native Rust guest binary** replaces the PyInstaller bundle |
-| Bootstrap media (ISO 9660 builder, protected delivery guard) | Keep (CAP-07 guard unchanged) |
+| Bootstrap media (ISO 9660 builder, protected delivery guard) | Keep (CAP-07 guard unchanged; Hyper-V protected delivery is an open design, [ADR-002](adr-002-hyperv-protected-bootstrap.md), decided before P6) |
 | Explicit staging and artifact collection, safe open/output | Keep |
 | Failure Capsule retention, quarantine, reconnect, cleanup uncertainty | Keep |
 | OS environment provisioning: definitions, plans, Windows/Ubuntu unattended, runtime bundle, baseline, image publication, provisioning evidence | Keep; Capsule preflight Fix (ARG-02, CAP-01…05) |
@@ -132,6 +134,8 @@ The PyO3 surface is versioned and covered by its own tests. Anything not listed 
 The PR #28 HTML/CSS/JS, fonts and visual design are kept. The backend bridge keeps every call the UI makes today:
 
 `app_info`, `capture_live`, `check_provider`, `draft_test`, `dry_run`, `environment`, `evidence`, `explain`, `help`, `init_project`, `interpret`, `job_status`, `knowledge`, `knowledge_export`, `knowledge_reset`, `list_tests`, `live`, `load_conversations`, `open_project`, `recent_runs`, `regression_stub`, `run_tests`, `save_conversations`, `save_test`, `set_environment`, `set_memory`, `set_provider`, `set_retain`, `start_roam`, `stop`, `token_usage`, `watch_start`, `watch_status`, `watch_stop`.
+
+The bridge (`argus/gui/app.py`, class `ArgusAPI`) has two more public methods, 36 in total: `read_test` and `live_stats`. **Keep** (not called by the UI at `8e7ebe5`; retained for API parity).
 
 Behaviour kept from PR #28:
 

@@ -2,7 +2,7 @@
 
 Version: **v0.1 / DRAFT for operator review.** Date: 2026-10-07.
 
-Decision record: [ADR-001](tech-stack-decision.md). Functional checklist: [parity inventory](parity-inventory.md). Linux contract: [Linux platform specification](linux-platform.md). Stabilization requirements carried into this work: [stabilization specification](../stabilization-spec.md) and [issue register](../usability-issues.md).
+Decision record: [ADR-001](tech-stack-decision.md). Open design: [ADR-002, Hyper-V protected bootstrap delivery](adr-002-hyperv-protected-bootstrap.md). Reconciliation decisions: [Amendment B](#18-amendment-b--reconciliation-decisions). Functional checklist: [parity inventory](parity-inventory.md). Linux contract: [Linux platform specification](linux-platform.md). Stabilization requirements carried into this work: [stabilization specification](../stabilization-spec.md) and [issue register](../usability-issues.md).
 
 Keywords MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 
@@ -13,7 +13,7 @@ Goals:
 1. Replace the Python implementation with a Rust workspace that delivers **every** capability in the [parity inventory](parity-inventory.md).
 2. Lower resource use where it was measured to matter: no interpreter, no Node driver, no in-process ML framework by default, event-driven UI, smaller live frames, native guest agent ([ADR-001 §2](tech-stack-decision.md#2-what-actually-costs-resources-today)).
 3. Keep `pip install argus-app-testing` working, delivering native `argus`/`argus-gui` binaries and the documented Python API.
-4. Keep the PR #28 desktop design; make `argus serve` use the same UI.
+4. Keep the PR #28 desktop UI visually and behaviourally unchanged (code changes limited as stated in §9); make `argus serve` use the same UI.
 5. Close ARG-01…ARG-13 as acceptance gates of the new implementation.
 6. Leave a clean base for the [Environment Matrix](../environment-matrix.md) and Fleet growth.
 
@@ -22,7 +22,7 @@ Non-goals for this change:
 - New user-facing features beyond the parity inventory and the stabilization fixes. The Environment Matrix is built **after** the switch, on the new core. The first feature after the switch is Linux Capsules on Windows hosts (§17); P6 only prepares the Capsule code for it.
 - Firefox or WebKit automation (operator decision).
 - Running Argus on Windows XP, Vista, 7, 8 or 8.1 (§16.1). Testing applications on those systems inside Capsules is a separate, later feature.
-- Changing the ATES evidence format, the Fleet wire protocol, or the `.argus/` file formats. Compatibility with existing data is required (§5).
+- Changing the ATES evidence format for capabilities that exist today, the Fleet wire protocol, or the `.argus/` file formats. Compatibility with existing data is required (§5). Fields added by new features are additive, opt-in and version-gated (C-03).
 
 ## 2. Architectural invariants carried over
 
@@ -88,19 +88,21 @@ During migration (§12) the Python package stays at `argus/` so current releases
 
 ## 5. Compatibility contracts
 
-C-01. Existing `.argus/config.yaml` and `*.test.yaml` files MUST load with the same meaning. Unknown keys keep today's behaviour (warn or reject exactly as today). Corrections are proposed, never silently rewritten (CFG-07).
+C-01. Existing `.argus/config.yaml` and `*.test.yaml` files MUST load with the same meaning. Unknown keys keep today's behaviour (warn or reject exactly as today). Corrections are proposed, never silently rewritten (CFG-07). Existing `knowledge` settings map as defined in §7.1.
 
-C-02. Existing run history, token usage, saved conversations and knowledge graph files MUST load and display identically.
+C-02. Existing run history, token usage, saved conversations and knowledge files (`<key>.graph.json`, `states.ndjson`, `bugs.ndjson`) MUST load and display identically. Vector indexes written by chromadb are not loaded; they are rebuilt from those records after the operator confirms (§7.1).
 
-C-03. **ATES:** evidence written by the Python implementation MUST verify under the Rust implementation, and evidence written by Rust MUST verify under the last Python release. Canonical encodings, hashes, signatures and version strings stay identical. This is checked with golden stores exported from Python (`tests/golden/ates/`).
+C-03. **ATES:** evidence written by the Python implementation MUST verify under the Rust implementation. Evidence and manifests that Rust writes for capabilities that exist in the last Python release MUST verify under that release. For that evidence, canonical encodings, hashes, signatures and version strings stay identical, and so do its bytes. This is checked with golden stores exported from Python (`tests/golden/ates/`).
+
+Fields introduced by Rust-only or post-switch features are **additive, opt-in and version-gated**: they appear only when the feature is used, and the last Python release rejecting such evidence is expected and acceptable. Today this covers the runtime kind field of the runtime bundle manifest (C-05), the `browser.sandbox: false` opt-out record ([Linux platform §4](linux-platform.md#4-cli-and-browser-on-linux)) and the Hyper-V/Ubuntu provisioning pairing (§17.5). The exact encoding of each new field is decided and tested in an ATES additive-fields amendment, part of gate G-ATES (P2, §12). No code may emit these fields before that amendment is accepted.
 
 C-04. **Fleet:** all `argus-fleet-*-v1` identifiers and message formats stay identical, so a fleet can mix Python and Rust nodes during migration.
 
-C-05. **Capsule guest protocol:** the host must keep working with images whose guest runtime is the Python PyInstaller bundle, until the operator republishes images with the native `argus-guest`. The runtime bundle manifest gains a runtime kind (`python-pyinstaller` | `native`) under the same approval and digest rules. No approval is inferred from the kind. Argus never republishes an image by itself, and there is no end date for `python-pyinstaller` images; §16.3 says when republishing happens.
+C-05. **Capsule guest protocol:** the host must keep working with images whose guest runtime is the Python PyInstaller bundle, until the operator republishes images with the native `argus-guest`. The runtime bundle manifest gains a runtime kind (`python-pyinstaller` | `native`) under the same approval and digest rules. The field is additive (C-03): `python-pyinstaller` manifests stay byte-identical and omit it, and a manifest without it is read as `python-pyinstaller`. Only `native` manifests carry it, so the last Python release rejecting them is expected. No approval is inferred from the kind. Argus never republishes an image by itself, and there is no end date for `python-pyinstaller` images; §16.3 says when republishing happens.
 
 C-06. The secrets store keeps its location, format and `SECRET://ARGUS/NAME` references.
 
-C-07. CLI commands, options and exit codes stay as listed in the parity inventory. Human-readable output may change wording but MUST keep the same information.
+C-07. CLI commands, options and exit codes stay as listed in the parity inventory. Human-readable output may change wording but MUST keep the same information. One documented, intentional exception: `argus serve` binding a non-loopback address requires the new flag `--allow-remote`, and without it exits non-zero with a message that names the flag; `--debug` enables verbose logging only (§8).
 
 ## 6. Adapters
 
@@ -113,7 +115,7 @@ C-07. CLI commands, options and exit codes stay as listed in the parity inventor
 
 ### 6.2 Browser over CDP (closes ARG-06, ARG-07, ARG-13)
 
-- **Browser discovery order:** configured path → installed Chrome → installed Edge → Argus-managed pinned Chromium (downloaded with consent and verified by hash). A supplied executable path with spaces is used exactly (TGT-02).
+- **Browser discovery order** on Windows and macOS: configured path → installed Chrome → installed Edge → Argus-managed pinned Chromium (downloaded with consent and verified by hash). The Linux order also tries the distribution's `chromium`/`chromium-browser` before Edge; it is defined in [Linux platform §4](linux-platform.md#4-cli-and-browser-on-linux). A supplied executable path with spaces is used exactly (TGT-02).
 - **One session object** owns the browser process, its user-data directory and the CDP pipe. `close()` is idempotent, also cleans up a partially launched session, and never touches other browsers (ACT-07, TGT-04).
 - **Observation-scoped element map:** each observation assigns IDs once, and every action resolves IDs through that same map. Typing into an element that cannot be resolved or is not editable is rejected before dispatch and never redirected to the focused element (ACT-01, ACT-02).
 - **Effect checks:** after `type`, the element value is read back and recorded. A mismatch is a failed action, not a success (ACT-06).
@@ -126,7 +128,7 @@ C-07. CLI commands, options and exit codes stay as listed in the parity inventor
 
 ### 6.4 Linux desktop
 
-X11 as today, through native XTEST input and X11 screenshots (`x11rb`) instead of the external `xdotool` and `scrot`. An Argus-owned Xvfb is used when there is no usable X11 display, and AT-SPI (`atspi`/`zbus`) adds semantic elements where the target exposes them. The full Linux contract covers display selection, Wayland, process-group ownership, browser discovery, libvirt, the guest agent and packaging. It is in the [Linux platform specification](linux-platform.md).
+X11 as today, through native XTEST input and X11 screenshots (`x11rb`) instead of the external `xdotool` and `scrot`. An Argus-owned Xvfb is used on Wayland sessions and when there is no usable X11 display (selection order in [Linux platform §3.1](linux-platform.md#31-display)), and AT-SPI (`atspi`/`zbus`) adds semantic elements where the target exposes them. The full Linux contract covers display selection, Wayland, process-group ownership, browser discovery, libvirt, the guest agent and packaging. It is in the [Linux platform specification](linux-platform.md).
 
 ## 7. Knowledge store
 
@@ -142,14 +144,29 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 - When the project's provider is Ollama and the server is reachable, `argus init`, `argus providers` and the desktop app **offer** `ollama` embeddings with a named embedding model. The offer is a proposed change (propose-then-confirm); the backend changes only after the operator confirms it.
 - Vector records store backend, model and dimension. A mismatch requires an explicit re-index and is never mixed silently (CFG-06).
 
+### 7.1 Migration of existing knowledge configuration
+
+Today's defaults (`argus/config.py`, `KnowledgeConfig`) are `type: auto`, `vector_backend: chroma` and `embedding_model: all-MiniLM-L6-v2`, plus `vector_url` and `persist_dir`. A pure-Rust index cannot read chromadb's vector files; only the knowledge files named in C-02 are guaranteed to load. Existing settings therefore map as follows:
+
+| Existing setting | Behaviour after the switch |
+|---|---|
+| `vector_backend: chroma` (with `type: auto` or `local`) | The graph, `states.ndjson` and `bugs.ndjson` load unchanged. The vector index is reported as "re-index required", with a visible reason. Argus **offers** (propose-then-confirm) to rebuild the new embedded index from `states.ndjson` and `bugs.ndjson`. P4 verifies that those records suffice to re-embed; if they do not, the project stays graph-only for old records and says so. Argus never modifies or deletes existing chromadb files (in `persist_dir` or the default location). |
+| `embedding_model: all-MiniLM-L6-v2` (the sentence-transformers default) | Maps to the `onnx` backend **only after explicit operator consent**, which covers the model download and its hash verification. Until then the project runs graph-only and shows the reason. For a project with both defaults, the rebuild offer above and this consent are one confirmed proposal, since rebuilding needs an embedding backend. |
+| `type: docker` or `qdrant`, `vector_url` | Kept with the same meaning (the `qdrant` / `external` backends). |
+| New projects | Default to `none` (graph only), unchanged from §16.2. |
+
+There is no silent download and no silent backend switch.
+
 ## 8. `argus serve` uses the same UI
 
 - `argus-server` (axum) serves `ui/` and exposes the same API as the desktop bridge: `POST /api/<method>` for requests, `GET /api/events` (SSE) for job, live-frame and watch updates.
-- The UI talks to a single transport shim (`ui/api.js`). It selects Tauri `invoke` in the desktop app and HTTP + SSE in the browser. The rest of the PR #28 code is unchanged apart from replacing polling with events. The dashboard therefore looks and behaves exactly like the desktop app, which resolves the theme mismatch.
-- **Security (new requirement):** today's Flask dashboard accepts `POST /api/roam/start` with no authentication, and the README suggests `--host 0.0.0.0`. The new server MUST require a per-launch access token (printed once, stored only in a cookie scoped to the origin) for every API call, MUST check `Origin`, and MUST refuse to bind a non-loopback address unless the operator passes an explicit flag. Propose-then-confirm applies exactly as on the desktop.
+- The UI talks to a single transport shim (`ui/api.js`). It selects Tauri `invoke` in the desktop app and HTTP + SSE in the browser. The rest of the PR #28 code changes only to replace polling with events and to receive the new live-frame encoding (§9). The dashboard therefore looks and behaves exactly like the desktop app, which resolves the theme mismatch.
+- **Security (new requirement):** today's Flask dashboard accepts `POST /api/roam/start` with no authentication, and the README suggests `--host 0.0.0.0`. The new server MUST require a per-launch access token (printed once, stored only in a cookie scoped to the origin) for every API call, MUST check `Origin`, and MUST NOT accept the token from a URL query. Propose-then-confirm applies exactly as on the desktop.
+- **Flags:** `--host` and `--port` keep their meaning, and the default host stays `127.0.0.1`. Binding any non-loopback address MUST require the explicit flag `--allow-remote`. `--host 0.0.0.0` without it exits non-zero with a message that names `--allow-remote`. This is a documented, intentional behaviour change (C-07). With `--allow-remote`, the access token and the `Origin` check still apply. `--debug` enables verbose request and diagnostic logging only: no interactive debugger, no code reloader, and nothing that widens access.
 
 ## 9. Desktop app (Tauri 2)
 
+- The desktop UI stays **visually and behaviourally unchanged**. Code changes to `ui/` are limited to the transport shim (`ui/api.js`, §8), event-driven updates instead of polling, and the live-frame encoding below.
 - Hosts `ui/` with the system webview (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux), the same engines pywebview uses today. The window, project selection, per-project windows and close protocol behave as in PR #28.
 - **No polling.** The 150 ms job poll and the 700 ms follow-up timer are replaced by core events (`job.updated`, `job.finished`, `live.frame`, `watch.event`). A reconcile call remains for close and restart (PR #28 close-time reconciliation).
 - **Live view:** frames are downscaled to the panel size and sent as WebP/JPEG. They are only sent while the live panel is visible, and an unchanged frame is skipped by comparing a cheap hash.
@@ -203,7 +220,7 @@ Testing applications that run on old Windows is a different question from runnin
 
 ## 11. Performance budgets and how they are measured
 
-Baselines are the Python numbers in [ADR-001 §2](tech-stack-decision.md#2-what-actually-costs-resources-today). Targets are acceptance gates (G-PERF) checked on Windows 11 x64 and Ubuntu 24.04 x64. A Windows 10 test host (LTSC 2016, version 1607, the oldest Windows 10 release still under Microsoft support when this was written) runs the conformance suite to prove the minimum (§10.1). G-PERF is measured with a committed benchmark harness. The harness samples whole-process-tree RSS at 50 ms and reports median of 5 runs.
+Baselines are the Python numbers in [ADR-001 §2](tech-stack-decision.md#2-what-actually-costs-resources-today). Targets are acceptance gates (G-PERF) checked on Windows 11 x64 and Ubuntu 24.04 x64. A Windows 10 test host runs the conformance suite to prove the minimum (§10.1). That host SHOULD run the oldest Windows 10 release still under Microsoft support at the start of P0. Support for LTSB/LTSC 2016 (version 1607) is expected to end in October 2026, so the choice MUST be re-checked when P0 starts. The minimum supported OS (Windows 10, any release) does not change with this choice. G-PERF is measured with a committed benchmark harness. The harness samples whole-process-tree RSS at 50 ms and reports median of 5 runs.
 
 | Scenario | Python baseline | Target |
 |---|---|---|
@@ -221,17 +238,17 @@ If a target proves impossible, the gate report MUST state the measured value and
 
 ## 12. Migration plan
 
-The Python release line stays the shipped product until G-SWITCH. Rust components are built in `crates/` alongside it and released as a **preview** binary (`argus-next`) for operator testing. Each phase ends with a gate report: implemented requirements, tests, measured results and remaining gaps (same rule as the stabilization specification).
+The Python release line stays the shipped product until G-SWITCH and receives only **critical** fixes until then. A fix is critical when the defect is a security vulnerability, or can produce a false pass or wrong verdict (evidence or UI says an effect happened when it did not). The fixes backported now, and the rule for everything else, are in §18 (R-7). Rust components are built in `crates/` alongside it and released as a **preview** binary (`argus-next`) for operator testing. Each phase ends with a gate report: implemented requirements, tests, measured results and remaining gaps (same rule as the stabilization specification).
 
 | Phase | Scope | Exit gate |
 |---|---|---|
 | **P0 Foundations** | Cargo workspace, CI for Windows/macOS/Linux × x64/ARM64, maturin wheels, benchmark harness, golden fixtures exported from Python (configs, specs, run history, conversations, knowledge graphs, ATES stores, Fleet messages), black-box conformance runner. **Measure the desktop-app and guest-runtime baselines on Windows.** | G-FOUND: CI green on every target; golden fixtures committed; baselines recorded |
 | **P1 Core** | `argus-core`, `argus-providers`, readiness and embedding roles | G-CORE: configs/specs/history load identically (C-01, C-02); A01 provider-setup gate; CFG-01…04 |
-| **P2 Evidence** | `argus-ates` | G-ATES: C-03 both directions on all golden stores; ATES test vectors pass |
-| **P3 Adapters** | CLI command + interactive, browser CDP, Windows UIA, Linux | A05–A09, A16 from the stabilization spec; ARG-03…08, ARG-13 closed |
-| **P4 Engine and knowledge** | runner, agent, roam, findings, regression drafts, watch, knowledge | A02, A10–A12; ARG-07, ARG-09…12 closed; CLI-level parity for `run`, `roam`, `watch`, `report`, `tokens`, `knowledge`, `secrets`, `init`, `providers` |
+| **P2 Evidence** | `argus-ates` | G-ATES: C-03 both directions on all golden stores; ATES test vectors pass; ATES additive-fields amendment accepted, with the encoding of every new field in C-03 decided and tested |
+| **P3 Adapters** | CLI command + interactive, browser CDP, Windows UIA, Linux | A05, A06, A07 local half (command prompt, Python REPL, EOF, prompt wait, timeout, cancellation, flood, owned-child cleanup), A08, A09, A16 from the stabilization spec; ARG-03, ARG-06, ARG-08, ARG-13 closed; local half of ARG-04 and the adapter-identity part of ARG-05 done |
+| **P4 Engine and knowledge** | runner, agent, roam, findings, regression drafts, watch, knowledge | A02, A10–A12; ARG-05 (remainder), ARG-07, ARG-09…12 closed; knowledge migration cases from golden fixtures (§7.1); CLI-level parity for `run`, `roam`, `watch`, `report`, `tokens`, `knowledge`, `secrets`, `init`, `providers` |
 | **P5 UI** | `argus-assistant` (port of intents, grounding, slash parser, propose-then-confirm, with the phrasing sweep as data), `argus-api`, Tauri desktop, `argus serve` | G-UI: every bridge method and intent in parity §11; phrasing sweep and confirmation suites pass; serve auth (§8); PR #28 visual comparison approved by the operator |
-| **P6 Capsules and provisioning** | `argus-execution`, `argus-capsule`, `argus-guest`, `argus-provisioning` | A03, A04 (native hosts); C-05 with both runtime kinds, using a native-agent **test** image built by the conformance suite (operator images are republished only as §16.3 says); ARG-02 closed; CAP-01…07. **Guest-OS-neutral Capsule code (prepares §17):** the guest OS comes from the image manifest or the request, never from the provider name, and Windows-only settings are checked per guest. The gate review confirms that no provider-to-OS mapping remains and that existing pairings behave exactly as before |
+| **P6 Capsules and provisioning** | `argus-execution`, `argus-capsule`, `argus-guest`, `argus-provisioning` | A03, A04 (native hosts); A07 in-Capsule half (interactive CLI through `argus-guest`); C-05 with both runtime kinds, using a native-agent **test** image built by the conformance suite (operator images are republished only as §16.3 says); ARG-02 and ARG-04 closed; CAP-01…07. **Hyper-V protected bootstrap delivery:** [ADR-002](adr-002-hyperv-protected-bootstrap.md) decided before P6 starts, then implemented and natively accepted for this gate. **Guest-OS-neutral Capsule code (prepares §17):** the guest OS comes from the image manifest or the request, never from the provider name, and Windows-only settings are checked per guest. The gate review confirms that no provider-to-OS mapping remains and that existing pairings behave exactly as before |
 | **P7 Fleet** | `argus-fleet` | C-04 mixed-fleet test (Python node + Rust node) |
 | **P8 Python API and switch** | `argus-py`, packaging re-pointed at native binaries, docs | G-PARITY: every row in the parity inventory checked; G-PERF met or explained; **G-SWITCH**: operator approval, then `argus-app-testing` `0.2.0` releases the Rust implementation in place (§16.4) |
 | **P9 Retire** | Python implementation removed from the tree after one release of overlap | G-RETIRE: no open parity gaps and no regression reports from the overlap release |
@@ -245,7 +262,7 @@ The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is im
 | ARG-01 provider readiness | P1 | argus-providers |
 | ARG-02 Capsule preflight | P6 | argus-capsule / argus-provisioning |
 | ARG-03 exact executable paths, Chrome | P3 | argus-adapters (target model), browser discovery |
-| ARG-04 interactive CLI | P3 | argus-adapters::cli (PTY/ConPTY) |
+| ARG-04 interactive CLI | P3 (local), P6 (Capsule) | argus-adapters::cli (PTY/ConPTY); argus-guest |
 | ARG-05 adapter identity in failures/regressions | P3–P4 | adapters + engine |
 | ARG-06 browser element mapping | P3 | argus-adapters::browser |
 | ARG-07 useful browser Roam | P4 | engine + browser |
@@ -275,7 +292,7 @@ The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is im
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Rewrite takes longer than planned | Delayed fixes for users | Python line keeps critical fixes; phases are independently useful through the `argus-next` preview |
+| Rewrite takes longer than planned | Delayed fixes for users | Python line keeps critical fixes (§12, R-7 in §18); phases are independently useful through the `argus-next` preview |
 | ATES byte-compatibility subtleties | Evidence fails to verify | G-ATES golden stores in both directions before anything else depends on ATES |
 | Young Rust CDP crates | Browser instability | Argus-owned `BrowserSession` trait; thin internal CDP client if a crate falls short |
 | Windows COM/ConPTY edge cases | Desktop/CLI regressions | Early P3 native tests on real Windows hosts; ARG-04/ARG-08 gates |
@@ -314,7 +331,7 @@ Read from the code at `8e7ebe5`:
 | Provider capability | Hyper-V advertises `guest_os=("windows",)` (`argus/execution/secure_capsule.py`) | advertises `windows` and `linux` |
 | Provider-to-OS mapping | Provisioned images: `hyperv → windows-11`, `libvirt → ubuntu` (`argus/provisioning/capsule_bridge.py`). Baseline check: `hyperv → windows`, with target user `argus-target` on Windows and `argus` on Linux (`argus/provisioning/baseline.py`). | The guest OS comes from the image manifest (the guest runtime's `target_os`). Allowed pairs become a table: Hyper-V → Windows 11 or Ubuntu; libvirt → Ubuntu. |
 | Secure Boot | Template fixed to `MicrosoftWindows` (`argus/capsule/hyperv_isolated.py`) | `MicrosoftUEFICertificateAuthority` for Linux guests |
-| Bootstrap media | NTFS VHDX on a fixed SCSI disk, protected with Windows permissions (`argus/capsule/windows_bootstrap.py`) | A medium the Linux guest reads, with the same protection as the libvirt path: the target user cannot read it (CAP-07) |
+| Bootstrap media | NTFS VHDX on a fixed SCSI disk with a SYSTEM/Administrators-only ACL (`argus/capsule/windows_bootstrap.py`). This medium is **not** accepted as protected: the Hyper-V provider does not advertise protected bootstrap media, and nothing verifies on the guest that the target user cannot read it, so ISO-provisioned control stays disabled (CAP-07). The design is open in [ADR-002](adr-002-hyperv-protected-bootstrap.md) | A medium the Linux guest reads, delivered by the ADR-002 design, which covers Windows and Linux guests: the target user cannot read it (CAP-07) |
 | Guest address | Hyper-V reports the guest's IP through Key-Value Pair Exchange; Argus then disables it (`hyperv_isolated.py`) | Same flow. The Linux guest runs the Hyper-V KVP daemon (`hv_kvp_daemon`, from Ubuntu's `linux-cloud-tools` packages), installed by the Ubuntu auto-install for Hyper-V images |
 | Ubuntu auto-install | libvirt only. It passes `autoinstall` to the installer kernel by direct kernel boot, which skips Subiquity's disk-wipe confirmation (`argus/provisioning/providers.py`) | Hyper-V has no direct kernel boot, so the argument needs another route, for example a derived boot configuration recorded in the provisioning evidence. The route is chosen at design time and reviewed before implementation. |
 | Windows-only settings | Guest input mode, the Windows target-user bootstrap | Rejected for Linux guests with a clear message, never silently ignored |
@@ -345,13 +362,31 @@ Read from the code at `8e7ebe5`:
 
 On a real Windows host with Hyper-V:
 
-1. An Ubuntu image is built through Hyper-V from a verified ISO and published with provisioning evidence that records the Hyper-V/Ubuntu pairing.
+1. An Ubuntu image is built through Hyper-V from a verified ISO and published with provisioning evidence that records the Hyper-V/Ubuntu pairing. The pairing is an additive field under C-03, encoded as the ATES additive-fields amendment defines; the last Python release, which hard-codes Hyper-V to Windows (`argus/provisioning/capsule_bridge.py`, `argus/provisioning/baseline.py`), is expected to reject it.
 2. A Capsule from that image, and one from an operator-built Linux VHDX with the guest agent, each run the following with verified ATES evidence:
    - CLI tests in command and interactive mode;
    - browser tests;
    - Linux desktop tests.
 3. The network-isolation tests of the Windows-guest suite pass unchanged for the Linux guest, including the egress allowlist.
-4. The target user cannot read the bootstrap medium. Key-Value Pair Exchange and Guest Service Interface are disabled when the test starts.
+4. The target user cannot read the bootstrap medium, verified on the guest as [ADR-002](adr-002-hyperv-protected-bootstrap.md) requires. Key-Value Pair Exchange and Guest Service Interface are disabled when the test starts.
 5. Mismatches fail at preflight, before any VM is created. Examples: Windows-only settings with a Linux image, or a manifest whose OS contradicts the request.
 6. Existing Windows-guest configurations and images behave exactly as before.
 7. Once the Environment Matrix exists, one Windows host runs a plan that mixes Windows 11 and Ubuntu cases.
+
+## 18. Amendment B — reconciliation decisions
+
+Date: 2026-10-07. The operator (the repository owner) approved all seven recommendations below on that date. They resolve conflicts between sections of this specification and the code at `8e7ebe5`. The errata E-1…E-4 correct wording only. Every requirement ID and gate name above is kept.
+
+| ID | Decision | Sections changed |
+|---|---|---|
+| R-1 | **ATES additive-field rule.** The reverse direction of C-03 (Rust-written evidence verifies under the last Python release) applies to evidence and manifests of capabilities that exist in that release; their bytes, canonical encodings, hashes, signatures and version strings do not change. Fields from Rust-only or post-switch features are additive, opt-in and version-gated, and the last Python release rejecting them is expected. Reason: the Python code validates strictly (ATES event payload keys in `argus/ates/evidence_validation.py`, for example `TARGET_LAUNCHED` takes exactly `{"target"}`; unknown runtime-bundle manifest fields in `argus/provisioning/runtime_bundle.py`; the Hyper-V-to-Windows pairing in `argus/provisioning/capsule_bridge.py` and `baseline.py`). Each new field's encoding is decided and tested in the ATES additive-fields amendment at G-ATES; no code emits one before that. | §1 non-goals; C-03; C-05; §12 P2 row; §17.5 item 1; [Linux platform §4](linux-platform.md#4-cli-and-browser-on-linux); [parity inventory §7](parity-inventory.md#7-ates-evidence-must-stay-byte-compatible) |
+| R-2 | **Knowledge configuration and vector migration.** Graph, states and bugs files load unchanged; chromadb vectors are rebuilt on confirmation, never loaded, modified or deleted. `all-MiniLM-L6-v2` maps to `onnx` only after explicit consent; until then the project is graph-only with the reason shown. `docker`/`qdrant` and `vector_url` keep their meaning. New projects default to `none`. | C-01; C-02; §7.1 (new); §12 P4 row; [parity inventory §2 and §6](parity-inventory.md#2-project-files-and-formats) |
+| R-3 | **`argus serve` flags.** `--host` and `--port` keep their meaning. A non-loopback bind requires `--allow-remote`; without it the command exits non-zero and names the flag. Token and `Origin` checks still apply with `--allow-remote`; the token is never accepted from a URL query. `--debug` is verbose logging only. | §8; C-07; [parity inventory §1](parity-inventory.md#1-command-line-argus) |
+| R-4 | **Phase-gate corrections.** A07 is gated in two parts: the local half at P3, the in-Capsule half at P6 (it needs `argus-capsule` and `argus-guest`). ARG-04 therefore closes at P6. ARG-07 closes only at P4. P3 closes ARG-03, ARG-06, ARG-08 and ARG-13, plus the local half of ARG-04 and the adapter-identity part of ARG-05. | §12 rows P3, P4, P6 and the issue mapping; [stabilization specification, Amendment A](../stabilization-spec.md#amendment-a--implementation-in-the-rust-re-architecture-2026-10-07) |
+| R-5 | **Hyper-V protected bootstrap delivery needs a design.** The existing Hyper-V medium is not accepted as protected. [ADR-002](adr-002-hyperv-protected-bootstrap.md) is opened as a proposed design; a decision is required before P6 starts, and it is implemented and natively accepted at P6. No capability flag is set before guest-side verification exists. | Header; §12 P6 row; §17.2; §17.5 item 4; ADR-002 (new); [documentation index](../README.md) |
+| R-6 | **Linux display selection and the Wayland and sandbox questions.** Display precedence, first match wins: explicit `display: owned \| host`; Wayland session → owned Xvfb; usable `DISPLAY` → driven as today; otherwise owned Xvfb. L-1 and L-2 are answered with their recommendations. | §6.4; [Linux platform §2, §3.1, §4, §8 and §9](linux-platform.md#31-display) |
+| R-7 | **Critical fixes for the Python line.** Until G-SWITCH the Python line receives only critical fixes: the defect is a security vulnerability, or can produce a false pass or wrong verdict. Backported now: **SEC-1**, unauthenticated `argus serve` (access token, `Origin` check, loopback guard and `--allow-remote` as in R-3), and **ARG-06**, browser typing false success (observation-scoped element map plus read-back of the typed value). Every other register item is fixed only in the Rust line unless the operator reclassifies it. | §12 intro; §15; [stabilization specification, Amendment A](../stabilization-spec.md#amendment-a--implementation-in-the-rust-re-architecture-2026-10-07); [ADR-001 §5](tech-stack-decision.md#5-decision); [documentation index](../README.md) |
+| E-1 | The desktop UI is visually and behaviourally unchanged; code changes are limited to the transport shim (`ui/api.js`), event-driven updates instead of polling, and the live-frame encoding. | §1 goal 4; §8; §9 |
+| E-2 | Browser discovery order stated for Windows and macOS; the Linux order is defined in the Linux platform specification. | §6.2; [Linux platform §4](linux-platform.md#4-cli-and-browser-on-linux) |
+| E-3 | The desktop bridge has 36 public methods, not 34: `read_test` and `live_stats` are kept for API parity although the UI does not call them at `8e7ebe5`. | [Parity inventory §11](parity-inventory.md#11-desktop-app-pr-28-design) |
+| E-4 | The Windows 10 test host SHOULD be the oldest Windows 10 release still under Microsoft support at P0 start; LTSB/LTSC 2016 (1607) support is expected to end in October 2026 and MUST be re-checked then. The minimum supported OS is unchanged. | §11 |
