@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bundled SIL OFL fonts for the desktop app (Newsreader, IBM Plex Sans, IBM Plex Mono)
 - Redesigned project website (`index.html`) in the same design language
 ### Fixed
+- **Security:** `argus serve` now requires a per-launch access token for every page and API call (previously `POST /api/roam/start` was unauthenticated). Sign in at `/login` or send `Authorization: Bearer <token>`; state-changing requests also need a same-origin `Origin` (or the Bearer header), and the `Host` header must match the bound loopback address. Binding a non-loopback address such as `--host 0.0.0.0` now exits with an error unless `--allow-remote` is passed. `--debug` is verbose logging only and never enables the Flask debugger or reloader
+- Browser adapter: typing into an observed element id now targets exactly the element that was observed (it used a different selector list and could report success while the input stayed empty). Unknown, stale, hidden, disabled or non-editable targets are rejected before dispatch, never redirected to the focused element, and the typed value is read back so a mismatch fails the action
 - Hyper-V session-storage removal retries briefly on transient Windows sharing violations (e.g. antivirus holding the new session disk) instead of reporting a cleanup failure
 - Integrated ISO-backed provisioning and secure Capsule generation/reconnect contracts from PR #27 while preserving the desktop theme and session provider picker
 - Desktop project selection opens isolated project windows; setup creates a cross-platform CLI sample without overwriting existing files
