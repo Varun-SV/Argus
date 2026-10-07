@@ -1,0 +1,7 @@
+# Toolchain for the Rust workspace (docs/rearchitecture/specification.md §12, phase P0).
+# CI and local builds use current stable; the minimum supported version is `rust-version`
+# in Cargo.toml (checked by the MSRV job in .github/workflows/rust-ci.yml).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
