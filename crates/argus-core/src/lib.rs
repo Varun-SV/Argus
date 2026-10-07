@@ -53,7 +53,11 @@ mod tests {
     fn preview_version_matches_package_version() {
         assert_eq!(PREVIEW_VERSION, env!("CARGO_PKG_VERSION"));
         assert!(!PREVIEW_VERSION.is_empty());
-        assert_eq!(PREVIEW_VERSION.split('.').count(), 3, "expected semver x.y.z");
+        assert_eq!(
+            PREVIEW_VERSION.split('.').count(),
+            3,
+            "expected semver x.y.z"
+        );
     }
 
     #[test]
