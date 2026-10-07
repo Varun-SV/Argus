@@ -10,3 +10,9 @@ venv/
 .argus/runs/
 .argus/roam/
 .argus/usage.json
+
+# Rust workspace (re-architecture preview)
+target/
+*.whl
+wheelhouse/
+**/*.rs.bk
