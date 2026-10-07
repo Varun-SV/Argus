@@ -1,6 +1,6 @@
 [package]
 name = "argus-py"
-description = "PyO3 extension module backing the documented Argus Python API (spec section 10). P0 stub; owned by the packaging work package."
+description = "PyO3 extension module backing the documented Argus Python API (spec section 10). Packaged as argus_next._native in the argus-next preview wheel (python/pyproject.toml) until G-SWITCH."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

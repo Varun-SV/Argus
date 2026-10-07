@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "argus-next"
+dynamic = ["version"]
+requires-python = ">=3.10"
+
+[tool.maturin]
+manifest-path = "../crates/argus-py/Cargo.toml"
+module-name = "argus_next._native"
+python-source = "."
+python-packages = ["argus_next"]
+bindings = "pyo3"
+locked = true
+data = "argus_next.data"
