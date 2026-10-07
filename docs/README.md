@@ -75,6 +75,26 @@ Argus Fleet extends the existing Capsule boundary across physical machines. The 
 
 **Status: Fleet execution plane implemented. Fleet operations and the strictly read-only Observer are follow-on work.**
 
+### [Environment Matrix and adaptive VM test lab](environment-matrix.md)
+
+Environment Matrix is a **planned** layer that will expand one test plan across multiple immutable OS images and virtual hardware configurations, schedule disposable Capsules according to available local/Fleet capacity, and aggregate one canonical ATES Run per case.
+
+**Status: planning only. PR #27 and PR #28 are merged; implementation still requires reconciliation with their final merged APIs, Fleet contracts and the stabilization acceptance gates.**
+
+### [Stabilization and operator acceptance](stabilization-spec.md)
+
+The [usability issue register](usability-issues.md) tracks configuration, Capsule, Chrome, interactive CLI, browser/Roam and generated-test gaps. The draft specification defines fixes and acceptance gates before implementing the Environment Matrix, while preserving the approved desktop design and existing isolation/evidence contracts.
+
+The [reproduction results](reproduction-results.md) document confirmed defects, verified evidence and the blocked native acceptance work.
+
+**Status: draft specification and diagnostic results; no runtime behavior added.**
+
+### [Re-architecture: Rust + Tauri 2](rearchitecture/specification.md)
+
+Argus will be rebuilt as a Rust workspace with a Tauri 2 desktop app, keeping every existing capability ([parity inventory](rearchitecture/parity-inventory.md)), the PR #28 design, `pip install argus-app-testing` (native binaries in platform wheels plus the documented Python API) and the `.argus/`, ATES and Fleet formats. `argus serve` will use the same UI as the desktop app. The decision, the measurements behind it and the options considered are in [ADR-001](rearchitecture/tech-stack-decision.md). The stabilization issues above become acceptance gates of the new implementation. Linux hosts, adapters, Capsules and packaging are specified in the [Linux platform specification](rearchitecture/linux-platform.md). The first feature planned after the switch is Linux Capsules on Windows hosts through Hyper-V ([specification §17](rearchitecture/specification.md#17-first-feature-after-the-switch-linux-capsules-on-windows-hosts)).
+
+**Status: accepted direction; specification draft for review. No runtime change yet. The Python release line remains the shipped product until the switch gate.**
+
 ### [Release engineering](releasing.md)
 
 Argus CI now validates Windows, Linux, and macOS across x64/ARM64 where supported. Production releases build Windows portable/EXE/MSI packages, a macOS universal2 app/DMG, Linux AppImage/DEB/RPM/Arch packages, and Python distributions from the same tagged source.
