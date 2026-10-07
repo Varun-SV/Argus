@@ -33,6 +33,9 @@ class FinalizationResult:
     package_manifest_path: Path
     binding_path: Path
     trust_state: FinalizationTrustState
+    # Immutable canonical bytes validated in the same verification transaction.
+    # Consumers must not re-open a mutable pathname to display verified metadata.
+    evidence_manifest_bytes: bytes = b""
 
 
 def _finalization_error(message: str, cause: BaseException | None = None):

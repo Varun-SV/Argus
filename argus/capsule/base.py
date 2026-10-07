@@ -14,6 +14,10 @@ class CapsuleError(AdapterError):
     """Raised when a Capsule cannot be created, reached, or destroyed safely."""
 
 
+class CapsuleCleanupError(CapsuleError):
+    """Provider resources may still depend on storage; preserve recovery state."""
+
+
 def _strict_bool(value: Any, name: str) -> bool:
     """Parse a security-sensitive boolean without Python truthiness surprises."""
     if isinstance(value, bool):
@@ -44,6 +48,7 @@ class CapsuleProviderCapabilities:
     explicit_transfers: bool
     failure_retention: bool
     egress_allowlist: bool = False
+    protected_bootstrap_media: bool = False
 
     def supports_guest_os(self, value: str) -> bool:
         wanted = str(value or "auto").strip().lower()
@@ -81,9 +86,27 @@ class CapsuleSettings:
     allow_insecure_http: bool = False
     rotate_session_token: bool = True
     network_mode: str = "host_only"
+    # None preserves legacy provider behavior. Provisioned images bind this
+    # explicitly so the runtime cannot silently change the build contract.
+    secure_boot: Optional[bool] = None
+    tpm_version: str = ""
     egress_allowlist: tuple[str, ...] = ()
     allow_dhcp: bool = True
     disable_guest_file_copy: bool = True
+
+    # Verified provisioning commitments. Empty values preserve legacy manually
+    # prepared Capsule configurations; the provisioning bridge fills all three.
+    environment_id: str = ""
+    base_image_sha256: str = ""
+    guest_runtime_identity: str = ""
+    require_target_desktop: bool = False
+    control_root: str = ""
+
+    default_execution_mode: str = "isolated"
+    allowed_execution_modes: tuple[str, ...] = ("isolated",)
+    allow_llm_mode_change: bool = False
+    failure_allow_reconnect: bool = True
+    failure_allow_llm_reconnect: bool = False
 
     # PR7 libvirt/QEMU settings. ``qemu:///system`` is intentionally the only
     # production URI accepted by the first Linux provider because its network
@@ -92,6 +115,9 @@ class CapsuleSettings:
     libvirt_network_cidr: str = ""
     libvirt_arch: str = ""
     libvirt_machine: str = ""
+    # Trusted host group containing the system QEMU service account. Only this
+    # group and the host controller may read per-generation libvirt media.
+    libvirt_qemu_group: str = ""
 
     @classmethod
     def from_mapping(cls, value: Optional[Mapping[str, Any]] = None) -> "CapsuleSettings":
@@ -109,17 +135,24 @@ class CapsuleSettings:
             "rotate_session_token",
             "allow_dhcp",
             "disable_guest_file_copy",
+            "secure_boot",
+            "require_target_desktop",
+            "allow_llm_mode_change",
+            "failure_allow_reconnect",
+            "failure_allow_llm_reconnect",
         ):
             if name in raw:
                 raw[name] = _strict_bool(raw[name], name)
-        if "egress_allowlist" in raw:
-            value = raw["egress_allowlist"]
+        for tuple_field in ("egress_allowlist", "allowed_execution_modes"):
+            if tuple_field not in raw:
+                continue
+            value = raw[tuple_field]
             if value is None:
-                raw["egress_allowlist"] = ()
+                raw[tuple_field] = ()
             elif isinstance(value, (list, tuple)):
-                raw["egress_allowlist"] = tuple(str(item).strip() for item in value)
+                raw[tuple_field] = tuple(str(item).strip() for item in value)
             else:
-                raise CapsuleError("egress_allowlist must be a list of CIDR strings")
+                raise CapsuleError(f"{tuple_field} must be a list of strings")
         return cls(**raw)
 
     @property
@@ -127,6 +160,12 @@ class CapsuleSettings:
         if self.vm_root:
             return Path(self.vm_root).expanduser().resolve()
         return (Path.home() / ".argus" / "capsules").resolve()
+
+    @property
+    def resolved_control_root(self) -> Path:
+        if self.control_root:
+            return Path(self.control_root).expanduser().resolve()
+        return (Path.home() / ".argus" / "capsule-control").resolve()
 
     @property
     def resolved_guest_ca_cert(self) -> Optional[Path]:
@@ -140,6 +179,9 @@ class CapsuleRequest:
     session_id: str
     adapter_type: str
     settings: CapsuleSettings
+    capsule_id: str = ""
+    control_generation: int = 0
+    execution_mode: str = "isolated"
 
 
 @dataclass(frozen=True)
@@ -155,6 +197,11 @@ class CapsuleHandle:
     transport: str = "http"
     guest_os: str = "unknown"
     architecture: str = "unknown"
+    capsule_id: str = ""
+    control_generation: int = 0
+    execution_mode: str = "isolated"
+    provider_resource_identity: str = ""
+    mutable_disk_identity: str = ""
 
     @property
     def endpoint(self) -> str:
@@ -176,9 +223,39 @@ class FailureCapsule:
     reason: str
     retained_at: str
     vm_state: str
+    capsule_id: str = ""
+    failed_generation: int = 0
+    execution_mode: str = "isolated"
+    provider_resource_identity: str = ""
+    mutable_disk_identity: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def persist(self, path: Path) -> None:
+        """Atomically update the retained reference after a later failure.
+
+        The same Capsule can fail more than once after reconnect. Its latest
+        metadata must advance without overwriting another Capsule's ownership.
+        """
+        import json
+        from argus.capsule.control import _atomic_json
+
+        if path.exists() or path.is_symlink():
+            try:
+                if path.is_symlink():
+                    raise ValueError()
+                previous = FailureCapsule(**json.loads(path.read_text(encoding="utf-8")))
+                if (not self.capsule_id or previous.capsule_id != self.capsule_id
+                        or previous.provider_resource_identity != self.provider_resource_identity
+                        or previous.mutable_disk_identity != self.mutable_disk_identity
+                        or previous.failed_generation >= self.failed_generation):
+                    raise ValueError()
+            except (OSError, ValueError, TypeError):
+                raise CapsuleError("retained Capsule metadata ownership or generation conflicts") from None
+            path.chmod(0o600)
+        _atomic_json(path, self.to_dict(), preserve_parent_permissions=True)
+        path.chmod(0o444)
 
 
 class CapsuleProvider(ABC):
@@ -206,6 +283,66 @@ class CapsuleProvider(ABC):
         This method must clean up its own partial allocations before raising;
         callers cannot destroy a handle that was never returned.
         """
+
+    def create_stopped(self, request: CapsuleRequest) -> CapsuleHandle:
+        """Allocate one stable mutable Capsule without booting it."""
+        raise CapsuleError(
+            f"Capsule provider {self.provider_name!r} does not support stopped allocation"
+        )
+
+    def attach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
+        raise CapsuleError(
+            f"Capsule provider {self.provider_name!r} does not support bootstrap media"
+        )
+
+    bootstrap_media_suffix: str = ".iso"
+
+    def bootstrap_media_directory(
+        self, handle: CapsuleHandle, settings: CapsuleSettings
+    ) -> Path:
+        """Prepare private storage for one-attempt provider control media."""
+        from argus.capsule.permissions import ensure_private_directory
+
+        directory = settings.resolved_control_root / "bootstrap-media"
+        ensure_private_directory(directory)
+        return directory
+
+    def create_bootstrap_media(self, source: Path, output: Path) -> Path:
+        """Render provider-specific, one-attempt media without booting a VM."""
+        from argus.capsule.bootstrap import create_bootstrap_iso
+
+        return create_bootstrap_iso(source, output)
+
+    def destroy_bootstrap_media(self, media: Path) -> None:
+        """Called only after confirmed VM detachment; verify host mounts too."""
+        media.unlink(missing_ok=True)
+
+    def detach_bootstrap(self, handle: CapsuleHandle, media: Path) -> None:
+        raise CapsuleError(
+            f"Capsule provider {self.provider_name!r} does not support bootstrap media"
+        )
+
+    def start_existing(
+        self,
+        handle: CapsuleHandle,
+        request: CapsuleRequest,
+    ) -> CapsuleHandle:
+        raise CapsuleError(
+            f"Capsule provider {self.provider_name!r} does not support existing-Capsule start"
+        )
+
+    def stop_existing(self, handle: CapsuleHandle) -> None:
+        raise CapsuleError(
+            f"Capsule provider {self.provider_name!r} does not support existing-Capsule stop"
+        )
+
+    def quarantine(self, handle: CapsuleHandle) -> None:
+        self.stop_existing(handle)
+
+    def inspect_ownership(self, handle: CapsuleHandle) -> tuple[str, str]:
+        raise CapsuleError(
+            f"Capsule provider {self.provider_name!r} cannot attest retained ownership"
+        )
 
     def retain_failure(self, handle: CapsuleHandle, reason: str) -> FailureCapsule:
         """Freeze a live Capsule for later forensic inspection instead of destroying it."""

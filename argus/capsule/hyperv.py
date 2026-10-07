@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
-import json
+import os
 import shutil
 import subprocess
 import sys
@@ -13,12 +13,32 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from argus.capsule.base import (
+    CapsuleCleanupError,
     CapsuleError,
     CapsuleHandle,
     CapsuleProvider,
     CapsuleRequest,
     FailureCapsule,
 )
+
+
+def _remove_tree(root: Path, attempts: int = 5, delay: float = 0.1) -> None:
+    """Remove session storage, retrying Windows sharing violations briefly.
+
+    A file Argus just wrote (the session disk) can be held open for a moment by
+    antivirus or the indexer; that transient lock must not turn a clean rollback into
+    a cleanup failure. A lock that outlasts the retries is still reported.
+    """
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(root)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * 2 ** attempt)
 
 
 def _ps_quote(value: str) -> str:
@@ -123,6 +143,10 @@ class HyperVProvider(CapsuleProvider):
     def create(self, request: CapsuleRequest) -> CapsuleHandle:
         self._ensure_host()
         settings = request.settings
+        if settings.secure_boot is not None or settings.tpm_version:
+            raise CapsuleError(
+                "provisioned firmware/TPM contracts require SecureCapsuleExecutionEnvironment"
+            )
         if settings.provider.lower() != "hyperv":
             raise CapsuleError(f"HyperVProvider cannot handle provider {settings.provider!r}")
         if not settings.guest_token:
@@ -305,7 +329,7 @@ class HyperVProvider(CapsuleProvider):
         ).strip().splitlines()[-1]
         retained_at = datetime.now(timezone.utc).isoformat()
         failure = FailureCapsule(
-            failure_id=handle.session_id,
+            failure_id=handle.capsule_id or handle.session_id,
             session_id=handle.session_id,
             provider=self.provider_name,
             vm_name=handle.vm_name,
@@ -313,12 +337,14 @@ class HyperVProvider(CapsuleProvider):
             reason=(reason or "test failure")[:2000],
             retained_at=retained_at,
             vm_state=vm_state or "Off",
+            capsule_id=handle.capsule_id,
+            failed_generation=handle.control_generation,
+            execution_mode=handle.execution_mode,
+            provider_resource_identity=handle.provider_resource_identity,
+            mutable_disk_identity=handle.mutable_disk_identity,
         )
         manifest = root / "failure-capsule.json"
-        manifest.write_text(
-            json.dumps(failure.to_dict(), indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        failure.persist(manifest)
         return failure
 
     def _remove_vm(self, vm_name: str) -> None:
@@ -329,24 +355,49 @@ class HyperVProvider(CapsuleProvider):
             45,
         )
 
-    def _cleanup_partial(self, vm_name: str, root: Path) -> Optional[Exception]:
+    def _cleanup_partial(
+        self, vm_name: str, root: Path, *, expected_vm_path: Path | None = None,
+        expected_disk: Path | None = None,
+    ) -> Optional[Exception]:
         try:
             # Always query by name. New-VM may have succeeded even if the next
             # setup command failed before create() could record that fact.
-            self._remove_vm(vm_name)
+            if expected_vm_path is None:
+                self._remove_vm(vm_name)
+            else:
+                if expected_disk is None:
+                    raise CapsuleCleanupError("partial allocation disk identity is missing")
+                result = self._run_ps(
+                    "$ErrorActionPreference='Stop'; "
+                    f"$v=@(Get-VM -ErrorAction Stop | Where-Object {{ $_.Name -eq {_ps_quote(vm_name)} }}); "
+                    "if ($v.Count -eq 0) { 'absent' } else { "
+                    "if ($v.Count -ne 1) { throw 'ambiguous VM ownership' }; "
+                    f"if ([IO.Path]::GetFullPath($v[0].Path) -ne {_ps_quote(str(expected_vm_path.resolve()))}) "
+                    "{ throw 'VM configuration ownership mismatch' }; "
+                    "$d=@(Get-VMHardDiskDrive -VM $v[0] -ErrorAction Stop); "
+                    f"if ($d.Count -ne 1 -or [IO.Path]::GetFullPath($d[0].Path) -ne {_ps_quote(str(expected_disk.resolve()))}) "
+                    "{ throw 'VM disk ownership mismatch' }; $id=$v[0].Id; "
+                    "if ($v[0].State -ne 'Off') { Stop-VM -VM $v[0] -TurnOff -Force -ErrorAction Stop }; "
+                    "Remove-VM -VM $v[0] -Force -ErrorAction Stop; "
+                    "if (@(Get-VM -ErrorAction Stop | Where-Object { $_.Id -eq $id }).Count) "
+                    "{ throw 'VM removal is incomplete' }; 'removed' }",
+                    60,
+                ).strip()
+                if result not in {"absent", "removed"}:
+                    raise CapsuleCleanupError("partial VM cleanup could not be confirmed")
         except Exception as exc:
             # Preserve recovery/configuration files whenever VM deregistration
             # fails. Removing storage first can turn a recoverable orphaned VM
             # into a broken registered VM with missing backing files.
-            return CapsuleError(
+            return CapsuleCleanupError(
                 f"VM removal failed: {exc}; session storage preserved at {root}"
             )
         try:
-            shutil.rmtree(root)
+            _remove_tree(root)
         except FileNotFoundError:
             pass
         except OSError as exc:
-            return CapsuleError(f"session storage removal failed: {exc}")
+            return CapsuleCleanupError(f"session storage removal failed: {exc}")
         return None
 
     def destroy(self, handle: CapsuleHandle) -> None:
@@ -362,7 +413,7 @@ class HyperVProvider(CapsuleProvider):
                 f"VM removal failed: {exc}; session storage preserved at {root}"
             ) from exc
         try:
-            shutil.rmtree(root)
+            _remove_tree(root)
         except FileNotFoundError:
             pass
         except OSError as exc:

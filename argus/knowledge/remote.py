@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from argus.adapters.base import Observation
 from argus.knowledge.base import KnowledgeContext, KnowledgeStore, PastBug, SimilarState
+from argus.knowledge.storage import KnowledgeFileError
 from argus.knowledge.embeddings import EmbeddingGenerator
 from argus.knowledge.fingerprint import fingerprint, semantic_description, summarize_action, target_key
 
@@ -32,30 +33,47 @@ class RemoteKnowledgeStore(KnowledgeStore):
         self._vector_url = vector_url
         self._embedder = EmbeddingGenerator(embedding_model)
         self._qdrant = None
+        self._qdrant_ok: Optional[bool] = None
         self._graphs: Dict[str, Any] = {}
 
+    def backend_info(self) -> Dict[str, str]:
+        state = ("client initialized; connectivity not verified" if self._qdrant is not None
+                 else "unavailable" if self._qdrant_ok is False else "not checked")
+        return {"type": "qdrant", "label": (
+            f"JSON graph · Qdrant vectors ({state}) · {self._embedder.status_description()}")}
+
     def _client(self):
+        verify = getattr(self._vector_url, "verify", None)
+        if verify is not None:
+            verify()
         if self._qdrant is None:
             try:
                 from qdrant_client import QdrantClient
-                self._qdrant = QdrantClient(url=self._vector_url)
+                options = self._vector_url.client_options() if verify is not None else {}
+                self._qdrant = QdrantClient(url=str(self._vector_url), **options)
+                self._qdrant_ok = True
             except Exception:
-                pass
+                self._qdrant_ok = False
         return self._qdrant
 
-    def _graph(self, target: str):
+    def _graph(self, target: str, *, create: bool = True):
         key = target_key(target)
         if key not in self._graphs:
+            path = self._dir / f"{key}.graph.json"
+            if not create and not path.exists():
+                return None
             try:
                 import networkx as nx
                 G = nx.DiGraph()
-                path = self._dir / f"{key}.graph.json"
                 if path.exists():
                     data = json.loads(path.read_text(encoding="utf-8"))
                     G = nx.node_link_graph(data)
-                self._graphs[key] = G
+                if create:
+                    self._graphs[key] = G
+                return G
             except ImportError:
-                self._graphs[key] = None
+                if create:
+                    self._graphs[key] = None
         return self._graphs.get(key)
 
     def _save_graph(self, target: str) -> None:
@@ -67,6 +85,8 @@ class RemoteKnowledgeStore(KnowledgeStore):
             import networkx as nx
             path = self._dir / f"{key}.graph.json"
             path.write_text(json.dumps(nx.node_link_data(G), indent=2), encoding="utf-8")
+        except KnowledgeFileError:
+            raise
         except Exception:
             pass
 
@@ -315,10 +335,10 @@ class RemoteKnowledgeStore(KnowledgeStore):
             target_map = {target_key(target): target}
         else:
             graph_files = list(self._dir.glob("*.graph.json"))
-            keys = [f.stem for f in graph_files]
-            target_map = {k: k for k in keys}
+            keys = [f.name[:-len(".graph.json")] for f in graph_files]
+            target_map = {k: k + ".graph" for k in keys}
         for key in keys:
-            G = self._graph(target_map[key])
+            G = self._graph(key, create=False)
             stats[target_map[key]] = {
                 "states": len(G.nodes) if G is not None else 0,
                 "transitions": len(G.edges) if G is not None else 0,
@@ -328,19 +348,52 @@ class RemoteKnowledgeStore(KnowledgeStore):
             }
         return stats
 
-    def clear_target(self, target: str) -> None:
+    def has_remote_target(self, target: str) -> bool:
+        """Whether the vector service holds collections for ``target``.
+
+        A session can upsert vectors and then be interrupted before its local graph is
+        written, so the remote side may hold knowledge with no local file at all.
+        """
+        client = self._client()
+        if client is None:
+            return False
         key = target_key(target)
+        names = {c.name for c in client.get_collections().collections}
+        return any(f"{key}_{suffix}" in names for suffix in ("states", "bugs"))
+
+    def clear_target(self, target: str) -> None:
+        # Verify remote authority before mutating either local or remote state.
+        client = self._client()
+        if client is None:
+            # Clearing only the local graph would report a reset while the vectors stay on
+            # the server and come back in later roams; change nothing instead.
+            raise RuntimeError(f"Can't reach the knowledge server, so nothing for {target!r} was reset. "
+                               "Check the vector service and retry.")
+        key = target_key(target)
+        failures = {}
+        for suffix in ("states", "bugs"):
+            name = f"{key}_{suffix}"
+            try:
+                if client.delete_collection(name) is False:
+                    failures[name] = "the server refused the deletion"
+            except Exception as exc:
+                failures[name] = str(exc)
+        if failures:
+            # A failed delete is fine only if the collection doesn't exist; vectors left
+            # behind would be retrieved by later roams, so the reset must not look done.
+            try:
+                existing = {c.name for c in client.get_collections().collections}
+            except Exception:
+                existing = set(failures)  # can't confirm they're gone: treat as remaining
+            remaining = sorted(name for name in failures if name in existing)
+            if remaining:
+                detail = "; ".join(f"{name}: {failures[name]}" for name in remaining)
+                raise RuntimeError(f"Could not delete the remote knowledge for {target!r} ({detail}). Retry the reset.")
+        # The local graph goes only once the server side is confirmed clear.
         path = self._dir / f"{key}.graph.json"
         if path.exists():
             path.unlink()
         self._graphs.pop(key, None)
-        client = self._client()
-        if client:
-            for suffix in ("states", "bugs"):
-                try:
-                    client.delete_collection(f"{key}_{suffix}")
-                except Exception:
-                    pass
 
     def confidence_for_state(self, state_id: str) -> int:
         for g in self._graphs.values():

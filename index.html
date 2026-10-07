@@ -5,155 +5,723 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Argus — Autonomous Application Testing with Isolated Execution</title>
 <meta name="description" content="Argus uses multimodal LLMs to test desktop, web, and CLI software. Run lightweight tests locally or use isolated Argus Capsules for production testing.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..600;1,6..72,300..600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-  :root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--faint:#484f58;--brand:#14c9ac;--brand-dim:rgba(20,201,172,.12);--blue:#58a6ff;--red:#f85149;--green:#3fb950;--yellow:#d29922;--r:8px}
-  html{scroll-behavior:smooth} body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;font-size:16px} a{color:var(--brand);text-decoration:none} a:hover{text-decoration:underline} code,pre{font-family:"SF Mono","Fira Mono","Cascadia Code",Consolas,monospace}
-  nav{position:sticky;top:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 2rem;height:56px;background:rgba(13,17,23,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
-  .nav-brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.1rem;color:var(--text)} .nav-links{display:flex;gap:1.35rem;align-items:center}.nav-links a{color:var(--muted);font-size:.9rem}.nav-links a:hover{color:var(--text);text-decoration:none}.nav-cta{background:var(--brand);color:#0d1117;font-weight:700;padding:.4rem 1rem;border-radius:6px;font-size:.875rem}.nav-cta:hover{background:#0fb89a;text-decoration:none}
-  .hero{max-width:920px;margin:0 auto;padding:6rem 2rem 4rem;text-align:center}.hero-badge{display:inline-flex;align-items:center;gap:8px;background:var(--brand-dim);border:1px solid rgba(20,201,172,.25);color:var(--brand);font-size:.8rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:.3rem .9rem;border-radius:100px;margin-bottom:1.5rem}.hero-badge span{width:7px;height:7px;border-radius:50%;background:var(--brand)} h1{font-size:clamp(2.4rem,6vw,4rem);font-weight:800;letter-spacing:-.03em;line-height:1.1;margin-bottom:1.25rem} h1 em{font-style:normal;color:var(--brand)} .hero-sub{font-size:1.18rem;color:var(--muted);max-width:690px;margin:0 auto 2.5rem;line-height:1.7}.release-row{display:flex;justify-content:center;margin:-.75rem 0 1.5rem}.release-pill{display:inline-flex;align-items:center;padding:.35rem .85rem;border-radius:999px;border:1px solid rgba(88,166,255,.3);background:rgba(88,166,255,.08);color:var(--blue);font-size:.82rem;font-weight:700}.release-pill:hover{text-decoration:none;background:rgba(88,166,255,.14)}
-  .hero-actions{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;margin-bottom:3rem}.btn-primary,.btn-ghost{padding:.75rem 1.5rem;border-radius:var(--r);font-size:1rem;display:inline-flex;align-items:center;gap:.5rem}.btn-primary{background:var(--brand);color:#0d1117;font-weight:700}.btn-primary:hover{background:#0fb89a;text-decoration:none}.btn-ghost{border:1px solid var(--border);color:var(--text)}.btn-ghost:hover{background:var(--bg2);text-decoration:none}
-  .terminal-wrap{max-width:760px;margin:0 auto 4rem}.terminal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,.4)}.terminal-bar{background:var(--bg3);padding:.6rem 1rem;display:flex;align-items:center;gap:.5rem;border-bottom:1px solid var(--border)}.terminal-bar i{width:12px;height:12px;border-radius:50%;display:inline-block}.dot-r{background:#ff5f57}.dot-y{background:#febc2e}.dot-g{background:#28c840}.terminal-title{margin-left:.5rem;font-size:.78rem;color:var(--muted)}.terminal-body{padding:1.25rem 1.5rem;font-size:.875rem;line-height:1.7}.terminal-body pre{white-space:pre-wrap}.c-muted{color:var(--muted)}.c-green{color:var(--green)}.c-brand{color:var(--brand)}.c-yellow{color:var(--yellow)}.c-blue{color:var(--blue)}
-  section{padding:5rem 2rem}.section-inner{max-width:1100px;margin:0 auto}.section-label{font-size:.78rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--brand);margin-bottom:.75rem} h2{font-size:clamp(1.6rem,4vw,2.4rem);font-weight:700;letter-spacing:-.02em;margin-bottom:1rem}.section-sub{color:var(--muted);font-size:1.08rem;max-width:720px;margin-bottom:2.5rem}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.25rem}.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.45rem}.card:hover{border-color:var(--brand)}.card .icon{font-size:1.25rem;margin-bottom:.8rem}.card h3{font-size:1rem;margin-bottom:.5rem}.card p{font-size:.9rem;color:var(--muted)}.badge{font-size:.68rem;font-weight:700;padding:2px 7px;border-radius:100px;text-transform:uppercase}.badge-live{background:rgba(63,185,80,.15);color:var(--green)}.badge-plan{background:rgba(88,166,255,.15);color:var(--blue)}
-  .mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.25rem}.mode{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.5rem}.mode.recommended{border-color:rgba(20,201,172,.55);box-shadow:inset 0 0 0 1px rgba(20,201,172,.12)}.mode h3{display:flex;justify-content:space-between;gap:1rem;align-items:center;margin-bottom:.75rem}.mode p,.mode li{color:var(--muted);font-size:.9rem}.mode ul{padding-left:1.15rem;margin-top:.8rem}.mode li{margin:.35rem 0}
-  .steps{display:flex;flex-direction:column;gap:1.6rem;max-width:760px}.step{display:flex;gap:1.2rem}.step-num{flex-shrink:0;width:34px;height:34px;border-radius:50%;border:2px solid var(--brand);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem}.step h3{font-size:1rem;margin-bottom:.3rem}.step p{font-size:.9rem;color:var(--muted)}
-  .codebox{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem;overflow-x:auto}.codebox pre{font-size:.84rem;line-height:1.7}.notice{border:1px solid rgba(210,153,34,.35);background:rgba(210,153,34,.08);border-radius:var(--r);padding:1rem 1.2rem;color:var(--muted);margin-top:1.5rem}.notice strong{color:var(--yellow)}
-  .roadmap{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.25rem}.roadmap .card{min-height:220px}.roadmap .card a{font-weight:700}.cta{text-align:center;padding:6rem 2rem;background:linear-gradient(180deg,var(--bg) 0%,var(--bg2) 100%)}.cta p{color:var(--muted);margin:0 auto 2rem;max-width:650px} footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:var(--faint);font-size:.85rem}footer a{color:var(--muted)}
-  @media(max-width:760px){.nav-links{display:none}.hero{padding:4rem 1.25rem 3rem}h1{font-size:2.25rem}section{padding:3.5rem 1.25rem}.mode-grid,.roadmap{grid-template-columns:1fr}}
+  :root {
+    --ivory: #FAF9F5; --oat: #F0EEE6; --cloud: #E8E6DC; --kraft: #E3DACC; --white: #FFFFFF;
+    --ink: #141413; --ink-2: #3D3D3A; --ink-3: #5E5D59; --ink-4: #73726C; --ink-6: #9C9A92; --ink-7: #C2C0B6;
+    --night: #141413; --night-2: #1F1E1D; --night-3: #262624; --night-line: #3D3D3A;
+    --teal: #14C9AC; --teal-deep: #0B7A69; --teal-deeper: #075C4F;
+    --line: rgba(31,30,29,.15); --line-soft: rgba(31,30,29,.12); --line-strong: rgba(31,30,29,.3);
+    --serif: Newsreader, Georgia, "Times New Roman", serif;
+    --sans: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
+    --gutter: clamp(20px, 8.3vw, 120px);
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font-family: var(--sans); color: var(--ink); background: var(--ivory); -webkit-font-smoothing: antialiased; line-height: 1.5; }
+  button { font-family: inherit; cursor: pointer; }
+  a { color: var(--teal-deep); text-decoration: none; }
+  a:hover { color: var(--teal-deeper); text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+  h1, h2, h3 { font-family: var(--serif); font-weight: 400; margin: 0; }
+  p { margin: 0; }
+  em { font-style: italic; }
+  .mono { font-family: var(--mono); }
+  .wrap { max-width: 1440px; margin: 0 auto; padding-left: var(--gutter); padding-right: var(--gutter); }
+  .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); column-gap: 24px; }
+  .eyebrow { font-family: var(--mono); font-size: 13px; color: var(--teal-deep); }
+  .h2 { font-size: clamp(34px, 4.2vw, 48px); line-height: 1.1; letter-spacing: -.8px; }
+  .lead { font-size: 17px; line-height: 1.65; color: var(--ink-2); }
+  .stack { display: flex; flex-direction: column; gap: 18px; }
+  .btn { height: 52px; display: inline-flex; align-items: center; gap: 10px; padding: 0 24px; border-radius: 12px; font-size: 16px; font-weight: 500; text-decoration: none; }
+  .btn:hover { text-decoration: none; filter: brightness(.94); }
+  .btn-dark { background: var(--ink); color: var(--ivory); }
+  .btn-dark:hover { color: var(--ivory); }
+  .btn-ghost { border: .5px solid var(--line-strong); color: var(--ink); font-weight: 400; }
+  .btn-ghost:hover { background: rgba(115,114,108,.1); color: var(--ink); filter: none; }
+  .pill { display: inline-flex; align-items: center; font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 8px; }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* nav */
+  .nav { position: sticky; top: 0; z-index: 50; background: rgba(250,249,245,.92); backdrop-filter: blur(10px); border-bottom: .5px solid var(--line); }
+  .nav .wrap { height: 72px; display: flex; align-items: center; gap: 36px; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); }
+  .brand:hover { text-decoration: none; color: var(--ink); }
+  .brand span { font-family: var(--serif); font-size: 25px; font-weight: 500; letter-spacing: -.2px; }
+  .nav-links { display: flex; gap: 28px; font-size: 14.5px; flex-grow: 1; }
+  .nav-links a { color: var(--ink-2); }
+  .nav .gh { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 16px; border-radius: 10px; border: .5px solid var(--line-strong); color: var(--ink); font-size: 14px; }
+  .nav .gh:hover { background: rgba(115,114,108,.1); text-decoration: none; }
+  .nav .dl { height: 40px; display: flex; align-items: center; padding: 0 18px; border-radius: 10px; background: var(--ink); color: var(--ivory); font-size: 14px; font-weight: 500; }
+  .nav .dl:hover { text-decoration: none; filter: brightness(1.2); }
+
+  /* hero */
+  .hero { padding-top: 96px; padding-bottom: 110px; align-items: center; row-gap: 56px; }
+  .hero-copy { grid-column: span 6; display: flex; flex-direction: column; gap: 28px; }
+  .tag { display: flex; align-items: center; gap: 10px; }
+  .tag i { width: 8px; height: 8px; border-radius: 4px; background: var(--teal); animation: blink 1.6s infinite; }
+  .hero h1 { font-size: clamp(44px, 5.4vw, 68px); line-height: 1.04; letter-spacing: -1.4px; }
+  .hero h1 em { color: var(--teal-deep); }
+  .hero .sub { font-size: 19px; line-height: 1.6; color: var(--ink-2); max-width: 560px; }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .hero-actions .btn-ghost { font-family: var(--mono); font-size: 14.5px; }
+  .release-pill { font-size: 13.5px; color: var(--teal-deep); font-weight: 500; }
+  .claims { display: flex; flex-wrap: wrap; gap: 10px 22px; font-size: 13.5px; color: var(--ink-3); }
+  .claims b { font-weight: 400; color: var(--ink-7); }
+  .viewfinder { grid-column: 8 / span 5; position: relative; padding: 26px; }
+  .viewfinder > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .demo { position: relative; background: var(--white); border: .5px solid var(--line); border-radius: 16px; box-shadow: 0 18px 50px rgba(20,20,19,.08); overflow: hidden; }
+  .demo-screen { position: relative; height: 170px; background: var(--oat); border-bottom: .5px solid var(--line); overflow: hidden; }
+  .demo-win { position: absolute; left: 22px; right: 22px; top: 20px; bottom: 0; background: var(--white); border-radius: 8px 8px 0 0; border: .5px solid rgba(31,30,29,.2); border-bottom: 0; }
+  .demo-title { height: 26px; display: flex; align-items: center; padding: 0 10px; font-size: 11.5px; color: var(--ink-2); background: var(--ivory); border-radius: 8px 8px 0 0; border-bottom: .5px solid var(--line-soft); }
+  .demo-menu { display: flex; gap: 14px; padding: 4px 10px; font-size: 11px; color: var(--ink-3); border-bottom: .5px solid rgba(31,30,29,.1); }
+  .demo-text { padding: 10px 12px; font-family: var(--mono); font-size: 13px; min-height: 18px; }
+  .caret { display: inline-block; width: 1px; height: 14px; background: var(--ink); margin-left: 1px; vertical-align: -2px; animation: blink 1s infinite; }
+  .demo-drop { position: absolute; left: 8px; top: 50px; width: 150px; background: var(--white); border: .5px solid rgba(31,30,29,.2); border-radius: 6px; box-shadow: 0 8px 20px rgba(20,20,19,.14); padding: 4px 0; font-size: 11.5px; }
+  .demo-drop div { padding: 3px 10px; }
+  .demo-drop .hit { background: rgba(20,201,172,.16); outline: 1.5px solid var(--teal-deep); outline-offset: -1.5px; }
+  .reticle { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; transition: left .6s, top .6s; }
+  .demo-body { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 10px; }
+  .demo-cmd { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 12.5px; }
+  .demo-cmd .grow { flex-grow: 1; }
+  .demo-env { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+  .demo-step { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13.5px; transition: opacity .3s; }
+  .demo-step .g { width: 16px; display: flex; justify-content: center; }
+  .demo-step .k { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); width: 44px; flex-shrink: 0; }
+  .demo-step .t { flex-grow: 1; }
+  .demo-step .d { font-family: var(--mono); font-size: 11.5px; color: var(--ink-4); }
+  .demo-step .dot { width: 6px; height: 6px; border-radius: 3px; background: var(--ink-7); }
+  .spin { animation: spin .9s linear infinite; }
+  .demo-sum { font-family: var(--mono); font-size: 12px; color: var(--teal-deep); border-top: .5px solid var(--line-soft); padding-top: 10px; min-height: 27px; }
+  .demo-live { position: absolute; right: -8px; bottom: -34px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+
+  /* principles */
+  .principles { margin-top: 0; }
+  .principles .inner { padding: 40px 0; border-top: .5px solid var(--line); border-bottom: .5px solid var(--line); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 48px; }
+  .principles .eyebrow { font-size: 12px; margin-bottom: 10px; }
+  .principles .say { font-family: var(--serif); font-size: 25px; line-height: 1.3; }
+
+  /* how */
+  .section { padding-top: 120px; padding-bottom: 110px; }
+  .how-left { grid-column: span 5; }
+  .how-list { display: flex; flex-direction: column; margin-top: 18px; border-top: .5px solid var(--line); }
+  .how-tab { border: 0; border-bottom: .5px solid var(--line); background: transparent; display: flex; align-items: center; gap: 16px; padding: 16px 12px; text-align: left; color: var(--ink); font-size: 16.5px; }
+  .how-tab .n { font-family: var(--mono); font-size: 13px; color: var(--ink-6); width: 24px; }
+  .how-tab .t { flex-grow: 1; }
+  .how-tab svg { stroke: var(--ink-6); }
+  .how-tab[aria-selected="true"] { background: var(--oat); }
+  .how-tab[aria-selected="true"] .n { color: var(--teal-deep); }
+  .how-tab[aria-selected="true"] .t { font-weight: 500; }
+  .how-tab[aria-selected="true"] svg { stroke: var(--teal-deep); }
+  .how-panel { grid-column: 7 / span 6; align-self: end; background: var(--white); border: .5px solid var(--line); border-radius: 20px; padding: 36px; display: flex; flex-direction: column; gap: 20px; min-height: 420px; }
+  .how-panel .head { display: flex; align-items: center; gap: 12px; }
+  .how-panel .num { width: 44px; height: 44px; border-radius: 22px; border: 1.5px solid var(--teal-deep); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 15px; color: var(--teal-deep); flex-shrink: 0; }
+  .how-panel h3 { font-size: 30px; line-height: 1.2; }
+  pre.code { margin: 0; background: var(--ink); color: var(--cloud); border-radius: 12px; padding: 18px 20px; font-family: var(--mono); font-size: 13px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .how-panel pre { margin-top: auto; }
+
+  /* execution */
+  .dark { background: var(--night); color: var(--ivory); }
+  .dark .eyebrow { color: var(--teal); }
+  .dark .lead { color: var(--ink-7); }
+  .exec .grid { row-gap: 56px; }
+  .exec-head { grid-column: span 7; }
+  .exec-head h2 em { color: var(--teal); }
+  .seg { grid-column: 9 / span 4; align-self: end; display: flex; padding: 4px; background: var(--night-3); border-radius: 12px; gap: 4px; }
+  .seg button { flex: 1 1 0; height: 44px; border: 0; border-radius: 9px; background: transparent; color: var(--ink-7); font-size: 15px; font-weight: 500; }
+  .seg button[aria-selected="true"] { background: var(--ivory); color: var(--ink); }
+  .layers { grid-column: span 7; background: var(--night-2); border: .5px solid var(--night-line); border-radius: 20px; padding: 28px; display: flex; flex-direction: column; gap: 10px; min-height: 440px; }
+  .layers .path { font-family: var(--mono); font-size: 12px; color: var(--ink-6); margin-bottom: 6px; }
+  .layer { border: 1px solid var(--night-line); background: var(--night-3); border-radius: 12px; padding: 14px 16px; display: flex; align-items: center; gap: 14px; }
+  .layer .nm { font-family: var(--mono); font-size: 14px; width: 250px; flex-shrink: 0; overflow-wrap: anywhere; }
+  .layer .nt { font-size: 13.5px; color: var(--ink-7); }
+  .layer.app { border-style: dashed; border-color: var(--teal); background: rgba(20,201,172,.08); }
+  .layer.app .nm { color: var(--teal); }
+  .env-info { grid-column: 9 / span 4; display: flex; flex-direction: column; gap: 18px; }
+  .env-info .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .env-info .top h3 { font-size: 32px; }
+  .env-info .pts { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
+  .env-info .pts li { display: flex; gap: 12px; font-size: 15px; line-height: 1.5; }
+  .env-info .pts svg { flex-shrink: 0; margin-top: 2px; }
+  .env-info .note { font-size: 13.5px; line-height: 1.55; color: var(--ink-6); border-top: .5px solid var(--night-line); padding-top: 14px; }
+
+  /* adapters */
+  .ad-head { grid-column: span 6; }
+  .chips { grid-column: 8 / span 5; align-self: end; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  .chip { height: 44px; border: .5px solid var(--line-strong); border-radius: 22px; background: transparent; color: var(--ink); padding: 0 20px; font-size: 15px; }
+  .chip[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: var(--ivory); }
+  .ad-file { grid-column: span 7; background: var(--white); border: .5px solid var(--line); border-radius: 20px; overflow: hidden; }
+  .ad-file .fh { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: .5px solid var(--line-soft); font-family: var(--mono); font-size: 13px; color: var(--ink-3); }
+  .ad-file pre { margin: 0; padding: 22px 24px; font-family: var(--mono); font-size: 14px; line-height: 1.75; white-space: pre-wrap; color: var(--ink); min-height: 400px; overflow-wrap: anywhere; }
+  .ad-info { grid-column: 9 / span 4; display: flex; flex-direction: column; gap: 20px; }
+  .ad-info h3 { font-size: 32px; }
+  .asserts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .asserts span { font-family: var(--mono); font-size: 12.5px; padding: 6px 10px; border-radius: 8px; background: var(--oat); }
+  .adapters .grid { row-gap: 48px; }
+  code.inline { font-family: var(--mono); font-size: 15px; }
+
+  /* capabilities */
+  .caps-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 40px; flex-wrap: wrap; }
+  .caps-head h2 { font-size: clamp(30px, 3.4vw, 40px); line-height: 1.15; letter-spacing: -.5px; max-width: 700px; }
+  .caps-head h2 em { color: var(--teal-deep); }
+  .caps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: .5px solid var(--line); border-radius: 20px; overflow: hidden; }
+  .cap { background: var(--ivory); padding: 30px 28px; display: flex; flex-direction: column; gap: 12px; min-height: 190px; }
+  .cap .eyebrow { font-size: 12px; }
+  .cap h3 { font-size: 23px; line-height: 1.25; }
+  .cap p { font-size: 15px; line-height: 1.6; color: var(--ink-2); }
+
+  /* roam */
+  .oat { background: var(--oat); }
+  .roam { padding-top: 110px; padding-bottom: 110px; align-items: center; row-gap: 48px; }
+  .roam-copy { grid-column: span 5; display: flex; flex-direction: column; gap: 20px; }
+  .roam-cmds { background: var(--ink); color: var(--cloud); border-radius: 12px; padding: 16px 18px; font-family: var(--mono); font-size: 13.5px; line-height: 1.8; overflow-wrap: anywhere; }
+  .roam-cmds span { color: var(--ink-6); }
+  .roam-card { grid-column: 7 / span 6; background: var(--white); border: .5px solid var(--line); border-radius: 20px; overflow: hidden; }
+  .roam-card .rh { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: .5px solid var(--line-soft); }
+  .roam-card .rh i { width: 8px; height: 8px; border-radius: 4px; background: var(--teal); animation: blink 1.4s infinite; }
+  .roam-card .rh b { flex-grow: 1; font-size: 15px; font-weight: 500; }
+  .roam-card .rh span { font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); }
+  .roam-lines { padding: 16px 20px; display: flex; flex-direction: column; gap: 4px; min-height: 330px; }
+  .roam-lines div { display: flex; gap: 12px; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: var(--ink-2); }
+  .roam-lines div span:first-child { color: var(--ink-6); }
+  .roam-lines .m { color: #9A5B00; font-weight: 500; }
+  .roam-lines .h { color: #B42318; font-weight: 500; }
+  .roam-card .rf { padding: 14px 20px; border-top: .5px solid var(--line-soft); font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); background: var(--ivory); }
+
+  /* status */
+  .status-head { margin-bottom: 48px; row-gap: 24px; }
+  .status-head > div { grid-column: span 7; }
+  .status-head > p { grid-column: 9 / span 4; align-self: end; font-size: 16px; line-height: 1.6; color: var(--ink-2); }
+  .status { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .status-card { background: var(--white); border: .5px solid var(--line); border-radius: 18px; padding: 26px 24px; display: flex; flex-direction: column; gap: 14px; min-height: 330px; }
+  .status-card:hover { border-color: rgba(11,122,105,.45); }
+  .status-card .pill { align-self: flex-start; }
+  .done-pill { color: var(--teal-deeper); background: rgba(20,201,172,.16); }
+  .next-pill { color: var(--ink-2); background: var(--cloud); }
+  .status-card h3 { font-size: 25px; line-height: 1.2; }
+  .status-card p { font-size: 14.5px; line-height: 1.6; color: var(--ink-2); flex-grow: 1; }
+  .status-card a { font-size: 14px; font-weight: 500; }
+
+  /* install */
+  .install { padding-top: 20px; padding-bottom: 120px; row-gap: 40px; }
+  .install-copy { grid-column: span 5; }
+  .install-panel { grid-column: 7 / span 6; display: flex; flex-direction: column; gap: 14px; }
+  .install-panel .top { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .install-panel h3 { font-size: 30px; }
+  .install-panel .arch { font-family: var(--mono); font-size: 13px; color: var(--ink-3); }
+  .row { display: flex; align-items: center; gap: 12px; background: var(--ink); border-radius: 12px; padding: 14px 14px 14px 18px; min-height: 60px; }
+  .row .t { flex-grow: 1; font-family: var(--mono); font-size: 14px; color: var(--cloud); overflow-wrap: anywhere; }
+  .row .n { font-size: 12.5px; color: var(--ink-6); }
+  .row button { height: 32px; border: .5px solid var(--ink-3); border-radius: 8px; background: none; color: var(--cloud); padding: 0 12px; font-size: 13px; flex-shrink: 0; }
+  .row button:hover { background: rgba(255,255,255,.08); }
+  .install-panel .note { font-size: 13.5px; line-height: 1.55; color: var(--ink-3); }
+  .os-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .os-chips .chip { height: 42px; border-radius: 21px; padding: 0 18px; font-size: 14.5px; }
+  .install-panel .btn { align-self: flex-start; height: 48px; font-size: 15px; padding: 0 22px; margin-top: 6px; }
+
+  /* footer */
+  footer { padding-top: 110px; padding-bottom: 56px; }
+  .cta { align-items: center; row-gap: 56px; }
+  .cta-copy { grid-column: span 7; display: flex; flex-direction: column; gap: 26px; }
+  .cta-copy h2 { font-size: clamp(40px, 4.6vw, 60px); line-height: 1.05; letter-spacing: -1px; }
+  .cta-copy h2 em { color: var(--teal); }
+  .cta-copy p { font-size: 17px; line-height: 1.65; color: var(--ink-7); max-width: 580px; }
+  .cta-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn-teal { background: var(--teal); color: var(--ink); font-weight: 600; }
+  .btn-teal:hover { color: var(--ink); }
+  .btn-ghost-d { border: .5px solid var(--ink-3); color: var(--ivory); font-weight: 400; }
+  .btn-ghost-d:hover { background: rgba(255,255,255,.08); color: var(--ivory); filter: none; }
+  .eyes { grid-column: 9 / span 4; display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 14px; justify-items: center; }
+  .eye { width: 14px; height: 14px; border-radius: 7px; border: 1.5px solid var(--night-line); display: flex; align-items: center; justify-content: center; transition: border-color .4s; }
+  .eye i { width: 0; height: 0; border-radius: 3px; background: var(--teal); transition: width .4s, height .4s; }
+  .eye.open { border-color: var(--teal); }
+  .eye.open i { width: 6px; height: 6px; }
+  .foot { display: flex; align-items: center; flex-wrap: wrap; gap: 16px 28px; border-top: .5px solid var(--night-line); padding-top: 28px; margin-top: 80px; font-size: 14px; color: var(--ink-6); }
+  .foot .who { display: flex; align-items: center; gap: 10px; color: var(--ivory); }
+  .foot .who span { font-family: var(--serif); font-size: 19px; }
+  .foot .grow { flex-grow: 1; }
+  .foot a { color: var(--ink-7); }
+
+  @media (max-width: 1100px) {
+    .nav-links { display: none; }
+    .hero-copy, .viewfinder, .how-left, .how-panel, .exec-head, .seg, .layers, .env-info,
+    .ad-head, .chips, .ad-file, .ad-info, .roam-copy, .roam-card, .status-head > div, .status-head > p,
+    .install-copy, .install-panel, .cta-copy, .eyes { grid-column: 1 / -1; }
+    .viewfinder { max-width: 560px; }
+    .seg { max-width: 460px; }
+    .chips { justify-content: flex-start; }
+    .status { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .caps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .eyes { max-width: 340px; }
+  }
+  @media (max-width: 680px) {
+    .nav .gh { display: none; }
+    .hero { padding-top: 56px; padding-bottom: 80px; }
+    .section { padding-top: 80px; padding-bottom: 80px; }
+    .principles .inner, .caps, .status { grid-template-columns: 1fr; }
+    .principles .inner { gap: 28px; }
+    .viewfinder { padding: 16px; }
+    .demo-live { position: static; margin-top: 10px; }
+    .how-panel { padding: 24px; min-height: 0; }
+    .layers { padding: 18px; min-height: 0; }
+    .layer { flex-direction: column; align-items: flex-start; gap: 4px; margin-left: 0 !important; }
+    .layer .nm { width: auto; }
+    .ad-file pre { min-height: 0; font-size: 13px; }
+    .roam-lines { min-height: 0; }
+    .status-card { min-height: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    html { scroll-behavior: auto; }
+  }
 </style>
 </head>
 <body>
-<nav>
-  <a class="nav-brand" href="#top" aria-label="Argus home">
-    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true"><circle cx="14" cy="14" r="13" stroke="#14c9ac" stroke-width="2"/><circle cx="14" cy="14" r="6" fill="#14c9ac" opacity=".3"/><circle cx="14" cy="14" r="3" fill="#14c9ac"/><circle cx="14" cy="5" r="2" fill="#14c9ac" opacity=".7"/><circle cx="14" cy="23" r="2" fill="#14c9ac" opacity=".7"/><circle cx="5" cy="14" r="2" fill="#14c9ac" opacity=".7"/><circle cx="23" cy="14" r="2" fill="#14c9ac" opacity=".7"/></svg>
-    Argus
-  </a>
-  <div class="nav-links">
-    <a href="#execution">Execution</a><a href="#features">Features</a><a href="#how">How it works</a><a href="#roadmap">Roadmap</a><a href="https://github.com/Varun-SV/Argus/tree/main/docs">Docs</a><a href="https://github.com/Varun-SV/Argus">GitHub</a>
+
+<header class="nav">
+  <nav class="wrap" aria-label="Main">
+    <a class="brand" href="#top" aria-label="Argus home">
+      <svg width="30" height="30" viewBox="0 0 100 100" fill="none" aria-hidden="true"><path d="M16 31V16h15M69 16h15v15M84 69v15H69M31 84H16V69" stroke="#5E5D59" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="50" cy="50" r="17" stroke="#0B7A69" stroke-width="6"/><path d="M50 42l7 4v8l-7 4-7-4v-8z" fill="#14C9AC"/></svg>
+      <span>Argus</span>
+    </a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#execution">Capsules</a>
+      <a href="#adapters">Adapters</a>
+      <a href="#roam">Free roam</a>
+      <a href="#status">Platform</a>
+      <a href="https://github.com/Varun-SV/Argus/tree/main/docs">Docs</a>
+    </div>
+    <a class="gh" href="https://github.com/Varun-SV/Argus"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.2-3.4-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.8 1a9.6 9.6 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5A10 10 0 0 0 12 2z"/></svg>GitHub</a>
+    <a class="dl" href="https://github.com/Varun-SV/Argus/releases/latest">Download</a>
+  </nav>
+</header>
+
+<main id="top">
+  <!-- HERO -->
+  <section class="wrap grid hero">
+    <div class="hero-copy">
+      <div class="tag eyebrow"><i></i>observe · decide · act · verify</div>
+      <h1>Describe the behavior. <em>Argus watches</em>, acts, and proves it.</h1>
+      <p class="sub">Argus tests desktop apps, web UIs and command-line tools the way a person would, using multimodal models. It looks at the screen, decides what to do, acts, and checks the result. Run it locally for quick checks, or inside a disposable Capsule when your own desktop shouldn't be part of the experiment.</p>
+      <div class="hero-actions">
+        <a class="btn btn-dark" href="https://github.com/Varun-SV/Argus/releases/latest">Download Argus<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></svg></a>
+        <a class="btn btn-ghost" href="#install">pip install argus-app-testing</a>
+      </div>
+      <a id="latest-release" class="release-pill" href="https://github.com/Varun-SV/Argus/releases/latest">Latest release →</a>
+      <div class="claims"><span>No brittle selectors</span><b>/</b><span>No script for every click</span><b>/</b><span>MIT licensed</span></div>
+    </div>
+
+    <div class="viewfinder" aria-label="Animated example of an Argus run">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path d="M0 9V0h7M93 0h7v9M100 91v9h-7M7 100H0v-9" fill="none" stroke="#0B7A69" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linecap="round"/></svg>
+      <div class="demo">
+        <div class="demo-screen" aria-hidden="true">
+          <div class="demo-win">
+            <div class="demo-title" id="demo-title">Untitled - Notepad</div>
+            <div class="demo-menu"><span>File</span><span>Edit</span><span>Format</span><span>View</span><span>Help</span></div>
+            <div class="demo-text"><span id="demo-text"></span><span class="caret"></span></div>
+            <div class="demo-drop" id="demo-drop" hidden><div>New</div><div>Open…</div><div class="hit">Save</div><div>Save as…</div></div>
+          </div>
+          <div class="reticle" id="demo-reticle" style="left:30%;top:66%"><svg width="26" height="26" viewBox="0 0 26 26"><path d="M1 8V1h7M18 1h7v7M25 18v7h-7M8 25H1v-7" fill="none" stroke="#0B7A69" stroke-width="2"/><circle cx="13" cy="13" r="3" fill="#14C9AC"/></svg></div>
+        </div>
+        <div class="demo-body">
+          <div class="demo-cmd"><span style="color:var(--ink-3)">$</span><span class="grow">argus run notepad-smoke.test.yaml</span><span class="pill" id="demo-status" style="font-family:var(--sans)">Running</span></div>
+          <div class="demo-env">Capsule · Hyper-V · disposable Gen-2 VM · ollama:gemma3:9b</div>
+          <div id="demo-steps"></div>
+          <div class="demo-sum" id="demo-sum"></div>
+        </div>
+      </div>
+      <div class="demo-live">↳ live · <span id="demo-action">type 'hello from argus'</span></div>
+    </div>
+  </section>
+
+  <!-- PRINCIPLES -->
+  <section class="wrap principles">
+    <div class="inner">
+      <div><div class="eyebrow">test spec</div><div class="say">says <em>what</em> to test.</div></div>
+      <div><div class="eyebrow">execution spec</div><div class="say">says <em>where and how</em> Argus may run it.</div></div>
+      <div><div class="eyebrow">ATES evidence</div><div class="say">says <em>what Argus must prove</em> happened.</div></div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how" class="wrap grid section" style="row-gap:48px">
+    <div class="how-left stack">
+      <div class="eyebrow">01 — How it works</div>
+      <h2 class="h2">From intent to evidence, one boundary at a time.</h2>
+      <p class="lead">Argus keeps placement, interaction, policy and verification separate. The model proposes; Argus checks every action before it runs. Assertions are never left to the model's opinion.</p>
+      <div class="how-list" role="tablist" aria-label="How it works" id="how-tabs"></div>
+    </div>
+    <div class="how-panel" role="tabpanel" id="how-panel" aria-live="polite">
+      <div class="head"><span class="num" id="how-num">03</span><h3 id="how-title">Observe → propose → validate → act</h3></div>
+      <p class="lead" id="how-body"></p>
+      <pre class="code" id="how-code"></pre>
+    </div>
+  </section>
+
+  <!-- EXECUTION -->
+  <section id="execution" class="dark exec">
+    <div class="wrap grid section">
+      <div class="exec-head stack">
+        <div class="eyebrow">02 — Execution environments</div>
+        <h2 class="h2" style="font-size:clamp(36px,4.6vw,52px);line-height:1.08">A hundred eyes on your app. <em>None on your desktop.</em></h2>
+        <p class="lead" style="max-width:620px">Adapters decide how Argus interacts with a target. Execution environments decide where it's allowed to. Pick the boundary that fits the risk.</p>
+      </div>
+      <div class="seg" role="tablist" aria-label="Execution environment" id="env-tabs"></div>
+      <div class="layers" id="env-layers" aria-live="polite"></div>
+      <div class="env-info">
+        <div class="top"><h3 id="env-name">Capsule</h3><span class="pill" id="env-badge">Recommended for production</span></div>
+        <p class="lead" id="env-lead" style="font-size:16px;line-height:1.6"></p>
+        <ul class="pts" id="env-points"></ul>
+        <div class="note" id="env-note"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ADAPTERS -->
+  <section id="adapters" class="adapters">
+    <div class="wrap grid section">
+      <div class="ad-head stack">
+        <div class="eyebrow">03 — Adapters</div>
+        <h2 class="h2">One test style. Three ways in.</h2>
+        <p class="lead">Tests are YAML files in <code class="inline">.argus/</code>. Plain-English steps go to the model; <code class="inline">assert</code> blocks run deterministically.</p>
+      </div>
+      <div class="chips" role="tablist" aria-label="Adapter" id="ad-tabs"></div>
+      <div class="ad-file">
+        <div class="fh"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg><span id="ad-file"></span></div>
+        <pre id="ad-yaml"></pre>
+      </div>
+      <div class="ad-info">
+        <h3 id="ad-name"></h3>
+        <p class="lead" id="ad-body" style="font-size:16px;line-height:1.6"></p>
+        <div style="font-size:13px;color:var(--ink-3)">Assertions it checks</div>
+        <div class="asserts" id="ad-asserts"></div>
+        <div class="mono" style="font-size:12.5px;color:var(--ink-3);margin-top:8px">exit 0 all pass · 1 failure · 2 error/crash</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CAPABILITIES -->
+  <section class="wrap" style="padding-top:30px;padding-bottom:120px">
+    <div class="caps-head">
+      <h2>The model handles the judgment. <em>Argus holds the guardrails.</em></h2>
+      <span class="eyebrow">04 — Capabilities</span>
+    </div>
+    <div class="caps">
+      <div class="cap"><span class="eyebrow">intent</span><h3>Natural-language actions</h3><p>Say what a user should do instead of maintaining brittle selectors for every interaction.</p></div>
+      <div class="cap"><span class="eyebrow">verify</span><h3>Deterministic assertions</h3><p>Visible text, process state, exit code, URL and title are checked without asking the model.</p></div>
+      <div class="cap"><span class="eyebrow">policy</span><h3>Central execution policy</h3><p>Every action is normalized and checked against capabilities and host-safety policy first.</p></div>
+      <div class="cap"><span class="eyebrow">windows</span><h3>Safe local mode</h3><p>Supported desktop actions use semantic UI Automation, not host-wide input injection.</p></div>
+      <div class="cap"><span class="eyebrow">isolate</span><h3>Disposable Capsules</h3><p>Invasive tests run in dedicated VMs with secure guest control and explicit lifecycle ownership.</p></div>
+      <div class="cap"><span class="eyebrow">forensics</span><h3>Failure Capsules</h3><p>Keep disk and config evidence from a failed scripted run, without persisting live credentials.</p></div>
+      <div class="cap"><span class="eyebrow">transfer</span><h3>Explicit file transfer</h3><p>Stage inputs and collect outputs through declared, bounded, hashed transfers.</p></div>
+      <div class="cap"><span class="eyebrow">evidence</span><h3>ATES v0.1 evidence</h3><p>Ordered events, protected artifacts and verifiable manifests. Reports derive from evidence.</p></div>
+      <div class="cap"><span class="eyebrow">models</span><h3>Any provider</h3><p>Ollama locally, or Anthropic, OpenAI, Azure, Gemini and LiteLLM. Vision is auto-detected.</p></div>
+    </div>
+  </section>
+
+  <!-- FREE ROAM -->
+  <section id="roam" class="oat">
+    <div class="wrap grid roam">
+      <div class="roam-copy">
+        <div class="eyebrow">05 — Free roam</div>
+        <h2 class="h2">Let it wander. It writes down what breaks.</h2>
+        <p class="lead">Give Argus a target and a time budget. It explores without a script, catches crashes and error dialogs, records findings with severity, and leaves you a report plus regression-test stubs. Cross-session memory means each session starts where the last one stopped.</p>
+        <div class="roam-cmds"><span>$</span> argus roam "notepad.exe" --minutes 10<br><span>$</span> argus roam "http://localhost:3000" --adapter browser<br><span>$</span> argus roam "./my-cli.sh" --adapter cli</div>
+      </div>
+      <div class="roam-card" aria-label="Example roam session">
+        <div class="rh"><i></i><b>Roaming notepad.exe</b><span id="roam-stats">54 states · 0 findings</span></div>
+        <div class="roam-lines" id="roam-lines"></div>
+        <div class="rf">→ .argus/roam/&lt;stamp&gt;/report.md + regression-*.test.yaml</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PLATFORM STATUS -->
+  <section id="status" class="wrap section">
+    <div class="grid status-head">
+      <div class="stack">
+        <div class="eyebrow">06 — Platform status</div>
+        <h2 class="h2">What's shipped, and what's next. Stated plainly.</h2>
+      </div>
+      <p>Execution authority, evidence authority and future read-only monitoring stay separate trust boundaries.</p>
+    </div>
+    <div class="status">
+      <div class="status-card"><span class="pill done-pill">Implemented</span><h3>ATES v0.1</h3><p>Canonical ordered evidence, durable action dispatch, privacy controls, protected artifacts, transactional finalization, manifests and verification, traceability, approvals and audit.</p><a href="https://github.com/Varun-SV/Argus/blob/main/docs/ates.md">Read ATES →</a></div>
+      <div class="status-card"><span class="pill done-pill">Implemented</span><h3>Fleet execution plane</h3><p>Node identity and enrollment, authenticated heartbeats, placement and fencing, remote Capsule execution, and ATES transport above the existing Capsule boundary.</p><a href="https://github.com/Varun-SV/Argus/blob/main/docs/fleet.md">Read Fleet →</a></div>
+      <div class="status-card"><span class="pill next-pill">Next layer</span><h3>Fleet operations + Observer</h3><p>Scheduler and queues, matrix execution, timelines and indexes, and a strictly read-only Observer. Not presented as shipped.</p><a href="https://github.com/Varun-SV/Argus/blob/main/docs/consolidated-roadmap.md">Roadmap →</a></div>
+      <div class="status-card"><span class="pill done-pill">Automated</span><h3>Cross-platform releases</h3><p>CI builds Windows x64 and ARM64, macOS universal2, and Linux x86_64 and ARM64 packages with checksums and provenance.</p><a href="https://github.com/Varun-SV/Argus/releases/latest">Latest release →</a></div>
+    </div>
+  </section>
+
+  <!-- INSTALL -->
+  <section id="install" class="wrap grid install">
+    <div class="install-copy stack">
+      <div class="eyebrow">07 — Install</div>
+      <h2 class="h2">Desktop app or Python package.</h2>
+      <p class="lead">Every release builds native packages from the same tagged source, with SHA-256 checksums and GitHub build-provenance attestations. Needs Python 3.10+ for the package route; install Ollama for local models.</p>
+      <div class="os-chips" role="tablist" aria-label="Platform" id="os-tabs"></div>
+    </div>
+    <div class="install-panel" role="tabpanel" aria-live="polite">
+      <div class="top"><h3 id="os-name">Python package</h3><span class="arch" id="os-arch">Python 3.10+</span></div>
+      <div id="os-rows" style="display:flex;flex-direction:column;gap:14px"></div>
+      <div class="note" id="os-note"></div>
+      <a class="btn btn-dark" href="https://github.com/Varun-SV/Argus/releases/latest">Get the latest release</a>
+    </div>
+  </section>
+</main>
+
+<footer class="dark">
+  <div class="wrap">
+    <div class="grid cta">
+      <div class="cta-copy">
+        <h2>Test autonomously. <em>Keep the boundaries explicit.</em></h2>
+        <p>Use Argus locally for fast development, isolate invasive work in Capsules, and spread Capsule execution across machines with Fleet, while ATES keeps the evidence trail canonical.</p>
+        <div class="cta-actions">
+          <a class="btn btn-teal" href="https://github.com/Varun-SV/Argus/releases/latest">Download Argus</a>
+          <a class="btn btn-ghost-d" href="https://github.com/Varun-SV/Argus/tree/main/docs">Read the docs</a>
+        </div>
+      </div>
+      <div class="eyes" id="eyes" aria-hidden="true"></div>
+    </div>
+    <div class="foot">
+      <span class="who"><svg width="22" height="22" viewBox="0 0 100 100" fill="none" aria-hidden="true"><path d="M16 31V16h15M69 16h15v15M84 69v15H69M31 84H16V69" stroke="#9C9A92" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="50" cy="50" r="17" stroke="#14C9AC" stroke-width="7"/><path d="M50 42l7 4v8l-7 4-7-4v-8z" fill="#14C9AC"/></svg><span>Argus</span></span>
+      <span class="grow">Named for Argus Panoptes, the watchman with a hundred eyes.</span>
+      <a href="https://github.com/Varun-SV/Argus">GitHub</a>
+      <a href="https://github.com/Varun-SV/Argus/tree/main/docs">Docs</a>
+      <a href="https://github.com/Varun-SV/Argus/issues">Issues</a>
+      <a href="https://github.com/Varun-SV/Argus/blob/main/LICENSE">MIT License</a>
+    </div>
   </div>
-  <a href="#install" class="nav-cta">Get started</a>
-</nav>
+</footer>
 
-<div class="hero" id="top">
-  <div class="hero-badge"><span></span> Safe execution + Argus Capsules</div>
-  <h1>Autonomous testing,<br><em>without surrendering your desktop</em></h1>
-  <p class="hero-sub">Argus uses multimodal LLMs to test desktop apps, web UIs, and CLI tools with natural-language actions and deterministic assertions. Run lightweight tests locally, or move production testing into disposable isolated Capsules and distribute those Capsules through Fleet.</p>
-  <div class="release-row"><a id="latest-release" class="release-pill" href="https://github.com/Varun-SV/Argus/releases/latest">Latest release</a></div>
-  <div class="hero-actions"><a href="https://github.com/Varun-SV/Argus/releases/latest" class="btn-primary">Download Argus</a><a href="#install" class="btn-ghost">Install options</a><a href="https://github.com/Varun-SV/Argus" class="btn-ghost">View on GitHub</a></div>
-  <div class="terminal-wrap"><div class="terminal"><div class="terminal-bar"><i class="dot-r"></i><i class="dot-y"></i><i class="dot-g"></i><span class="terminal-title">argus run checkout.test.yaml</span></div><div class="terminal-body"><pre><span class="c-muted">Running</span> <b>checkout.test.yaml</b>
-  <span class="c-green">✓</span> Type 'hello from argus' into the editor
-  <span class="c-green">✓</span> text_visible: 'hello from argus'
-  <span class="c-green">✓</span> Open the File menu
-  <span class="c-green">✓</span> element_exists: Save
-
-<span class="c-green">4 passed</span> · <span class="c-muted">0 failed · production isolation available with Capsules</span></pre></div></div></div>
-</div>
-
-<section id="execution" style="background:var(--bg2)"><div class="section-inner">
-  <div class="section-label">Execution environments</div><h2>Choose where Argus is allowed to act</h2><p class="section-sub">Adapters describe how Argus interacts with an application. Execution environments decide where that interaction is allowed to happen. Keeping those concerns separate is now part of Argus's core architecture.</p>
-  <div class="mode-grid">
-    <div class="mode recommended"><h3>Argus Capsule <span class="badge badge-live">Recommended production</span></h3><p>Disposable VM execution for tests that should not share the operator's interactive host.</p><ul><li>Windows Hyper-V and Linux libvirt/QEMU/KVM providers</li><li>Secure guest control with pinned HTTPS and per-session credentials</li><li>Explicit staging and artifact collection</li><li>Isolated networking and provider capability enforcement</li><li>Optional forensic Failure Capsule retention for supported scripted <code>argus run</code> failure paths</li></ul></div>
-    <div class="mode"><h3>Local <span class="badge badge-live">Lightweight</span></h3><p>Fast shared-host execution for development, quick checks, and systems without virtualization.</p><ul><li>Compatibility default remains local</li><li>Shared and non-isolated by design</li><li>Windows desktop mode defaults to semantic UI Automation</li><li>Legacy unrestricted physical input requires explicit opt-in</li><li>Use a Capsule when production containment matters</li></ul></div>
-  </div>
-  <div class="notice"><strong>Compatibility note:</strong> Capsules are the recommended production architecture, but Argus does not silently change existing configurations. Local execution remains the current default.</div>
-</div></section>
-
-<section id="features"><div class="section-inner">
-  <div class="section-label">Capabilities</div><h2>AI-driven interaction with deterministic guardrails</h2><p class="section-sub">Natural language controls the exploratory parts; structured assertions and execution policy keep critical checks and boundaries explicit.</p>
-  <div class="grid">
-    <div class="card"><div class="icon">🗣️</div><h3>Natural-language actions</h3><p>Describe what a user should do instead of maintaining brittle selectors for every UI interaction.</p></div>
-    <div class="card"><div class="icon">🔍</div><h3>Deterministic assertions</h3><p>Assertions such as visible text, process state, exit code, URL, and page title are evaluated without asking the model to decide whether they passed.</p></div>
-    <div class="card"><div class="icon">🛡️</div><h3>Central execution policy</h3><p>Actions are normalized and checked against capabilities and host-safety policy before platform execution.</p></div>
-    <div class="card"><div class="icon">🖥️</div><h3>Safe Windows local mode</h3><p>Supported desktop actions default to semantic UI Automation rather than intentional host-wide physical mouse/keyboard injection.</p></div>
-    <div class="card"><div class="icon">📦</div><h3>Disposable Capsules</h3><p>Run invasive tests inside dedicated VMs with secure guest control and explicit lifecycle ownership.</p></div>
-    <div class="card"><div class="icon">🧪</div><h3>Failure Capsules</h3><p>For supported scripted <code>argus run</code> failure paths, optionally retain disk/config evidence for forensic investigation without persisting live recovery credentials. Roam-triggered retention is not yet guaranteed.</p></div>
-    <div class="card"><div class="icon">📤</div><h3>Explicit file transfer</h3><p>Stage inputs and collect outputs through declared, bounded, hashed transfer authority rather than shared folders or clipboard shortcuts.</p></div>
-    <div class="card"><div class="icon">🤖</div><h3>Free-roam testing</h3><p><code>argus roam</code> explores applications autonomously, records findings, and can build cross-session exploration memory.</p></div>
-    <div class="card"><div class="icon">🌐</div><h3>Multiple interaction surfaces</h3><p>Desktop GUI, browser, and CLI adapters share the same testing model while remaining distinct from execution placement.</p></div>
-  </div>
-</div></section>
-
-<section id="how" style="background:var(--bg2)"><div class="section-inner">
-  <div class="section-label">How it works</div><h2>A clear boundary from intent to execution</h2><p class="section-sub">Argus now treats placement, interaction, policy, and verification as separate concerns.</p>
-  <div class="steps">
-    <div class="step"><div class="step-num">1</div><div><h3>Select execution environment</h3><p>Use local mode for lightweight shared-host work or a Capsule for production isolation.</p></div></div>
-    <div class="step"><div class="step-num">2</div><div><h3>Prepare and launch the target</h3><p>The selected execution environment allocates resources, stages authorized files where applicable, and creates the adapter inside that boundary.</p></div></div>
-    <div class="step"><div class="step-num">3</div><div><h3>Observe → propose → validate → act</h3><p>The model receives supported observations, proposes an action, and Argus applies normalization/capability/policy checks before execution.</p></div></div>
-    <div class="step"><div class="step-num">4</div><div><h3>Evaluate assertions</h3><p>Structured assertions are evaluated deterministically against the current observation or adapter state.</p></div></div>
-    <div class="step"><div class="step-num">5</div><div><h3>Collect, retain, or destroy</h3><p>Authorized artifacts are collected; supported scripted <code>argus run</code> failures may retain a forensic Capsule when configured; normal disposable sessions are torn down.</p></div></div>
-  </div>
-</div></section>
-
-<section id="adapters"><div class="section-inner">
-  <div class="section-label">Adapters</div><h2>One test style, multiple interaction surfaces</h2><p class="section-sub">Adapters are not execution environments: they define how the target is controlled once an execution environment has been selected.</p>
-  <div class="grid">
-    <div class="card"><h3>🖥️ Desktop GUI <span class="badge badge-live">Implemented</span></h3><p>Windows UI Automation and Linux GUI support with screenshots/structured observations where available.</p></div>
-    <div class="card"><h3>🌐 Browser <span class="badge badge-live">Implemented</span></h3><p>Playwright-powered browser testing with page observations and deterministic URL/title checks.</p></div>
-    <div class="card"><h3>⌨️ CLI <span class="badge badge-live">Implemented</span></h3><p>Execute commands and validate stdout, stderr, process state, and exit codes.</p></div>
-  </div>
-</div></section>
-
-<section id="roadmap" style="background:var(--bg2)"><div class="section-inner">
-  <div class="section-label">Platform status</div><h2>Evidence and distributed execution are now part of Argus</h2><p class="section-sub">Argus keeps execution authority, evidence authority, and future read-only operations/monitoring as distinct trust boundaries.</p>
-  <div class="roadmap">
-    <div class="card"><h3>ATES v0.1 <span class="badge badge-live">Implemented</span></h3><p>Canonical ordered evidence, durable action dispatch, privacy controls, protected artifacts, transactional finalization, manifests/verification, derived reports, traceability, and approval/audit records.</p><p style="margin-top:1rem"><a href="https://github.com/Varun-SV/Argus/blob/main/docs/ates.md">Read ATES →</a></p></div>
-    <div class="card"><h3>Argus Fleet execution plane <span class="badge badge-live">Implemented</span></h3><p>Node identity/enrollment, authenticated heartbeats and capabilities, durable placement/fencing, remote Capsule execution, and canonical ATES transport above the existing <code>ExecutionEnvironment → Capsule → Adapter</code> boundary.</p><p style="margin-top:1rem"><a href="https://github.com/Varun-SV/Argus/blob/main/docs/fleet.md">Read Fleet →</a></p></div>
-    <div class="card"><h3>Fleet operations + Observer <span class="badge badge-plan">Next layer</span></h3><p>Scheduler/queue operations, matrix execution, timelines/indexes, and the separately authorized read-only Observer experience remain follow-on work; the site does not present them as shipped.</p></div>
-    <div class="card"><h3>Cross-platform releases <span class="badge badge-live">Automated</span></h3><p>CI builds Windows x64/ARM64, macOS universal2, and Linux x86_64/ARM64 packages with checksums and GitHub build provenance.</p><p style="margin-top:1rem"><a href="https://github.com/Varun-SV/Argus/releases/latest">Download the latest release →</a></p></div>
-  </div>
-  <div class="notice"><strong>Design principle:</strong> test specification says <em>what</em> to test, execution specification says <em>where/how</em> Argus may run it, and ATES says <em>what Argus must prove happened</em>.</div>
-</div></section>
-
-<section id="install"><div class="section-inner">
-  <div class="section-label">Install</div><h2>Desktop packages or Python — choose what fits your workflow</h2><p class="section-sub">Release binaries come from the same tagged source tree. Capsule execution still requires a configured virtualization host and prepared golden image.</p>
-  <div class="grid">
-    <div class="card"><h3>🪟 Windows</h3><p>x64 + ARM64</p><div class="codebox"><pre>Portable ZIP
-Setup EXE
-MSI</pre></div></div>
-    <div class="card"><h3>🍎 macOS</h3><p>Universal2 — Intel + Apple Silicon</p><div class="codebox"><pre>Argus.app ZIP
-DMG</pre></div><p style="margin-top:.75rem">Currently ad-hoc signed; Developer ID signing/notarization is not configured yet.</p></div>
-    <div class="card"><h3>🐧 Linux</h3><p>x86_64 + ARM64</p><div class="codebox"><pre>AppImage
-DEB
-RPM
-Arch .pkg.tar.zst</pre></div></div>
-    <div class="card"><h3>🐍 Python package</h3><div class="codebox"><pre>pip install argus-app-testing</pre></div></div>
-    <div class="card"><h3>Browser support</h3><div class="codebox"><pre>pip install "argus-app-testing[browser]"
-playwright install chromium</pre></div></div>
-    <div class="card"><h3>All Python extras</h3><div class="codebox"><pre>pip install "argus-app-testing[all]"</pre></div></div>
-  </div>
-  <div class="hero-actions" style="margin-top:2rem;margin-bottom:0"><a href="https://github.com/Varun-SV/Argus/releases/latest" class="btn-primary">Download latest release</a><a href="https://github.com/Varun-SV/Argus/blob/main/docs/releasing.md" class="btn-ghost">Release engineering</a></div>
-  <div style="margin-top:2rem" class="codebox"><pre><span class="c-muted"># Local model example</span>
-ollama pull gemma3:9b
-
-<span class="c-muted"># Initialize and run</span>
-argus init
-argus providers
-argus run</pre></div>
-  <p style="color:var(--muted);margin-top:1rem">For production Capsule setup, start with the <a href="https://github.com/Varun-SV/Argus/tree/main/docs">documentation hub</a>.</p>
-</div></section>
-
-<div class="cta"><h2>Test autonomously. Keep execution boundaries explicit.</h2><p>Use Argus locally for fast development, isolate invasive work in Capsules, and distribute Capsule execution through Fleet while ATES preserves the canonical evidence trail.</p><div class="hero-actions" style="margin-bottom:0"><a href="https://github.com/Varun-SV/Argus/releases/latest" class="btn-primary">Download Argus</a><a href="https://github.com/Varun-SV/Argus/tree/main/docs" class="btn-ghost">Read the docs</a></div></div>
-<footer><p>Argus — MIT License · Python + multimodal LLMs</p><p style="margin-top:.5rem"><a href="https://github.com/Varun-SV/Argus">GitHub</a> · <a href="https://github.com/Varun-SV/Argus/tree/main/docs">Docs</a> · <a href="https://github.com/Varun-SV/Argus/issues">Issues</a></p></footer>
 <script>
-(() => {
-  const badge = document.getElementById("latest-release");
-  if (!badge) return;
-  fetch("https://api.github.com/repos/Varun-SV/Argus/releases/latest", {
-    headers: { Accept: "application/vnd.github+json" }
-  })
-    .then(response => {
-      if (!response.ok) throw new Error("release lookup failed");
-      return response.json();
-    })
-    .then(release => {
-      if (release && typeof release.tag_name === "string" && release.tag_name) {
-        badge.textContent = `Latest release ${release.tag_name}`;
-      }
-    })
-    .catch(() => {
-      badge.textContent = "Latest release";
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  var CHECK = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#14C9AC" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>';
+  var CHEV = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+
+  function tabs(container, keys, labels, current, onPick, cls) {
+    var hadFocus = container.contains(document.activeElement);
+    container.textContent = "";
+    keys.forEach(function (k, i) {
+      var b = el("button", cls, null);
+      b.type = "button";
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", k === current ? "true" : "false");
+      if (typeof labels[i] === "string") b.textContent = labels[i]; else b.appendChild(labels[i]);
+      b.addEventListener("click", function () { onPick(k); });
+      container.appendChild(b);
+      if (hadFocus && k === current) b.focus();
     });
+  }
+
+  /* ---- hero demo: the README's notepad run, looping ---- */
+  var DEMO = [
+    { kind: "action", text: "Type 'hello from argus' into the editor", dur: "2.31s", x: "30%", y: "66%", act: "type 'hello from argus'" },
+    { kind: "assert", text: "text_visible: 'hello from argus'", dur: "0.12s", x: "26%", y: "64%", act: "checking text_visible" },
+    { kind: "action", text: "Open the File menu", dur: "1.08s", x: "9%", y: "36%", act: "menu File" },
+    { kind: "assert", text: "element_exists: Save · MenuItem", dur: "0.09s", x: "16%", y: "73%", act: "checking element_exists" }
+  ];
+  var ICONS = {
+    pass: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0B7A69" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>',
+    active: '<svg class="spin" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="#E8E6DC" stroke-width="3"/><path d="M12 4a8 8 0 0 1 8 8" fill="none" stroke="#0B7A69" stroke-width="3" stroke-linecap="round"/></svg>',
+    pending: '<span class="dot"></span>'
+  };
+  function drawDemo(t) {
+    var phase = reduced ? 8 : t % 9, shown = Math.min(phase, 4), done = shown >= 4;
+    var box = $("demo-steps");
+    box.textContent = "";
+    DEMO.forEach(function (d, i) {
+      var pass = i < shown, active = i === shown && !done;
+      var row = el("div", "demo-step");
+      row.style.opacity = pass || active ? "1" : ".45";
+      var g = el("span", "g"); g.innerHTML = pass ? ICONS.pass : active ? ICONS.active : ICONS.pending;
+      row.appendChild(g);
+      row.appendChild(el("span", "k", d.kind));
+      row.appendChild(el("span", "t", d.text));
+      row.appendChild(el("span", "d", pass ? d.dur : ""));
+      box.appendChild(row);
+    });
+    var cur = DEMO[Math.min(shown, 3)];
+    $("demo-reticle").style.left = cur.x;
+    $("demo-reticle").style.top = cur.y;
+    $("demo-text").textContent = shown >= 1 ? "hello from argus" : "";
+    $("demo-title").textContent = shown >= 1 ? "*Untitled - Notepad" : "Untitled - Notepad";
+    $("demo-drop").hidden = !(shown === 3 || (shown === 4 && phase < 6));
+    var st = $("demo-status");
+    st.textContent = done ? "Passed" : "Running";
+    st.style.color = done ? "#075C4F" : "#0B7A69";
+    st.style.background = done ? "rgba(20,201,172,.18)" : "#F0EEE6";
+    $("demo-sum").textContent = done ? "4 passed · 0 failed · 0 skipped · 3.6s · 1840 tokens · exit 0" : "";
+    $("demo-action").textContent = done ? "teardown · VM destroyed" : cur.act;
+  }
+
+  /* ---- how it works ---- */
+  var STEPS = [
+    { title: "Select the execution environment", body: "Local for lightweight shared-host work, or a Capsule when the test is invasive, destructive or headed for production. Argus never silently falls back to local if Capsule requirements aren’t met.", code: "# .argus/config.yaml\nexecution:\n  environment: capsule   # local | capsule\n  capsule:\n    retain_on_failure: true" },
+    { title: "Prepare and launch the target", body: "The environment allocates resources, stages only the files the spec authorizes, and creates the adapter inside that boundary. Transfers are bounded, hashed and explicit — no shared folders, no clipboard.", code: "target:\n  adapter: desktop-gui\n  launch: notepad.exe" },
+    { title: "Observe → propose → validate → act", body: "The model sees the screen and the accessibility tree and proposes an action. Argus normalizes it and checks capabilities, policy and process identity before anything reaches the platform.", code: "observe   41 elements · screenshot · vision on\npropose   {\"action\":\"type\",\"text\":\"hello from argus\"}\nvalidate  schema ✓  capability ✓  policy ✓\nact       semantic UI Automation → Edit" },
+    { title: "Evaluate assertions", body: "Structured assertions run deterministically against the current observation or adapter state. The model never gets a vote on whether a check passed.", code: "- assert:\n    element_exists:\n      name: \"Save\"\n      control_type: MenuItem\n\n✓ element_exists  0.09s" },
+    { title: "Collect, retain, or destroy", body: "Authorized artifacts are collected before teardown. A failed scripted run can keep a forensic Failure Capsule (disk and config only, no live credentials); everything else is torn down.", code: "collect   3 artifacts · sha256 · bounded\nevidence  .argus/runs/<run>/manifests/manifest-0001.json\nteardown  VM destroyed" }
+  ];
+  function pickStep(i) {
+    tabs($("how-tabs"), STEPS.map(function (_, k) { return k; }), STEPS.map(function (s, k) {
+      var f = document.createDocumentFragment();
+      f.appendChild(el("span", "n", "0" + (k + 1)));
+      f.appendChild(el("span", "t", s.title));
+      var c = el("span"); c.innerHTML = CHEV; f.appendChild(c.firstChild);
+      return f;
+    }), i, pickStep, "how-tab");
+    $("how-num").textContent = "0" + (i + 1);
+    $("how-title").textContent = STEPS[i].title;
+    $("how-body").textContent = STEPS[i].body;
+    $("how-code").textContent = STEPS[i].code;
+  }
+
+  /* ---- execution environments ---- */
+  var ENVS = {
+    local: { name: "Local", badge: "Lightweight · default", badgeBg: "#C2C0B6", path: "Runner / Roam → LocalExecutionEnvironment → Adapter",
+      lead: "Fast shared-host execution for development, quick checks, and machines without virtualization.",
+      points: ["Remains the compatibility default", "Windows desktop tests use semantic UI Automation, not host-wide mouse and keyboard", "Legacy physical input only by explicit opt-in", "Shared and non-isolated by design"],
+      note: "Existing configurations keep running locally. Nothing changes silently.",
+      layers: [["Runner / Roam", "your test spec or roam session"], ["LocalExecutionEnvironment", "shared host · policy-checked actions"], ["Adapter", "desktop-gui · browser · cli"], ["application under test", "on your own machine"]] },
+    capsule: { name: "Capsule", badge: "Recommended for production", badgeBg: "#14C9AC", path: "Runner / Roam → CapsuleExecutionEnvironment → Capsule → Guest adapter",
+      lead: "A disposable virtual machine for tests that shouldn’t share the operator’s interactive host.",
+      points: ["Hyper-V (Windows) and libvirt/QEMU/KVM (Linux) providers", "Pinned HTTPS guest control with per-session bearer rotation", "Isolated networking, fail-closed provider capabilities", "Optional forensic Failure Capsule on scripted run failures"],
+      note: "Requires a configured virtualization host and image. ISO-derived Windows production images remain gated on protected bootstrap delivery; advanced provisioning and reconnect use the configuration/API. Roam findings do not trigger Failure Capsule retention.",
+      layers: [["Runner / Roam", "your test spec or roam session"], ["CapsuleExecutionEnvironment", "no silent fallback to local"], ["Capsule", "disposable VM · host_only network"], ["Guest adapter", "drives the app inside the guest"], ["application under test", "never touches your desktop"]] },
+    fleet: { name: "Fleet", badge: "Execution plane", badgeBg: "#E3DACC", path: "Control Center → Node Agent → ExecutionEnvironment → Capsule → Adapter",
+      lead: "The same Capsule boundary, extended across physical machines. No second Capsule abstraction.",
+      points: ["Node enrollment, identity and authenticated heartbeats", "Capability and clock assessment per node", "Durable placement with fencing", "Remote Capsule execution with ATES transport and reconciliation"],
+      note: "Scheduler and queues, matrix runs, timelines and the read-only Observer are the next layer, not shipped yet.",
+      layers: [["Control Center", "placement · fencing"], ["Node Agent", "enrolled, heartbeating node"], ["ExecutionEnvironment", "same boundary as a local Capsule"], ["Capsule", "disposable VM on that node"], ["Adapter", "canonical ATES flows back"]] }
+  };
+  function pickEnv(k) {
+    tabs($("env-tabs"), ["local", "capsule", "fleet"], ["Local", "Capsule", "Fleet"], k, pickEnv);
+    var E = ENVS[k];
+    $("env-name").textContent = E.name;
+    var b = $("env-badge"); b.textContent = E.badge; b.style.background = E.badgeBg; b.style.color = "#141413";
+    $("env-lead").textContent = E.lead;
+    $("env-note").textContent = E.note;
+    var pts = $("env-points"); pts.textContent = "";
+    E.points.forEach(function (p) { var li = el("li"); li.innerHTML = CHECK; li.appendChild(el("span", null, p)); pts.appendChild(li); });
+    var box = $("env-layers"); box.textContent = "";
+    box.appendChild(el("div", "path", E.path));
+    E.layers.forEach(function (l, i) {
+      var row = el("div", "layer" + (i === E.layers.length - 1 ? " app" : ""));
+      row.style.marginLeft = (i * 28) + "px";
+      row.appendChild(el("span", "nm", l[0]));
+      row.appendChild(el("span", "nt", l[1]));
+      box.appendChild(row);
+    });
+  }
+
+  /* ---- adapters ---- */
+  var ADS = {
+    desktop: { label: "Desktop GUI", name: "Desktop GUI", file: "notepad.test.yaml", body: "Windows UI Automation and Linux GUI (X11/Xvfb), with screenshots and structured observations where available.", asserts: ["text_visible", "window_title_contains", "element_exists", "process_running", "dialog_open"],
+      yaml: "name: Notepad smoke test\ntarget:\n  adapter: desktop-gui\n  launch: notepad.exe\nretries: 1\n\nsteps:\n  - \"Type 'hello from argus' into the editor\"\n  - assert:\n      text_visible: \"hello from argus\"\n  - \"Open the File menu\"\n  - assert:\n      element_exists:\n        name: \"Save\"\n        control_type: MenuItem\n\nteardown:\n  - close" },
+    browser: { label: "Browser", name: "Browser", file: "homepage.test.yaml", body: "Playwright-powered browser testing with page observations and deterministic URL and title checks.", asserts: ["url_contains", "page_title_contains", "text_visible"],
+      yaml: "name: Homepage loads\ntarget:\n  adapter: browser\n  launch: \"https://example.com\"\n\nsteps:\n  - \"Check that the page loaded\"\n  - assert:\n      page_title_contains: \"Example\"\n  - assert:\n      url_contains: \"example.com\"\n  - \"Click the first link\"\n\nteardown:\n  - close" },
+    cli: { label: "CLI", name: "CLI and scripts", file: "script.test.yaml", body: "Run commands and validate stdout, stderr, process state and exit codes. Pure-assertion tests cost zero model tokens.", asserts: ["exit_code_is", "stdout_contains", "stderr_contains", "process_running"],
+      yaml: "name: Script returns zero\ntarget:\n  adapter: cli\n  launch: \"python my_script.py --check\"\n\nsteps:\n  - assert:\n      exit_code_is: 0\n  - assert:\n      stdout_contains: \"OK\"" }
+  };
+  function pickAd(k) {
+    tabs($("ad-tabs"), ["desktop", "browser", "cli"], ["Desktop GUI", "Browser", "CLI"], k, pickAd, "chip");
+    var A = ADS[k];
+    $("ad-file").textContent = ".argus/" + A.file;
+    $("ad-yaml").textContent = A.yaml;
+    $("ad-name").textContent = A.name;
+    $("ad-body").textContent = A.body;
+    var box = $("ad-asserts"); box.textContent = "";
+    A.asserts.forEach(function (a) { box.appendChild(el("span", null, a)); });
+  }
+
+  /* ---- roam log ---- */
+  var ROAM = [
+    ["launch notepad.exe · desktop-gui · Capsule", 0],
+    ["memory: recalled 54 states, 3 bug zones from 4 sessions", 0],
+    ["menu Format → Font… → type '999' → OK", 0],
+    ["FINDING [medium] Font size 999 accepted without validation", 1],
+    ["key ctrl+h → type '.*' → Replace All", 0],
+    ["key ctrl+z → no change", 0],
+    ["FINDING [high] Replace All empties the document; undo does nothing", 2],
+    ["menu View → Zoom → Zoom in ×3 → ctrl+0", 0],
+    ["unexplored: Edit › Time/Date — saved for next session", 0],
+    ["done · report.md + 2 regression stubs", 0]
+  ];
+  function drawRoam(t) {
+    var shown = reduced ? ROAM.length : Math.min(ROAM.length, (t % 14) + 1);
+    var box = $("roam-lines"); box.textContent = "";
+    var findings = 0;
+    ROAM.slice(0, shown).forEach(function (r, i) {
+      if (r[1]) findings++;
+      var row = el("div", r[1] === 2 ? "h" : r[1] === 1 ? "m" : "");
+      row.appendChild(el("span", null, (i < 9 ? "0" : "") + (i + 1)));
+      row.appendChild(el("span", null, r[0]));
+      box.appendChild(row);
+    });
+    $("roam-stats").textContent = (54 + shown * 2) + " states · " + findings + " findings";
+  }
+
+  /* ---- install ---- */
+  var OSES = {
+    windows: { label: "Windows", name: "Windows", arch: "x64 · ARM64", rows: [["Setup EXE", "installer"], ["MSI", "managed installs"], ["Portable ZIP", "no install"]], note: "Windows packages are not Authenticode-signed yet. Checksums and provenance attestations are published with every release." },
+    mac: { label: "macOS", name: "macOS", arch: "universal2 · Intel + Apple silicon", rows: [["DMG", "drag to Applications"], ["Argus.app ZIP", "portable"]], note: "Ad-hoc signed. Developer ID signing and notarization aren’t configured yet." },
+    linux: { label: "Linux", name: "Linux", arch: "x86_64 · ARM64", rows: [["AppImage", "any distro"], ["DEB · RPM", "Debian, Fedora family"], [".pkg.tar.zst", "Arch"]], note: "Capsules on Linux use libvirt/QEMU/KVM and need a prepared golden guest image." },
+    python: { label: "Python", name: "Python package", arch: "Python 3.10+", cmds: ["pip install argus-app-testing", "pip install \"argus-app-testing[all]\"", "ollama pull gemma3:9b"], note: "Extras: [windows], [browser], [linux], [serve], [gui], [knowledge]. For browser tests, also run playwright install chromium." }
+  };
+  function pickOs(k) {
+    tabs($("os-tabs"), ["windows", "mac", "linux", "python"], ["Windows", "macOS", "Linux", "Python"], k, pickOs, "chip");
+    var O = OSES[k];
+    $("os-name").textContent = O.name;
+    $("os-arch").textContent = O.arch;
+    $("os-note").textContent = O.note;
+    var box = $("os-rows"); box.textContent = "";
+    (O.cmds || []).forEach(function (c) {
+      var row = el("div", "row");
+      row.appendChild(el("span", "t", c));
+      var b = el("button", null, "Copy"); b.type = "button";
+      b.setAttribute("aria-label", "Copy " + c);
+      b.addEventListener("click", function () {
+        var ok = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1600); };
+        try { navigator.clipboard.writeText(c).then(ok, function () {}); } catch (e) { /* clipboard unavailable */ }
+      });
+      row.appendChild(b);
+      box.appendChild(row);
+    });
+    (O.rows || []).forEach(function (r) {
+      var row = el("div", "row");
+      row.appendChild(el("span", "t", r[0]));
+      row.appendChild(el("span", "n", r[1]));
+      box.appendChild(row);
+    });
+  }
+
+  /* ---- the hundred eyes ---- */
+  var OPEN = [3, 14, 27, 31, 46, 52, 58, 69, 75, 88, 93];
+  var eyes = [];
+  for (var i = 0; i < 100; i++) {
+    var e = el("span", "eye"); e.appendChild(el("i"));
+    $("eyes").appendChild(e); eyes.push(e);
+  }
+  function drawEyes(t) {
+    eyes.forEach(function (e, i) { e.classList.toggle("open", OPEN.indexOf(i) >= 0 || (!reduced && i === (t * 7) % 100)); });
+  }
+
+  pickStep(2); pickEnv("capsule"); pickAd("desktop"); pickOs("python");
+  var t = 0;
+  function tick() { drawDemo(t); drawRoam(t); drawEyes(t); t++; }
+  tick();
+  if (!reduced) setInterval(tick, 900);
 })();
 </script>
 </body>

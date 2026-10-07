@@ -145,6 +145,14 @@ ATES is always-on across Argus execution modes, so a Run must not assume that ev
 
 Future execution kinds may be added through schema evolution, but they must define their source/provenance requirements explicitly rather than borrowing fields from another kind.
 
+OS image builds use `execution_kind: provisioning` with an `os_environment` source.
+That source binds the environment-definition and installation-media SHA-256 values,
+the requested machine contract, provider, architecture, and image format. The
+ordered ATES step attempts cover media verification, provider selection,
+installation, secure Capsule baseline, final image hashing, and publication.
+The image digest is a validated safe observation; ISO paths, credentials,
+hypervisor output, and error text are excluded from canonical evidence.
+
 For a scripted run, source identity is mandatory and should include the immutable test/spec identity plus a **secret-safe source commitment**, for example:
 
 ```yaml

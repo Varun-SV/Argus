@@ -84,6 +84,7 @@ class GuestAgentClient:
         *,
         timeout_seconds: float = 15.0,
         opener: Optional[Callable] = None,
+        require_target_desktop: bool = False,
     ) -> None:
         parsed = urllib.parse.urlparse(endpoint)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -91,6 +92,7 @@ class GuestAgentClient:
         self.endpoint = endpoint.rstrip("/")
         self.token = token
         self.timeout_seconds = float(timeout_seconds)
+        self.require_target_desktop = require_target_desktop
         self._opener = opener or urllib.request.urlopen
         # Staged-path provenance remains host-side. Only paths returned by a
         # successful guest commit are eligible for automatic literal launch.
@@ -144,8 +146,12 @@ class GuestAgentClient:
         while time.monotonic() < deadline:
             try:
                 data = self.health()
-                if data.get("ok", True):
+                if data.get("ok", True) and (
+                    not self.require_target_desktop or data.get("target_desktop_ready") is True
+                ):
                     return
+                if self.require_target_desktop:
+                    last_error = "target desktop not ready"
             except CapsuleGuestError as exc:
                 last_error = str(exc)
             time.sleep(0.5)

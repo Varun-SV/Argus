@@ -6,6 +6,9 @@ This directory separates **implemented behavior** from **planned architecture** 
 
 ## Start here
 
+- [Desktop app: project setup, chat, model configuration, and recovery](desktop-app.md)
+- [ISO-backed OS provisioning: supported contracts and native validation gates](os-environment-provisioning.md)
+
 ### Execution environments
 
 Argus separates **how a target is driven** from **where the test executes**.

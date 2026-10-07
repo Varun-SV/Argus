@@ -28,6 +28,11 @@ class EmbeddingGenerator:
     def available(self) -> bool:
         return self._load()
 
+    def status_description(self) -> str:
+        """Report observed state only; never load/download a model for a label."""
+        state = {None: "not checked", False: "unavailable", True: "loaded"}[self._available]
+        return f"embeddings ({state})"
+
     def embed(self, text: str) -> Optional[List[float]]:
         if not self._load():
             return None

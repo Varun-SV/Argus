@@ -31,11 +31,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+guest-runtime-build = ["pyinstaller>=6.0"]
 # Desktop GUI automation on Windows (UIA tree + input synthesis + screenshots)
 windows = [
     "pywinauto>=0.6.8",
     "mss>=9.0",
     "psutil>=5.9",
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 # Linux GUI automation (X11 / Xvfb)
 linux = [
@@ -87,12 +89,13 @@ Releases = "https://github.com/Varun-SV/Argus/releases"
 [project.scripts]
 argus = "argus.cli:main"
 argus-gui = "argus.gui.app:run_gui"
+argus-guest-runtime-build = "argus.provisioning.build_guest_runtime:main"
 
 [tool.setuptools.packages.find]
 include = ["argus*"]
 
 [tool.setuptools.package-data]
-"argus.gui" = ["web/*"]
+"argus.gui" = ["web/*", "web/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

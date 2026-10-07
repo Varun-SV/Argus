@@ -1,0 +1,1485 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
+import os
+from pathlib import Path
+import platform
+import threading
+
+import pytest
+
+from argus.capsule.base import CapsuleError, CapsuleRequest, CapsuleSettings
+from argus.capsule.hyperv_isolated import IsolatedHyperVProvider
+from argus.capsule.hyperv import HyperVProvider
+from argus.provisioning import (
+    DerivedImageManifest,
+    EnvironmentDefinition,
+    GuestRuntimeIdentity,
+    InstallationMediaSource,
+    InstallationSpec,
+    MachineSpec,
+    ProvisioningCleanupError,
+    ProvisioningCleanupState,
+    ProvisioningError,
+    ProvisioningProviderCapabilities,
+    build_provisioning_plan,
+    capsule_settings_from_derived_image,
+    create_build_payload,
+    create_guest_runtime_bundle,
+    derived_image_advertisement,
+    environment_definition_from_mapping,
+    verify_guest_runtime_bundle,
+    verify_installation_media,
+)
+from argus.provisioning.build import publish_derived_image
+from argus.provisioning.baseline import validate_secure_capsule_baseline
+from argus.provisioning.baseline import _attest_installed_profile
+from argus.provisioning.providers import HyperVProvisioner, LibvirtProvisioner
+
+
+def _digest(data: bytes) -> str:
+    return sha256(data).hexdigest()
+
+
+def _guest_runtime(
+    tmp_path: Path,
+    target_os: str = "windows-11",
+) -> GuestRuntimeIdentity:
+    payload = tmp_path / f"runtime-{target_os}"
+    entrypoint = payload / "bin" / (
+        "argus-guest-agent.exe" if target_os == "windows-11" else "argus-guest-agent.py"
+    )
+    entrypoint.parent.mkdir(parents=True, exist_ok=True)
+    entrypoint.write_text(
+        "print('argus guest runtime')\n",
+        encoding="utf-8",
+    )
+    bundle = tmp_path / f"argus-runtime-{target_os}.zip"
+    if not bundle.exists():
+        create_guest_runtime_bundle(
+            payload,
+            bundle,
+            runtime_version="0.1.0-dev.0",
+            target_os=target_os,
+            target_architecture="x86_64",
+            entrypoint=entrypoint.relative_to(payload).as_posix(),
+        )
+    return GuestRuntimeIdentity(
+        bundle_path=str(bundle),
+        runtime_bundle_sha256=_digest(bundle.read_bytes()),
+        runtime_version="0.1.0-dev.0",
+        target_os=target_os,
+    )
+
+
+def _definition(tmp_path: Path, **overrides) -> EnvironmentDefinition:
+    iso = tmp_path / "windows.iso"
+    iso.write_bytes(b"installation-media")
+    source = InstallationMediaSource(
+        path=str(iso),
+        sha256=_digest(b"installation-media"),
+        architecture="x86_64",
+    )
+    values = {
+        "name": "win11-lab",
+        "source": source,
+        "machine": MachineSpec(
+            architecture="x86_64",
+            cpu_count=4,
+            memory_mb=8192,
+            firmware="uefi",
+            secure_boot=True,
+            tpm_version="2.0",
+            disk_size_gib=80,
+            disk_bus="nvme",
+            network_mode="isolated",
+        ),
+        "installation": InstallationSpec(
+            edition="professional",
+            locale="en-US",
+            timezone="UTC",
+            update_policy="frozen",
+            credential_ref="secret://argus/windows-lab",
+        ),
+        "guest_runtime": _guest_runtime(tmp_path),
+    }
+    values.update(overrides)
+    return EnvironmentDefinition(**values)
+
+
+def _capabilities() -> ProvisioningProviderCapabilities:
+    return ProvisioningProviderCapabilities(
+        provider="hyperv",
+        host_platforms=(platform.system().lower(),),
+        architectures=("x86_64",),
+        media_types=("iso",),
+        image_formats=("vhdx",),
+        firmware_modes=("uefi",),
+        disk_buses=("nvme", "scsi"),
+        network_modes=("isolated", "host_only"),
+        secure_boot=True,
+        tpm_versions=("2.0",),
+    )
+
+
+def _runtime_definition(tmp_path: Path, provider: str = "hyperv") -> EnvironmentDefinition:
+    original = _definition(tmp_path)
+    machine = replace(
+        original.machine,
+        firmware="uefi" if provider == "hyperv" else "bios",
+        secure_boot=False,
+        tpm_version=None,
+        disk_bus="scsi" if provider == "hyperv" else "virtio",
+        network_mode="host_only",
+    )
+    return replace(
+        original,
+        machine=machine,
+        guest_runtime=_guest_runtime(tmp_path, "windows-11" if provider == "hyperv" else "ubuntu"),
+        installation=InstallationSpec(unattended=False, update_policy="manual"),
+    )
+
+
+def _unattended_runtime_definition(tmp_path: Path, provider: str) -> EnvironmentDefinition:
+    base = _runtime_definition(tmp_path, provider)
+    if provider == "hyperv":
+        return replace(
+            base,
+            machine=replace(base.machine, secure_boot=True, tpm_version="2.0"),
+            installation=InstallationSpec(
+                unattended=True, target_os="windows-11", target_release="24H2",
+                edition="professional", update_policy="frozen",
+            ),
+        )
+    return replace(base, installation=InstallationSpec(
+        unattended=True, target_os="ubuntu", target_release="24.04.1",
+        target_flavor="server", update_policy="latest", apt_mirror="http://mirror.internal/ubuntu",
+    ))
+
+
+def _write_ubuntu_build_inputs(argv) -> bool:
+    if argv[0] == "xorriso":
+        if "-extract" in argv:
+            path = Path(argv[-1])
+            if argv[-2] == "/casper/install-sources.yaml":
+                path.write_text("- id: ubuntu-server\n  variant: server\n", encoding="utf-8")
+            else:
+                path.write_bytes(b"verified boot input")
+        else:
+            Path(argv[argv.index("-o") + 1]).write_bytes(b"build payload ISO")
+        return True
+    if argv[0] == "cloud-localds":
+        Path(argv[3]).write_bytes(b"NoCloud seed")
+        return True
+    return False
+
+
+@pytest.mark.parametrize("provider_name", ["hyperv", "libvirt"])
+def test_providers_reject_attended_builds_before_commands_or_cache(
+    tmp_path, monkeypatch, provider_name
+):
+    monkeypatch.setattr(platform, "system", lambda: "Windows" if provider_name == "hyperv" else "Linux")
+    definition = _runtime_definition(tmp_path, provider_name)
+    calls = []
+    if provider_name == "hyperv":
+        provider = HyperVProvisioner(switch_name="Argus-Internal", runner=lambda *args: calls.append(args))
+        fmt = "vhdx"
+    else:
+        provider = LibvirtProvisioner(network_name="argus-local", runner=lambda *args: calls.append(args))
+        fmt = "qcow2"
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format=fmt, cache_root=tmp_path / "cache"
+    )
+    with pytest.raises(ProvisioningError, match="attended provisioning is unsupported"):
+        provider.provision(definition, plan)
+    assert calls == []
+    assert not plan.cache_dir.exists()
+    assert not list(tmp_path.rglob(".building-*"))
+
+
+def test_cleanup_outcomes_are_explicit_and_uncertainty_is_typed() -> None:
+    assert {state.value for state in ProvisioningCleanupState} == {
+        "NOTHING_CREATED",
+        "CONFIRMED",
+        "UNCERTAIN",
+    }
+    error = ProvisioningCleanupError("provider ownership uncertain")
+    assert error.cleanup_state is ProvisioningCleanupState.UNCERTAIN
+
+
+@pytest.mark.parametrize("provider_name", ["hyperv", "libvirt"])
+def test_providers_reject_custom_baseline_port_before_installation(
+    tmp_path, monkeypatch, provider_name
+):
+    monkeypatch.setattr(platform, "system", lambda: "Windows" if provider_name == "hyperv" else "Linux")
+    definition = _unattended_runtime_definition(tmp_path, provider_name)
+    calls = []
+    settings = CapsuleSettings(guest_port=9443)
+    if provider_name == "hyperv":
+        provider = HyperVProvisioner(
+            switch_name="Argus-Internal", runner=lambda *args: calls.append(args),
+            baseline_settings=settings,
+        )
+        fmt = "vhdx"
+    else:
+        provider = LibvirtProvisioner(
+            network_name="argus-local", runner=lambda *args: calls.append(args),
+            baseline_settings=settings,
+        )
+        fmt = "qcow2"
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format=fmt, cache_root=tmp_path / "cache"
+    )
+    with pytest.raises(ProvisioningError, match="guest_port=8765"):
+        provider.provision(definition, plan)
+    assert calls == []
+    assert not plan.cache_dir.exists()
+
+
+def test_guest_runtime_identity_changes_environment_identity(
+    tmp_path: Path,
+) -> None:
+    first = _definition(tmp_path)
+    assert first.guest_runtime is not None
+    second = replace(
+        first,
+        guest_runtime=replace(
+            first.guest_runtime,
+            runtime_version="0.1.1",
+        ),
+    )
+    assert first.environment_id != second.environment_id
+
+
+def test_guest_runtime_bundle_verifies_payload_and_manifest(
+    tmp_path: Path,
+) -> None:
+    definition = _definition(tmp_path)
+    runtime = definition.require_guest_runtime()
+    verified = verify_guest_runtime_bundle(
+        runtime,
+        allowed_roots=(tmp_path,),
+    )
+    assert verified.file.sha256 == runtime.runtime_bundle_sha256
+    assert verified.manifest.runtime_version == runtime.runtime_version
+    assert verified.manifest.entrypoint == "bin/argus-guest-agent.exe"
+    assert "bin/argus-guest-agent.exe" in verified.payload_files
+
+
+@pytest.mark.parametrize("field,old_policy", [
+    ("bootstrap_service_policy_version", "argus-bootstrap-service-v1"),
+    ("runtime_installation_policy_version", "argus-runtime-install-v1"),
+])
+def test_obsolete_media_policy_cannot_reuse_environment_or_bundle(tmp_path, field, old_policy):
+    definition = _definition(tmp_path)
+    runtime = definition.require_guest_runtime()
+    old_runtime = replace(runtime, **{field: old_policy})
+    old_definition = replace(definition, guest_runtime=old_runtime)
+    assert old_definition.environment_id != definition.environment_id
+    with pytest.raises(ProvisioningError, match="unsupported runtime security policy"):
+        old_definition.require_guest_runtime()
+    # An old manifest agreeing with an old identity is still not supported.
+    from argus.provisioning.runtime_bundle import GuestRuntimeBundleManifest
+    manifest = GuestRuntimeBundleManifest(
+        format_version=runtime.bundle_format_version, runtime_version=runtime.runtime_version,
+        target_os=runtime.target_os, target_architecture=runtime.target_architecture,
+        bootstrap_schema_version=runtime.bootstrap_schema_version,
+        bootstrap_service_policy_version=old_runtime.bootstrap_service_policy_version,
+        installation_policy_version=old_runtime.runtime_installation_policy_version,
+        entrypoint="bin/argus-guest-agent.py", content_sha256="a" * 64,
+    )
+    with pytest.raises(ProvisioningError, match="unsupported security policy"):
+        manifest.validate_identity(old_runtime)
+
+
+def test_build_payload_stages_exact_runtime_without_secrets(
+    tmp_path: Path,
+) -> None:
+    definition = _definition(tmp_path)
+    payload = create_build_payload(
+        definition,
+        tmp_path / "build-payload",
+    )
+    assert payload.runtime_bundle_path.read_bytes() == Path(
+        definition.require_guest_runtime().bundle_path
+    ).read_bytes()
+    text = payload.manifest_path.read_text(encoding="utf-8")
+    assert definition.environment_id in text
+    assert "secret://" not in text
+    assert "windows-lab" not in text
+    assert (
+        definition.require_guest_runtime().runtime_identity
+        in text
+    )
+
+
+def test_guest_runtime_bundle_tampering_fails_closed(
+    tmp_path: Path,
+) -> None:
+    definition = _definition(tmp_path)
+    runtime = definition.require_guest_runtime()
+    bundle = Path(runtime.bundle_path)
+    bundle.write_bytes(bundle.read_bytes() + b"tamper")
+    with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
+        verify_guest_runtime_bundle(
+            runtime,
+            allowed_roots=(tmp_path,),
+        )
+
+
+def test_environment_identity_uses_content_not_source_path_or_secret_ref(tmp_path: Path) -> None:
+    first = _definition(tmp_path)
+    moved = tmp_path / "moved.iso"
+    moved.write_bytes(b"installation-media")
+    second = replace(
+        first,
+        source=replace(first.source, path=str(moved)),
+        installation=replace(
+            first.installation,
+            credential_ref="secret://rotated/credential",
+        ),
+    )
+
+    assert first.definition_sha256 == second.definition_sha256
+    assert first.environment_id == second.environment_id
+
+
+def test_machine_change_changes_environment_identity(tmp_path: Path) -> None:
+    first = _definition(tmp_path)
+    second = replace(first, machine=replace(first.machine, memory_mb=16384))
+
+    assert first.environment_id != second.environment_id
+
+
+def test_secure_boot_requires_uefi() -> None:
+    with pytest.raises(ProvisioningError, match="requires UEFI"):
+        MachineSpec(firmware="bios", secure_boot=True)
+
+
+def test_source_and_machine_architecture_must_match(tmp_path: Path) -> None:
+    iso = tmp_path / "linux.iso"
+    iso.write_bytes(b"linux")
+    source = InstallationMediaSource(
+        path=str(iso),
+        sha256=_digest(b"linux"),
+        architecture="aarch64",
+    )
+    with pytest.raises(ProvisioningError, match="must match"):
+        EnvironmentDefinition(
+            name="bad-arch",
+            source=source,
+            machine=MachineSpec(architecture="x86_64"),
+        )
+
+
+def test_mapping_loader_is_strict_and_converts_packages() -> None:
+    mapping = {
+        "name": "ubuntu-24",
+        "source": {
+            "kind": "installation_media",
+            "path": "/media/ubuntu.iso",
+            "sha256": "a" * 64,
+            "architecture": "x86_64",
+        },
+        "machine": {
+            "architecture": "x86_64",
+            "network_mode": "isolated",
+        },
+        "installation": {
+            "packages": ["python3", "git"],
+            "credential_ref": "secret://lab/account",
+        },
+    }
+    definition = environment_definition_from_mapping(mapping)
+    assert definition.installation.packages == ("python3", "git")
+
+    mapping["machine"]["mystery_switch"] = True
+    with pytest.raises(ProvisioningError, match="unknown machine field"):
+        environment_definition_from_mapping(mapping)
+
+
+def test_iso_verification_binds_actual_bytes(tmp_path: Path) -> None:
+    definition = _definition(tmp_path)
+    verified = verify_installation_media(definition, allowed_roots=(tmp_path,))
+    assert verified.sha256 == definition.source.sha256
+    assert verified.size == len(b"installation-media")
+
+    Path(definition.source.path).write_bytes(b"changed")
+    with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
+        verify_installation_media(definition, allowed_roots=(tmp_path,))
+
+
+@pytest.mark.skipif(
+    os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"),
+    reason="requires dir_fd + O_NOFOLLOW secure traversal",
+)
+def test_iso_verification_rejects_intermediate_symlink_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted = tmp_path / "trusted"
+    slot = trusted / "slot"
+    outside = tmp_path / "outside"
+    slot.mkdir(parents=True)
+    outside.mkdir()
+
+    iso = slot / "windows.iso"
+    iso.write_bytes(b"installation-media")
+    (outside / "windows.iso").write_bytes(b"attacker-media")
+    definition = _definition(
+        tmp_path,
+        source=InstallationMediaSource(
+            path=str(iso),
+            sha256=_digest(b"installation-media"),
+        ),
+    )
+
+    resolved_iso = iso.resolve()
+    original_relative_to = Path.relative_to
+    swapped = False
+
+    def swapping_relative_to(self: Path, *other: object) -> Path:
+        nonlocal swapped
+        result = original_relative_to(self, *other)
+        if not swapped and self == resolved_iso:
+            slot.rename(trusted / "slot-original")
+            slot.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(Path, "relative_to", swapping_relative_to)
+
+    with pytest.raises(ProvisioningError, match="cannot securely open"):
+        verify_installation_media(definition, allowed_roots=(trusted,))
+    assert swapped
+
+
+def test_iso_verification_requires_iso_locator(tmp_path: Path) -> None:
+    blob = tmp_path / "windows.img"
+    blob.write_bytes(b"installation-media")
+    definition = _definition(
+        tmp_path,
+        source=InstallationMediaSource(
+            path=str(blob),
+            sha256=_digest(b"installation-media"),
+        ),
+    )
+    with pytest.raises(ProvisioningError, match=r"\.iso"):
+        verify_installation_media(definition)
+
+
+def test_plan_rejects_provider_for_different_host_platform(tmp_path: Path) -> None:
+    definition = _definition(tmp_path)
+    unsupported = replace(_capabilities(), host_platforms=("unsupported-host",))
+
+    with pytest.raises(ProvisioningError, match="host platform"):
+        build_provisioning_plan(
+            definition,
+            unsupported,
+            output_format="vhdx",
+            cache_root=tmp_path / "cache",
+        )
+
+
+def test_plan_is_content_addressed_and_provider_gated(tmp_path: Path) -> None:
+    definition = _definition(tmp_path)
+    plan = build_provisioning_plan(
+        definition,
+        _capabilities(),
+        output_format="vhdx",
+        cache_root=tmp_path / "cache",
+    )
+    assert plan.environment_id == definition.environment_id
+    assert plan.image_path.name == "base.vhdx"
+    assert definition.environment_id in str(plan.image_path)
+
+    unsupported = replace(_capabilities(), secure_boot=False)
+    with pytest.raises(ProvisioningError, match="Secure Boot"):
+        build_provisioning_plan(
+            definition,
+            unsupported,
+            output_format="vhdx",
+            cache_root=tmp_path / "cache",
+        )
+
+
+def test_plan_separates_manifest_by_output_format(tmp_path: Path) -> None:
+    definition = _definition(tmp_path)
+    capabilities = replace(
+        _capabilities(),
+        provider="libvirt",
+        image_formats=("qcow2", "raw"),
+    )
+
+    qcow2 = build_provisioning_plan(
+        definition,
+        capabilities,
+        output_format="qcow2",
+        cache_root=tmp_path / "cache",
+    )
+    raw = build_provisioning_plan(
+        definition,
+        capabilities,
+        output_format="raw",
+        cache_root=tmp_path / "cache",
+    )
+
+    assert qcow2.cache_dir != raw.cache_dir
+    assert qcow2.manifest_path != raw.manifest_path
+    assert qcow2.manifest_path.name == raw.manifest_path.name == "manifest.json"
+    assert qcow2.image_path.name == "base.qcow2"
+    assert raw.image_path.name == "base.raw"
+
+
+@pytest.mark.parametrize("guest_port", [8765, 9443])
+def test_derived_image_bridge_returns_normal_capsule_settings(tmp_path: Path, guest_port) -> None:
+    definition = _runtime_definition(tmp_path)
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"derived-image")
+    manifest = DerivedImageManifest(
+        environment_id=definition.environment_id,
+        definition_sha256=definition.definition_sha256,
+        source_sha256=definition.source.sha256,
+        provider="hyperv",
+        image_format="vhdx",
+        image_sha256=_digest(b"derived-image"),
+        architecture="x86_64",
+        created_at="2026-09-25T00:00:00Z",
+    )
+
+    base = CapsuleSettings(
+        provider="hyperv",
+        memory_mb=8192,
+        cpu_count=4,
+        network_mode="host_only",
+        guest_port=guest_port,
+    )
+    if guest_port != 8765:
+        with pytest.raises(ProvisioningError, match="guest_port=8765"):
+            capsule_settings_from_derived_image(definition, manifest, image, settings=base)
+        return
+    settings = capsule_settings_from_derived_image(
+        definition,
+        manifest,
+        image,
+        settings=base,
+    )
+    assert settings.provider == "hyperv"
+    assert settings.memory_mb == 8192
+    assert settings.cpu_count == 4
+    assert settings.network_mode == "host_only"
+    assert settings.secure_boot is False
+    assert settings.guest_port == 8765
+    assert settings.image == str(image.resolve())
+    assert settings.environment_id == definition.environment_id
+    assert settings.base_image_sha256 == manifest.image_sha256
+    assert (
+        settings.guest_runtime_identity
+        == definition.require_guest_runtime().runtime_identity
+    )
+
+
+def test_derived_manifest_rejects_wrong_definition(tmp_path: Path) -> None:
+    definition = _runtime_definition(tmp_path)
+    different = replace(
+        definition,
+        machine=replace(definition.machine, cpu_count=8),
+    )
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"derived-image")
+    manifest = DerivedImageManifest(
+        environment_id=definition.environment_id,
+        definition_sha256=definition.definition_sha256,
+        source_sha256=definition.source.sha256,
+        provider="hyperv",
+        image_format="vhdx",
+        image_sha256=_digest(b"derived-image"),
+        architecture="x86_64",
+        created_at="2026-09-25T00:00:00Z",
+    )
+
+    with pytest.raises(ProvisioningError, match="environment identity mismatch"):
+        capsule_settings_from_derived_image(different, manifest, image)
+
+def test_derived_image_bridge_derives_provider_from_manifest(tmp_path: Path) -> None:
+    definition = _runtime_definition(tmp_path, "libvirt")
+    image = tmp_path / "base.qcow2"
+    image.write_bytes(b"derived-image")
+    manifest = DerivedImageManifest(
+        environment_id=definition.environment_id,
+        definition_sha256=definition.definition_sha256,
+        source_sha256=definition.source.sha256,
+        provider="libvirt",
+        image_format="qcow2",
+        image_sha256=_digest(b"derived-image"),
+        architecture="x86_64",
+        created_at="2026-09-25T00:00:00Z",
+    )
+
+    settings = capsule_settings_from_derived_image(definition, manifest, image)
+
+    assert settings.provider == "libvirt"
+    assert settings.cpu_count == 4
+    assert settings.memory_mb == 8192
+    assert settings.network_mode == "host_only"
+    assert settings.libvirt_arch == "x86_64"
+    assert settings.image == str(image.resolve())
+
+
+def test_derived_image_bridge_rejects_explicit_machine_contract_mismatch(
+    tmp_path: Path,
+) -> None:
+    definition = _runtime_definition(tmp_path)
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"derived-image")
+    manifest = DerivedImageManifest(
+        environment_id=definition.environment_id,
+        definition_sha256=definition.definition_sha256,
+        source_sha256=definition.source.sha256,
+        provider="hyperv",
+        image_format="vhdx",
+        image_sha256=_digest(b"derived-image"),
+        architecture="x86_64",
+        created_at="2026-09-25T00:00:00Z",
+    )
+
+    with pytest.raises(ProvisioningError, match="memory_mb requires 8192"):
+        capsule_settings_from_derived_image(
+            definition,
+            manifest,
+            image,
+            settings=CapsuleSettings(
+                provider="hyperv",
+                cpu_count=4,
+                memory_mb=12288,
+                network_mode="host_only",
+            ),
+        )
+
+
+def test_derived_image_bridge_rejects_explicit_provider_mismatch(tmp_path: Path) -> None:
+    definition = _runtime_definition(tmp_path, "libvirt")
+    image = tmp_path / "base.qcow2"
+    image.write_bytes(b"derived-image")
+    manifest = DerivedImageManifest(
+        environment_id=definition.environment_id,
+        definition_sha256=definition.definition_sha256,
+        source_sha256=definition.source.sha256,
+        provider="libvirt",
+        image_format="qcow2",
+        image_sha256=_digest(b"derived-image"),
+        architecture="x86_64",
+        created_at="2026-09-25T00:00:00Z",
+    )
+
+    with pytest.raises(ProvisioningError, match="provider mismatch"):
+        capsule_settings_from_derived_image(
+            definition,
+            manifest,
+            image,
+            settings=CapsuleSettings(provider="hyperv"),
+        )
+
+
+def test_bridge_rejects_security_and_hardware_downgrade(tmp_path: Path) -> None:
+    definition = _runtime_definition(tmp_path)
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"image")
+    manifest = DerivedImageManifest(
+        definition.environment_id, definition.definition_sha256, definition.source.sha256,
+        "hyperv", "vhdx", _digest(b"image"), "x86_64", "2026-09-26T00:00:00Z",
+    )
+    for machine in (
+        replace(definition.machine, tpm_version="1.2"),
+        replace(definition.machine, disk_bus="nvme"),
+        replace(definition.machine, network_mode="isolated"),
+    ):
+        changed = replace(definition, machine=machine)
+        changed_manifest = replace(
+            manifest, environment_id=changed.environment_id,
+            definition_sha256=changed.definition_sha256,
+        )
+        with pytest.raises(ProvisioningError, match="cannot be preserved"):
+            capsule_settings_from_derived_image(changed, changed_manifest, image)
+
+
+def test_windows_11_security_contract_reaches_capsule(tmp_path: Path) -> None:
+    original = _runtime_definition(tmp_path)
+    definition = replace(
+        original, machine=replace(original.machine, secure_boot=True, tpm_version="2.0")
+    )
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"win11 image")
+    manifest = DerivedImageManifest(
+        definition.environment_id, definition.definition_sha256, definition.source.sha256,
+        "hyperv", "vhdx", _digest(b"win11 image"), "x86_64", "2026-09-26T00:00:00Z",
+    )
+    settings = capsule_settings_from_derived_image(definition, manifest, image)
+    assert settings.secure_boot is True
+    assert settings.tpm_version == "2.0"
+    with pytest.raises(CapsuleError, match="require SecureCapsuleExecutionEnvironment"):
+        HyperVProvider(runner=lambda script, timeout: "").create(
+            CapsuleRequest("legacy", "cli", settings)
+        )
+    with pytest.raises(ProvisioningError, match="secure_boot requires True"):
+        capsule_settings_from_derived_image(
+            definition, manifest, image,
+            settings=CapsuleSettings(
+                provider="hyperv", cpu_count=4, memory_mb=8192,
+                network_mode="host_only", secure_boot=False,
+            ),
+        )
+
+
+def test_hyperv_capsule_configures_derived_secure_boot_and_tpm_before_start(
+    tmp_path: Path,
+) -> None:
+    definition = _runtime_definition(tmp_path)
+    definition = replace(
+        definition, machine=replace(definition.machine, secure_boot=True, tpm_version="2.0")
+    )
+    image = tmp_path / "base.vhdx"
+    image.write_bytes(b"win11 image")
+    manifest = DerivedImageManifest(
+        definition.environment_id, definition.definition_sha256, definition.source.sha256,
+        "hyperv", "vhdx", _digest(b"win11 image"), "x86_64", "2026-09-26T00:00:00Z",
+    )
+    settings = replace(
+        capsule_settings_from_derived_image(definition, manifest, image),
+        switch_name="Argus-Internal", vm_root=str(tmp_path / "sessions"),
+        guest_token="test-token", guest_transport="http", allow_insecure_http=True,
+        guest_address="10.0.0.2", boot_timeout_seconds=2,
+    )
+    commands = []
+
+    def run(script: str, timeout: float) -> str:
+        commands.append(script)
+        if "Get-VMSwitch" in script and "SwitchType" in script:
+            return "Internal"
+        if "Get-VMNetworkAdapter -ManagementOS" in script:
+            return "10.0.0.1"
+        if "Get-VMNetworkAdapter -VMName" in script and "IPAddresses" in script:
+            return "10.0.0.2"
+        return ""
+
+    provider = IsolatedHyperVProvider(runner=run)
+    handle = provider.create(CapsuleRequest("win11-session", "cli", settings))
+    try:
+        secure_boot = next(i for i, command in enumerate(commands)
+                           if "-EnableSecureBoot On -SecureBootTemplate MicrosoftWindows" in command)
+        tpm = next(i for i, command in enumerate(commands) if "Enable-VMTPM" in command)
+        start = next(i for i, command in enumerate(commands) if "Start-VM" in command)
+        assert secure_boot < tpm < start
+    finally:
+        provider.destroy(handle)
+
+
+def test_build_publishes_once_and_rejects_corrupt_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    provider = LibvirtProvisioner(network_name="argus-local")
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
+    )
+    calls = []
+
+    def install(iso: Path, image: Path, payload) -> None:
+        assert iso.read_bytes() == b"installation-media"
+        calls.append(iso)
+        image.write_bytes(b"installed-os")
+
+    first = publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
+    second = publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
+    assert first.manifest == second.manifest
+    assert len(calls) == 1
+    assert plan.image_path.read_bytes() == b"installed-os"
+    assert not (plan.cache_dir / "installation.iso").exists()
+    assert "secret://" not in plan.manifest_path.read_text()
+    plan.image_path.chmod(0o644)
+    plan.image_path.write_bytes(b"tampered")
+    with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
+        publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
+    assert len(calls) == 1
+
+
+def test_publication_requires_booted_baseline_and_rejects_pre_baseline_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    provider = LibvirtProvisioner(network_name="argus-local")
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
+    )
+
+    def install(iso: Path, image: Path, payload) -> None:
+        image.write_bytes(b"blank, structurally valid disk")
+
+    def reject_baseline(image: Path) -> None:
+        raise ProvisioningError("baseline failed")
+
+    with pytest.raises(ProvisioningError, match="baseline Capsule validation is required"):
+        publish_derived_image(definition, plan, install)
+    with pytest.raises(ProvisioningError, match="baseline failed"):
+        publish_derived_image(
+            definition, plan, install,
+            validate_baseline=reject_baseline,
+        )
+    assert not plan.cache_dir.exists()
+    assert not list(plan.cache_dir.parent.glob(".building-*"))
+    result = publish_derived_image(
+        definition, plan, install, validate_baseline=lambda image: None
+    )
+    assert result.manifest.manifest_version == "argus-derived-image-v2"
+    old = plan.manifest_path.read_text().replace("argus-derived-image-v2", "argus-derived-image-v1")
+    plan.manifest_path.chmod(0o644)  # Deliberate owner tampering with a sealed cache.
+    plan.manifest_path.write_text(old)
+    with pytest.raises(ProvisioningError, match="published derived-image manifest is invalid"):
+        publish_derived_image(
+            definition, plan, install, validate_baseline=lambda image: None
+        )
+
+
+@pytest.mark.parametrize("fault", [None, "admin", "same-tls", "same-token", "desktop"])
+def test_secure_capsule_baseline_checks_guest_identity_and_destroys_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault,
+) -> None:
+    import argus.provisioning.baseline as baseline_module
+
+    definition = _runtime_definition(tmp_path, "libvirt")
+    if fault == "desktop":
+        definition = replace(definition, installation=replace(
+            definition.installation, target_os="ubuntu", target_release="24.04", target_flavor="desktop"))
+    image = tmp_path / "base.qcow2"
+    image.write_bytes(b"candidate")
+    settings = CapsuleSettings(
+        provider="libvirt",
+        cpu_count=4,
+        memory_mb=8192,
+        network_mode="host_only",
+    )
+    sessions = []
+
+    class FakeCapsule:
+        counter = 0
+
+        def __init__(self, adapter_type, bound):
+            assert adapter_type == "cli"
+            assert bound.image == str(image.resolve())
+            assert bound.require_target_desktop == (fault == "desktop")
+            type(self).counter += 1
+            self.session_id = f"probe-{type(self).counter}"
+            self._capsule_id = f"cap-{type(self).counter:032x}"
+            self._handle = None
+            self._client = self
+            self.pinned_cert_sha256 = f"{1 if fault == 'same-tls' else type(self).counter:064x}"
+            self.token = f"fresh-bearer-{1 if fault == 'same-token' else type(self).counter}"
+            self._runtime_identity = (
+                definition.require_guest_runtime().runtime_identity
+            )
+            sessions.append(self)
+
+        def prepare(self):
+            self._handle = object()
+
+        def health(self):
+            return {
+                "ok": True,
+                "service": "argus-guest-agent",
+                "secure": True,
+                "auth_session_id": self.session_id,
+                "capsule_id": self._capsule_id,
+                "control_generation": 1,
+                "runtime_identity": self._runtime_identity,
+                "guest_os": "linux",
+                "architecture": "x86_64",
+                "machine_identity": f"{len(sessions):032x}",
+                "os_id": "ubuntu", "os_release": "24.04",
+                "target_user": "argus", "target_user_present": True,
+                "target_user_non_admin": True, "target_user_locked": True,
+            }
+
+        def close(self):
+            self._handle = None
+
+        def installed_packages(self, packages):
+            return {name: "1" for name in packages}
+
+        def launch(self, target):
+            assert target == "/usr/bin/id -un"
+
+        def observe(self, include_screenshot):
+            from argus.adapters.base import Observation
+
+            return Observation(window_title="", stdout="root\n" if fault == "admin" else "argus\n", exit_code=0)
+
+    monkeypatch.setattr(
+        baseline_module,
+        "SecureCapsuleExecutionEnvironment",
+        FakeCapsule,
+    )
+    def validate():
+        validate_secure_capsule_baseline(definition, image, provider="libvirt", image_format="qcow2", settings=settings)
+    if fault:
+        with pytest.raises(ProvisioningError):
+            validate()
+    else:
+        validate()
+        assert len(sessions) == 2
+    assert all(session._handle is None for session in sessions)
+
+
+def test_failed_build_removes_private_resources_and_can_retry(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    provider = LibvirtProvisioner(network_name="argus-local")
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="qcow2", cache_root=tmp_path / "cache"
+    )
+
+    def fail(iso: Path, image: Path, payload) -> None:
+        image.write_bytes(b"partial")
+        raise ProvisioningError("installer failed")
+
+    with pytest.raises(ProvisioningError, match="installer failed"):
+        publish_derived_image(definition, plan, fail, validate_baseline=lambda image: None)
+    assert not plan.cache_dir.exists()
+    assert not list(plan.cache_dir.parent.glob(".building-*"))
+    assert publish_derived_image(
+        definition, plan, lambda iso, image, payload: image.write_bytes(b"retry image"),
+        validate_baseline=lambda image: None,
+    ).manifest.image_sha256 == _digest(b"retry image")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock concurrency path")
+def test_concurrent_same_key_builds_publish_one_image(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    provider = LibvirtProvisioner(network_name="argus-local")
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def install(iso: Path, image: Path, payload) -> None:
+        calls.append(image)
+        entered.set()
+        assert release.wait(5)
+        image.write_bytes(b"one published image")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            publish_derived_image, definition, plan, install,
+            validate_baseline=lambda image: None,
+        )
+        assert entered.wait(5)
+        second = executor.submit(
+            publish_derived_image, definition, plan, install,
+            validate_baseline=lambda image: None,
+        )
+        release.set()
+        assert first.result(timeout=10).manifest == second.result(timeout=10).manifest
+    assert len(calls) == 1
+
+
+def test_media_swap_before_staging_does_not_publish(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    provider = LibvirtProvisioner(network_name="argus-local")
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
+    )
+    import argus.provisioning.build as build_module
+
+    original = build_module.verify_installation_media
+
+    def swap_after_check(value):
+        checked = original(value)
+        Path(value.source.path).write_bytes(b"swapped after first verification")
+        return checked
+
+    monkeypatch.setattr(build_module, "verify_installation_media", swap_after_check)
+    with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
+        publish_derived_image(
+            definition, plan, lambda iso, image, payload: image.write_bytes(b"should not run"),
+            validate_baseline=lambda image: None,
+        )
+    assert not plan.cache_dir.exists()
+
+
+def test_libvirt_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _unattended_runtime_definition(tmp_path, "libvirt")
+    commands = []
+
+    def run(argv, timeout):
+        commands.append(tuple(argv))
+        if _write_ubuntu_build_inputs(argv):
+            return ""
+        if argv[0] == "qemu-img" and argv[1] == "create":
+            Path(argv[-2]).write_bytes(b"bootable image fixture")
+        if argv[0] == "qemu-img" and argv[1] == "info":
+            return '{"format":"qcow2","virtual-size":85899345920}'
+        if "net-dumpxml" in argv:
+            return "<network><name>argus-local</name><bridge name='virbr9'/></network>"
+        if "net-info" in argv:
+            return "Name: argus-local\nActive: yes\n"
+        if "domstate" in argv:
+            return "shut off"
+        return ""
+
+    validated = []
+
+    def validate(image: Path) -> None:
+        assert any("undefine" in command for command in commands)
+        validated.append(image.read_bytes())
+
+    provider = LibvirtProvisioner(
+        network_name="argus-local", runner=run, baseline_validator=validate
+    )
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="qcow2", cache_root=tmp_path / "cache"
+    )
+    result = provider.provision(definition, plan)
+    assert result.manifest.image_sha256 == _digest(b"bootable image fixture")
+    assert validated == [b"bootable image fixture"]
+    assert any("define" in command for command in commands)
+    assert any("undefine" in command for command in commands)
+    assert not (plan.cache_dir / "domain.xml").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX QEMU group permissions")
+def test_libvirt_private_build_is_accessible_to_configured_qemu_group() -> None:
+    import grp
+    import stat
+    import tempfile
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as root_name:
+        root = Path(root_name)
+        shared = root / "shared"
+        shared.mkdir(mode=0o755)
+        work = shared / "build"
+        work.mkdir(mode=0o700)
+        iso, image = work / "installation.iso", work / "base.qcow2"
+        iso.write_bytes(b"iso")
+        image.write_bytes(b"disk")
+        provider = LibvirtProvisioner(
+            network_name="argus-local", qemu_group=grp.getgrgid(os.getgid()).gr_name
+        )
+        with pytest.raises(ProvisioningError, match="cannot traverse"):
+            provider._grant_qemu_access(iso, image)
+
+        root.chmod(0o755)
+        provider._grant_qemu_access(iso, image)
+        assert stat.S_IMODE(work.stat().st_mode) == 0o2770
+        assert stat.S_IMODE(iso.stat().st_mode) == 0o640
+        assert stat.S_IMODE(image.stat().st_mode) == 0o660
+
+
+def test_libvirt_failure_after_start_cleans_vm_and_does_not_publish(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _unattended_runtime_definition(tmp_path, "libvirt")
+    commands = []
+
+    def run(argv, timeout):
+        commands.append(tuple(argv))
+        if _write_ubuntu_build_inputs(argv):
+            return ""
+        if argv[:2] == ("qemu-img", "create"):
+            Path(argv[-2]).write_bytes(b"partial disk")
+        if "net-dumpxml" in argv:
+            return "<network><name>argus-local</name><bridge name='virbr9'/></network>"
+        if "net-info" in argv:
+            return "Active: yes"
+        if "domstate" in argv:
+            return "running"
+        return ""
+
+    def interrupt(name):
+        raise KeyboardInterrupt()
+
+    provider = LibvirtProvisioner(
+        network_name="argus-local", runner=run, on_started=interrupt,
+        baseline_validator=lambda image: None,
+    )
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="qcow2", cache_root=tmp_path / "cache"
+    )
+    with pytest.raises(KeyboardInterrupt):
+        provider.provision(definition, plan)
+    assert any("destroy" in argv for argv in commands)
+    assert any("undefine" in argv for argv in commands)
+    assert not plan.cache_dir.exists()
+    assert not list(plan.cache_dir.parent.glob(".building-*"))
+
+
+def test_hyperv_provider_builds_and_cleans_vm(tmp_path: Path, monkeypatch) -> None:
+    import re
+
+    original = _unattended_runtime_definition(tmp_path, "hyperv")
+    definition = replace(
+        original, machine=replace(original.machine, secure_boot=True, tpm_version="2.0")
+    )
+    commands = []
+
+    def run(script, timeout):
+        commands.append(script)
+        if script.startswith("New-VHD"):
+            path = re.search(r"-Path '([^']+)'", script).group(1)
+            Path(path).write_bytes(b"installed Windows fixture")
+        if "Get-VMSwitch" in script:
+            return "Internal"
+        if "Get-VHD" in script:
+            return "Dynamic:85899345920"
+        if ".State.ToString()" in script:
+            return "Off"
+        return ""
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    provider = HyperVProvisioner(
+        switch_name="Argus-Internal", runner=run,
+        baseline_validator=lambda image: None,
+    )
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="vhdx", cache_root=tmp_path / "cache"
+    )
+    result = provider.provision(definition, plan)
+    assert result.manifest.image_sha256 == _digest(b"installed Windows fixture")
+    assert any("-EnableSecureBoot On -SecureBootTemplate MicrosoftWindows" in command
+               for command in commands)
+    assert any("Enable-VMTPM" in command for command in commands)
+    assert any("Remove-VM" in command for command in commands)
+
+
+@pytest.mark.parametrize("ownership", ["absent", "denied", "mismatch", "parent", "partial", "remains"])
+def test_hyperv_allocation_failure_verifies_cleanup_ownership(
+    tmp_path: Path, ownership: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import re
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    definition = _unattended_runtime_definition(tmp_path, "hyperv")
+    commands = []
+    image = None
+    allocated = False
+    allocated_name = None
+    removed = False
+
+    def run(script, timeout):
+        nonlocal image, allocated, allocated_name, removed
+        commands.append(script)
+        if "Get-VMSwitch" in script:
+            return "Internal"
+        if script.startswith("New-VHD"):
+            image = Path(re.search(r"-Path '([^']+)'", script).group(1))
+            image.write_bytes(b"partial disk")
+        if script.startswith("New-VM"):
+            allocated = True
+            allocated_name = re.search(r"-Name '([^']+)'", script).group(1)
+            raise ProvisioningError("allocation failed")
+        if "Get-VM -ErrorAction Stop | Where-Object" in script:
+            assert "SilentlyContinue" not in script
+            if not allocated or removed:
+                return ""
+            if ownership == "denied":
+                raise ProvisioningError("query denied")
+            if ownership == "mismatch":
+                return str(tmp_path / "unrelated-vm")
+            if ownership == "parent":
+                return str(image.parent / "vm")
+            if ownership in {"partial", "remains"}:
+                return str(image.parent / "vm" / allocated_name)
+            return ""
+        if "Remove-VM" in script:
+            removed = ownership != "remains"
+        return ""
+
+    provider = HyperVProvisioner(
+        switch_name="Argus-Internal", runner=run, baseline_validator=lambda image: None,
+    )
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="vhdx", cache_root=tmp_path / "cache",
+    )
+    expected = ProvisioningError if ownership in {"absent", "partial"} else ProvisioningCleanupError
+    with pytest.raises(expected) as error:
+        provider.provision(definition, plan)
+    uncertain = isinstance(error.value, ProvisioningCleanupError)
+    assert uncertain == (ownership not in {"absent", "partial"})
+    if not uncertain:
+        assert str(error.value) == "allocation failed"
+    assert bool(list(plan.cache_dir.parent.glob(".building-*"))) == uncertain
+    assert not plan.cache_dir.exists()
+    assert any("Remove-VM" in script for script in commands) == (ownership in {"partial", "remains"})
+
+
+def test_hyperv_collision_lookup_errors_prevent_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    definition = _unattended_runtime_definition(tmp_path, "hyperv")
+    commands = []
+
+    def run(script, timeout):
+        commands.append(script)
+        if "Get-VMSwitch" in script:
+            return "Internal"
+        raise ProvisioningError("query denied")
+
+    provider = HyperVProvisioner(
+        switch_name="Argus-Internal", runner=run, baseline_validator=lambda image: None,
+    )
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="vhdx", cache_root=tmp_path / "cache",
+    )
+    with pytest.raises(ProvisioningError, match="query denied"):
+        provider.provision(definition, plan)
+    assert not any(script.startswith("New-") for script in commands)
+
+
+def test_baseline_attests_target_release_edition_and_ubuntu_packages(tmp_path: Path) -> None:
+    windows = _runtime_definition(tmp_path)
+    windows = replace(windows, installation=InstallationSpec(
+        unattended=True, target_os="windows-11", target_release="24H2",
+        edition="professional",
+    ))
+    health = {
+        "os_id": "windows-11", "os_release": "24H2",
+        "os_edition": "professional", "os_build": 26100,
+        "target_user": "argus-target",
+        "target_user_present": True,
+        "target_user_non_admin": True,
+    }
+    _attest_installed_profile(windows, health, object())
+    with pytest.raises(ProvisioningError, match="Windows release or edition"):
+        _attest_installed_profile(windows, {**health, "os_release": "23H2"}, object())
+
+    ubuntu = _runtime_definition(tmp_path, "libvirt")
+    ubuntu = replace(
+        ubuntu,
+        installation=InstallationSpec(
+            unattended=True, target_os="ubuntu", target_release="24.04.1",
+            target_flavor="desktop", packages=("git",), update_policy="latest",
+            apt_mirror="http://mirror.internal/ubuntu",
+            credential_ref="secret://argus/ubuntu/bootstrap",
+        ),
+        guest_runtime=_guest_runtime(tmp_path, "ubuntu"),
+    )
+
+    class Guest:
+        def installed_packages(self, names):
+            assert set(names) == {"git", "ubuntu-desktop"}
+            return {"git": "1:2.43.0", "ubuntu-desktop": "1.539"}
+
+    ubuntu_health = {
+        "os_id": "ubuntu", "os_release": "24.04",
+        "target_user": "argus",
+        "target_user_present": True,
+        "target_user_non_admin": True,
+        "target_user_locked": True,
+    }
+    _attest_installed_profile(ubuntu, ubuntu_health, Guest())
+    with pytest.raises(ProvisioningError, match="Ubuntu release"):
+        _attest_installed_profile(
+            ubuntu, {**ubuntu_health, "os_release": "22.04"}, Guest()
+        )
+
+    class MissingGuest:
+        def installed_packages(self, names):
+            return {"git": "1:2.43.0"}
+
+    with pytest.raises(ProvisioningError, match="packages are missing"):
+        _attest_installed_profile(
+            ubuntu, ubuntu_health, MissingGuest(),
+        )
+
+
+def test_fleet_advertisement_uses_verified_image_digest_not_alias(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    provider = LibvirtProvisioner(network_name="argus-local")
+    plan = build_provisioning_plan(
+        definition, provider.capabilities(), output_format="raw", cache_root=tmp_path / "cache"
+    )
+    result = publish_derived_image(
+        definition, plan, lambda iso, image, payload: image.write_bytes(b"guest os"),
+        validate_baseline=lambda image: None,
+    )
+    first = derived_image_advertisement(
+        definition, result.manifest, plan.image_path, alias="latest", guest_os="linux"
+    )
+    renamed = derived_image_advertisement(
+        definition, result.manifest, plan.image_path, alias="stable", guest_os="linux"
+    )
+    assert first.digest == renamed.digest == f"sha256:{_digest(b'guest os')}"
+    assert first.image_id == renamed.image_id
+    assert first.alias != renamed.alias
+    plan.image_path.chmod(0o644)
+    plan.image_path.write_bytes(b"mutated")
+    with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
+        derived_image_advertisement(
+            definition, result.manifest, plan.image_path, alias="latest", guest_os="linux"
+        )
+
+
+def test_config_selects_only_an_ates_verified_published_image(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    import yaml
+    from argus.config import CapsuleConfig, ExecutionConfig, load_config
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    spec = tmp_path / "environment.yaml"
+    spec.write_text(yaml.safe_dump(asdict(definition)))
+    cache = tmp_path / "cache"
+    plan = build_provisioning_plan(definition, LibvirtProvisioner(network_name="build").capabilities(),
+                                  output_format="qcow2", cache_root=cache, evidence_root=tmp_path)
+    publish_derived_image(definition, plan, lambda iso, image, payload: image.write_bytes(b"guest"),
+                          validate_baseline=lambda image: None)
+    cfg = load_config(tmp_path)
+    cfg.execution = ExecutionConfig("capsule", CapsuleConfig(provider="libvirt", cpu_count=4,
+        memory_mb=8192, environment_definition=str(spec), image_cache_root=str(cache),
+        provisioning_evidence_root=str(tmp_path), guest_token_ref="secret://missing-legacy-secret"))
+    env = cfg.make_execution_environment("cli", capsule_overrides={"retain_on_failure": True, "provider": "auto"})
+    assert env.settings.environment_id == definition.environment_id
+    assert env.settings.guest_runtime_identity == definition.require_guest_runtime().runtime_identity
+    assert env.settings.image == str(plan.image_path.resolve())
+    assert env.settings.guest_token == ""
+    assert env.settings.retain_on_failure is True
+    with pytest.raises(ValueError, match="cannot be overridden"):
+        cfg.make_execution_environment("cli", capsule_overrides={"allowed_execution_modes": ["shared_user"]})
+    plan.image_path.chmod(0o644)
+    plan.image_path.write_bytes(b"tampered")
+    with pytest.raises(ProvisioningError, match="SHA-256 mismatch"):
+        cfg.make_execution_environment("cli")
+
+
+@pytest.mark.parametrize("override", [None, "cpu", "memory", "env-cpu", "env-memory"])
+def test_config_definition_supplies_only_omitted_hardware(tmp_path, monkeypatch, override):
+    from dataclasses import asdict
+    import yaml
+    from argus.config import load_config
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.delenv("ARGUS_CAPSULE_CPU_COUNT", raising=False)
+    monkeypatch.delenv("ARGUS_CAPSULE_MEMORY_MB", raising=False)
+    definition = _runtime_definition(tmp_path, "libvirt")
+    spec = tmp_path / "environment.yaml"
+    spec.write_text(yaml.safe_dump(asdict(definition)))
+    cache = tmp_path / "cache"
+    plan = build_provisioning_plan(definition, LibvirtProvisioner(network_name="build").capabilities(),
+                                  output_format="qcow2", cache_root=cache, evidence_root=tmp_path)
+    publish_derived_image(definition, plan, lambda iso, image, payload: image.write_bytes(b"guest"),
+                          validate_baseline=lambda image: None)
+    values = {"provider": "libvirt", "environment_definition": str(spec),
+              "image_cache_root": str(cache), "provisioning_evidence_root": str(tmp_path)}
+    if override == "cpu":
+        values["cpu_count"] = 2
+    elif override == "memory":
+        values["memory_mb"] = 4096
+    elif override == "env-cpu":
+        monkeypatch.setenv("ARGUS_CAPSULE_CPU_COUNT", "2")
+    elif override == "env-memory":
+        monkeypatch.setenv("ARGUS_CAPSULE_MEMORY_MB", "4096")
+    config_path = tmp_path / ".argus" / "config.yaml"
+    config_path.parent.mkdir(exist_ok=True)
+    config_path.write_text(yaml.safe_dump({"execution": {"environment": "capsule", "capsule": values}}))
+    cfg = load_config(tmp_path)
+    if override:
+        with pytest.raises(ProvisioningError, match="machine contract"):
+            cfg.make_execution_environment("cli")
+    else:
+        env = cfg.make_execution_environment("cli")
+        assert (env.settings.cpu_count, env.settings.memory_mb) == (4, 8192)
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_baseline_preparation_cleanup_uncertainty_preserves_workspace(tmp_path, monkeypatch, uncertain):
+    from argus.capsule.base import CapsuleCleanupError
+    from argus.ates import FinalizationError, verify_finalized_run
+    import argus.provisioning.baseline as baseline_module
+    import argus.provisioning.build as build_module
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    plan = build_provisioning_plan(definition, LibvirtProvisioner(network_name="build").capabilities(),
+                                  output_format="qcow2", cache_root=tmp_path / "cache")
+    closed = []
+    runs = []
+    recorder_type = build_module.AtesProvisioningRecorder
+
+    def recorder(*args):
+        result = recorder_type(*args)
+        runs.append(result.run_dir)
+        return result
+
+    monkeypatch.setattr(build_module, "AtesProvisioningRecorder", recorder)
+
+    class FailedPreparation:
+        _handle = None
+
+        def __init__(self, *args):
+            pass
+
+        def prepare(self):
+            raise (CapsuleCleanupError("cleanup uncertain") if uncertain else CapsuleError("authentication failed"))
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(baseline_module, "SecureCapsuleExecutionEnvironment", FailedPreparation)
+
+    def baseline(image):
+        validate_secure_capsule_baseline(definition, image, provider="libvirt", image_format="qcow2",
+                                        settings=CapsuleSettings(provider="libvirt", cpu_count=4, memory_mb=8192))
+
+    with pytest.raises(ProvisioningCleanupError if uncertain else ProvisioningError):
+        publish_derived_image(definition, plan, lambda iso, image, payload: image.write_bytes(b"candidate"),
+                              validate_baseline=baseline)
+    assert closed == [True]
+    assert not plan.cache_dir.exists()
+    assert len(list(plan.cache_dir.parent.glob(".building-*"))) == int(uncertain)
+    assert len(runs) == 1
+    if uncertain:
+        with pytest.raises(FinalizationError):
+            verify_finalized_run(runs[0])
+    else:
+        verify_finalized_run(runs[0])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="native POSIX publication permissions")
+@pytest.mark.parametrize("seal_fails", [False, True])
+def test_publication_revokes_qemu_directory_write_access(tmp_path, monkeypatch, seal_fails):
+    import stat
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    definition = _runtime_definition(tmp_path, "libvirt")
+    plan = build_provisioning_plan(definition, LibvirtProvisioner(network_name="build").capabilities(),
+                                  output_format="qcow2", cache_root=tmp_path / "cache")
+
+    def install(iso, image, payload):
+        image.parent.chmod(0o2770)
+        image.write_bytes(b"candidate")
+        image.chmod(0o660)
+
+    original = Path.chmod
+    if seal_fails:
+        def fail_seal(path, mode, *args, **kwargs):
+            if path.name.startswith(".building-") and mode == 0o750:
+                raise OSError("cannot seal directory")
+            return original(path, mode, *args, **kwargs)
+        monkeypatch.setattr(Path, "chmod", fail_seal)
+        with pytest.raises(OSError, match="cannot seal"):
+            publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
+        assert not plan.cache_dir.exists()
+        assert not list(plan.cache_dir.parent.glob(".building-*"))
+    else:
+        publish_derived_image(definition, plan, install, validate_baseline=lambda image: None)
+        assert stat.S_IMODE(plan.cache_dir.stat().st_mode) == 0o750
+        assert stat.S_IMODE(plan.image_path.stat().st_mode) == 0o444
+        assert stat.S_IMODE(plan.manifest_path.stat().st_mode) == 0o444

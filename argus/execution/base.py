@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 from argus.adapters.base import Adapter, AdapterError, Observation
+from argus.capsule.base import CapsuleCleanupError
 
 
 class ExecutionEnvironmentError(AdapterError):
@@ -23,6 +24,10 @@ class ExecutionEnvironmentError(AdapterError):
     Subclassing :class:`AdapterError` keeps existing callers backward-compatible
     while giving environment failures a distinct type for newer code.
     """
+
+
+class ExecutionCleanupError(ExecutionEnvironmentError, CapsuleCleanupError):
+    """Execution rollback could not prove that provider resources were removed."""
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 import yaml
 
@@ -18,6 +18,7 @@ from argus.providers import LLMProvider, create_provider
 from argus.tokens import Budget, TokenTracker
 
 CAPSULE_GUEST_TOKEN_ENV = "ARGUS_CAPSULE_GUEST_TOKEN"
+SESSION_CAPSULE_OVERRIDES = frozenset({"provider", "retain_on_failure"})
 
 DEFAULT_CONFIG = """\
 # Argus configuration
@@ -62,6 +63,7 @@ execution:
   #   memory_mb: 4096
   #   cpu_count: 2
   #   guest_port: 8765
+  #   guest_token_ref: secret://argus/capsule/bootstrap # optional per-user store reference
   #   guest_input_mode: physical
   #   guest_address: null
   #   boot_timeout_seconds: 120
@@ -75,6 +77,7 @@ execution:
   #   libvirt_network_cidr: ""   # optional site-specific private /24, e.g. 10.250.77.0/24
   #   libvirt_arch: ""           # auto host arch; x86_64 or aarch64 when pinned
   #   libvirt_machine: ""        # optional libvirt/QEMU machine type
+  #   libvirt_qemu_group: ""     # trusted system QEMU group for provisioned media
   #
   #   # PR6 secure control plane / network isolation
   #   guest_transport: https
@@ -118,15 +121,27 @@ class KnowledgeConfig:
 
 @dataclass
 class CapsuleConfig:
+    environment_definition: str = ""
+    image_cache_root: str = ""
+    provisioning_evidence_root: str = ""
+    image_format: str = ""
+    control_root: str = ""
+    default_execution_mode: str = "isolated"
+    allowed_execution_modes: tuple[str, ...] = ("isolated",)
+    allow_llm_mode_change: bool = False
+    failure_allow_reconnect: bool = True
+    failure_allow_llm_reconnect: bool = False
     provider: str = "hyperv"
     guest_os: str = "auto"
     image: str = ""
     switch_name: str = ""
     vm_root: str = ""
-    memory_mb: int = 4096
-    cpu_count: int = 2
+    # None preserves omission until an immutable definition can supply values.
+    memory_mb: Optional[int] = None
+    cpu_count: Optional[int] = None
     guest_port: int = 8765
     guest_token_env: str = CAPSULE_GUEST_TOKEN_ENV
+    guest_token_ref: str = ""
     guest_input_mode: str = "physical"
     guest_address: str = ""
     boot_timeout_seconds: float = 120.0
@@ -145,6 +160,7 @@ class CapsuleConfig:
     libvirt_network_cidr: str = ""
     libvirt_arch: str = ""
     libvirt_machine: str = ""
+    libvirt_qemu_group: str = ""
 
 
 @dataclass
@@ -167,6 +183,17 @@ class ArgusConfig:
     def argus_dir(self) -> Path:
         return self.project_dir / ".argus"
 
+    def knowledge_persist_dir(self) -> Optional[Path]:
+        """The configured graph directory, with a relative path anchored to the project.
+
+        The desktop app can open a project other than its working directory, so a
+        relative ``knowledge.persist_dir`` must never resolve against the process cwd.
+        """
+        if not self.knowledge.persist_dir:
+            return None
+        path = Path(self.knowledge.persist_dir).expanduser()
+        return path if path.is_absolute() else self.project_dir / path
+
     def make_provider(self, tracker: Optional[TokenTracker] = None) -> LLMProvider:
         return create_provider(
             self.provider.type,
@@ -180,13 +207,16 @@ class ArgusConfig:
         self,
         adapter_type: str,
         environment_type: Optional[str] = None,
+        capsule_overrides: Optional[Mapping[str, object]] = None,
     ):
         """Build the configured local or Capsule execution environment.
 
-        The reusable bootstrap credential always comes from the dedicated host
-        variable ``ARGUS_CAPSULE_GUEST_TOKEN``. Project configuration cannot
-        select an arbitrary host environment variable. PR6 rotates that token
-        to a fresh bearer after the HTTPS control channel is authenticated.
+        A provisioned environment verifies cached image bytes and ATES evidence
+        before binding Capsule settings. Static credentials are only read for
+        the legacy image path. Model requests cannot expand host mode policy.
+
+        Per-session Capsule overrides are limited to provider and failure
+        retention; selecting a provider must still match the image contract.
         """
         from argus.execution import create_execution_environment
 
@@ -205,16 +235,30 @@ class ArgusConfig:
                 "execution.capsule.guest_token_env cannot select a host secret; "
                 f"Capsule credentials are read only from {CAPSULE_GUEST_TOKEN_ENV}"
             )
+        if cc.environment_definition:
+            guest_token = ""
+        elif cc.guest_token_ref:
+            from argus.secrets import ArgusSecretStore
+
+            guest_token = ArgusSecretStore().get(cc.guest_token_ref).rstrip("\r\n")
+        else:
+            guest_token = os.environ.get(CAPSULE_GUEST_TOKEN_ENV, "")
         capsule_config = {
+            "control_root": cc.control_root,
+            "default_execution_mode": cc.default_execution_mode,
+            "allowed_execution_modes": cc.allowed_execution_modes,
+            "allow_llm_mode_change": cc.allow_llm_mode_change,
+            "failure_allow_reconnect": cc.failure_allow_reconnect,
+            "failure_allow_llm_reconnect": cc.failure_allow_llm_reconnect,
             "provider": os.environ.get("ARGUS_CAPSULE_PROVIDER") or cc.provider,
             "guest_os": os.environ.get("ARGUS_CAPSULE_GUEST_OS") or cc.guest_os,
             "image": os.environ.get("ARGUS_CAPSULE_IMAGE") or cc.image,
             "switch_name": os.environ.get("ARGUS_CAPSULE_SWITCH") or cc.switch_name,
             "vm_root": os.environ.get("ARGUS_CAPSULE_VM_ROOT") or cc.vm_root,
-            "memory_mb": _env_int("ARGUS_CAPSULE_MEMORY_MB", cc.memory_mb),
-            "cpu_count": _env_int("ARGUS_CAPSULE_CPU_COUNT", cc.cpu_count),
+            "memory_mb": _env_int("ARGUS_CAPSULE_MEMORY_MB", cc.memory_mb if cc.memory_mb is not None else 4096),
+            "cpu_count": _env_int("ARGUS_CAPSULE_CPU_COUNT", cc.cpu_count if cc.cpu_count is not None else 2),
             "guest_port": _env_int("ARGUS_CAPSULE_GUEST_PORT", cc.guest_port),
-            "guest_token": os.environ.get(CAPSULE_GUEST_TOKEN_ENV, ""),
+            "guest_token": guest_token,
             "guest_input_mode": (
                 os.environ.get("ARGUS_CAPSULE_GUEST_INPUT_MODE") or cc.guest_input_mode
             ),
@@ -262,7 +306,65 @@ class ArgusConfig:
             "libvirt_machine": (
                 os.environ.get("ARGUS_CAPSULE_LIBVIRT_MACHINE") or cc.libvirt_machine
             ),
+            "libvirt_qemu_group": (
+                os.environ.get("ARGUS_CAPSULE_LIBVIRT_QEMU_GROUP") or cc.libvirt_qemu_group
+            ),
         }
+        for key, value in (capsule_overrides or {}).items():
+            if key not in SESSION_CAPSULE_OVERRIDES:
+                raise ValueError(f"Capsule setting {key!r} cannot be overridden per session")
+            if key == "retain_on_failure":
+                value = _strict_bool(value, "retain_on_failure")
+            else:
+                value = str(value).lower().strip()
+                if value not in {"hyperv", "libvirt", "auto"}:
+                    raise ValueError("Capsule provider must be hyperv, libvirt or auto")
+            capsule_config[key] = value
+        if cc.environment_definition:
+            from dataclasses import asdict
+            from argus.capsule.base import CapsuleSettings
+            from argus.provisioning.build import load_published_derived_image
+            from argus.provisioning.capsule_bridge import capsule_settings_from_derived_image
+            from argus.provisioning.planner import build_provisioning_plan
+            from argus.provisioning.providers import HyperVProvisioner, LibvirtProvisioner
+            from argus.provisioning.spec import load_environment_definition
+
+            if not cc.image_cache_root:
+                raise ValueError("provisioned Capsule requires image_cache_root")
+            if capsule_config["image"]:
+                raise ValueError("provisioned Capsule selects its image from the verified cache")
+            def project_path(value):
+                path = Path(value).expanduser()
+                return path if path.is_absolute() else self.project_dir / path
+
+            definition = load_environment_definition(project_path(cc.environment_definition))
+            for field, env_name in (("cpu_count", "ARGUS_CAPSULE_CPU_COUNT"),
+                                    ("memory_mb", "ARGUS_CAPSULE_MEMORY_MB")):
+                if getattr(cc, field) is None and os.environ.get(env_name) in {None, ""}:
+                    capsule_config[field] = getattr(definition.machine, field)
+            if str(capsule_config["provider"]).lower() == "auto":
+                import platform
+
+                capsule_config["provider"] = {"windows": "hyperv", "linux": "libvirt"}.get(
+                    platform.system().lower(), "unsupported")
+            provider = {"hyperv": HyperVProvisioner, "libvirt": LibvirtProvisioner}.get(
+                str(capsule_config["provider"]).lower())
+            if provider is None:
+                raise ValueError("unsupported provisioned Capsule provider")
+            image_format = cc.image_format or ("vhdx" if provider is HyperVProvisioner else "qcow2")
+            provisioner = (provider(switch_name=str(capsule_config["switch_name"]))
+                           if provider is HyperVProvisioner else provider(network_name="argus-build"))
+            plan = build_provisioning_plan(
+                definition, provisioner.capabilities(), output_format=image_format,
+                cache_root=project_path(cc.image_cache_root),
+                evidence_root=(project_path(cc.provisioning_evidence_root)
+                               if cc.provisioning_evidence_root else None),
+            )
+            published = load_published_derived_image(definition, plan)
+            capsule_config = asdict(capsule_settings_from_derived_image(
+                definition, published.manifest, plan.image_path,
+                settings=CapsuleSettings(**capsule_config),
+            ))
         return create_execution_environment(
             adapter_type,
             environment_type="capsule",
@@ -288,10 +390,31 @@ class ArgusConfig:
     def make_knowledge_store(self):
         from argus.knowledge import create_knowledge_store
         kc = self.knowledge
-        persist = Path(kc.persist_dir) if kc.persist_dir else self.argus_dir / "knowledge"
+        if not kc.enabled:
+            return None
+        if not kc.persist_dir:
+            from argus.knowledge.storage import create_project_knowledge_store
+            return create_project_knowledge_store(
+                self.project_dir, store_type=kc.type, vector_backend=kc.vector_backend,
+                vector_url=kc.vector_url, embedding_model=kc.embedding_model,
+            )
+        persist = self.knowledge_persist_dir()
+        backend = kc.type
+        if backend == "auto":
+            from argus.knowledge import _resolve_auto
+            backend = _resolve_auto(persist.parent, interactive=True)
+        if backend in ("docker", "qdrant"):
+            # Explicit graph persistence does not authorize redirected project
+            # storage for the managed Docker service.
+            from argus.knowledge.storage import create_project_knowledge_store
+            return create_project_knowledge_store(
+                self.project_dir, graph_persist_dir=persist, store_type=backend,
+                vector_backend=kc.vector_backend, vector_url=kc.vector_url,
+                embedding_model=kc.embedding_model,
+            )
         return create_knowledge_store(
             enabled=kc.enabled,
-            store_type=kc.type,
+            store_type=backend,
             vector_backend=kc.vector_backend,
             vector_url=kc.vector_url,
             persist_dir=persist,
@@ -300,8 +423,8 @@ class ArgusConfig:
         )
 
 
-def _resolve_api_key(entry: dict) -> str:
-    if os.environ.get("ARGUS_API_KEY"):
+def _resolve_api_key(entry: dict, allow_generic_env: bool = True) -> str:
+    if allow_generic_env and os.environ.get("ARGUS_API_KEY"):
         return os.environ["ARGUS_API_KEY"]
     if entry.get("api_key"):
         return str(entry["api_key"])
@@ -347,19 +470,43 @@ def _env_cidrs(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
-def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
+def load_config(
+    project_dir: Optional[Path] = None,
+    provider: Optional[str] = None,
+) -> ArgusConfig:
+    """Load project configuration.
+
+    ``provider`` selects one of the configured ``providers:`` entries for this
+    load only (the desktop app's per-session model picker); the file on disk
+    is never modified. ``ARGUS_PROVIDER`` is a process-level pin and takes
+    precedence over that session selection.
+    """
     project_dir = (project_dir or Path.cwd()).resolve()
     cfg_path = project_dir / ".argus" / "config.yaml"
     raw: dict = {}
     if cfg_path.exists():
-        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        if loaded is not None and not isinstance(loaded, dict):
+            raise ValueError("Argus configuration must be a YAML mapping")
+        raw = loaded or {}
 
-    active = os.environ.get("ARGUS_PROVIDER") or raw.get("provider") or "ollama"
+    env_provider = (os.environ.get("ARGUS_PROVIDER") or "").strip()
+    # ARGUS_PROVIDER is an explicit process-level pin and remains authoritative.
+    # A GUI session override may choose another configured provider only when no
+    # process pin exists. Session overrides must not inherit the generic ARGUS_*
+    # model/base-url/key values, which may belong to a different provider.
+    active = env_provider or provider or raw.get("provider") or "ollama"
+    session_override = (provider is not None and not env_provider
+                        and provider != (raw.get("provider") or "ollama"))
+    allow_generic_env = not session_override
+
     providers = raw.get("providers") or {}
     entry = dict(providers.get(active) or {})
 
-    model = os.environ.get("ARGUS_MODEL") or entry.get("model") or _default_model(active)
-    base_url = os.environ.get("ARGUS_BASE_URL") or entry.get("base_url")
+    model = ((os.environ.get("ARGUS_MODEL") if allow_generic_env else None)
+             or entry.get("model") or _default_model(active))
+    base_url = ((os.environ.get("ARGUS_BASE_URL") if allow_generic_env else None)
+                or entry.get("base_url"))
 
     budgets = raw.get("budgets") or {}
     time_minutes = budgets.get("time_minutes", 10)
@@ -368,7 +515,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
     kc_raw = raw.get("knowledge") or {}
     knowledge = KnowledgeConfig(
         enabled=bool(kc_raw.get("enabled", True)),
-        type=str(kc_raw.get("type", "local")),
+        type=str(kc_raw.get("type", "local" if os.name == "nt" or Path("/proc/self/fd").is_dir() else "json")),
         vector_backend=str(kc_raw.get("vector_backend", "chroma")),
         vector_url=kc_raw.get("vector_url") or None,
         persist_dir=kc_raw.get("persist_dir") or None,
@@ -389,19 +536,39 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
     raw_allowlist = capsule_raw.get("egress_allowlist") or []
     if not isinstance(raw_allowlist, list):
         raise ValueError("execution.capsule.egress_allowlist must be a list of CIDRs")
+    raw_modes = capsule_raw.get("allowed_execution_modes", ["isolated"])
+    if not isinstance(raw_modes, list) or not raw_modes or any(
+        mode not in {"isolated", "shared_user"} for mode in raw_modes
+    ):
+        raise ValueError("execution.capsule.allowed_execution_modes must list supported modes")
 
     execution = ExecutionConfig(
         environment=str(execution_raw.get("environment") or "local"),
         capsule=CapsuleConfig(
+            environment_definition=str(capsule_raw.get("environment_definition") or ""),
+            image_cache_root=str(capsule_raw.get("image_cache_root") or ""),
+            provisioning_evidence_root=str(capsule_raw.get("provisioning_evidence_root") or ""),
+            image_format=str(capsule_raw.get("image_format") or ""),
+            control_root=str(capsule_raw.get("control_root") or ""),
+            default_execution_mode=str(capsule_raw.get("default_execution_mode") or "isolated"),
+            allowed_execution_modes=tuple(raw_modes),
+            allow_llm_mode_change=_strict_bool(capsule_raw.get("allow_llm_mode_change", False),
+                                             "execution.capsule.allow_llm_mode_change"),
+            failure_allow_reconnect=_strict_bool(capsule_raw.get("failure_allow_reconnect", True),
+                                                "execution.capsule.failure_allow_reconnect"),
+            failure_allow_llm_reconnect=_strict_bool(capsule_raw.get("failure_allow_llm_reconnect", False),
+                                                    "execution.capsule.failure_allow_llm_reconnect"),
             provider=str(capsule_raw.get("provider") or "hyperv"),
             guest_os=str(capsule_raw.get("guest_os") or "auto"),
             image=str(capsule_raw.get("image") or ""),
             switch_name=str(capsule_raw.get("switch_name") or ""),
             vm_root=str(capsule_raw.get("vm_root") or ""),
-            memory_mb=int(capsule_raw.get("memory_mb") or 4096),
-            cpu_count=int(capsule_raw.get("cpu_count") or 2),
+            # An explicit null means omitted, as before: keep the provisioned default.
+            memory_mb=int(capsule_raw["memory_mb"]) if capsule_raw.get("memory_mb") is not None else None,
+            cpu_count=int(capsule_raw["cpu_count"]) if capsule_raw.get("cpu_count") is not None else None,
             guest_port=int(capsule_raw.get("guest_port") or 8765),
             guest_token_env=CAPSULE_GUEST_TOKEN_ENV,
+            guest_token_ref=str(capsule_raw.get("guest_token_ref") or ""),
             guest_input_mode=str(capsule_raw.get("guest_input_mode") or "physical"),
             guest_address=str(capsule_raw.get("guest_address") or ""),
             boot_timeout_seconds=float(
@@ -442,6 +609,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
             libvirt_network_cidr=str(capsule_raw.get("libvirt_network_cidr") or ""),
             libvirt_arch=str(capsule_raw.get("libvirt_arch") or ""),
             libvirt_machine=str(capsule_raw.get("libvirt_machine") or ""),
+            libvirt_qemu_group=str(capsule_raw.get("libvirt_qemu_group") or ""),
         ),
     )
 
@@ -450,7 +618,7 @@ def load_config(project_dir: Optional[Path] = None) -> ArgusConfig:
         provider=ProviderConfig(
             type=active,
             model=str(model),
-            api_key=_resolve_api_key(entry),
+            api_key=_resolve_api_key(entry, allow_generic_env=allow_generic_env),
             base_url=base_url,
         ),
         knowledge=knowledge,
@@ -470,7 +638,7 @@ def _default_model(provider_type: str) -> str:
     }.get(provider_type, "gemma3:9b")
 
 
-def init_project(project_dir: Optional[Path] = None) -> Path:
+def init_project(project_dir: Optional[Path] = None, *, create_example: bool = True) -> Path:
     project_dir = (project_dir or Path.cwd()).resolve()
     argus_dir = project_dir / ".argus"
     argus_dir.mkdir(parents=True, exist_ok=True)
@@ -482,7 +650,7 @@ def init_project(project_dir: Optional[Path] = None) -> Path:
         cfg.write_text(DEFAULT_CONFIG, encoding="utf-8")
 
     example = argus_dir / "notepad.test.yaml"
-    if not example.exists():
+    if create_example and not example.exists():
         example.write_text(EXAMPLE_TEST, encoding="utf-8")
     return argus_dir
 

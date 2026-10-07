@@ -1,5 +1,36 @@
 from argus.config import init_project, load_config
 from argus.tokens import TokenTracker
+import pytest
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r\n\r\n"])
+def test_secret_store_token_line_endings_are_removed(tmp_path, monkeypatch, ending):
+    import argus.execution
+    from argus.config import CapsuleConfig, ExecutionConfig
+    from argus.secrets import ArgusSecretStore
+
+    cfg = load_config(tmp_path)
+    cfg.execution = ExecutionConfig("capsule", CapsuleConfig(guest_token_ref="secret://test/token"))
+    monkeypatch.setattr(ArgusSecretStore, "get", lambda self, ref: "sentinel-token" + ending)
+    monkeypatch.setattr(argus.execution, "create_execution_environment",
+                        lambda *args, **kwargs: kwargs["capsule_config"])
+    assert cfg.make_execution_environment("cli")["guest_token"] == "sentinel-token"
+
+
+def test_omitted_legacy_hardware_keeps_runtime_defaults(tmp_path, monkeypatch):
+    import argus.execution
+    from argus.config import ExecutionConfig
+
+    monkeypatch.delenv("ARGUS_CAPSULE_MEMORY_MB", raising=False)
+    monkeypatch.delenv("ARGUS_CAPSULE_CPU_COUNT", raising=False)
+    cfg = load_config(tmp_path)
+    cfg.execution = ExecutionConfig("capsule")
+    assert cfg.execution.capsule.cpu_count is None
+    assert cfg.execution.capsule.memory_mb is None
+    monkeypatch.setattr(argus.execution, "create_execution_environment",
+                        lambda *args, **kwargs: kwargs["capsule_config"])
+    settings = cfg.make_execution_environment("cli")
+    assert (settings["cpu_count"], settings["memory_mb"]) == (2, 4096)
 
 
 def test_init_creates_scaffold(tmp_path):
@@ -18,6 +49,27 @@ def test_load_defaults_without_config(tmp_path, monkeypatch):
     cfg = load_config(tmp_path)
     assert cfg.provider.type == "ollama"
     assert cfg.provider.model == "gemma3:9b"
+
+
+def test_libvirt_qemu_group_survives_config_and_environment_override(tmp_path, monkeypatch):
+    import argus.execution
+
+    init_project(tmp_path)
+    (tmp_path / ".argus" / "config.yaml").write_text(
+        "execution:\n  environment: capsule\n  capsule:\n"
+        "    provider: libvirt\n    libvirt_qemu_group: argus-qemu\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("ARGUS_CAPSULE_LIBVIRT_QEMU_GROUP", raising=False)
+    cfg = load_config(tmp_path)
+    assert cfg.execution.capsule.libvirt_qemu_group == "argus-qemu"
+    monkeypatch.setattr(
+        argus.execution, "create_execution_environment",
+        lambda *args, **kwargs: kwargs["capsule_config"],
+    )
+    assert cfg.make_execution_environment("cli")["libvirt_qemu_group"] == "argus-qemu"
+    monkeypatch.setenv("ARGUS_CAPSULE_LIBVIRT_QEMU_GROUP", "service-qemu")
+    assert cfg.make_execution_environment("cli")["libvirt_qemu_group"] == "service-qemu"
 
 
 def test_load_from_scaffold(tmp_path, monkeypatch):
@@ -41,6 +93,24 @@ def test_env_overrides(tmp_path, monkeypatch):
     assert cfg.provider.api_key == "sk-test"
 
 
+@pytest.mark.parametrize("default,other", [("openai", "anthropic"), ("anthropic", "openai"),
+                                         ("ollama", "openai")])
+def test_switch_back_to_default_restores_generic_provider_environment(tmp_path, monkeypatch, default, other):
+    init_project(tmp_path)
+    path = tmp_path / ".argus" / "config.yaml"
+    path.write_text(f"provider: {default}\nproviders:\n  {other}:\n    model: other-model\n    api_key: other-key\n")
+    monkeypatch.delenv("ARGUS_PROVIDER", raising=False)
+    monkeypatch.setenv("ARGUS_API_KEY", "default-key")
+    monkeypatch.setenv("ARGUS_MODEL", "default-model")
+    monkeypatch.setenv("ARGUS_BASE_URL", "https://default.invalid")
+    switched = load_config(tmp_path, provider=other)
+    assert switched.provider.model == "other-model" and switched.provider.api_key == "other-key"
+    assert switched.provider.base_url != "https://default.invalid"
+    restored = load_config(tmp_path, provider=default)
+    assert restored.provider.model == "default-model" and restored.provider.api_key == "default-key"
+    assert restored.provider.base_url == "https://default.invalid"
+
+
 def test_ollama_budget_ignores_tokens(tmp_path, monkeypatch):
     monkeypatch.delenv("ARGUS_PROVIDER", raising=False)
     init_project(tmp_path)
@@ -58,3 +128,27 @@ def test_paid_provider_budget_keeps_tokens(tmp_path, monkeypatch):
     cfg = load_config(tmp_path)
     budget = cfg.make_budget(TokenTracker(), time_minutes=5, max_tokens=1000)
     assert budget.max_tokens == 1000
+
+
+def test_session_provider_override_never_reuses_generic_credentials(tmp_path, monkeypatch):
+    init_project(tmp_path)
+    monkeypatch.setenv("ARGUS_PROVIDER", "openai")
+    monkeypatch.setenv("ARGUS_MODEL", "gpt-env-model")
+    monkeypatch.setenv("ARGUS_BASE_URL", "https://openai.example/v1")
+    monkeypatch.setenv("ARGUS_API_KEY", "openai-secret")
+
+    # The process-level provider pin wins over a GUI/session override.
+    pinned = load_config(tmp_path, provider="anthropic")
+    assert pinned.provider.type == "openai"
+    assert pinned.provider.model == "gpt-env-model"
+    assert pinned.provider.base_url == "https://openai.example/v1"
+    assert pinned.provider.api_key == "openai-secret"
+
+    # Without the provider pin, an explicit session override uses that provider's
+    # own configured settings and does not inherit generic credentials/model/url.
+    monkeypatch.delenv("ARGUS_PROVIDER")
+    switched = load_config(tmp_path, provider="anthropic")
+    assert switched.provider.type == "anthropic"
+    assert switched.provider.model == "claude-sonnet-4-6"
+    assert switched.provider.base_url is None
+    assert switched.provider.api_key != "openai-secret"
