@@ -1,0 +1,173 @@
+name: Rust CI
+
+# Rust re-architecture preview (docs/rearchitecture/specification.md §12, phase P0).
+# Gate G-FOUND requires this workflow to be green on every target below.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - "clippy.toml"
+      - "deny.toml"
+      - "tests/conformance/**"
+      - "tests/golden/**"
+      - "bench/**"
+      - "scripts/golden/**"
+      - ".github/workflows/rust-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - "clippy.toml"
+      - "deny.toml"
+      - "tests/conformance/**"
+      - "tests/golden/**"
+      - "bench/**"
+      - "scripts/golden/**"
+      - ".github/workflows/rust-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # Pinned tool versions for the dependency policy checks (spec §14).
+  CARGO_DENY_VERSION: "0.20.2"
+  CARGO_AUDIT_VERSION: "0.22.2"
+
+jobs:
+  lint:
+    name: Lint + dependency policy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup show active-toolchain
+          cargo --version
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Install cargo-deny and cargo-audit
+        run: |
+          cargo install --locked "cargo-deny@${CARGO_DENY_VERSION}"
+          cargo install --locked "cargo-audit@${CARGO_AUDIT_VERSION}"
+      - name: cargo deny (licenses, advisories, bans, sources)
+        run: cargo deny --locked check
+      - name: cargo audit (RustSec advisories)
+        run: cargo audit
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Check the workspace with the declared rust-version
+        run: |
+          MSRV="$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)"
+          test -n "$MSRV"
+          echo "Declared rust-version: $MSRV"
+          rustup toolchain install "$MSRV" --profile minimal
+          cargo "+$MSRV" check --workspace --all-targets --locked
+
+  test:
+    name: Test · ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            runner: ubuntu-24.04
+            artifact: argus-next-linux-x64
+            binary: argus-next
+            file_pattern: x86-64
+          - label: Linux ARM64
+            runner: ubuntu-24.04-arm
+            artifact: argus-next-linux-arm64
+            binary: argus-next
+            file_pattern: aarch64
+          - label: Windows x64
+            runner: windows-2025
+            artifact: argus-next-windows-x64
+            binary: argus-next.exe
+            file_pattern: ""
+          - label: Windows ARM64
+            runner: windows-11-arm
+            artifact: argus-next-windows-arm64
+            binary: argus-next.exe
+            file_pattern: ""
+          - label: macOS Apple Silicon
+            runner: macos-15
+            artifact: argus-next-macos-arm64
+            binary: argus-next
+            file_pattern: arm64
+          - label: macOS Intel
+            runner: macos-15-intel
+            artifact: argus-next-macos-x64
+            binary: argus-next
+            file_pattern: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      # argus-py (PyO3) runs its build script against a Python interpreter.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Rust toolchain from rust-toolchain.toml
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "::error::rustup is not available on runner ${{ matrix.runner }}"
+            exit 1
+          fi
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup show active-toolchain
+          rustc -vV
+      - name: Build workspace
+        run: cargo build --workspace --all-targets --locked
+      - name: Test workspace
+        run: cargo test --workspace --locked
+      - name: Build release CLI
+        run: cargo build --release --locked -p argus-cli
+      - name: Smoke-test release CLI
+        shell: bash
+        run: |
+          "target/release/${{ matrix.binary }}" --version
+          "target/release/${{ matrix.binary }}" --help
+      - name: Verify binary architecture
+        if: matrix.file_pattern != ''
+        shell: bash
+        run: |
+          DESCRIPTION="$(file "target/release/${{ matrix.binary }}")"
+          echo "$DESCRIPTION"
+          echo "$DESCRIPTION" | grep -q "${{ matrix.file_pattern }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/release/${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 14

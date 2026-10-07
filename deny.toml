@@ -1,0 +1,69 @@
+# cargo-deny policy for the Rust workspace (docs/rearchitecture/specification.md §14:
+# licenses, advisories and duplicate versions are checked in CI; sources are crates.io only).
+# Run with: cargo deny check
+
+[graph]
+# Check the dependency graph for every target that CI builds (spec §12, P0), so that
+# platform-specific dependencies (windows-sys, objc2, ...) are covered too.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+# Vulnerability advisories are always errors. Unmaintained and unsound advisories are errors
+# for every crate in the graph, and yanked versions are rejected.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+# Each ignored advisory needs an ID, a reason and a review date.
+ignore = []
+
+[licenses]
+# Only the licenses that the pinned dependencies in Cargo.toml actually need. Adding one is a
+# reviewed change. Crates offering "X OR MIT" are accepted through MIT.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # unicode-ident (via clap/pyo3 proc macros).
+    "Unicode-3.0",
+    # objc2-core-foundation and objc2-io-kit (via sysinfo on macOS, once sysinfo is used).
+    "Zlib",
+]
+# Zlib is allowed ahead of the first crate that uses sysinfo; do not warn about it until then.
+unused-allowed-license = "allow"
+confidence-threshold = 0.93
+exceptions = [
+    # Build-time dependency of pyo3 (target triple parsing); not linked into any binary.
+    { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "target-lexicon" },
+]
+
+[licenses.private]
+# Workspace crates are publish = false and MIT-licensed (checked like any other crate).
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside this workspace (publish = false) are not wildcards on crates.io.
+allow-wildcard-paths = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
