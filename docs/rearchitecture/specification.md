@@ -171,7 +171,7 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 | Component | Minimum |
 |---|---|
 | Windows host: `argus`, `argus-gui`, `argus serve` | **Windows 10** (any release, including LTSB/LTSC), Windows 11, Windows Server 2016 or later; x64 and ARM64 |
-| Interactive CLI mode on Windows (ConPTY, §6.1) | Windows 10 version 1809, Windows Server 2019 or later. On older Windows 10 builds every other feature works, including CLI command mode; preflight rejects an interactive-mode test before it starts and names the required version |
+| Interactive CLI mode on Windows (ConPTY, §6.1) | Windows 10 version 1809, Windows Server 2019 or later. On older Windows 10 builds every other feature works, including CLI command mode; preflight rejects an interactive-mode test before it starts and names the required version. Known limitation accepted by the operator; no fallback is planned (§16.1) |
 | Hyper-V Capsules | as above, on an edition with Hyper-V (Pro, Enterprise, Education or Server). Preflight checks the Hyper-V features a Capsule needs (for example a virtual TPM for Windows 11 guests) by probing them, not by trusting a version number (ARG-02) |
 | Windows desktop app | also needs the WebView2 Evergreen runtime (included in Windows 11; the installer bootstraps it on Windows 10) |
 | macOS | 10.15 or later (Tauri 2 minimum), universal2 |
@@ -274,7 +274,7 @@ The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is im
 
 ## 16. Operator decisions on the open questions (2026-10-07)
 
-1. **Minimum OS (P0).** The operator asked whether Windows support could reach back to XP. It cannot, for the reasons in §10.1. The operator then set the minimum to **Windows 10** (any release) and Windows Server 2016, on x64 and ARM64. The one exception is the interactive CLI mode, which needs ConPTY and therefore Windows 10 version 1809 or later; on older builds it is rejected at preflight with a clear message. The other platforms are listed in §10.1. Testing applications on old Windows inside Capsules is possible later as a separate feature, and only when the operator requests it.
+1. **Minimum OS (P0).** The operator asked whether Windows support could reach back to XP. It cannot, for the reasons in §10.1. The operator then set the minimum to **Windows 10** (any release) and Windows Server 2016, on x64 and ARM64. The one exception is the interactive CLI mode, which needs ConPTY and therefore Windows 10 version 1809 or later; on older builds it is rejected at preflight with a clear message. The operator accepted this as a **known limitation** of Argus: no winpty or other fallback is planned for Windows 10 builds before 1809. The other platforms are listed in §10.1. Testing applications on old Windows inside Capsules is possible later as a separate feature, and only when the operator requests it.
 2. **Default embedding backend (P4).** The operator had no preference. The default for new projects is `none` (graph only): it needs no download and no running server, and it reports its limits honestly. When an Ollama provider is configured and reachable, Argus offers `ollama` embeddings as a confirmed change (§7). It never switches silently.
 3. **Republishing Capsule images with the native guest agent (P6).** Images are republished in two cases only:
    - the operator asks for it, by provisioning an image with the `native` runtime kind through the provisioning API;

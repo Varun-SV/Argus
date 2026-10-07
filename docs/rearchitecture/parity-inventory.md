@@ -58,7 +58,7 @@ Exit codes, the `rich` console summaries (✓/✗ lines, step durations, summary
 
 | Adapter | Today | Parity |
 |---|---|---|
-| `cli` | Command execution with stdout/stderr/exit code | Fix: command mode **plus** persistent interactive mode (ConPTY/PTY), ARG-04, ARG-05, CLI-01…07 |
+| `cli` | Command execution with stdout/stderr/exit code | Fix: command mode **plus** persistent interactive mode (ConPTY/PTY), ARG-04, ARG-05, CLI-01…07. Interactive mode on Windows needs Windows 10 1809 or later (known limitation, [specification §10.1](specification.md#101-supported-operating-systems-161)) |
 | `browser` | Playwright Chromium, headless | Fix: Argus-owned CDP session, one observation-scoped element map, owned teardown, prefer installed Chrome/Edge (ARG-06, ARG-07, ARG-13, ACT-01…07) |
 | `desktop-gui` on Windows | pywinauto UIA tree, `mss` screenshots, safe semantic input | Fix: UIA through COM, actionability checked before dispatch (ARG-08, ACT-03, ACT-04) |
 | `desktop-gui` on Linux | X11 / Xvfb via python-xlib | Keep (X11), AT-SPI added for semantic actions |
