@@ -6,6 +6,10 @@ Purpose: combine the PR #29 Environment Matrix goal with dependable existing CLI
 
 Reference: [PR #29](https://github.com/Varun-SV/Argus/pull/29), its `docs/environment-matrix.md`, and the companion [usability issue register](usability-issues.md).
 
+## Amendment A — implementation in the Rust re-architecture (2026-10-07)
+
+The operator decided to rebuild Argus in Rust with a Tauri 2 desktop app ([ADR-001](rearchitecture/tech-stack-decision.md)) and to fix ARG-01…ARG-13 **in the new implementation** rather than twice. The requirements and acceptance gates below are unchanged and become gates of the [re-architecture plan](rearchitecture/specification.md#12-migration-plan), which maps each issue to a phase. The delivery order in §11 is superseded by that plan. The current Python release receives only critical fixes until the switch gate. The Environment Matrix is still implemented after stabilization, now on the new core.
+
 ## 1. Scope and approved decisions
 
 The final product MUST retain the PR #28 appearance and conversation interface. Reliability work MUST use the existing execution architecture:
