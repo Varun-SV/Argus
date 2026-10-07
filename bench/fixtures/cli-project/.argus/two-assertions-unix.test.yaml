@@ -1,0 +1,11 @@
+# Two structured assertions against a CLI target; no natural-language steps, so no model call.
+# Mirrors the "CLI test run (two assertions)" row of spec section 11.
+name: Bench CLI test (two assertions)
+target:
+  adapter: cli
+  launch: /bin/echo Argus bench ready
+steps:
+  - assert:
+      exit_code_is: 0
+  - assert:
+      stdout_contains: Argus bench ready

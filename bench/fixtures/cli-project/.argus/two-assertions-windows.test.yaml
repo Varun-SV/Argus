@@ -1,0 +1,10 @@
+# Windows variant of two-assertions-unix.test.yaml (same two assertions, cmd.exe echo).
+name: Bench CLI test (two assertions)
+target:
+  adapter: cli
+  launch: cmd.exe /d /c echo Argus bench ready
+steps:
+  - assert:
+      exit_code_is: 0
+  - assert:
+      stdout_contains: Argus bench ready
