@@ -19,7 +19,7 @@ Goals:
 
 Non-goals for this change:
 
-- New user-facing features beyond the parity inventory and the stabilization fixes. The Environment Matrix is built **after** the switch, on the new core.
+- New user-facing features beyond the parity inventory and the stabilization fixes. The Environment Matrix is built **after** the switch, on the new core. The first feature after the switch is Linux Capsules on Windows hosts (§17); P6 only prepares the Capsule code for it.
 - Firefox or WebKit automation (operator decision).
 - Running Argus on Windows XP, Vista, 7, 8 or 8.1 (§16.1). Testing applications on those systems inside Capsules is a separate, later feature.
 - Changing the ATES evidence format, the Fleet wire protocol, or the `.argus/` file formats. Compatibility with existing data is required (§5).
@@ -177,7 +177,15 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 | macOS | 10.15 or later (Tauri 2 minimum), universal2 |
 | Linux CLI and `argus serve` | glibc 2.28 or later (`manylinux_2_28`), x86_64 and aarch64 |
 | Linux desktop app | WebKitGTK 4.1 (Ubuntu 22.04, Debian 12, Fedora 36 or later) |
-| Native guest agent (`argus-guest`) | the guest systems that image provisioning already supports (Windows 11 23H2/24H2 unattended profiles, the pinned Ubuntu profiles) |
+| Native guest agent (`argus-guest`) | runs on Windows 10 or later and on Linux with glibc 2.28 or later; tested and gated on the guests that image provisioning builds (Windows 11 23H2/24H2 unattended profiles, the pinned Ubuntu profiles) |
+
+Capsule guests by host:
+
+| Host | Capsule provider | Guests at the switch | Added after the switch (§17) |
+|---|---|---|---|
+| Windows | Hyper-V | Windows: Windows 11 23H2/24H2 images built by Argus; Windows 10 or 11 images you build with the guest agent | Linux: Ubuntu images built by Argus through Hyper-V; Linux images you build with the guest agent |
+| Linux | libvirt/KVM | Linux on the host's CPU architecture: Ubuntu images built by Argus (Server 20.04 or later, Desktop 23.04 or later, x86_64); Linux images you build with the guest agent | none planned (Windows guests on KVM only on request) |
+| macOS | none | none | none |
 
 Windows 10 is the minimum because it is the oldest Windows that Rust's standard targets and WebView2 both support. TLS uses `rustls` (§14), not the Windows TLS stack, so model providers, Capsule control and Fleet work the same on every supported Windows build. Microsoft no longer supports most Windows 10 releases; Argus still runs on them, but bugs that occur only there are fixed on a best-effort basis.
 
@@ -223,7 +231,7 @@ The Python release line stays the shipped product until G-SWITCH. Rust component
 | **P3 Adapters** | CLI command + interactive, browser CDP, Windows UIA, Linux | A05–A09, A16 from the stabilization spec; ARG-03…08, ARG-13 closed |
 | **P4 Engine and knowledge** | runner, agent, roam, findings, regression drafts, watch, knowledge | A02, A10–A12; ARG-07, ARG-09…12 closed; CLI-level parity for `run`, `roam`, `watch`, `report`, `tokens`, `knowledge`, `secrets`, `init`, `providers` |
 | **P5 UI** | `argus-assistant` (port of intents, grounding, slash parser, propose-then-confirm, with the phrasing sweep as data), `argus-api`, Tauri desktop, `argus serve` | G-UI: every bridge method and intent in parity §11; phrasing sweep and confirmation suites pass; serve auth (§8); PR #28 visual comparison approved by the operator |
-| **P6 Capsules and provisioning** | `argus-execution`, `argus-capsule`, `argus-guest`, `argus-provisioning` | A03, A04 (native hosts); C-05 with both runtime kinds, using a native-agent **test** image built by the conformance suite (operator images are republished only as §16.3 says); ARG-02 closed; CAP-01…07 |
+| **P6 Capsules and provisioning** | `argus-execution`, `argus-capsule`, `argus-guest`, `argus-provisioning` | A03, A04 (native hosts); C-05 with both runtime kinds, using a native-agent **test** image built by the conformance suite (operator images are republished only as §16.3 says); ARG-02 closed; CAP-01…07. **Guest-OS-neutral Capsule code (prepares §17):** the guest OS comes from the image manifest or the request, never from the provider name, and Windows-only settings are checked per guest. The gate review confirms that no provider-to-OS mapping remains and that existing pairings behave exactly as before |
 | **P7 Fleet** | `argus-fleet` | C-04 mixed-fleet test (Python node + Rust node) |
 | **P8 Python API and switch** | `argus-py`, packaging re-pointed at native binaries, docs | G-PARITY: every row in the parity inventory checked; G-PERF met or explained; **G-SWITCH**: operator approval, then `argus-app-testing` `0.2.0` releases the Rust implementation in place (§16.4) |
 | **P9 Retire** | Python implementation removed from the tree after one release of overlap | G-RETIRE: no open parity gaps and no regression reports from the overlap release |
@@ -284,3 +292,66 @@ The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is im
 
    Until then, `python-pyinstaller` images keep working with no end date (C-05). The P6 conformance suite builds its own native-agent test image, so the gate does not depend on the operator's images.
 4. **PyPI release (P8).** The release switches in place: same package, `argus-app-testing` `0.2.0`, with no PyPI pre-release cycle (§10). Before the switch, operator testing uses the `argus-next` preview binaries attached to GitHub releases. The last Python release (`0.1.x`) carries the deprecation notice for the internal Python imports that are not kept (§15).
+5. **Linux Capsules on Windows hosts (asked after the questions above).** The operator asked why a Windows host cannot run Linux Capsules when VirtualBox and VMware run Linux on Windows. The limit is in Argus, not in Windows or Hyper-V. Approved as the **first feature after the switch** (§17), with P6 building the Capsule code so that it needs no restructuring. Not requested, and not planned: other hypervisors, and Windows guests on Linux hosts.
+
+## 17. First feature after the switch: Linux Capsules on Windows hosts
+
+Status: **approved by the operator (2026-10-07) as the first new feature after G-SWITCH.** It is built on the Rust core after the switch and before the [Environment Matrix](../environment-matrix.md). Phase P6 only makes the Capsule code guest-OS-neutral (§12).
+
+### 17.1 Why it is possible
+
+Hyper-V runs Linux guests well: Generation 2 VMs boot Linux with UEFI and Secure Boot (Microsoft's UEFI CA template), and current kernels include the Hyper-V drivers. The restriction is in Argus:
+
+- the Hyper-V Capsule provider was built and security-reviewed for Windows guests only (PR5/PR6);
+- Linux guests were added later (PR7), and only through libvirt on Linux hosts.
+
+### 17.2 What is tied to Windows guests today
+
+Read from the code at `8e7ebe5`:
+
+| Area | Today | For Linux guests on Hyper-V |
+|---|---|---|
+| Provider capability | Hyper-V advertises `guest_os=("windows",)` (`argus/execution/secure_capsule.py`) | advertises `windows` and `linux` |
+| Provider-to-OS mapping | Provisioned images: `hyperv → windows-11`, `libvirt → ubuntu` (`argus/provisioning/capsule_bridge.py`). Baseline check: `hyperv → windows`, with target user `argus-target` on Windows and `argus` on Linux (`argus/provisioning/baseline.py`). | The guest OS comes from the image manifest (the guest runtime's `target_os`). Allowed pairs become a table: Hyper-V → Windows 11 or Ubuntu; libvirt → Ubuntu. |
+| Secure Boot | Template fixed to `MicrosoftWindows` (`argus/capsule/hyperv_isolated.py`) | `MicrosoftUEFICertificateAuthority` for Linux guests |
+| Bootstrap media | NTFS VHDX on a fixed SCSI disk, protected with Windows permissions (`argus/capsule/windows_bootstrap.py`) | A medium the Linux guest reads, with the same protection as the libvirt path: the target user cannot read it (CAP-07) |
+| Guest address | Hyper-V reports the guest's IP through Key-Value Pair Exchange; Argus then disables it (`hyperv_isolated.py`) | Same flow. The Linux guest runs the Hyper-V KVP daemon (`hv_kvp_daemon`, from Ubuntu's `linux-cloud-tools` packages), installed by the Ubuntu auto-install for Hyper-V images |
+| Ubuntu auto-install | libvirt only. It passes `autoinstall` to the installer kernel by direct kernel boot, which skips Subiquity's disk-wipe confirmation (`argus/provisioning/providers.py`) | Hyper-V has no direct kernel boot, so the argument needs another route, for example a derived boot configuration recorded in the provisioning evidence. The route is chosen at design time and reviewed before implementation. |
+| Windows-only settings | Guest input mode, the Windows target-user bootstrap | Rejected for Linux guests with a clear message, never silently ignored |
+
+### 17.3 What stays the same
+
+- **Isolation** does not depend on the guest OS, so all of it is kept:
+  - Internal switch only;
+  - extended port ACLs in force from the first packet;
+  - Guest Service Interface disabled, and Key-Value Pair Exchange disabled once the address is known;
+  - per-session differencing disks;
+  - failure retention.
+- **Egress allowlist:** Linux guests on Hyper-V get the Hyper-V egress allowlist. libvirt Linux guests still have none (fail closed).
+- **Linux guest agent:** the guest agent, target-user rules, X11 desktop session and evidence formats are those in the [Linux platform specification §6](linux-platform.md#6-linux-guest-agent-argus-guest).
+- **Configuration keeps its meaning (C-01):**
+  - `guest_os: auto` on Hyper-V still means Windows for images without a manifest;
+  - for provisioned images, the guest OS comes from the manifest;
+  - a Linux guest on Windows is selected with `guest_os: linux`, and `provider: hyperv` or `auto`.
+- **Fleet:** image advertisements already carry `guest_os` separately from the provider. A Windows node can therefore advertise Linux images without changing any `argus-fleet-*-v1` format (C-04).
+- **Host requirements:** the Windows editions with Hyper-V listed in §10.1. Linux guest images stay x86_64, following the Ubuntu provisioning rule.
+
+### 17.4 Not planned
+
+- Windows guests on Linux hosts (KVM). This is possible, with UEFI firmware, a software TPM and virtio drivers, but it was not requested. It is specified only if the operator asks for it.
+- Other hypervisors (VirtualBox, VMware).
+
+### 17.5 Acceptance
+
+On a real Windows host with Hyper-V:
+
+1. An Ubuntu image is built through Hyper-V from a verified ISO and published with provisioning evidence that records the Hyper-V/Ubuntu pairing.
+2. A Capsule from that image, and one from an operator-built Linux VHDX with the guest agent, each run the following with verified ATES evidence:
+   - CLI tests in command and interactive mode;
+   - browser tests;
+   - Linux desktop tests.
+3. The network-isolation tests of the Windows-guest suite pass unchanged for the Linux guest, including the egress allowlist.
+4. The target user cannot read the bootstrap medium. Key-Value Pair Exchange and Guest Service Interface are disabled when the test starts.
+5. Mismatches fail at preflight, before any VM is created. Examples: Windows-only settings with a Linux image, or a manifest whose OS contradicts the request.
+6. Existing Windows-guest configurations and images behave exactly as before.
+7. Once the Environment Matrix exists, one Windows host runs a plan that mixes Windows 11 and Ubuntu cases.

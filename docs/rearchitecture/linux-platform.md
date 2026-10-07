@@ -132,10 +132,11 @@ The native agent replaces the PyInstaller runtime under the same approval and di
 - **Desktop readiness:** probed natively by connecting to `:0` with that cookie as the target user, so `xdpyinfo` is no longer needed.
 - **Guest identity and inventory:** OS identity, machine identity and the `dpkg-query` package inventory keep their formats, because they are part of the evidence.
 - **Guest desktop:** stays X11, as provisioned today.
+- **Hypervisor-neutral:** the agent must not depend on libvirt- or virtio-specific devices. After the switch, the same Linux guest also runs under Hyper-V on Windows hosts ([specification §17](specification.md#17-first-feature-after-the-switch-linux-capsules-on-windows-hosts)). There, the guest also runs the Hyper-V KVP daemon so the host can learn its address.
 
 ## 7. Provisioning, files and packaging
 
-- **Ubuntu provisioning:** unchanged rules (§1), still x86_64 only. aarch64 Ubuntu images are a later feature, specified only when the operator asks for it.
+- **Ubuntu provisioning:** unchanged rules (§1), still x86_64 only. Building Ubuntu images through Hyper-V on Windows hosts comes after the switch ([specification §17](specification.md#17-first-feature-after-the-switch-linux-capsules-on-windows-hosts)). aarch64 Ubuntu images are a later feature, specified only when the operator asks for it.
 - **Per-user files:** the same paths, permissions and formats as in §1 (C-02, C-06). Linux secrets remain permission-protected files, since there is no DPAPI equivalent. A desktop keyring is not introduced.
 - **Native packages:**
   - AppImage, DEB, RPM and Arch packages continue for x86_64 and aarch64 (Tauri's bundler builds the first three; the Arch package is built as today);

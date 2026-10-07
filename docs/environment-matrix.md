@@ -229,6 +229,8 @@ The same Matrix Plan should work on one machine or across a Fleet.
 
 Argus runs as many cases concurrently as the host can safely support and queues the rest.
 
+A single host runs only the guest OS families its Capsule provider supports. Until Linux Capsules on Windows hosts are available, a plan that mixes Windows and Linux cases needs a Fleet with Windows and Linux nodes. That feature is planned as the first one after the Rust switch ([re-architecture specification §17](rearchitecture/specification.md#17-first-feature-after-the-switch-linux-capsules-on-windows-hosts)).
+
 ### Fleet
 
 The Control Center expands the plan once, then places individual Matrix Cases onto eligible Nodes.
