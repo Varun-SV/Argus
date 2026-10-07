@@ -4,12 +4,14 @@ Status: **Draft checklist for the Rust re-architecture.** Source of truth: `main
 
 The operator's rule is that **no functionality is removed**. Every row below must be implemented by the Rust version, or explicitly marked *superseded* with the replacement named, before the Python implementation is retired ([specification §12](specification.md#12-migration-plan), gate G-PARITY).
 
-Two operator-approved scope changes are recorded here so they are not mistaken for regressions:
+These operator-approved changes are recorded here so they are not mistaken for regressions:
 
 | Area | Python today | Rust target | Why |
 |---|---|---|---|
 | Browser engines | Playwright `browser_type` (Chromium default; Firefox/WebKit possible) | Chromium family only (Chrome, Edge, Chromium) via CDP | Operator decision, [ADR-001](tech-stack-decision.md) §5 |
 | Python imports | Every `argus.*` module importable | Only the documented Python API (§10 below) | Operator decision, ADR-001 §5 |
+| Chromium sandbox | Off (Playwright's default `--no-sandbox`) | On by default; `browser.sandbox: false` opts out and is recorded in evidence | Operator decision L-2, [Linux platform §8](linux-platform.md#8-operator-decisions-2026-10-07) |
+| Linux desktop testing on a Wayland session | Only X11/XWayland windows can be driven | The application under test runs on an Argus-owned virtual X11 display; the visible Wayland desktop is not driven | Operator decision L-1, [Linux platform §8](linux-platform.md#8-operator-decisions-2026-10-07) |
 
 Legend: **Keep** = same behaviour and same user-visible contract. **Fix** = keep, and also close a listed stabilization issue. **Superseded** = replaced by an equivalent, named.
 

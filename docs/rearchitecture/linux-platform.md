@@ -51,7 +51,7 @@ Everything in this table is kept (C-01…C-07 of the main specification). The ro
   - driving windows on the visible Wayland desktop is not supported, because Wayland does not allow global input injection or screen capture without portals;
   - preflight explains this before the run starts instead of failing during it.
 
-  See §8, question L-1.
+  This is operator decision L-1 (§8).
 
 ### 3.2 Input, screenshots and window identity
 
@@ -88,7 +88,7 @@ Everything in this table is kept (C-01…C-07 of the main specification). The ro
 
 **Chromium sandbox.** Today Playwright launches Chromium with `--no-sandbox` by default. The new default keeps the sandbox on.
 - On hosts where it cannot start (for example Ubuntu 23.10 and later restrict unprivileged user namespaces through AppArmor), preflight reports it with the fix: use the distribution's Chrome or Chromium, which ships a profile, or install the profile for the pinned build.
-- `browser.sandbox: false` remains as an explicit opt-out and is recorded in the ATES evidence of every run that uses it. See §8, question L-2.
+- `browser.sandbox: false` remains as an explicit opt-out and is recorded in the ATES evidence of every run that uses it. This is operator decision L-2 (§8).
 
 **Headed or headless.** The browser runs headless by default, as today. Headed runs use the X11 display chosen in §3.1.
 
@@ -147,14 +147,18 @@ The native agent replaces the PyInstaller runtime under the same approval and di
   - WebKitGTK cannot be bundled into a wheel, so `argus-gui` is a launcher. It checks for WebKitGTK 4.1, then runs the desktop binary. If the library is missing, it prints the install command for the detected distribution and suggests `argus serve`, which has the same UI;
   - P0 verifies this design against `auditwheel` before the packaging is committed.
 
-## 8. Open questions for the operator
+## 8. Operator decisions (2026-10-07)
 
-Each question has a recommendation, which the specification already follows unless the operator decides otherwise.
+The operator accepted both recommendations:
 
-- **L-1. Wayland desktops.**
-  - Recommended: run targets on an owned Xvfb display by default, as in §3.1. This works on every Linux host but is not visible on screen; the live view shows it.
-  - Alternative, later: drive the visible Wayland desktop through the RemoteDesktop/ScreenCast portals (libei). That requires the user's approval prompt per session and differs per desktop environment.
-- **L-2. Chromium sandbox default.** Recommended: sandbox on, with the explicit `browser.sandbox: false` opt-out recorded in evidence, as in §4. Today's behaviour is sandbox off.
+- **L-1. Wayland desktops: owned virtual X11 display.**
+  - On a Wayland session, Argus runs the application under test on an Argus-owned Xvfb display, as described in §3.1. This works on every Linux host. It is not visible on the desktop; the operator watches it through the live view.
+  - Driving windows on the visible Wayland desktop is not supported. Preflight says so before a run starts.
+  - Driving the visible desktop through the RemoteDesktop/ScreenCast portals (libei) is not planned. It would need a permission prompt every session and differs per desktop environment. It is specified only if the operator asks for it.
+- **L-2. Chromium sandbox: on by default.**
+  - The browser runs with Chromium's sandbox, as described in §4. Today it runs without it, because that is Playwright's default.
+  - On a host where the sandbox cannot start, preflight explains the fix before the run.
+  - `browser.sandbox: false` turns it off explicitly. Every run that uses it records this in its ATES evidence.
 
 ## 9. Testing and gates
 
