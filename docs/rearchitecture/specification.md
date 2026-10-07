@@ -21,6 +21,7 @@ Non-goals for this change:
 
 - New user-facing features beyond the parity inventory and the stabilization fixes. The Environment Matrix is built **after** the switch, on the new core.
 - Firefox or WebKit automation (operator decision).
+- Running Argus on Windows XP, Vista, 7, 8 or 8.1 (§16.1). Testing applications on those systems inside Capsules is a separate, later feature.
 - Changing the ATES evidence format, the Fleet wire protocol, or the `.argus/` file formats. Compatibility with existing data is required (§5).
 
 ## 2. Architectural invariants carried over
@@ -95,7 +96,7 @@ C-03. **ATES:** evidence written by the Python implementation MUST verify under 
 
 C-04. **Fleet:** all `argus-fleet-*-v1` identifiers and message formats stay identical, so a fleet can mix Python and Rust nodes during migration.
 
-C-05. **Capsule guest protocol:** the host must keep working with images whose guest runtime is the Python PyInstaller bundle, until the operator republishes images with the native `argus-guest`. The runtime bundle manifest gains a runtime kind (`python-pyinstaller` | `native`) under the same approval and digest rules. No approval is inferred from the kind.
+C-05. **Capsule guest protocol:** the host must keep working with images whose guest runtime is the Python PyInstaller bundle, until the operator republishes images with the native `argus-guest`. The runtime bundle manifest gains a runtime kind (`python-pyinstaller` | `native`) under the same approval and digest rules. No approval is inferred from the kind. Argus never republishes an image by itself, and there is no end date for `python-pyinstaller` images; §16.3 says when republishing happens.
 
 C-06. The secrets store keeps its location, format and `SECRET://ARGUS/NAME` references.
 
@@ -134,10 +135,11 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 - **Graph:** the same JSON graph files, read and written natively (C-02).
 - **Vector index:** embedded in Argus (a pure-Rust HNSW/flat index stored next to the graph). No database process.
 - **Embedding backend** is explicit configuration (CFG-05):
-  - `none`: graph-only, the default when no embedder is configured, shown as "graph only" in the UI;
+  - `none`: graph-only, **the default for new projects** (§16.2), shown as "graph only" in the UI;
   - `ollama`: uses Ollama's embedding API with the configured embedding model (fixes ARG-09);
   - `onnx`: in-process ONNX Runtime with a small quantized sentence model, downloaded only on explicit consent and verified by hash;
   - `qdrant` / `external`: today's remote options stay available, including `argus knowledge docker up/down/status`.
+- When the project's provider is Ollama and the server is reachable, `argus init`, `argus providers` and the desktop app **offer** `ollama` embeddings with a named embedding model. The offer is a proposed change (propose-then-confirm); the backend changes only after the operator confirms it.
 - Vector records store backend, model and dimension. A mismatch requires an explicit re-index and is never mixed silently (CFG-06).
 
 ## 8. `argus serve` uses the same UI
@@ -155,7 +157,7 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 
 ## 10. Python packaging and API
 
-- PyPI name stays `argus-app-testing`.
+- PyPI name stays `argus-app-testing`. The release **switches in place** (§16.4): the first Rust release is the next breaking version of the same package, `0.2.0`, with no pre-release cycle on PyPI. Under the 0.x rule a minor bump is breaking, so anyone who needs the Python line pins `argus-app-testing<0.2`.
 - **Platform wheels** (Windows x64/ARM64, macOS universal2, manylinux x86_64/aarch64, musllinux where feasible) built with maturin. They contain:
   - the `argus` and `argus-gui` binaries (maturin `bin`-style scripts on PATH);
   - the PyO3 extension that backs the documented Python API ([parity inventory §10](parity-inventory.md#10-python-api-kept-on-pypi-operator-decision)).
@@ -163,6 +165,29 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 - Optional extras (`[browser]`, `[gui]`, `[knowledge]` …) become no-ops that still install, so existing install commands keep working. The capabilities are built into the binary and enabled by configuration.
 - `python -m argus` keeps working, by executing the binary.
 - The provisioning Python API is a thin, typed wrapper. Errors map to the same exception names (`ProvisioningError`, `ProvisioningCleanupError`).
+
+### 10.1 Supported operating systems (§16.1)
+
+| Component | Minimum |
+|---|---|
+| Windows host: `argus`, `argus-gui`, `argus serve` | Windows 10 version 1809 or later, Windows 11, Windows Server 2019 or later; x64 and ARM64 |
+| Hyper-V Capsules | as above, on an edition with Hyper-V (Pro, Enterprise, Education or Server) |
+| Windows desktop app | also needs the WebView2 Evergreen runtime (included in Windows 11; the installer bootstraps it on Windows 10) |
+| macOS | 10.15 or later (Tauri 2 minimum), universal2 |
+| Linux CLI and `argus serve` | glibc 2.28 or later (`manylinux_2_28`), x86_64 and aarch64 |
+| Linux desktop app | WebKitGTK 4.1 (Ubuntu 22.04, Debian 12, Fedora 36 or later) |
+| Native guest agent (`argus-guest`) | the guest systems that image provisioning already supports (Windows 11 23H2/24H2 unattended profiles, the pinned Ubuntu profiles) |
+
+Why Windows XP, Vista, 7, 8 and 8.1 cannot be supported:
+
+- Rust's standard Windows targets need Windows 10 or later. Windows 7 and 8 were dropped in Rust 1.78 (2024) and now have only unsupported tier-3 targets. No Rust target supports XP.
+- Tauri 2 needs WebView2. Microsoft stopped WebView2 support for Windows 7, 8 and 8.1 in 2023, and it never supported XP.
+- The interactive terminal (ConPTY, ARG-04) exists only from Windows 10 version 1809.
+- XP has no usable TLS 1.2 or 1.3 stack, so it cannot reach model providers, verify Capsule TLS or take part in Fleet.
+- The Chromium-family browser adapter needs a current Chrome or Edge. Chrome stopped supporting XP at version 49 (2016) and Windows 7 at version 109 (2023).
+- The current Python product cannot run there either: Python 3.10, its minimum, needs Windows 8.1 or later.
+
+Testing applications that run on old Windows is a different question from running Argus there. It would be a Capsule *guest* feature: a provisioning definition for the old system, plus a small legacy guest agent built separately (for example with the tier-3 `*-win7-windows-msvc` targets, or in C for XP). It is not part of this change. It needs its own specification once the operator asks for it.
 
 ## 11. Performance budgets and how they are measured
 
@@ -194,9 +219,9 @@ The Python release line stays the shipped product until G-SWITCH. Rust component
 | **P3 Adapters** | CLI command + interactive, browser CDP, Windows UIA, Linux | A05–A09, A16 from the stabilization spec; ARG-03…08, ARG-13 closed |
 | **P4 Engine and knowledge** | runner, agent, roam, findings, regression drafts, watch, knowledge | A02, A10–A12; ARG-07, ARG-09…12 closed; CLI-level parity for `run`, `roam`, `watch`, `report`, `tokens`, `knowledge`, `secrets`, `init`, `providers` |
 | **P5 UI** | `argus-assistant` (port of intents, grounding, slash parser, propose-then-confirm, with the phrasing sweep as data), `argus-api`, Tauri desktop, `argus serve` | G-UI: every bridge method and intent in parity §11; phrasing sweep and confirmation suites pass; serve auth (§8); PR #28 visual comparison approved by the operator |
-| **P6 Capsules and provisioning** | `argus-execution`, `argus-capsule`, `argus-guest`, `argus-provisioning` | A03, A04 (native hosts); C-05; ARG-02 closed; CAP-01…07 |
+| **P6 Capsules and provisioning** | `argus-execution`, `argus-capsule`, `argus-guest`, `argus-provisioning` | A03, A04 (native hosts); C-05 with both runtime kinds, using a native-agent **test** image built by the conformance suite (operator images are republished only as §16.3 says); ARG-02 closed; CAP-01…07 |
 | **P7 Fleet** | `argus-fleet` | C-04 mixed-fleet test (Python node + Rust node) |
-| **P8 Python API and switch** | `argus-py`, packaging re-pointed at native binaries, docs | G-PARITY: every row in the parity inventory checked; G-PERF met or explained; **G-SWITCH**: operator approval, then `argus-app-testing` releases the Rust implementation |
+| **P8 Python API and switch** | `argus-py`, packaging re-pointed at native binaries, docs | G-PARITY: every row in the parity inventory checked; G-PERF met or explained; **G-SWITCH**: operator approval, then `argus-app-testing` `0.2.0` releases the Rust implementation in place (§16.4) |
 | **P9 Retire** | Python implementation removed from the tree after one release of overlap | G-RETIRE: no open parity gaps and no regression reports from the overlap release |
 
 The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is implemented after G-SWITCH, on the new core. Its own prerequisite gate is unchanged.
@@ -245,11 +270,13 @@ The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is im
 | Losing Firefox/WebKit | Users of non-Chromium engines | Operator-accepted; documented in the release notes |
 | Python API users beyond the documented surface | Broken scripts | Deprecation notice in the last Python release; documented replacement via CLI/JSON |
 
-## 16. Open questions for the operator
+## 16. Operator decisions on the open questions (2026-10-07)
 
-These do not block P0 and are asked at the start of the phase that needs them:
+1. **Minimum OS (P0).** The operator asked whether Windows support could reach back to XP. It cannot, for the reasons in §10.1. The minimum is Windows 10 version 1809 or Windows Server 2019, on x64 and ARM64; the other platforms are listed in §10.1. Testing applications on old Windows inside Capsules is possible later as a separate feature, and only when the operator requests it.
+2. **Default embedding backend (P4).** The operator had no preference. The default for new projects is `none` (graph only): it needs no download and no running server, and it reports its limits honestly. When an Ollama provider is configured and reachable, Argus offers `ollama` embeddings as a confirmed change (§7). It never switches silently.
+3. **Republishing Capsule images with the native guest agent (P6).** Images are republished in two cases only:
+   - the operator asks for it, by provisioning an image with the `native` runtime kind through the provisioning API;
+   - a test needs a capability that only the native agent advertises, such as an interactive terminal inside a Capsule (ARG-04). Preflight then fails before anything starts, names the missing capability and the image, and shows the exact command that republishes it. It never republishes automatically and never falls back to local execution.
 
-1. **P0:** minimum supported OS versions for the native binaries (ConPTY needs Windows 10 1809+; WebView2 needs the Evergreen runtime).
-2. **P4:** default embedding backend for new projects: `none` (graph only) or `ollama` when an Ollama server is configured.
-3. **P6:** when to republish Capsule images with the native guest agent, and for how long Python-runtime images stay supported (C-05).
-4. **P8:** whether the PyPI release switches in place (same package, new major version) or ships first under a pre-release tag for one cycle.
+   Until then, `python-pyinstaller` images keep working with no end date (C-05). The P6 conformance suite builds its own native-agent test image, so the gate does not depend on the operator's images.
+4. **PyPI release (P8).** The release switches in place: same package, `argus-app-testing` `0.2.0`, with no PyPI pre-release cycle (§10). Before the switch, operator testing uses the `argus-next` preview binaries attached to GitHub releases. The last Python release (`0.1.x`) carries the deprecation notice for the internal Python imports that are not kept (§15).
