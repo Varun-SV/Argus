@@ -1,0 +1,85 @@
+# Argus Rust workspace (re-architecture preview, phase P0 "Foundations").
+#
+# Authoritative design: docs/rearchitecture/specification.md (§4 layout, §12 migration plan,
+# §14 security and dependency policy). Crates for later phases (argus-ates, argus-adapters,
+# argus-engine, ...) are added in their own phases, not here.
+#
+# The Python package in argus/ remains the shipped product until G-SWITCH (spec §12). The
+# CLI built from this workspace is the preview binary `argus-next`.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/argus-core",
+    "crates/argus-protocol",
+    "crates/argus-cli",
+    "crates/argus-py",
+    "crates/argus-bench",
+    "tests/conformance",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+# Edition 2024 needs Rust 1.85. Every dependency pinned below must stay compatible with this
+# value; the MSRV job in .github/workflows/rust-ci.yml checks it.
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/Varun-SV/Argus"
+publish = false
+
+# Dependencies are pinned exactly (`=x.y.z`) so that builds are reproducible from the tag
+# (spec §14) and upgrades are deliberate, reviewed changes. Cargo.lock is committed.
+[workspace.dependencies]
+anyhow = "=1.0.104"
+clap = { version = "=4.6.7", features = ["derive"] }
+humantime = "=2.4.0"
+# `extension-module` stops the cdylib from linking libpython; `abi3-py310` builds one wheel
+# for CPython 3.10+ (the Python line's minimum, pyproject.toml).
+pyo3 = { version = "=0.29.3", features = ["abi3-py310", "extension-module"] }
+regex = "=1.13.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+# sysinfo 0.37 and later require Rust 1.88+ (0.39 requires 1.95), above the workspace
+# rust-version. 0.36.1 is the newest release compatible with Rust 1.85.
+sysinfo = "=0.36.1"
+tempfile = "=3.27.0"
+thiserror = "=2.0.21"
+toml = "=1.1.6"
+
+# Internal crates.
+argus-core = { path = "crates/argus-core", version = "0.0.0" }
+argus-protocol = { path = "crates/argus-protocol", version = "0.0.0" }
+
+[workspace.lints.rust]
+# Spec §14: unsafe Rust only at FFI boundaries. argus-py (PyO3) defines its own lint table.
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# Small pedantic subset. Silent integer truncation or sign loss would corrupt byte-exact
+# evidence, sizes and offsets (spec §5 C-03), so lossy casts must be explicit.
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+cast_lossless = "warn"
+# Readability rules that keep diffs small and code uniform.
+uninlined_format_args = "warn"
+semicolon_if_nothing_returned = "warn"
+redundant_closure_for_method_calls = "warn"
+# Restriction lints: no panicking shortcuts or leftovers in shipped code (tests may unwrap,
+# see clippy.toml).
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+[profile.release]
+# Small, fast binaries for the §11 budgets; adjust once the benchmark harness measures them.
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,21 @@
+[package]
+name = "argus-cli"
+description = "Argus command-line front end. Built as the preview binary `argus-next` until G-SWITCH (spec section 12)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+# Preview name until G-SWITCH; the binary becomes `argus` at the switch (spec §12, §16.4).
+name = "argus-next"
+path = "src/main.rs"
+
+[dependencies]
+argus-core.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

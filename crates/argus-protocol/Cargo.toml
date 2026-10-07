@@ -1,0 +1,14 @@
+[package]
+name = "argus-protocol"
+description = "Argus protocol types: serde types for every UI/API request, response and event (spec section 4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
