@@ -91,7 +91,7 @@ The [reproduction results](reproduction-results.md) document confirmed defects, 
 
 ### [Re-architecture: Rust + Tauri 2](rearchitecture/specification.md)
 
-Argus will be rebuilt as a Rust workspace with a Tauri 2 desktop app, keeping every existing capability ([parity inventory](rearchitecture/parity-inventory.md)), the PR #28 design, `pip install argus-app-testing` (native binaries in platform wheels plus the documented Python API) and the `.argus/`, ATES and Fleet formats. `argus serve` will use the same UI as the desktop app. The decision, the measurements behind it and the options considered are in [ADR-001](rearchitecture/tech-stack-decision.md). The stabilization issues above become acceptance gates of the new implementation.
+Argus will be rebuilt as a Rust workspace with a Tauri 2 desktop app, keeping every existing capability ([parity inventory](rearchitecture/parity-inventory.md)), the PR #28 design, `pip install argus-app-testing` (native binaries in platform wheels plus the documented Python API) and the `.argus/`, ATES and Fleet formats. `argus serve` will use the same UI as the desktop app. The decision, the measurements behind it and the options considered are in [ADR-001](rearchitecture/tech-stack-decision.md). The stabilization issues above become acceptance gates of the new implementation. Linux hosts, adapters, Capsules and packaging are specified in the [Linux platform specification](rearchitecture/linux-platform.md).
 
 **Status: accepted direction; specification draft for review. No runtime change yet. The Python release line remains the shipped product until the switch gate.**
 

@@ -2,7 +2,7 @@
 
 Version: **v0.1 / DRAFT for operator review.** Date: 2026-10-07.
 
-Decision record: [ADR-001](tech-stack-decision.md). Functional checklist: [parity inventory](parity-inventory.md). Stabilization requirements carried into this work: [stabilization specification](../stabilization-spec.md) and [issue register](../usability-issues.md).
+Decision record: [ADR-001](tech-stack-decision.md). Functional checklist: [parity inventory](parity-inventory.md). Linux contract: [Linux platform specification](linux-platform.md). Stabilization requirements carried into this work: [stabilization specification](../stabilization-spec.md) and [issue register](../usability-issues.md).
 
 Keywords MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 
@@ -126,7 +126,7 @@ C-07. CLI commands, options and exit codes stay as listed in the parity inventor
 
 ### 6.4 Linux desktop
 
-X11 screenshots and input (`x11rb`) as today, with AT-SPI (`atspi`/`zbus`) added for semantic element discovery where the target exposes it.
+X11 as today, through native XTEST input and X11 screenshots (`x11rb`) instead of the external `xdotool` and `scrot`. An Argus-owned Xvfb is used when there is no usable X11 display, and AT-SPI (`atspi`/`zbus`) adds semantic elements where the target exposes them. The full Linux contract covers display selection, Wayland, process-group ownership, browser discovery, libvirt, the guest agent and packaging. It is in the [Linux platform specification](linux-platform.md).
 
 ## 7. Knowledge store
 
@@ -180,6 +180,8 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 | Native guest agent (`argus-guest`) | the guest systems that image provisioning already supports (Windows 11 23H2/24H2 unattended profiles, the pinned Ubuntu profiles) |
 
 Windows 10 is the minimum because it is the oldest Windows that Rust's standard targets and WebView2 both support. TLS uses `rustls` (§14), not the Windows TLS stack, so model providers, Capsule control and Fleet work the same on every supported Windows build. Microsoft no longer supports most Windows 10 releases; Argus still runs on them, but bugs that occur only there are fixed on a best-effort basis.
+
+Linux details (tested distributions, display servers, Capsule host prerequisites, wheel layout) are in the [Linux platform specification](linux-platform.md#2-supported-linux-hosts).
 
 Why Windows XP, Vista, 7, 8 and 8.1 cannot be supported:
 

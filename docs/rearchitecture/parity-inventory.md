@@ -61,7 +61,7 @@ Exit codes, the `rich` console summaries (✓/✗ lines, step durations, summary
 | `cli` | Command execution with stdout/stderr/exit code | Fix: command mode **plus** persistent interactive mode (ConPTY/PTY), ARG-04, ARG-05, CLI-01…07. Interactive mode on Windows needs Windows 10 1809 or later (known limitation, [specification §10.1](specification.md#101-supported-operating-systems-161)) |
 | `browser` | Playwright Chromium, headless | Fix: Argus-owned CDP session, one observation-scoped element map, owned teardown, prefer installed Chrome/Edge (ARG-06, ARG-07, ARG-13, ACT-01…07) |
 | `desktop-gui` on Windows | pywinauto UIA tree, `mss` screenshots, safe semantic input | Fix: UIA through COM, actionability checked before dispatch (ARG-08, ACT-03, ACT-04) |
-| `desktop-gui` on Linux | X11 / Xvfb via python-xlib | Keep (X11), AT-SPI added for semantic actions |
+| `desktop-gui` / `linux-gui` on Linux | X11 or auto-started Xvfb `:99`; `xdotool` input and window title, `scrot` screenshots; coordinates only; X session escape chords blocked | Keep and Fix: native X11 input/screenshots, owned Xvfb on a free display, AT-SPI elements with pre-dispatch actionability, process-group teardown, Wayland guidance ([Linux platform §3](linux-platform.md#3-desktop-gui-adapter)) |
 | Target guessing (`adapter_for`) and roam target parsing | Keep, Fix (ARG-03 exact executable paths with spaces) |
 
 ## 5. Engine
@@ -103,7 +103,7 @@ All of ATES v0.1 is kept, and **existing evidence written by the Python implemen
 | Item | Parity |
 |---|---|
 | `ExecutionEnvironment` boundary: `local`, `capsule` (`auto`, `hyperv`, `libvirt`) | Keep |
-| Hyper-V Capsules, isolated Hyper-V, libvirt/QEMU/KVM | Keep |
+| Hyper-V Capsules, isolated Hyper-V, libvirt/QEMU/KVM | Keep (libvirt contract and Linux guest rules in [Linux platform §5–6](linux-platform.md#5-libvirt-capsules)) |
 | Secure guest control: pinned HTTPS, per-generation credentials, bearer rotation, network isolation, Hyper-V side-channel restrictions | Keep |
 | Guest agent, secure guest agent, target worker (non-admin target user), Windows target-user bootstrap | Keep; **native Rust guest binary** replaces the PyInstaller bundle |
 | Bootstrap media (ISO 9660 builder, protected delivery guard) | Keep (CAP-07 guard unchanged) |
