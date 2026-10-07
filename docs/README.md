@@ -76,7 +76,15 @@ Argus Fleet extends the existing Capsule boundary across physical machines. The 
 
 Environment Matrix is a **planned** layer that will expand one test plan across multiple immutable OS images and virtual hardware configurations, schedule disposable Capsules according to available local/Fleet capacity, and aggregate one canonical ATES Run per case.
 
-**Status: planning only. Implementation is intentionally blocked until the current PR #27 and PR #28 are merged.**
+**Status: planning only. PR #27 and PR #28 are merged; implementation still requires reconciliation with their final merged APIs, Fleet contracts and the stabilization acceptance gates.**
+
+### [Stabilization and operator acceptance](stabilization-spec.md)
+
+The [usability issue register](usability-issues.md) tracks configuration, Capsule, Chrome, interactive CLI, browser/Roam and generated-test gaps. The draft specification defines fixes and acceptance gates before implementing the Environment Matrix, while preserving the approved desktop design and existing isolation/evidence contracts.
+
+The [reproduction results](reproduction-results.md) document confirmed defects, verified evidence and the blocked native acceptance work.
+
+**Status: draft specification and diagnostic results; no runtime behavior added.**
 
 ### [Release engineering](releasing.md)
 

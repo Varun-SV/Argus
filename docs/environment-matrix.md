@@ -2,12 +2,12 @@
 
 Status: **planned; documentation only**
 
-Implementation gate: **do not begin implementation until current PR #27 and current PR #28 are merged.**
+Implementation gate: **PR #27 and PR #28 are merged. Do not begin implementation until the plan is reconciled with their final APIs and Fleet contracts, and prerequisite stabilization acceptance gates are met.**
 
 - PR #27: ISO-backed OS environment provisioning
 - PR #28: Claude-style desktop GUI and website redesign
 
-This document records the intended design so the capability is not lost while those pull requests are completed. It is not an implementation contract yet; details may be refined against the merged APIs, but the architectural boundaries below should be preserved.
+This document records the intended design for review against those merged prerequisites. It is not an implementation contract yet; details may be refined against the merged APIs, but the architectural boundaries below should be preserved.
 
 ## Goal
 
@@ -23,6 +23,10 @@ A user should be able to express requirements such as:
 - one or more application versions and test specifications.
 
 Argus should expand the requested combinations into independent test cases, schedule as many disposable VMs as the available hardware can safely support, queue the remainder, execute the existing Capsule/test path, collect canonical ATES evidence, and destroy or retain each VM according to the existing Capsule policy.
+
+## Stabilization prerequisite
+
+The [stabilization specification](stabilization-spec.md) and [usability issue register](usability-issues.md) extend this planning scope with provider/configuration readiness, Capsule operator setup, Chrome target handling, both command-based and interactive CLI testing, browser/desktop action correctness, draft validation and honest reporting. These workflows must be dependable before matrix scheduling multiplies them across environments. The PR #27/#28 merge prerequisites are satisfied; API/Fleet reconciliation and the stabilization gates remain required. See the [reproduction results](reproduction-results.md) for current evidence and blockers. This addition is documentation only.
 
 ## Architectural rule
 
@@ -312,7 +316,7 @@ Any label such as "recommended configuration" should only be emitted when the te
 
 ## Proposed implementation phases
 
-Implementation should begin only after current #27 and #28 are merged.
+Implementation should begin only after final merged API/Fleet reconciliation and prerequisite stabilization acceptance.
 
 ### Phase 1 — Matrix plan and deterministic expansion
 
