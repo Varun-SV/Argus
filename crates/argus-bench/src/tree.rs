@@ -285,6 +285,7 @@ mod tests {
             parent,
             start_time: start,
             name: name.to_owned(),
+            os_name: name.to_owned(),
             memory_bytes: mem,
         }
     }

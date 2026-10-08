@@ -19,7 +19,11 @@ pub struct ProcInfo {
     /// across samples, so that a reused PID is not mistaken for a tree member.
     pub start_time: u64,
     /// Short process name: the executable file name when readable, else the OS process name.
+    /// Used for the per-name breakdown.
     pub name: String,
+    /// Process name as the OS reports it (on Linux the 15-character `comm`, which for a Python
+    /// console script is the script name, not `python`). Used, with `name`, by `attach --name`.
+    pub os_name: String,
     /// Memory in bytes, using the per-OS metric named by [`memory_metric`].
     pub memory_bytes: u64,
 }
@@ -149,6 +153,7 @@ impl ProcessSource for SysinfoSource {
                 parent: p.parent().map(Pid::as_u32),
                 start_time: p.start_time(),
                 name: display_name(p),
+                os_name: p.name().to_string_lossy().into_owned(),
                 memory_bytes: p.memory(),
             })
             .collect()

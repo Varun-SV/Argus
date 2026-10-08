@@ -1,17 +1,61 @@
+# Preview distribution of the Rust re-architecture (docs/rearchitecture/specification.md §10,
+# §12 phase P0 "maturin wheels"). Design, commands and measurements:
+# docs/rearchitecture/p0-packaging-findings.md.
+#
+# One platform wheel contains both
+#   - the native `argus-next` binary (crates/argus-cli), installed into the scripts directory
+#     (on PATH), and
+#   - the PyO3 extension `argus_next._native` (crates/argus-py) for the Python API.
+#
+# Names during migration: the supported Python package `argus` (distribution argus-app-testing,
+# root pyproject.toml) stays untouched until G-SWITCH, so this preview uses the distribution
+# `argus-next`, the import package `argus_next` and the command `argus-next`. At G-SWITCH they
+# become argus-app-testing / argus / argus (+ argus-gui); see the findings document.
+#
+# Build from this directory:
+#   pip wheel . -w dist          (PEP 517: builds and stages the binary, then runs maturin)
+#   python build_backend/argus_next_build.py stage-cli && maturin build --release --locked
+#                                (what CI does; see .github/workflows/rust-wheels.yml)
+
 [build-system]
 requires = ["maturin>=1.15,<2"]
-build-backend = "maturin"
+# Thin wrapper around maturin's backend: stages the CLI binary before maturin packs the wheel and
+# adds the CLI crate to the sdist (maturin builds an extension or binaries, not both).
+build-backend = "argus_next_build"
+backend-path = ["build_backend"]
 
 [project]
 name = "argus-next"
 dynamic = ["version"]
+description = "Argus preview build (Rust re-architecture): the argus-next command and the argus_next Python module."
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Varun S V" }]
+keywords = ["testing", "automation", "preview"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Testing",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+[project.urls]
+Source = "https://github.com/Varun-SV/Argus"
+Documentation = "https://github.com/Varun-SV/Argus/tree/main/docs/rearchitecture"
 
 [tool.maturin]
 manifest-path = "../crates/argus-py/Cargo.toml"
 module-name = "argus_next._native"
 python-source = "."
-python-packages = ["argus_next"]
 bindings = "pyo3"
-locked = true
+profile = "release"
+strip = true
+# Wheel data directory; build_backend/argus_next_build.py stages scripts/argus-next[.exe] here.
 data = "argus_next.data"
+# The backend module must be in the sdist so that pip can build a wheel from it.
+include = [{ path = "build_backend/*.py", format = "sdist" }]
