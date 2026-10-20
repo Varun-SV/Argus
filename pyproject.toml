@@ -74,6 +74,7 @@ all = [
 ]
 dev = [
     "pytest>=8.0",
+    "flask>=3.0",
     "build>=1.2",
     "twine>=6.0",
     "ruff>=0.13",
