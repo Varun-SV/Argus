@@ -2,7 +2,7 @@
   "api": "argus knowledge / ArgusAPI.knowledge*",
   "case": "knowledge/export_and_stats",
   "environment": {
-    "COLUMNS": "120"
+    "COLUMNS": "1000"
   },
   "schema": "argus-golden-state-v1",
   "value": {
@@ -31,7 +31,7 @@
       "exception": null,
       "exit_code": 1,
       "stderr": "",
-      "stdout": "✗ No graph found for 'missing-app' at \n<PROJECT>/.argus/knowledge/missing-app.graph.json\n"
+      "stdout": "✗ No graph found for 'missing-app' at <PROJECT>/.argus/knowledge/missing-app.graph.json\n"
     },
     "argus_knowledge_stats": {
       "args": [

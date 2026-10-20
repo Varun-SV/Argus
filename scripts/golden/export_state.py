@@ -247,6 +247,12 @@ def _attempt(fn: Callable[[], Any], norm: _Normalizer) -> dict[str, Any]:
         return {"error": {"message": norm.text(str(exc)), "type": type(exc).__name__}}
 
 
+# Rich folds output wider than the console. A fixed width far above any temp path keeps a
+# path from being split across lines, so the normalizer always sees it whole and the output
+# does not depend on the host's COLUMNS or TMPDIR.
+CONSOLE_WIDTH = "1000"
+
+
 def _cli(args: list[str], cwd: Path, norm: _Normalizer, stdin: str | None = None) -> dict:
     """Run the real ``argus`` click command group in-process from ``cwd``."""
     from click.testing import CliRunner
@@ -477,7 +483,7 @@ def _history(work: Path, out: _Out, det: _Determinism, env_norm: list[tuple[Path
     out.expected("history", "report_command", "argus report", {
         "default_limit_10": _cli(["report"], project, norm),
         "limit_3": _cli(["report", "--limit", "3"], project, norm),
-    }, environment={"COLUMNS": os.environ.get("COLUMNS")})
+    }, environment={"COLUMNS": CONSOLE_WIDTH})
 
 
 # ------------------------------------------------------------------ tokens (C-02)
@@ -571,7 +577,7 @@ def _tokens(work: Path, out: _Out, env_norm: list[tuple[Path, str]]) -> None:
     out.expected("tokens", "tokens_command", "argus tokens", {
         "project": _cli(["tokens"], project, norm),
         "edge_cases": edge_cases,
-    }, environment={"COLUMNS": os.environ.get("COLUMNS")})
+    }, environment={"COLUMNS": CONSOLE_WIDTH})
 
 
 # ----------------------------------------------------------- conversations (C-02)
@@ -844,7 +850,7 @@ def _knowledge(work: Path, out: _Out, det: _Determinism,
         "gui_knowledge_export": norm.value(gui_export),
         "gui_knowledge_export_bytes_equal_graph":
             (export_dir / f"{target_key(target_a)}.graph.json").read_bytes() == graph_bytes,
-    }, environment={"COLUMNS": os.environ.get("COLUMNS")})
+    }, environment={"COLUMNS": CONSOLE_WIDTH})
 
 
 # ----------------------------------------------------------------- secrets (C-06)
@@ -1080,7 +1086,7 @@ def build_outputs() -> dict[str, bytes]:
         tmp_root = Path(tmp).resolve()
         env = {name: os.environ[name] for name in PASSTHROUGH_ENV if name in os.environ}
         env.update({
-            "COLUMNS": "120",
+            "COLUMNS": CONSOLE_WIDTH,
             "HOME": str(tmp_root / "home"),
             "LC_ALL": "C.UTF-8",
             "PYTHONDONTWRITEBYTECODE": "1",

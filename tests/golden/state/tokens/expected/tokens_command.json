@@ -2,7 +2,7 @@
   "api": "argus tokens",
   "case": "tokens/tokens_command",
   "environment": {
-    "COLUMNS": "120"
+    "COLUMNS": "1000"
   },
   "schema": "argus-golden-state-v1",
   "value": {

@@ -37,8 +37,8 @@
       "sha256": "0260e1f625bf9dcfb6c3b179bd8560a402771aa0db492720a43fd2761e2463f4"
     },
     "history/expected/report_command.json": {
-      "bytes": 3467,
-      "sha256": "5d4ca923273ec8ae9ff6f24e9ff05b4690f1dc7f5d2ccc3e0330b02e93700c44"
+      "bytes": 3468,
+      "sha256": "a7f0874992c2678fb51fcd0ac60b7120732a685649428eeaf54b23f7df0db857"
     },
     "history/project/.argus/runs/.storage-order": {
       "bytes": 19,
@@ -169,8 +169,8 @@
       "sha256": "0fb1db0e71e178183d7581080c63c2b80630b1e60c182cae9fd866701a751329"
     },
     "knowledge/expected/export_and_stats.json": {
-      "bytes": 4247,
-      "sha256": "49fe4c241083a06c155a2ab4739e5ddf1f900e95a24180d10c199830fd24047f"
+      "bytes": 4246,
+      "sha256": "f1806a3aa44adb6d5b17752ec8f6f15e9163721b8b448f540043f1e93fccddae"
     },
     "knowledge/expected/store.json": {
       "bytes": 3805,
@@ -228,8 +228,8 @@
       "sha256": "dcc79fc41f13ab7f4c98c31d7e5c5a224bb7341b864335c755a401d8810fb0cf"
     },
     "tokens/expected/tokens_command.json": {
-      "bytes": 3641,
-      "sha256": "f76652050528c05036a540236fe194ee30bcf904213004e6d8ae158d3e2dddc2"
+      "bytes": 3642,
+      "sha256": "92d480d14f3a00486d31acf12c30f8934c3b49131fbc07ef0a1b4d628b6b0bcf"
     },
     "tokens/project/.argus/config.yaml": {
       "bytes": 134,
@@ -243,7 +243,7 @@
   "generated_with": {
     "_note": "informational; ignored by --check",
     "argus_package_version": "0.1.6.dev30+gb559e9790.d20261008",
-    "git_commit": "7489f01d98ef16cc30bae641456b3bbd71b55838",
+    "git_commit": "61f79fb35bba7fbf7dc6bc29318aaaaeb4747c27",
     "python": "3.13.16",
     "sources_last_commit": "417127353d64e3edd3c7d5591388c5591a7001e5",
     "sqlite": "3.45.1"
