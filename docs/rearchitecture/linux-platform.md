@@ -1,0 +1,187 @@
+# Linux platform specification
+
+Status: **v0.1 / DRAFT for operator review.** Date: 2026-10-07. Part of the [re-architecture specification](specification.md); keywords as there.
+
+The main specification describes Linux only in passing: one line for the desktop adapter (§6.4) and a few rows in the supported-OS table (§10.1). This document is the complete Linux contract. It records:
+
+- what the Python implementation does on Linux today (the parity baseline, read from the code at `8e7ebe5`);
+- how the Rust implementation delivers it.
+
+Windows-specific behaviour stays in the main specification.
+
+## 1. Linux today (parity baseline)
+
+| Area | Behaviour on `main` | Source |
+|---|---|---|
+| Desktop GUI adapter | `linux-gui` (aliases `linux_gui`, `x11`; `desktop-gui` resolves to it on Linux). **X11 only.** Input and the active window title come from the external `xdotool` command, screenshots from `scrot`. If `DISPLAY` is unset, it starts `Xvfb :99` at 1920×1080×24 and uses that display. | `argus/adapters/linux_gui.py`, `argus/adapters/base.py` |
+| Actions | `click`, `double_click` (coordinates only), `type`, `key` (canonical chords translated to xdotool names), `scroll`, `wait`, `done`. No element discovery. | same |
+| Safety | Blocks `Ctrl+Alt+Backspace` and `Ctrl+Alt+F1…F12`, which can kill the X session or switch virtual terminals. | same |
+| Launch | An exact staged path runs directly. Any other launch string runs through the shell. Close terminates the direct child only, then the owned Xvfb. | same |
+| Wayland | Not supported. Only X11 and XWayland windows can be driven. | – |
+| CLI adapter | POSIX command mode. No persistent interactive session (ARG-04). | `argus/adapters/cli_adapter.py` |
+| Browser | Playwright Chromium, headless. | `argus/adapters/browser_adapter.py` |
+| Capsules | `libvirt` provider. Details are in §5 below and in [capsules-multi-os.md](../capsules-multi-os.md). | `argus/capsule/libvirt.py` |
+| Linux guest | Target account `argus`. It must not be uid 0 and must not be in `sudo`, `wheel`, `root`, `docker`, `lxd`, `incus` or `libvirt`, and its password is locked. The guest runs a GDM autologin **X11** session (`WaylandEnable=false`). The target worker needs the user's own Xauthority cookie. The workspace is handed over by an fd-bound walk that never follows symlinks. The worker gets a fixed, minimal environment. OS identity comes from `os-release` and `/etc/machine-id`; package inventory from `dpkg-query`. | `argus/capsule/target_worker.py`, `secure_guest_agent.py` |
+| Provisioning | Ubuntu Subiquity autoinstall with NoCloud seed media. Rules: x86_64 only, `host_only` networking, a pinned host-local apt mirror, `update_policy: latest`, a SHA-512 crypt hash for the account, and the `argus-bootstrap.service` systemd unit. Server or desktop flavour. | `argus/provisioning/ubuntu_unattended.py` |
+| Per-user files | GUI state in `$XDG_STATE_HOME/argus` (default `~/.local/state/argus`). Secrets in `$XDG_DATA_HOME/argus/secrets` (default `~/.local/share/argus/secrets`; must be absolute), directory `0700`, files `0600`. | `argus/gui/state.py`, `argus/secrets.py` |
+| Desktop app | pywebview with its GTK/WebKit backend. | `argus/gui/app.py` |
+| Packages | AppImage, DEB, RPM and Arch `.pkg.tar.zst` for x86_64 and aarch64; desktop entry `packaging/linux/argus.desktop`. | `.github/workflows/build-artifacts.yml` |
+
+Everything in this table is kept (C-01…C-07 of the main specification). The rows below say how, and which gaps are closed on the way.
+
+## 2. Supported Linux hosts
+
+| Component | Requirement |
+|---|---|
+| `argus` CLI, `argus serve`, guest agent | glibc 2.28 or later (`manylinux_2_28`), x86_64 and aarch64 |
+| Desktop app (`argus-gui`) | WebKitGTK 4.1 and GTK 3 (Ubuntu 22.04, Debian 12, Fedora 36 or later) |
+| Desktop GUI testing | an X11 server: the user's X11 session, XWayland (X11 apps only), or an Argus-owned Xvfb (§3) |
+| libvirt Capsules | KVM (`/dev/kvm`), libvirt with `qemu:///system`, `virsh`, `qemu-img`, iproute2 `ip` (§5) |
+
+**Tested distributions:** Ubuntu 22.04 and 24.04 LTS, Debian 12, and the current Fedora release, on x86_64; Ubuntu 24.04 on aarch64. Other distributions that meet the table are expected to work but are not gated.
+
+## 3. Desktop GUI adapter
+
+### 3.1 Display
+
+- **Owned Xvfb (default when there is no usable X11 display).** Argus starts Xvfb with `-displayfd`, so the X server picks a free display number. This replaces the fixed `:99`, which collides when two runs or two Matrix cases use it at once. Each Xvfb gets `-nolisten tcp` and a fresh per-session Xauthority cookie. Screen size stays 1920×1080×24 unless configured otherwise. Teardown stops it even after failures.
+- **Existing X11 display.** As today: when `DISPLAY` is set, Argus drives that display.
+- **Wayland sessions.** The rule depends on how Argus is configured:
+  - by default, Argus launches the target on an owned Xvfb display. It sets `DISPLAY` and removes `WAYLAND_DISPLAY` from the target's environment, so GTK and Qt apps use their X11 backend;
+  - driving windows on the visible Wayland desktop is not supported, because Wayland does not allow global input injection or screen capture without portals;
+  - preflight explains this before the run starts instead of failing during it.
+
+  This is operator decision L-1 (§8).
+
+### 3.2 Input, screenshots and window identity
+
+- Input goes through the X11 XTEST extension (`x11rb`), and screenshots through `GetImage`, using MIT-SHM when available. **`xdotool` and `scrot` are no longer needed.**
+- The window title and active window come from EWMH (`_NET_ACTIVE_WINDOW`, `_NET_WM_NAME`). Windows are matched to the owned process by `_NET_WM_PID` where the application sets it.
+- Key chords use the canonical grammar (main specification §3). The `Ctrl+Alt+Backspace` and `Ctrl+Alt+F1…F12` blocks are kept.
+- Coordinate actions keep today's meaning. Screenshots for the model and the live view follow the main specification (downscaled, sent only while visible).
+
+### 3.3 Semantic elements through AT-SPI (new, optional)
+
+- When the target exposes AT-SPI, Argus lists elements with stable observation-scoped IDs: role, name, state and bounds. Element actions then use AT-SPI interfaces: `Action` (`click`), `EditableText` (`type`) and `Component` (bounds).
+- **Actionability is checked before dispatch**, using the same rule that closes ARG-08 on Windows. An element that cannot perform the action is rejected before any dispatch commitment.
+- On an owned Xvfb, Argus starts a private session bus and the AT-SPI bus launcher when they are installed, so accessibility works headless too.
+- If no accessibility tree is available, the adapter reports "coordinates only" in its capabilities, exactly as today. It is never a silent failure.
+
+### 3.4 Launch and process ownership
+
+- **Launch semantics are unchanged (C-01).** An exact staged path is executed directly. Any other launch string still runs through `/bin/sh -c`, so existing specs keep their meaning.
+- Every target runs in its **own process group and session** (`setsid`). Argus tracks it with a pidfd, so signals cannot hit a recycled PID, and sets `PR_SET_PDEATHSIG` on direct children.
+- **Close** sends `SIGTERM` to the whole process group, waits, then sends `SIGKILL`. Today only the direct child is terminated, so helper processes started by the target can survive. When systemd's user manager is available, Argus places the target in a transient scope, so daemonising children are also stopped.
+- A launch that failed partway is cleaned up the same way, and teardown failures are reported, not hidden (the ARG-13 rule, applied to every Linux process Argus owns).
+
+## 4. CLI and browser on Linux
+
+**CLI.** Command mode and the persistent interactive mode use a POSIX PTY (`openpty` via `portable-pty`), as specified in main specification §6.1. The process-group rules from §3.4 apply. Interactive mode has no version restriction on Linux.
+
+**Browser discovery.** Argus looks for an installed browser in this order: `google-chrome-stable`, `chromium`, `chromium-browser`, `microsoft-edge-stable`. On aarch64, where Google Chrome may be unavailable, it uses Chromium. If none is found, it downloads a pinned Chromium and verifies its hash.
+
+**Snap and Flatpak browsers.** Ubuntu's `chromium` is a Snap. A confined browser may not accept Argus's profile directory or the `--remote-debugging-pipe` file descriptors.
+- Argus detects a Snap- or Flatpak-wrapped browser.
+- It uses the browser with a profile directory that confinement allows.
+- If that does not work, it says so and uses the pinned Chromium instead. It does not fail partway through a test.
+- This is verified on Ubuntu in P3.
+
+**Chromium sandbox.** Today Playwright launches Chromium with `--no-sandbox` by default. The new default keeps the sandbox on.
+- On hosts where it cannot start (for example Ubuntu 23.10 and later restrict unprivileged user namespaces through AppArmor), preflight reports it with the fix: use the distribution's Chrome or Chromium, which ships a profile, or install the profile for the pinned build.
+- `browser.sandbox: false` remains as an explicit opt-out and is recorded in the ATES evidence of every run that uses it. This is operator decision L-2 (§8).
+
+**Headed or headless.** The browser runs headless by default, as today. Headed runs use the X11 display chosen in §3.1.
+
+## 5. libvirt Capsules
+
+The PR #27 security shape is kept as it is:
+
+- `qemu:///system` only; remote and session URIs are rejected;
+- KVM with the same guest and host architecture; on aarch64 the `virt` machine type with EFI;
+- a qcow2 overlay per session; golden images are never booted writable;
+- a per-session libvirt network without `<forward>`, plus a per-session nwfilter allowing only DHCP and host-to-guest Argus control traffic;
+- a /24 per session from an RFC1918 pool (default `10.240.0.0/12`, configurable with `libvirt_network_cidr`);
+- no egress allowlist (fail closed);
+- forensic retention of failed sessions;
+- storage root `/var/lib/libvirt/images/argus-capsules`;
+- every configuration key and every `ARGUS_CAPSULE_*` environment override.
+
+What the Rust implementation adds or changes:
+
+- **Host tools stay argv-based.** It runs `virsh`, `qemu-img` and `ip` as today and does not link the libvirt C library. This keeps one binary portable across distributions and libvirt versions, and keeps command data out of any shell.
+- **Preflight** (ARG-02 for Linux) checks each prerequisite before any domain is defined, and reports the distribution-appropriate fix for each one that fails:
+  - `/dev/kvm` access;
+  - the `qemu:///system` connection;
+  - the required tools;
+  - whether the storage root can be traversed by the QEMU service account;
+  - AppArmor or SELinux (sVirt) labelling of the overlay location;
+  - free addresses in the network pool.
+- **Privilege.** Argus never runs as root. Access to `qemu:///system` through the `libvirt` group or polkit is effectively root-equivalent on the host. The setup documentation states this plainly, and preflight reports which mechanism granted access.
+
+## 6. Linux guest agent (`argus-guest`)
+
+The native agent replaces the PyInstaller runtime under the same approval and digest rules (C-05). Everything in the "Linux guest" row of §1 is kept:
+
+- **Service:** the agent runs as a systemd service started by `argus-bootstrap.service`, as provisioned today.
+- **Target worker:**
+  - it drops to the `argus` account with `setgroups([])`, `setresgid` and `setresuid`;
+  - it refuses the privileged accounts and groups listed in §1;
+  - it gets the same minimal environment;
+  - it uses the target user's own Xauthority cookie, from GDM's runtime directory first, then the user's home;
+  - it keeps the fd-bound, no-symlink workspace hand-over.
+- **Desktop readiness:** probed natively by connecting to `:0` with that cookie as the target user, so `xdpyinfo` is no longer needed.
+- **Guest identity and inventory:** OS identity, machine identity and the `dpkg-query` package inventory keep their formats, because they are part of the evidence.
+- **Guest desktop:** stays X11, as provisioned today.
+- **Hypervisor-neutral:** the agent must not depend on libvirt- or virtio-specific devices. After the switch, the same Linux guest also runs under Hyper-V on Windows hosts ([specification §17](specification.md#17-first-feature-after-the-switch-linux-capsules-on-windows-hosts)). There, the guest also runs the Hyper-V KVP daemon so the host can learn its address.
+
+## 7. Provisioning, files and packaging
+
+- **Ubuntu provisioning:** unchanged rules (§1), still x86_64 only. Building Ubuntu images through Hyper-V on Windows hosts comes after the switch ([specification §17](specification.md#17-first-feature-after-the-switch-linux-capsules-on-windows-hosts)). aarch64 Ubuntu images are a later feature, specified only when the operator asks for it.
+- **Per-user files:** the same paths, permissions and formats as in §1 (C-02, C-06). Linux secrets remain permission-protected files, since there is no DPAPI equivalent. A desktop keyring is not introduced.
+- **Native packages:**
+  - AppImage, DEB, RPM and Arch packages continue for x86_64 and aarch64 (Tauri's bundler builds the first three; the Arch package is built as today);
+  - DEB and RPM declare WebKitGTK 4.1 and GTK 3 as dependencies, and recommend `xvfb` and `at-spi2-core`;
+  - `xdotool` and `scrot` are dropped from the requirements.
+- **PyPI wheels:**
+  - the CLI and `argus serve` are plain `manylinux_2_28` binaries;
+  - WebKitGTK cannot be bundled into a wheel, so `argus-gui` is a launcher. It checks for WebKitGTK 4.1, then runs the desktop binary. If the library is missing, it prints the install command for the detected distribution and suggests `argus serve`, which has the same UI;
+  - P0 verifies this design against `auditwheel` before the packaging is committed.
+
+## 8. Operator decisions (2026-10-07)
+
+The operator accepted both recommendations:
+
+- **L-1. Wayland desktops: owned virtual X11 display.**
+  - On a Wayland session, Argus runs the application under test on an Argus-owned Xvfb display, as described in §3.1. This works on every Linux host. It is not visible on the desktop; the operator watches it through the live view.
+  - Driving windows on the visible Wayland desktop is not supported. Preflight says so before a run starts.
+  - Driving the visible desktop through the RemoteDesktop/ScreenCast portals (libei) is not planned. It would need a permission prompt every session and differs per desktop environment. It is specified only if the operator asks for it.
+- **L-2. Chromium sandbox: on by default.**
+  - The browser runs with Chromium's sandbox, as described in §4. Today it runs without it, because that is Playwright's default.
+  - On a host where the sandbox cannot start, preflight explains the fix before the run.
+  - `browser.sandbox: false` turns it off explicitly. Every run that uses it records this in its ATES evidence.
+
+## 9. Testing and gates
+
+**Acceptance.** P3 native acceptance on Linux covers each of the following on a real host:
+- an X11 session;
+- an owned Xvfb, including two concurrent runs;
+- a GNOME Wayland session (Ubuntu 24.04);
+- AT-SPI on a GTK and a Qt target;
+- process-group teardown with a daemonising target;
+- PTY interactive mode;
+- installed Chrome, Snap Chromium and the pinned Chromium, with the sandbox on;
+- the sandbox preflight message on a restricted host.
+
+Mocks never stand in for these.
+
+**Capsules.** P6 libvirt acceptance runs on a KVM host. GitHub-hosted Ubuntu runners expose `/dev/kvm` where available; otherwise a self-hosted KVM host is used. It covers isolation (the network and nwfilter rules), overlay lifecycle, preflight failures and the native guest agent.
+
+**Performance.** G-PERF on Ubuntu 24.04 x64 is already in the main specification. P0 adds a **Linux desktop-app baseline** (WebKitGTK), measured on a Linux desktop alongside the Windows baseline.
+
+**Linux gaps closed by this design.** These were found while writing this specification, not in operator testing:
+- the fixed Xvfb display `:99` collides between runs;
+- close terminates only the direct child;
+- the adapter is coordinate-only;
+- there is no Wayland guidance;
+- the browser runs without the Chromium sandbox;
+- the adapter depends on the external `xdotool` and `scrot` commands.
