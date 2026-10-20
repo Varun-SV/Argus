@@ -21,7 +21,8 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 $Results = New-Object System.Collections.ArrayList
 $Abort = $false
 
-function Q([string]$s) { return '"' + $s + '"' }
+# Double trailing backslashes so a drive-root path (C:\) survives Windows argument parsing.
+function Q([string]$s) { $t = $s -replace '(\\+)$', '$1$1'; return '"' + $t + '"' }
 
 function Add-Result {
     param([string]$Name, [string]$Status, [string]$Detail)
@@ -34,7 +35,7 @@ function Add-Result {
 # stderr text into terminating errors when it is "Stop".
 function Invoke-Native {
     param([string]$Exe, [string[]]$ArgList = @(), [string]$Log)
-    ("> " + $Exe + " " + ($ArgList -join " ")) | Out-File -FilePath $Log -Encoding utf8
+    ("> " + $Exe + " " + ($ArgList -join " ")) | Out-File -FilePath $Log -Encoding utf8 -Append
     $old = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     $global:LASTEXITCODE = $null
@@ -79,11 +80,20 @@ function Get-CargoSummary {
 }
 
 function Test-Pytest {
-    param([string]$Name, [string]$Log, [string[]]$PytestArgs = @())
-    $all = @("-m", "pytest", "-q") + $PytestArgs
+    param([string]$Name, [string]$Log, [string[]]$PytestArgs = @(), [switch]$SkipIsFailure)
+    # A user's PYTEST_ADDOPTS (for example -l) could print local variables, including a password.
+    Remove-Item -Path Env:\PYTEST_ADDOPTS -ErrorAction SilentlyContinue
+    $all = @("-m", "pytest", "-q", "--tb=short") + $PytestArgs
     $code = Invoke-Native -Exe $VenvPy -ArgList $all -Log $Log
     $detail = Get-PytestSummary -Log $Log
-    if ($code -eq 0) { Add-Result $Name "PASS" $detail } else { Add-Result $Name "FAIL" ("exit $code; " + $detail) }
+    $onlySkipped = ($detail -match 'skipped') -and ($detail -notmatch 'passed')
+    if ($code -ne 0) {
+        Add-Result $Name "FAIL" ("exit $code; " + $detail)
+    } elseif ($onlySkipped) {
+        if ($SkipIsFailure) { Add-Result $Name "FAIL" ("nothing ran; " + $detail) } else { Add-Result $Name "SKIP" $detail }
+    } else {
+        Add-Result $Name "PASS" $detail
+    }
 }
 
 function Test-Step {
@@ -237,7 +247,9 @@ if (-not $NativeMediaTest) {
             } else {
                 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
                 $env:ARGUS_BOOTSTRAP_TEST_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-                Test-Pytest -Name "Native media test" -Log (Join-Path $LogDir "native-media.log") -PytestArgs @("tests/test_windows_bootstrap_media.py", "-k", "native_ntfs")
+                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+                $bstr = [IntPtr]::Zero
+                Test-Pytest -Name "Native media test" -Log (Join-Path $LogDir "native-media.log") -PytestArgs @("tests/test_windows_bootstrap_media.py", "-k", "native_ntfs") -SkipIsFailure
             }
         } catch {
             Add-Result "Native media test" "FAIL" "section error (details withheld)"
