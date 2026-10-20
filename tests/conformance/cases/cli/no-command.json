@@ -1,0 +1,40 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.no-command",
+  "title": "argus with no command prints usage listing the commands",
+  "requirements": [
+    "C-07",
+    "PARITY-1"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "steps": [
+    {
+      "args": [],
+      "expect": {
+        "exit": [
+          0,
+          2
+        ],
+        "output": {
+          "regex": [
+            "(?i)\\busage\\b",
+            "(?m)^\\s+init\\b",
+            "(?m)^\\s+run\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ],
+  "note": "Click 8.2 exits 2 here, older Click exited 0; both are accepted."
+}

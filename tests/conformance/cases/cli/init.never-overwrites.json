@@ -1,0 +1,68 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.init.never-overwrites",
+  "title": "argus init never overwrites existing project files",
+  "requirements": [
+    "C-07",
+    "PARITY-1",
+    "C-01"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "setup": {
+    "files": [
+      {
+        "path": ".argus/config.yaml",
+        "content": "# conformance-marker: keep this config\nprovider: ollama\nproviders:\n  ollama:\n    model: conformance-model\n    base_url: http://127.0.0.1:9\nbudgets:\n  time_minutes: 1\n"
+      },
+      {
+        "path": ".argus/notepad.test.yaml",
+        "content": "# conformance-marker: keep this test\nname: Mine\ntarget:\n  adapter: cli\n  launch: echo conformance\nsteps:\n  - \"Run the command and read its output\"\n  - assert:\n      stdout_contains: \"conformance\"\n  - assert:\n      exit_code_is: 0\n"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "args": [
+        "init"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        },
+        "files": [
+          {
+            "path": ".argus/config.yaml",
+            "contains": [
+              "conformance-marker: keep this config"
+            ]
+          },
+          {
+            "path": ".argus/notepad.test.yaml",
+            "contains": [
+              "conformance-marker: keep this test"
+            ]
+          },
+          {
+            "path": ".argus/runs",
+            "kind": "dir"
+          },
+          {
+            "path": ".argus/roam",
+            "kind": "dir"
+          }
+        ]
+      }
+    }
+  ]
+}

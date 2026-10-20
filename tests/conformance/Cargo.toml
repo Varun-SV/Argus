@@ -1,6 +1,6 @@
 [package]
 name = "argus-conformance"
-description = "Argus black-box conformance runner (spec section 13). P0 stub."
+description = "Argus black-box conformance runner (spec section 13): drives the argus command line of either implementation through its public interface and checks data-driven cases."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,26 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "argus-conformance"
+path = "src/main.rs"
+
+[lib]
+name = "argus_conformance"
+path = "src/lib.rs"
+
 [dependencies]
+clap.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+# Process-group signalling for the hard timeout (spec section 13 runner isolation). rustix is
+# already in Cargo.lock through tempfile; it is pinned to that exact version and only the
+# safe `process` API is used, so this crate keeps #![forbid(unsafe_code)].
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.5", features = ["process"] }
 
 [lints]
 workspace = true

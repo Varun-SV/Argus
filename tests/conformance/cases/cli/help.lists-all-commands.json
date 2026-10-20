@@ -1,0 +1,46 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.help.lists-all-commands",
+  "title": "argus --help lists every command of the parity inventory",
+  "requirements": [
+    "C-07",
+    "PARITY-1"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "--help"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "regex": [
+            "(?m)^\\s+init\\b",
+            "(?m)^\\s+run\\b",
+            "(?m)^\\s+roam\\b",
+            "(?m)^\\s+watch\\b",
+            "(?m)^\\s+serve\\b",
+            "(?m)^\\s+gui\\b",
+            "(?m)^\\s+providers\\b",
+            "(?m)^\\s+report\\b",
+            "(?m)^\\s+tokens\\b",
+            "(?m)^\\s+knowledge\\b",
+            "(?m)^\\s+secrets\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

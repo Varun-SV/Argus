@@ -1,0 +1,38 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.run.no-tests",
+  "title": "argus run in a project without specs exits 2 and points to argus init",
+  "requirements": [
+    "C-07",
+    "PARITY-1"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "run",
+        "--dry-run"
+      ],
+      "expect": {
+        "exit": 2,
+        "output": {
+          "regex": [
+            "(?i)no tests",
+            "\\binit\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

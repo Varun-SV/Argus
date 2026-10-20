@@ -1,0 +1,53 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.run.invalid-yaml",
+  "title": "argus run on a spec that is not valid YAML exits 2 naming the file",
+  "requirements": [
+    "C-07",
+    "PARITY-2"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "setup": {
+    "files": [
+      {
+        "path": ".argus/config.yaml",
+        "content": "provider: ollama\nproviders:\n  ollama:\n    model: conformance-model\n    base_url: http://127.0.0.1:9\nbudgets:\n  time_minutes: 1\n"
+      },
+      {
+        "path": ".argus/syntax.test.yaml",
+        "content": "name: [unclosed\n"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "args": [
+        "run",
+        "syntax.test.yaml",
+        "--dry-run"
+      ],
+      "expect": {
+        "exit": 2,
+        "output": {
+          "contains": [
+            "syntax.test.yaml"
+          ],
+          "regex": [
+            "(?i)yaml"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

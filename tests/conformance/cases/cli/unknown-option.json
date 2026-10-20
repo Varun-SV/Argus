@@ -1,0 +1,36 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.unknown-option",
+  "title": "an unknown option of a known command is a usage error naming it",
+  "requirements": [
+    "C-07"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "run",
+        "--no-such-option"
+      ],
+      "expect": {
+        "exit": 2,
+        "output": {
+          "contains": [
+            "--no-such-option"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

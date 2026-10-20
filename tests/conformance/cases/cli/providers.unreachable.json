@@ -1,0 +1,48 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.providers.unreachable",
+  "title": "argus providers names the provider and model and exits non-zero when it is unreachable",
+  "requirements": [
+    "C-07",
+    "PARITY-1",
+    "ARG-01"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "setup": {
+    "files": [
+      {
+        "path": ".argus/config.yaml",
+        "content": "provider: ollama\nproviders:\n  ollama:\n    model: conformance-model\n    base_url: http://127.0.0.1:9\nbudgets:\n  time_minutes: 1\n"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "args": [
+        "providers"
+      ],
+      "timeout_s": 60,
+      "expect": {
+        "exit": "nonzero",
+        "output": {
+          "contains": [
+            "ollama",
+            "conformance-model"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ],
+  "note": "The configured Ollama URL is a closed local port and all proxies are dead, so the connection check fails without network access. ARG-01 adds readiness states in the Rust line; the exit code stays non-zero for an unreachable provider."
+}

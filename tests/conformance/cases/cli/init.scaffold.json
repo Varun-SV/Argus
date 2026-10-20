@@ -1,0 +1,109 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.init.scaffold",
+  "title": "argus init creates the .argus/ scaffold and is idempotent",
+  "requirements": [
+    "C-07",
+    "PARITY-1",
+    "PARITY-2"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "init"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "contains": [
+            ".argus"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        },
+        "files": [
+          {
+            "path": ".argus",
+            "kind": "dir"
+          },
+          {
+            "path": ".argus/config.yaml",
+            "kind": "file",
+            "contains": [
+              "provider:"
+            ]
+          },
+          {
+            "path": ".argus/runs",
+            "kind": "dir"
+          },
+          {
+            "path": ".argus/roam",
+            "kind": "dir"
+          },
+          {
+            "path": ".argus/notepad.test.yaml",
+            "kind": "file",
+            "contains": [
+              "steps:"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "args": [
+        "init"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "contains": [
+            ".argus"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        },
+        "files": [
+          {
+            "path": ".argus",
+            "kind": "dir"
+          },
+          {
+            "path": ".argus/config.yaml",
+            "kind": "file",
+            "contains": [
+              "provider:"
+            ]
+          },
+          {
+            "path": ".argus/runs",
+            "kind": "dir"
+          },
+          {
+            "path": ".argus/roam",
+            "kind": "dir"
+          },
+          {
+            "path": ".argus/notepad.test.yaml",
+            "kind": "file",
+            "contains": [
+              "steps:"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

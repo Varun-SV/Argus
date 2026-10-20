@@ -1,0 +1,52 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.run.dry-run-shows-step-kind",
+  "title": "argus run --dry-run shows the kind of every step",
+  "requirements": [
+    "C-07",
+    "PARITY-1"
+  ],
+  "impls": {
+    "python": {
+      "status": "known-gap",
+      "note": "Defect in argus/cli.py: the dry-run line is printed as rich markup, so the '[step]'/'[assert]'/'[teardown]' kind tag is swallowed as a style tag and the step kind never reaches the output. The same markup handling mangles spec errors that contain '[' (for example an invalid YAML flow sequence). Python line receives critical fixes only (R-7); fix in the Rust line."
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "setup": {
+    "files": [
+      {
+        "path": ".argus/config.yaml",
+        "content": "provider: ollama\nproviders:\n  ollama:\n    model: conformance-model\n    base_url: http://127.0.0.1:9\nbudgets:\n  time_minutes: 1\n"
+      },
+      {
+        "path": ".argus/smoke.test.yaml",
+        "content": "name: Conformance smoke\ntarget:\n  adapter: cli\n  launch: echo conformance\nsteps:\n  - \"Run the command and read its output\"\n  - assert:\n      stdout_contains: \"conformance\"\n  - assert:\n      exit_code_is: 0\n"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "args": [
+        "run",
+        "smoke.test.yaml",
+        "--dry-run"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "regex": [
+            "\\[step\\][^\\n]*Run the command",
+            "\\[assert\\][^\\n]*stdout_contains"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

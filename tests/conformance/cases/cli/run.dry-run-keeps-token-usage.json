@@ -1,0 +1,79 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.run.dry-run-keeps-token-usage",
+  "title": "argus run --dry-run uses no tokens and keeps persisted usage intact",
+  "requirements": [
+    "C-02",
+    "C-07",
+    "PARITY-2"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "setup": {
+    "files": [
+      {
+        "path": ".argus/config.yaml",
+        "content": "provider: ollama\nproviders:\n  ollama:\n    model: conformance-model\n    base_url: http://127.0.0.1:9\nbudgets:\n  time_minutes: 1\n"
+      },
+      {
+        "path": ".argus/smoke.test.yaml",
+        "content": "name: Conformance smoke\ntarget:\n  adapter: cli\n  launch: echo conformance\nsteps:\n  - \"Run the command and read its output\"\n  - assert:\n      stdout_contains: \"conformance\"\n  - assert:\n      exit_code_is: 0\n"
+      },
+      {
+        "path": ".argus/usage.json",
+        "content": "{\"prompt_tokens\": 1200, \"completion_tokens\": 345, \"calls\": 7, \"total_tokens\": 1545}\n"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "args": [
+        "run",
+        "smoke.test.yaml",
+        "--dry-run"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "contains": [
+            "smoke.test.yaml",
+            "Run the command and read its output",
+            "stdout_contains",
+            "exit_code_is"
+          ],
+          "regex": [
+            "(?i)(\\b3\\s+steps\\b|\\bsteps:?\\s*3\\b)",
+            "\\bcli\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        },
+        "json": [
+          {
+            "file": ".argus/usage.json",
+            "path": "$.prompt_tokens",
+            "equals": 1200
+          },
+          {
+            "file": ".argus/usage.json",
+            "path": "$.completion_tokens",
+            "equals": 345
+          },
+          {
+            "file": ".argus/usage.json",
+            "path": "$.calls",
+            "equals": 7
+          }
+        ]
+      }
+    }
+  ]
+}
