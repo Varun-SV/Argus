@@ -8,7 +8,15 @@ Reference: [PR #29](https://github.com/Varun-SV/Argus/pull/29), its `docs/enviro
 
 ## Amendment A — implementation in the Rust re-architecture (2026-10-07)
 
-The operator decided to rebuild Argus in Rust with a Tauri 2 desktop app ([ADR-001](rearchitecture/tech-stack-decision.md)) and to fix ARG-01…ARG-13 **in the new implementation** rather than twice. The requirements and acceptance gates below are unchanged and become gates of the [re-architecture plan](rearchitecture/specification.md#12-migration-plan), which maps each issue to a phase. The delivery order in §11 is superseded by that plan. The current Python release receives only critical fixes until the switch gate. The Environment Matrix is still implemented after stabilization, now on the new core.
+The operator decided to rebuild Argus in Rust with a Tauri 2 desktop app ([ADR-001](rearchitecture/tech-stack-decision.md)) and to fix ARG-01…ARG-13 **in the new implementation** rather than twice. The requirements and acceptance gates below are unchanged, apart from the three reinterpretations listed at the end of this amendment. They become gates of the [re-architecture plan](rearchitecture/specification.md#12-migration-plan), which maps each issue to a phase. The delivery order in §11 is superseded by that plan. The current Python release receives only critical fixes until the switch gate. The first of these is the `argus serve` security fix ([re-architecture specification §8.1](rearchitecture/specification.md#81-critical-fix-in-the-python-line-now)).
+
+The Rust design has no Playwright and no Node, so three requirements are **reinterpreted**. They keep their intent and change only the resources they name:
+
+- **TGT-03:** "Playwright's managed browser dependency" means the Argus-managed pinned Chromium (downloaded with consent and verified by hash). It is distinguished from installed Chrome/Edge discovery and from supplied executable paths.
+- **ACT-07:** "its Playwright driver/context" means the session's owned CDP session: the CDP pipe, the browser process tree and the per-session user-data directory. "Leaked event loop or driver" means a leaked CDP pipe, browser process or user-data directory.
+- **A16:** "stop owned drivers completely" means that the owned CDP pipe is closed, the browser process tree has exited and the per-session user-data directory has been removed.
+
+Until the switch, the Python line is still described by the original wording. The Environment Matrix is still implemented after stabilization, now on the new core.
 
 ## 1. Scope and approved decisions
 
@@ -44,8 +52,7 @@ Implementation MUST preserve PR #27's immutable image verification, runtime iden
 This proposal extends the planning scope; it does not remove the original matrix implementation gate.
 
 - PR #27 and PR #28 are merged (confirmed on 2026-10-07). The diagnostic runtime baseline remains `c81a0d3`; it is not a claim of current-main acceptance.
-- Final merged APIs and Fleet contracts MUST still be reconciled before matrix implementation.
-- The matrix plan MUST be reconciled with the final merged APIs and Fleet contracts.
+- The matrix plan MUST be reconciled with the final merged APIs and Fleet contracts before matrix implementation. Under Amendment A, these are the Rust APIs and Fleet contracts at G-SWITCH.
 - Stabilization defects may be fixed in appropriately scoped prerequisite changes. Matrix implementation MUST wait until the original prerequisite gate and the stabilization checks below are met.
 - No runtime fixes, host setting changes, installation upgrades or native VM allocations were performed. The approved native diagnostic inspects only the retained unpublished disk read-only; its outcome does not establish boot acceptance.
 

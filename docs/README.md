@@ -79,7 +79,7 @@ Argus Fleet extends the existing Capsule boundary across physical machines. The 
 
 Environment Matrix is a **planned** layer that will expand one test plan across multiple immutable OS images and virtual hardware configurations, schedule disposable Capsules according to available local/Fleet capacity, and aggregate one canonical ATES Run per case.
 
-**Status: planning only. PR #27 and PR #28 are merged; implementation still requires reconciliation with their final merged APIs, Fleet contracts and the stabilization acceptance gates.**
+**Status: planning only. PR #27 and PR #28 are merged. Implementation starts after G-SWITCH, on the Rust core, once the stabilization acceptance gates are met and the plan is reconciled with the Rust APIs and Fleet contracts.**
 
 ### [Stabilization and operator acceptance](stabilization-spec.md)
 

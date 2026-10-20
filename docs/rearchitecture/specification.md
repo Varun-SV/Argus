@@ -146,7 +146,26 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 
 - `argus-server` (axum) serves `ui/` and exposes the same API as the desktop bridge: `POST /api/<method>` for requests, `GET /api/events` (SSE) for job, live-frame and watch updates.
 - The UI talks to a single transport shim (`ui/api.js`). It selects Tauri `invoke` in the desktop app and HTTP + SSE in the browser. The rest of the PR #28 code is unchanged apart from replacing polling with events. The dashboard therefore looks and behaves exactly like the desktop app, which resolves the theme mismatch.
-- **Security (new requirement):** today's Flask dashboard accepts `POST /api/roam/start` with no authentication, and the README suggests `--host 0.0.0.0`. The new server MUST require a per-launch access token (printed once, stored only in a cookie scoped to the origin) for every API call, MUST check `Origin`, and MUST refuse to bind a non-loopback address unless the operator passes an explicit flag. Propose-then-confirm applies exactly as on the desktop.
+- **Security (new requirement):** the new server MUST require a per-launch access token (printed once, stored only in a cookie scoped to the origin) for every API call, MUST check `Origin`, and MUST refuse to bind a non-loopback address unless the operator passes an explicit flag. It MUST NOT include a debugger or any other code-execution endpoint. Propose-then-confirm applies exactly as on the desktop.
+
+### 8.1 Critical fix in the Python line now
+
+The shipped Flask dashboard is a live security hole, and it is fixed in the current Python release. It does not wait for P5. This is the kind of critical fix the Python line still receives until the switch ([ADR-001 §5](tech-stack-decision.md#5-decision), item 4). What is wrong at `8e7ebe5`:
+
+- `POST /api/roam/start` accepts any request, from any `Origin`, with no authentication. The only check is that `target` is non-empty. The `target` string then goes straight to `create_adapter("desktop-gui").launch(target)` (`argus/serve/app.py`). Anyone who can reach the port can therefore launch any program on the host.
+- The README suggested `argus serve --host 0.0.0.0`, which exposes this to the network.
+- `argus serve --debug` passes `debug=True` to Flask's `app.run` (`argus/cli.py`), which enables the Werkzeug interactive debugger.
+- The dashboard shows the absolute project path to every visitor.
+
+The next Python `0.1.x` release MUST:
+
+- SEC-01: require a per-launch access token on every `/api/*` route and on every page that shows project data, using the same rules as §8;
+- SEC-02: reject state-changing requests whose `Origin` is missing or is not the dashboard's own origin;
+- SEC-03: bind only to loopback addresses by default, and refuse a non-loopback `--host` unless the operator passes an explicit opt-in flag that prints a warning;
+- SEC-04: never enable the Werkzeug debugger; `--debug` only raises log verbosity;
+- SEC-05: stop showing the absolute project path to visitors who have not authenticated.
+
+The README no longer suggests `--host 0.0.0.0`. Until SEC-01…05 ship, it warns operators to keep the dashboard on loopback and not to use `--debug`. The P5 gate (G-UI) re-checks SEC-01…05 against the Rust server.
 
 ## 9. Desktop app (Tauri 2)
 
@@ -160,7 +179,8 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 - PyPI name stays `argus-app-testing`. The release **switches in place** (§16.4): the first Rust release is the next breaking version of the same package, `0.2.0`, with no pre-release cycle on PyPI. Under the 0.x rule a minor bump is breaking, so anyone who needs the Python line pins `argus-app-testing<0.2`.
 - **Platform wheels** (Windows x64/ARM64, macOS universal2, manylinux x86_64/aarch64, musllinux where feasible) built with maturin. They contain:
   - the `argus` and `argus-gui` binaries (maturin `bin`-style scripts on PATH);
-  - the PyO3 extension that backs the documented Python API ([parity inventory §10](parity-inventory.md#10-python-api-kept-on-pypi-operator-decision)).
+  - the PyO3 extension that backs the documented Python API ([parity inventory §10](parity-inventory.md#10-python-api-kept-on-pypi-operator-decision));
+  - on the platforms that are Capsule guests (Windows x64 and manylinux x86_64), a prebuilt `argus-guest` binary and the `argus-guest-runtime-build` command. That command packages the binary into an approved guest-runtime bundle with the same manifest and digest rules as today, so pip-only operators can still build bundles without a Rust toolchain ([parity inventory §1](parity-inventory.md#1-command-line-argus)).
 - The sdist builds from source with a Rust toolchain.
 - Optional extras (`[browser]`, `[gui]`, `[knowledge]` …) become no-ops that still install, so existing install commands keep working. The capabilities are built into the binary and enabled by configuration.
 - `python -m argus` keeps working, by executing the binary.
@@ -187,7 +207,7 @@ Capsule guests by host:
 | Linux | libvirt/KVM | Linux on the host's CPU architecture: Ubuntu images built by Argus (Server 20.04 or later, Desktop 23.04 or later, x86_64); Linux images you build with the guest agent | none planned (Windows guests on KVM only on request) |
 | macOS | none | none | none |
 
-Windows 10 is the minimum because it is the oldest Windows that Rust's standard targets and WebView2 both support. TLS uses `rustls` (§14), not the Windows TLS stack, so model providers, Capsule control and Fleet work the same on every supported Windows build. Microsoft no longer supports most Windows 10 releases; Argus still runs on them, but bugs that occur only there are fixed on a best-effort basis.
+Windows 10 is the minimum because it is the oldest Windows that Rust's standard targets and WebView2 both support. TLS uses `rustls` (§14), not the Windows TLS stack, so model providers, Capsule control and Fleet work the same on every supported Windows build. Microsoft no longer supports most Windows 10 releases. This includes version 1607 (LTSB 2016), whose extended support ended on 2026-10-13, so the G-PERF minimum-version host is itself out of support. Argus still runs on these releases, but bugs that occur only there are fixed on a best-effort basis. The same applies to Windows Server 2016 after its support ends on 2027-01-12.
 
 Linux details (tested distributions, display servers, Capsule host prerequisites, wheel layout) are in the [Linux platform specification](linux-platform.md#2-supported-linux-hosts).
 
@@ -203,7 +223,7 @@ Testing applications that run on old Windows is a different question from runnin
 
 ## 11. Performance budgets and how they are measured
 
-Baselines are the Python numbers in [ADR-001 §2](tech-stack-decision.md#2-what-actually-costs-resources-today). Targets are acceptance gates (G-PERF) checked on Windows 11 x64 and Ubuntu 24.04 x64. A Windows 10 test host (LTSC 2016, version 1607, the oldest Windows 10 release still under Microsoft support when this was written) runs the conformance suite to prove the minimum (§10.1). G-PERF is measured with a committed benchmark harness. The harness samples whole-process-tree RSS at 50 ms and reports median of 5 runs.
+Baselines are the Python numbers in [ADR-001 §2](tech-stack-decision.md#2-what-actually-costs-resources-today). Targets are acceptance gates (G-PERF) checked on Windows 11 x64 and Ubuntu 24.04 x64. A Windows 10 test host running the oldest Windows 10 release (version 1607, LTSB 2016) runs the conformance suite to prove the minimum (§10.1). G-PERF is measured with a committed benchmark harness. The harness samples whole-process-tree RSS at 50 ms and reports median of 5 runs.
 
 | Scenario | Python baseline | Target |
 |---|---|---|
@@ -230,13 +250,13 @@ The Python release line stays the shipped product until G-SWITCH. Rust component
 | **P2 Evidence** | `argus-ates` | G-ATES: C-03 both directions on all golden stores; ATES test vectors pass |
 | **P3 Adapters** | CLI command + interactive, browser CDP, Windows UIA, Linux | A05–A09, A16 from the stabilization spec; ARG-03…08, ARG-13 closed |
 | **P4 Engine and knowledge** | runner, agent, roam, findings, regression drafts, watch, knowledge | A02, A10–A12; ARG-07, ARG-09…12 closed; CLI-level parity for `run`, `roam`, `watch`, `report`, `tokens`, `knowledge`, `secrets`, `init`, `providers` |
-| **P5 UI** | `argus-assistant` (port of intents, grounding, slash parser, propose-then-confirm, with the phrasing sweep as data), `argus-api`, Tauri desktop, `argus serve` | G-UI: every bridge method and intent in parity §11; phrasing sweep and confirmation suites pass; serve auth (§8); PR #28 visual comparison approved by the operator |
-| **P6 Capsules and provisioning** | `argus-execution`, `argus-capsule`, `argus-guest`, `argus-provisioning` | A03, A04 (native hosts); C-05 with both runtime kinds, using a native-agent **test** image built by the conformance suite (operator images are republished only as §16.3 says); ARG-02 closed; CAP-01…07. **Guest-OS-neutral Capsule code (prepares §17):** the guest OS comes from the image manifest or the request, never from the provider name, and Windows-only settings are checked per guest. The gate review confirms that no provider-to-OS mapping remains and that existing pairings behave exactly as before |
+| **P5 UI** | `argus-assistant` (port of intents, grounding, slash parser, propose-then-confirm, with the phrasing sweep as data), `argus-api`, Tauri desktop, `argus serve` | G-UI: every bridge method and intent in parity §11; phrasing sweep and confirmation suites pass; serve security (§8, SEC-01…05 from §8.1); PR #28 visual comparison approved by the operator |
+| **P6 Capsules and provisioning** | `argus-execution`, `argus-capsule`, `argus-guest`, `argus-provisioning` | A03, A04 (native hosts); C-05 with both runtime kinds, using a native-agent **test** image built by the conformance suite (operator images are republished only as §16.3 says); ARG-02 closed; CAP-01…07. **Guest-OS-neutral Capsule code (prepares §17):** the guest OS comes from the image manifest or the request, never from the provider name, and Windows-only settings are checked per guest. The gate review covers both Capsule runtime and the Hyper-V image provisioner (§17.2). It confirms that no provider-to-OS mapping remains and that existing pairings behave exactly as before |
 | **P7 Fleet** | `argus-fleet` | C-04 mixed-fleet test (Python node + Rust node) |
 | **P8 Python API and switch** | `argus-py`, packaging re-pointed at native binaries, docs | G-PARITY: every row in the parity inventory checked; G-PERF met or explained; **G-SWITCH**: operator approval, then `argus-app-testing` `0.2.0` releases the Rust implementation in place (§16.4) |
 | **P9 Retire** | Python implementation removed from the tree after one release of overlap | G-RETIRE: no open parity gaps and no regression reports from the overlap release |
 
-The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is implemented after G-SWITCH, on the new core. Its own prerequisite gate is unchanged.
+The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is implemented after G-SWITCH, on the new core. Its prerequisite gate is G-SWITCH plus the stabilization gates A01–A12 and A16, and its design is reconciled against the Rust APIs, not the internal Python ones ([environment-matrix.md, implementation trigger](../environment-matrix.md#implementation-trigger)).
 
 ### Mapping of stabilization issues to phases
 
@@ -261,7 +281,7 @@ The Environment Matrix ([environment-matrix.md](../environment-matrix.md)) is im
 - **Rust unit and property tests** inside each crate. This includes fuzzing of every parser that reads untrusted input: action JSON, test specs, CDP messages, guest responses, evidence files.
 - **Golden fixtures** exported once from the Python implementation (P0), committed under `tests/golden/`, and used for C-01…C-05.
 - **Conformance suite** (`tests/conformance/`): black-box tests that drive the `argus` binary and the API over its public interfaces. They run against both implementations while both exist. A test that passes on Python and fails on Rust is a parity bug.
-- **Porting the existing 126 Python test files:** each Python test is either ported to Rust, turned into a data-driven conformance case (the phrasing sweep, slash round-trips and intent grounding are already data-shaped), or listed as covered by an equivalent test. The mapping is a tracked checklist; no test is dropped silently.
+- **Porting the existing 123 Python test modules** (the `tests/test_*.py` files at `8e7ebe5`; the six helper modules `conftest.py`, `__init__.py`, `ates_test_support.py` and `fixtures/windows_uia_*.py` are ported only where a ported test still needs them): each Python test is either ported to Rust, turned into a data-driven conformance case (the phrasing sweep, slash round-trips and intent grounding are already data-shaped), or listed as covered by an equivalent test. The mapping is a tracked checklist; no test is dropped silently.
 - **Native acceptance** (Hyper-V, libvirt, Windows UIA, ConPTY, installed Chrome/Edge) runs on real hosts as in the stabilization gates. Mocks never stand in for them.
 
 ## 14. Security requirements specific to the rewrite
@@ -313,7 +333,8 @@ Read from the code at `8e7ebe5`:
 |---|---|---|
 | Provider capability | Hyper-V advertises `guest_os=("windows",)` (`argus/execution/secure_capsule.py`) | advertises `windows` and `linux` |
 | Provider-to-OS mapping | Provisioned images: `hyperv → windows-11`, `libvirt → ubuntu` (`argus/provisioning/capsule_bridge.py`). Baseline check: `hyperv → windows`, with target user `argus-target` on Windows and `argus` on Linux (`argus/provisioning/baseline.py`). | The guest OS comes from the image manifest (the guest runtime's `target_os`). Allowed pairs become a table: Hyper-V → Windows 11 or Ubuntu; libvirt → Ubuntu. |
-| Secure Boot | Template fixed to `MicrosoftWindows` (`argus/capsule/hyperv_isolated.py`) | `MicrosoftUEFICertificateAuthority` for Linux guests |
+| Secure Boot | Template fixed to `MicrosoftWindows` for Capsule runtime (`argus/capsule/hyperv_isolated.py`) and for image builds (`HyperVProvisioner`, `argus/provisioning/providers.py`) | `MicrosoftUEFICertificateAuthority` for Linux guests, in both places |
+| Hyper-V image builds | `HyperVProvisioner` always builds the Windows 11 answer ISO (`create_windows_11_answer_iso`) and the Windows installer flow (`argus/provisioning/providers.py`) | The provisioner picks its unattended media and installer flow from the environment definition's guest OS: the Windows 11 answer ISO for Windows, the Ubuntu auto-install for Ubuntu (see the Ubuntu auto-install row) |
 | Bootstrap media | NTFS VHDX on a fixed SCSI disk, protected with Windows permissions (`argus/capsule/windows_bootstrap.py`) | A medium the Linux guest reads, with the same protection as the libvirt path: the target user cannot read it (CAP-07) |
 | Guest address | Hyper-V reports the guest's IP through Key-Value Pair Exchange; Argus then disables it (`hyperv_isolated.py`) | Same flow. The Linux guest runs the Hyper-V KVP daemon (`hv_kvp_daemon`, from Ubuntu's `linux-cloud-tools` packages), installed by the Ubuntu auto-install for Hyper-V images |
 | Ubuntu auto-install | libvirt only. It passes `autoinstall` to the installer kernel by direct kernel boot, which skips Subiquity's disk-wipe confirmation (`argus/provisioning/providers.py`) | Hyper-V has no direct kernel boot, so the argument needs another route, for example a derived boot configuration recorded in the provisioning evidence. The route is chosen at design time and reviewed before implementation. |

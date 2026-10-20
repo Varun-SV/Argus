@@ -376,9 +376,11 @@ Fleet deliberately preserves `ExecutionEnvironment -> Capsule -> Adapter`. Sched
 
 ```bash
 pip install "argus-app-testing[serve]"
-argus serve
-argus serve --host 0.0.0.0 --port 8080
+argus serve                  # http://127.0.0.1:5000
+argus serve --port 8080
 ```
+
+> **Security:** keep the dashboard on the default loopback address. It does not yet require authentication, and its roam API can launch programs on the host. Do not bind it to `0.0.0.0` or any other network address, and do not use `--debug`, which enables the Werkzeug interactive debugger. The fix is tracked in the [re-architecture specification §8.1](docs/rearchitecture/specification.md#81-critical-fix-in-the-python-line-now).
 
 The current dashboard shows run history and roam-session summaries. The Fleet Observer described above is a future architecture and should not be confused with the existing dashboard.
 

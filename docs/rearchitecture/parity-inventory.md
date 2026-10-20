@@ -23,7 +23,7 @@ Legend: **Keep** = same behaviour and same user-visible contract. **Fix** = keep
 | `argus run [TEST]` | `--minutes`, `--max-tokens`, `--dry-run` | Keep |
 | `argus roam TARGET` | `--minutes`, `--max-tokens`, `--no-regressions`, `--adapter`, `--memory/--no-memory` | Fix (ARG-03, ARG-05, ARG-07) |
 | `argus watch` | `--minutes`, `--max-tokens` | Keep (native file watcher) |
-| `argus serve` | `--host`, `--port`, `--debug` | **Fix**: serves the PR #28 UI over HTTP instead of the Flask templates (see [specification §8](specification.md#8-argus-serve-uses-the-same-ui)) |
+| `argus serve` | `--host`, `--port`, `--debug` | **Fix**: serves the PR #28 UI over HTTP instead of the Flask templates (see [specification §8](specification.md#8-argus-serve-uses-the-same-ui)). Access token, `Origin` check and loopback-only default. `--debug` never enables a debugger. A non-loopback `--host` needs an explicit opt-in (SEC-01…05, already required of the Python line, [specification §8.1](specification.md#81-critical-fix-in-the-python-line-now)) |
 | `argus gui` / `argus-gui` | – | Keep (Tauri app) |
 | `argus providers` | – | Fix (ARG-01: readiness states) |
 | `argus report` | `--limit` | Keep |
@@ -31,7 +31,7 @@ Legend: **Keep** = same behaviour and same user-visible contract. **Fix** = keep
 | `argus knowledge stats/export/reset` | `TARGET` | Keep |
 | `argus knowledge docker up/down/status` | – | Keep (Qdrant stays an optional backend) |
 | `argus secrets set/list/remove` | `SECRET://ARGUS/NAME` references | Keep (same per-user store, values never printed) |
-| `argus-guest-runtime-build` | – | Superseded by a native guest-agent build target (`cargo build -p argus-guest`), same approved-bundle manifest and digests |
+| `argus-guest-runtime-build` | `OUTPUT`, `--runtime-version` | Keep. Still installed by the wheel on Windows x64 and manylinux x86_64. It packages the prebuilt native `argus-guest` binary shipped in that wheel instead of freezing Python with PyInstaller. The approved-bundle manifest and digests are the same, and no Rust toolchain or checkout is needed ([specification §10](specification.md#10-python-packaging-and-api)). Developers can also build the binary with `cargo build -p argus-guest` |
 
 Exit codes, the `rich` console summaries (✓/✗ lines, step durations, summary line) and `--help` text stay equivalent.
 

@@ -2,12 +2,12 @@
 
 Status: **planned; documentation only**
 
-Implementation gate: **PR #27 and PR #28 are merged. Do not begin implementation until the plan is reconciled with their final APIs and Fleet contracts, and prerequisite stabilization acceptance gates are met.**
+Implementation gate: **the matrix is built after G-SWITCH, on the Rust core ([re-architecture specification §12](rearchitecture/specification.md#12-migration-plan)). Do not begin implementation until G-SWITCH has passed, the stabilization gates A01–A12 and A16 are met, and this plan is reconciled with the Rust provisioning, desktop and Fleet APIs. Do not start matrix work on the Python line.** PR #27 and PR #28 are merged and remain the design baseline:
 
 - PR #27: ISO-backed OS environment provisioning
 - PR #28: Claude-style desktop GUI and website redesign
 
-This document records the intended design for review against those merged prerequisites. It is not an implementation contract yet; details may be refined against the merged APIs, but the architectural boundaries below should be preserved.
+This document records the intended design. It is not an implementation contract yet. Details may be refined against the Rust APIs at the implementation trigger, but the architectural boundaries below should be preserved.
 
 ## Goal
 
@@ -26,7 +26,7 @@ Argus should expand the requested combinations into independent test cases, sche
 
 ## Stabilization prerequisite
 
-The [stabilization specification](stabilization-spec.md) and [usability issue register](usability-issues.md) extend this planning scope with provider/configuration readiness, Capsule operator setup, Chrome target handling, both command-based and interactive CLI testing, browser/desktop action correctness, draft validation and honest reporting. These workflows must be dependable before matrix scheduling multiplies them across environments. The PR #27/#28 merge prerequisites are satisfied; API/Fleet reconciliation and the stabilization gates remain required. See the [reproduction results](reproduction-results.md) for current evidence and blockers. This addition is documentation only.
+The [stabilization specification](stabilization-spec.md) and [usability issue register](usability-issues.md) extend this planning scope with provider/configuration readiness, Capsule operator setup, Chrome target handling, both command-based and interactive CLI testing, browser/desktop action correctness, draft validation and honest reporting. These workflows must be dependable before matrix scheduling multiplies them across environments. The PR #27/#28 merge prerequisites are satisfied. G-SWITCH, reconciliation with the Rust APIs and Fleet contracts, and the stabilization gates are still required. See the [reproduction results](reproduction-results.md) for current evidence and blockers. This addition is documentation only.
 
 ## Architectural rule
 
@@ -127,7 +127,7 @@ tests:
   - performance
 ```
 
-The exact schema should be decided only after #27 and #28 merge so it can use their final public APIs and UX rather than introducing temporary compatibility layers.
+The exact schema is decided after G-SWITCH, against the Rust provisioning API and the PR #28 desktop UX as carried into the Rust implementation, rather than introducing temporary compatibility layers.
 
 ## Matrix identity
 
@@ -430,15 +430,15 @@ Do not start implementation merely because this planning PR is merged.
 The intended trigger is:
 
 ```text
-current PR #27 merged
+G-SWITCH passed (Rust core released as argus-app-testing 0.2.0)
         +
-current PR #28 merged
+stabilization gates A01–A12 and A16 met
         |
         v
-re-evaluate merged APIs
+re-evaluate the Rust APIs
         |
         v
 split this plan into implementation PR(s)
 ```
 
-At that point, review this document against the final #27 provisioning API, the final #28 desktop UX/API, and the then-current Fleet scheduler/execution contracts before writing code.
+PR #27 and PR #28 are already merged; they are the design baseline, not the trigger. At the trigger, review this document against the Rust provisioning API (`argus-provisioning`), the Rust desktop UX/API (`argus-api`, carrying the PR #28 design), and the then-current Rust Fleet scheduler/execution contracts before writing code. Internal Python APIs are not kept after the switch, so matrix work MUST NOT start on the Python line.
