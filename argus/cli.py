@@ -387,25 +387,61 @@ def _run_all(test: Optional[str], cfg, minutes, max_tokens) -> None:
 # ---------------------------------------------------------------- serve ----
 
 
+def _is_loopback_host(host: str) -> bool:
+    import ipaddress
+
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip().strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 @main.command()
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=5000, show_default=True)
-@click.option("--debug", is_flag=True)
-def serve(host: str, port: int, debug: bool) -> None:
+@click.option("--allow-remote", is_flag=True,
+              help="Allow binding a non-loopback --host (exposes the dashboard to the network).")
+@click.option("--debug", is_flag=True, help="Verbose logging (never enables the Werkzeug debugger).")
+def serve(host: str, port: int, allow_remote: bool, debug: bool) -> None:
     """Start the Argus web dashboard (requires Flask)."""
+    import logging
+
     try:
-        from argus.serve.app import create_app
+        from argus.serve.app import create_app, new_access_token
     except ImportError:
         _die(
             "Flask is required for `argus serve` — "
             "install with: pip install argus-app-testing[serve]"
         )
+    if not _is_loopback_host(host):
+        if not allow_remote:
+            _die(
+                f"refusing to bind non-loopback host {host!r}: the dashboard can start "
+                "programs on this machine. Use an SSH tunnel, or pass --allow-remote "
+                "if you really mean to expose it."
+            )
+        console.print(
+            f"[yellow]![/yellow] binding {host} exposes the dashboard to the network; "
+            "anyone with the access token can start programs on this machine. "
+            "Traffic is plain HTTP unless you put TLS in front of it."
+        )
+    if debug:
+        logging.basicConfig(level=logging.DEBUG)
+        logging.getLogger("werkzeug").setLevel(logging.DEBUG)
     cfg = load_config()
-    app = create_app(cfg)
+    token = new_access_token()
+    app = create_app(cfg, access_token=token)
+    url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
     console.print(
-        f"[green]✓[/green] Argus dashboard at [cyan]http://{host}:{port}[/cyan]"
+        f"[green]✓[/green] Argus dashboard at [cyan]http://{url_host}:{port}/?token={token}[/cyan]",
+        soft_wrap=True,
     )
-    app.run(host=host, port=port, debug=debug)
+    console.print("[dim]open this link once; the token is not shown again.[/dim]")
+    # SEC-04: never pass `debug`, and pin the debugger, reloader and .env loading off so
+    # FLASK_DEBUG or a project .env file cannot turn the Werkzeug debugger back on.
+    app.run(host=host, port=port, load_dotenv=False, use_debugger=False, use_reloader=False)
 
 
 # ----------------------------------------------------------- providers ----

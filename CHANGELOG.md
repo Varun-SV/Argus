@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-session provider, Local/Capsule environment, Failure Capsule retention and roam memory pickers in the desktop app (`.argus/config.yaml` is not modified)
 - Bundled SIL OFL fonts for the desktop app (Newsreader, IBM Plex Sans, IBM Plex Mono)
 - Redesigned project website (`index.html`) in the same design language
+### Security
+- `argus serve` now requires a per-launch access token (one-time `?token=` link exchanged for an HttpOnly, SameSite=Strict cookie) on every page and `/api/*` route, refuses state-changing requests from another `Origin`, refuses a non-loopback `--host` unless `--allow-remote` is passed (with a warning), never enables the Werkzeug debugger (`--debug` only raises log verbosity), and no longer shows the project path to unauthenticated visitors (spec §8.1, SEC-01…05)
 ### Fixed
 - Hyper-V session-storage removal retries briefly on transient Windows sharing violations (e.g. antivirus holding the new session disk) instead of reporting a cleanup failure
 - Integrated ISO-backed provisioning and secure Capsule generation/reconnect contracts from PR #27 while preserving the desktop theme and session provider picker
