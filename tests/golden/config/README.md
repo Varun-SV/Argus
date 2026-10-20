@@ -202,11 +202,11 @@ config's `raw`. The exception is `staging[]` entries, which reject unknown field
 
 ## Not covered here
 
-- **Default model names.** The built-in default model of the second native provider
-  and `DEFAULT_CONFIG` (the file `argus init` writes) are not exported, because
-  they contain vendor model names. Read them from `argus/config.py`
-  (`_default_model`, `DEFAULT_CONFIG`). The `provider-anthropic` case therefore
-  sets its model explicitly.
+- **Default model names.** The defaults are not listed as a table here, because they
+  contain vendor model names. Read them from `argus/config.py` (`_default_model`,
+  `DEFAULT_CONFIG`). Where a case omits its model, the resolved default is recorded
+  in that case's expected file: `provider-no-block` records the OpenAI default. The
+  `provider-anthropic` case sets its model explicitly.
 - **Use-time behaviour.** Checks that happen only when the configuration is used
   are recorded only as far as `derived` shows them. This includes Capsule
   environment-variable overrides (`ARGUS_CAPSULE_*`) and per-session Capsule

@@ -14,7 +14,7 @@
     "type": "AttributeError"
   },
   "implementation": {
-    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
     "name": "argus (Python)"
   },
   "input": {

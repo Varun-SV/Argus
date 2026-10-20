@@ -124,6 +124,9 @@ specification.
 
 **Run history**
 * Rows sort by the 20-digit allocation order in the name, not by the timestamp.
+  Constructing a `RunResult` also takes an order, so some orders (for example
+  `...841000000001` and `...961000000001`) are used by no file: the sequence has
+  gaps there by design.
   After a wall-clock rollback, the `rollback.test.yaml` run has an older stamp
   (`20251231-230000`) but sorts newest. The `.storage-order` counter holds the
   highest order handed out.

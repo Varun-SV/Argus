@@ -60,6 +60,8 @@ CATEGORIES = ("config", "spec", "programmatic")
 # Python sources whose behaviour the expected files describe. Their hashes are
 # recorded so a change to a loader shows up as drift in every expected file.
 LOADER_SOURCES = (
+    "argus/adapters/base.py",
+    "argus/capsule/base.py",
     "argus/capsule/files.py",
     "argus/config.py",
     "argus/engine/spec.py",
