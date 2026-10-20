@@ -311,7 +311,10 @@ mod tests {
     #[test]
     fn rejects_pid_reuse_for_children_older_than_parent() {
         // PID 30 claims parent 10, but started before 10: its real parent died and 10 is reused.
-        let snap = vec![p(10, None, 50, "root", 10), p(30, Some(10), 40, "stale", 500)];
+        let snap = vec![
+            p(10, None, 50, "root", 10),
+            p(30, Some(10), 40, "stale", 500),
+        ];
         let mut tracker = TreeTracker::new(&[10]);
         assert_eq!(tracker.observe(&snap).total_bytes, 10);
     }
@@ -336,7 +339,10 @@ mod tests {
         ];
         assert_eq!(tracker.observe(&first).total_bytes, 60);
         // The root and the daemon exited; the worker was re-parented to PID 1.
-        let second = vec![p(1, None, 0, "init", 1_000), p(12, Some(1), 3, "worker", 35)];
+        let second = vec![
+            p(1, None, 0, "init", 1_000),
+            p(12, Some(1), 3, "worker", 35),
+        ];
         let sample = tracker.observe(&second);
         assert_eq!(sample.total_bytes, 35);
         assert!(!sample.roots_alive);

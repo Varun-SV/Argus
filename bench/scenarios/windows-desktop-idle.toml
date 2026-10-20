@@ -1,0 +1,31 @@
+# P0 baseline: the CURRENT Python desktop app (`argus-gui`, pywebview + WebView2) idle with
+# its window open and no job. Spec section 11 row "Desktop app idle": baseline "to be
+# measured on Windows before work starts". The app opens bench/fixtures/desktop-project
+# (copied into {WORKDIR}). Step-by-step instructions:
+# bench/windows-baselines.md. The harness starts the app, samples the whole tree (launcher,
+# Python, WebView2 processes) for 60 s, excludes the first 15 s (start-up), then terminates
+# the tree. Skipped on other operating systems.
+schema = "argus-bench-scenario-v1"
+name = "windows-desktop-idle"
+description = "Python desktop app (argus-gui) idle for 60 s with its window open and no job, on Windows."
+tags = ["python", "baseline", "spec-11", "desktop", "windows"]
+command = ["{ARGUS_GUI}"]
+duration = "60s"
+measure_after = "15s"
+timeout = "120s"
+warmup = 0
+
+# The app opens the project in its working directory: a fresh copy of the desktop fixture.
+cwd = "{WORKDIR}"
+
+[workdir]
+copy_from = "bench/fixtures/desktop-project"
+
+# Fresh desktop state per run, so earlier conversations or projects do not change the result.
+[env]
+ARGUS_GUI_STATE_DIR = "{WORKDIR}/gui-state"
+
+[skip_unless]
+command = ["cmd.exe", "/d", "/c", "exit 0"]
+reason = "Windows only (the Python desktop app baseline is measured on Windows 11 x64)"
+timeout = "10s"

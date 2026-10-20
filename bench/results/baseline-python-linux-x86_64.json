@@ -1,0 +1,2289 @@
+{
+  "schema": "argus-bench-result-set-v1",
+  "description": "P0 Python baseline (ADR-001 section 2 reproduction) on a shared 4-CPU Linux x86_64 cloud sandbox, Ubuntu 24.04, Python 3.13.16, argus-app-testing 0.1.6.dev10. Default 50 ms interval and median of 5 runs; the -5ms variants (label variant=interval-5ms) re-measure the short-lived commands, whose 50 ms peak is unreliable (see warnings). Browser scenario ran with Playwright 1.56.0 because that is the Chromium revision available offline in the sandbox. Other builds ran concurrently on the machine, so wall times are noisy. See docs/rearchitecture/benchmarks.md.",
+  "results": [
+    {
+      "schema": "argus-bench-result-v1",
+      "tool": {
+        "name": "argus-bench",
+        "version": "0.0.0"
+      },
+      "created_utc": "2026-10-08T10:04:10Z",
+      "environment": {
+        "os": "linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04",
+        "arch": "x86_64",
+        "logical_cpus": 4,
+        "total_ram_bytes": 16876494848
+      },
+      "metric": {
+        "name": "rss",
+        "definition": "Linux resident set size per process (/proc/<pid>/statm resident), summed over the process tree; shared pages are counted once per process",
+        "interval_ms": 50,
+        "aggregation": "per sample: sum over every process in the tree; per run: highest sample (peak); over runs: median, min and max of the counted runs (warm-up and failed runs excluded)"
+      },
+      "mode": "run",
+      "status": "ok",
+      "status_reason": null,
+      "labels": {
+        "argus": "0.1.6.dev10",
+        "host": "shared-cloud-sandbox",
+        "python": "3.13.16"
+      },
+      "scenario": {
+        "name": "python-pass",
+        "description": "Bare Python interpreter: start, run `pass`, exit. Baseline for the interpreter's own cost.",
+        "tags": [
+          "python",
+          "baseline",
+          "adr-001"
+        ],
+        "file": "bench/scenarios/python-pass.toml",
+        "command": [
+          "{PYTHON}",
+          "-c",
+          "pass"
+        ],
+        "warmup": 1,
+        "expected_exit": 0,
+        "duration_ms": null,
+        "measure_after_ms": 0,
+        "pending": null
+      },
+      "attach": null,
+      "runs": [
+        {
+          "index": 1,
+          "warmup": true,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 33838,
+          "memory": {
+            "peak_tree_bytes": 9719808,
+            "peak_at_ms": 0,
+            "mean_tree_bytes": 9719808,
+            "samples": 1,
+            "counted_samples": 1,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 9719808,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 28932,
+          "memory": {
+            "peak_tree_bytes": 749568,
+            "peak_at_ms": 0,
+            "mean_tree_bytes": 749568,
+            "samples": 1,
+            "counted_samples": 1,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 749568,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 30579,
+          "memory": {
+            "peak_tree_bytes": 2113536,
+            "peak_at_ms": 0,
+            "mean_tree_bytes": 2113536,
+            "samples": 1,
+            "counted_samples": 1,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 2113536,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 35001,
+          "memory": {
+            "peak_tree_bytes": 2109440,
+            "peak_at_ms": 0,
+            "mean_tree_bytes": 2109440,
+            "samples": 1,
+            "counted_samples": 1,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 2109440,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 5,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 32959,
+          "memory": {
+            "peak_tree_bytes": 753664,
+            "peak_at_ms": 0,
+            "mean_tree_bytes": 753664,
+            "samples": 1,
+            "counted_samples": 1,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 753664,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 6,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 29170,
+          "memory": {
+            "peak_tree_bytes": 3051520,
+            "peak_at_ms": 0,
+            "mean_tree_bytes": 3051520,
+            "samples": 1,
+            "counted_samples": 1,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 3051520,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        }
+      ],
+      "summary": {
+        "runs": 5,
+        "wall_us": {
+          "median": 30579,
+          "min": 28932,
+          "max": 35001
+        },
+        "peak_tree_bytes": {
+          "median": 2109440,
+          "min": 749568,
+          "max": 3051520
+        },
+        "mean_tree_bytes": {
+          "median": 2109440,
+          "min": 749568,
+          "max": 3051520
+        },
+        "distinct_processes": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "by_name": [
+          {
+            "name": "python3.13",
+            "peak_bytes": {
+              "median": 2109440,
+              "min": 749568,
+              "max": 3051520
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          }
+        ]
+      },
+      "target": null,
+      "warnings": [
+        "a counted run had only 1 sample(s) at 50 ms: the process lived only a few intervals and its peak memory is probably underestimated; rerun with a smaller --interval-ms (e.g. 5) for a usable peak"
+      ],
+      "known_limits": [
+        "Processes that start and exit between two samples are never seen, and memory peaks shorter than the sampling interval can be missed.",
+        "Memory is summed per process: pages shared between processes (libraries, shared memory) are counted once per process, so the sum can exceed the physical memory in use.",
+        "A process that leaves the tree (is re-parented) before its first sample is not counted; once seen, a process stays counted while it lives.",
+        "Wall time runs from just before the root process is spawned until it exits, including interpreter or runtime start-up; setup and teardown are excluded."
+      ]
+    },
+    {
+      "schema": "argus-bench-result-v1",
+      "tool": {
+        "name": "argus-bench",
+        "version": "0.0.0"
+      },
+      "created_utc": "2026-10-08T10:04:18Z",
+      "environment": {
+        "os": "linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04",
+        "arch": "x86_64",
+        "logical_cpus": 4,
+        "total_ram_bytes": 16876494848
+      },
+      "metric": {
+        "name": "rss",
+        "definition": "Linux resident set size per process (/proc/<pid>/statm resident), summed over the process tree; shared pages are counted once per process",
+        "interval_ms": 5,
+        "aggregation": "per sample: sum over every process in the tree; per run: highest sample (peak); over runs: median, min and max of the counted runs (warm-up and failed runs excluded)"
+      },
+      "mode": "run",
+      "status": "ok",
+      "status_reason": null,
+      "labels": {
+        "argus": "0.1.6.dev10",
+        "host": "shared-cloud-sandbox",
+        "python": "3.13.16",
+        "variant": "interval-5ms"
+      },
+      "scenario": {
+        "name": "python-pass",
+        "description": "Bare Python interpreter: start, run `pass`, exit. Baseline for the interpreter's own cost.",
+        "tags": [
+          "python",
+          "baseline",
+          "adr-001"
+        ],
+        "file": "bench/scenarios/python-pass.toml",
+        "command": [
+          "{PYTHON}",
+          "-c",
+          "pass"
+        ],
+        "warmup": 1,
+        "expected_exit": 0,
+        "duration_ms": null,
+        "measure_after_ms": 0,
+        "pending": null
+      },
+      "attach": null,
+      "runs": [
+        {
+          "index": 1,
+          "warmup": true,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 30524,
+          "memory": {
+            "peak_tree_bytes": 11223040,
+            "peak_at_ms": 25,
+            "mean_tree_bytes": 10221568,
+            "samples": 5,
+            "counted_samples": 5,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 11223040,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 31671,
+          "memory": {
+            "peak_tree_bytes": 11194368,
+            "peak_at_ms": 25,
+            "mean_tree_bytes": 6651904,
+            "samples": 7,
+            "counted_samples": 7,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 11194368,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 31484,
+          "memory": {
+            "peak_tree_bytes": 11251712,
+            "peak_at_ms": 25,
+            "mean_tree_bytes": 7826773,
+            "samples": 7,
+            "counted_samples": 7,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 11251712,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 42119,
+          "memory": {
+            "peak_tree_bytes": 11206656,
+            "peak_at_ms": 35,
+            "mean_tree_bytes": 6876728,
+            "samples": 9,
+            "counted_samples": 9,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 11206656,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 5,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 39638,
+          "memory": {
+            "peak_tree_bytes": 11243520,
+            "peak_at_ms": 35,
+            "mean_tree_bytes": 8740864,
+            "samples": 8,
+            "counted_samples": 8,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 11243520,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 6,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 29950,
+          "memory": {
+            "peak_tree_bytes": 11165696,
+            "peak_at_ms": 25,
+            "mean_tree_bytes": 7875242,
+            "samples": 6,
+            "counted_samples": 6,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 11165696,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        }
+      ],
+      "summary": {
+        "runs": 5,
+        "wall_us": {
+          "median": 31671,
+          "min": 29950,
+          "max": 42119
+        },
+        "peak_tree_bytes": {
+          "median": 11206656,
+          "min": 11165696,
+          "max": 11251712
+        },
+        "mean_tree_bytes": {
+          "median": 7826773,
+          "min": 6651904,
+          "max": 8740864
+        },
+        "distinct_processes": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "by_name": [
+          {
+            "name": "python3.13",
+            "peak_bytes": {
+              "median": 11206656,
+              "min": 11165696,
+              "max": 11251712
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          }
+        ]
+      },
+      "target": null,
+      "warnings": [],
+      "known_limits": [
+        "Processes that start and exit between two samples are never seen, and memory peaks shorter than the sampling interval can be missed.",
+        "Memory is summed per process: pages shared between processes (libraries, shared memory) are counted once per process, so the sum can exceed the physical memory in use.",
+        "A process that leaves the tree (is re-parented) before its first sample is not counted; once seen, a process stays counted while it lives.",
+        "Wall time runs from just before the root process is spawned until it exits, including interpreter or runtime start-up; setup and teardown are excluded."
+      ]
+    },
+    {
+      "schema": "argus-bench-result-v1",
+      "tool": {
+        "name": "argus-bench",
+        "version": "0.0.0"
+      },
+      "created_utc": "2026-10-08T10:04:10Z",
+      "environment": {
+        "os": "linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04",
+        "arch": "x86_64",
+        "logical_cpus": 4,
+        "total_ram_bytes": 16876494848
+      },
+      "metric": {
+        "name": "rss",
+        "definition": "Linux resident set size per process (/proc/<pid>/statm resident), summed over the process tree; shared pages are counted once per process",
+        "interval_ms": 50,
+        "aggregation": "per sample: sum over every process in the tree; per run: highest sample (peak); over runs: median, min and max of the counted runs (warm-up and failed runs excluded)"
+      },
+      "mode": "run",
+      "status": "ok",
+      "status_reason": null,
+      "labels": {
+        "argus": "0.1.6.dev10",
+        "host": "shared-cloud-sandbox",
+        "python": "3.13.16"
+      },
+      "scenario": {
+        "name": "python-import-argus-cli",
+        "description": "Warm import of argus.cli (configuration, providers and their dependencies), then exit.",
+        "tags": [
+          "python",
+          "baseline",
+          "adr-001"
+        ],
+        "file": "bench/scenarios/python-import-argus-cli.toml",
+        "command": [
+          "{PYTHON}",
+          "-c",
+          "import argus.cli"
+        ],
+        "warmup": 1,
+        "expected_exit": 0,
+        "duration_ms": null,
+        "measure_after_ms": 0,
+        "pending": null
+      },
+      "attach": null,
+      "runs": [
+        {
+          "index": 1,
+          "warmup": true,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 333419,
+          "memory": {
+            "peak_tree_bytes": 44445696,
+            "peak_at_ms": 300,
+            "mean_tree_bytes": 28790784,
+            "samples": 7,
+            "counted_samples": 7,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44445696,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 348646,
+          "memory": {
+            "peak_tree_bytes": 44343296,
+            "peak_at_ms": 300,
+            "mean_tree_bytes": 23255332,
+            "samples": 7,
+            "counted_samples": 7,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44343296,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 421772,
+          "memory": {
+            "peak_tree_bytes": 44568576,
+            "peak_at_ms": 400,
+            "mean_tree_bytes": 26286762,
+            "samples": 9,
+            "counted_samples": 9,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44568576,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 280788,
+          "memory": {
+            "peak_tree_bytes": 44380160,
+            "peak_at_ms": 250,
+            "mean_tree_bytes": 24479061,
+            "samples": 6,
+            "counted_samples": 6,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44380160,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 5,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 320420,
+          "memory": {
+            "peak_tree_bytes": 44367872,
+            "peak_at_ms": 300,
+            "mean_tree_bytes": 26512237,
+            "samples": 7,
+            "counted_samples": 7,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44367872,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 6,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 321288,
+          "memory": {
+            "peak_tree_bytes": 44494848,
+            "peak_at_ms": 300,
+            "mean_tree_bytes": 27019556,
+            "samples": 7,
+            "counted_samples": 7,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44494848,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        }
+      ],
+      "summary": {
+        "runs": 5,
+        "wall_us": {
+          "median": 321288,
+          "min": 280788,
+          "max": 421772
+        },
+        "peak_tree_bytes": {
+          "median": 44380160,
+          "min": 44343296,
+          "max": 44568576
+        },
+        "mean_tree_bytes": {
+          "median": 26286762,
+          "min": 23255332,
+          "max": 27019556
+        },
+        "distinct_processes": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "by_name": [
+          {
+            "name": "python3.13",
+            "peak_bytes": {
+              "median": 44380160,
+              "min": 44343296,
+              "max": 44568576
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          }
+        ]
+      },
+      "target": null,
+      "warnings": [],
+      "known_limits": [
+        "Processes that start and exit between two samples are never seen, and memory peaks shorter than the sampling interval can be missed.",
+        "Memory is summed per process: pages shared between processes (libraries, shared memory) are counted once per process, so the sum can exceed the physical memory in use.",
+        "A process that leaves the tree (is re-parented) before its first sample is not counted; once seen, a process stays counted while it lives.",
+        "Wall time runs from just before the root process is spawned until it exits, including interpreter or runtime start-up; setup and teardown are excluded."
+      ]
+    },
+    {
+      "schema": "argus-bench-result-v1",
+      "tool": {
+        "name": "argus-bench",
+        "version": "0.0.0"
+      },
+      "created_utc": "2026-10-08T10:04:18Z",
+      "environment": {
+        "os": "linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04",
+        "arch": "x86_64",
+        "logical_cpus": 4,
+        "total_ram_bytes": 16876494848
+      },
+      "metric": {
+        "name": "rss",
+        "definition": "Linux resident set size per process (/proc/<pid>/statm resident), summed over the process tree; shared pages are counted once per process",
+        "interval_ms": 5,
+        "aggregation": "per sample: sum over every process in the tree; per run: highest sample (peak); over runs: median, min and max of the counted runs (warm-up and failed runs excluded)"
+      },
+      "mode": "run",
+      "status": "ok",
+      "status_reason": null,
+      "labels": {
+        "argus": "0.1.6.dev10",
+        "host": "shared-cloud-sandbox",
+        "python": "3.13.16",
+        "variant": "interval-5ms"
+      },
+      "scenario": {
+        "name": "python-import-argus-cli",
+        "description": "Warm import of argus.cli (configuration, providers and their dependencies), then exit.",
+        "tags": [
+          "python",
+          "baseline",
+          "adr-001"
+        ],
+        "file": "bench/scenarios/python-import-argus-cli.toml",
+        "command": [
+          "{PYTHON}",
+          "-c",
+          "import argus.cli"
+        ],
+        "warmup": 1,
+        "expected_exit": 0,
+        "duration_ms": null,
+        "measure_after_ms": 0,
+        "pending": null
+      },
+      "attach": null,
+      "runs": [
+        {
+          "index": 1,
+          "warmup": true,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 318783,
+          "memory": {
+            "peak_tree_bytes": 44515328,
+            "peak_at_ms": 275,
+            "mean_tree_bytes": 26818392,
+            "samples": 61,
+            "counted_samples": 61,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44515328,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 344212,
+          "memory": {
+            "peak_tree_bytes": 44453888,
+            "peak_at_ms": 300,
+            "mean_tree_bytes": 27721490,
+            "samples": 69,
+            "counted_samples": 69,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44453888,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 353304,
+          "memory": {
+            "peak_tree_bytes": 44306432,
+            "peak_at_ms": 300,
+            "mean_tree_bytes": 27662336,
+            "samples": 70,
+            "counted_samples": 70,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44306432,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 303600,
+          "memory": {
+            "peak_tree_bytes": 44478464,
+            "peak_at_ms": 265,
+            "mean_tree_bytes": 25274132,
+            "samples": 61,
+            "counted_samples": 61,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44478464,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 5,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 319339,
+          "memory": {
+            "peak_tree_bytes": 44294144,
+            "peak_at_ms": 285,
+            "mean_tree_bytes": 24550272,
+            "samples": 64,
+            "counted_samples": 64,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44294144,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 6,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 295701,
+          "memory": {
+            "peak_tree_bytes": 44425216,
+            "peak_at_ms": 255,
+            "mean_tree_bytes": 26980352,
+            "samples": 60,
+            "counted_samples": 60,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44425216,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        }
+      ],
+      "summary": {
+        "runs": 5,
+        "wall_us": {
+          "median": 319339,
+          "min": 295701,
+          "max": 353304
+        },
+        "peak_tree_bytes": {
+          "median": 44425216,
+          "min": 44294144,
+          "max": 44478464
+        },
+        "mean_tree_bytes": {
+          "median": 26980352,
+          "min": 24550272,
+          "max": 27721490
+        },
+        "distinct_processes": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "by_name": [
+          {
+            "name": "python3.13",
+            "peak_bytes": {
+              "median": 44425216,
+              "min": 44294144,
+              "max": 44478464
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          }
+        ]
+      },
+      "target": null,
+      "warnings": [],
+      "known_limits": [
+        "Processes that start and exit between two samples are never seen, and memory peaks shorter than the sampling interval can be missed.",
+        "Memory is summed per process: pages shared between processes (libraries, shared memory) are counted once per process, so the sum can exceed the physical memory in use.",
+        "A process that leaves the tree (is re-parented) before its first sample is not counted; once seen, a process stays counted while it lives.",
+        "Wall time runs from just before the root process is spawned until it exits, including interpreter or runtime start-up; setup and teardown are excluded."
+      ]
+    },
+    {
+      "schema": "argus-bench-result-v1",
+      "tool": {
+        "name": "argus-bench",
+        "version": "0.0.0"
+      },
+      "created_utc": "2026-10-08T10:04:12Z",
+      "environment": {
+        "os": "linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04",
+        "arch": "x86_64",
+        "logical_cpus": 4,
+        "total_ram_bytes": 16876494848
+      },
+      "metric": {
+        "name": "rss",
+        "definition": "Linux resident set size per process (/proc/<pid>/statm resident), summed over the process tree; shared pages are counted once per process",
+        "interval_ms": 50,
+        "aggregation": "per sample: sum over every process in the tree; per run: highest sample (peak); over runs: median, min and max of the counted runs (warm-up and failed runs excluded)"
+      },
+      "mode": "run",
+      "status": "ok",
+      "status_reason": null,
+      "labels": {
+        "argus": "0.1.6.dev10",
+        "host": "shared-cloud-sandbox",
+        "python": "3.13.16"
+      },
+      "scenario": {
+        "name": "python-help",
+        "description": "`argus --help` through the installed console script, warm.",
+        "tags": [
+          "python",
+          "baseline",
+          "spec-11"
+        ],
+        "file": "bench/scenarios/python-help.toml",
+        "command": [
+          "{ARGUS}",
+          "--help"
+        ],
+        "warmup": 1,
+        "expected_exit": 0,
+        "duration_ms": null,
+        "measure_after_ms": 0,
+        "pending": null
+      },
+      "attach": null,
+      "runs": [
+        {
+          "index": 1,
+          "warmup": true,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 355948,
+          "memory": {
+            "peak_tree_bytes": 44417024,
+            "peak_at_ms": 350,
+            "mean_tree_bytes": 26637824,
+            "samples": 8,
+            "counted_samples": 8,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44417024,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 285868,
+          "memory": {
+            "peak_tree_bytes": 44507136,
+            "peak_at_ms": 250,
+            "mean_tree_bytes": 24441514,
+            "samples": 6,
+            "counted_samples": 6,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44507136,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 298171,
+          "memory": {
+            "peak_tree_bytes": 44711936,
+            "peak_at_ms": 250,
+            "mean_tree_bytes": 24478378,
+            "samples": 6,
+            "counted_samples": 6,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44711936,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 312131,
+          "memory": {
+            "peak_tree_bytes": 44580864,
+            "peak_at_ms": 300,
+            "mean_tree_bytes": 26530962,
+            "samples": 7,
+            "counted_samples": 7,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44580864,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 5,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 292678,
+          "memory": {
+            "peak_tree_bytes": 44625920,
+            "peak_at_ms": 250,
+            "mean_tree_bytes": 24100181,
+            "samples": 6,
+            "counted_samples": 6,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44625920,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 6,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 325521,
+          "memory": {
+            "peak_tree_bytes": 44679168,
+            "peak_at_ms": 300,
+            "mean_tree_bytes": 25816502,
+            "samples": 7,
+            "counted_samples": 7,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44679168,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        }
+      ],
+      "summary": {
+        "runs": 5,
+        "wall_us": {
+          "median": 298171,
+          "min": 285868,
+          "max": 325521
+        },
+        "peak_tree_bytes": {
+          "median": 44625920,
+          "min": 44507136,
+          "max": 44711936
+        },
+        "mean_tree_bytes": {
+          "median": 24478378,
+          "min": 24100181,
+          "max": 26530962
+        },
+        "distinct_processes": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "by_name": [
+          {
+            "name": "python3.13",
+            "peak_bytes": {
+              "median": 44625920,
+              "min": 44507136,
+              "max": 44711936
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          }
+        ]
+      },
+      "target": null,
+      "warnings": [],
+      "known_limits": [
+        "Processes that start and exit between two samples are never seen, and memory peaks shorter than the sampling interval can be missed.",
+        "Memory is summed per process: pages shared between processes (libraries, shared memory) are counted once per process, so the sum can exceed the physical memory in use.",
+        "A process that leaves the tree (is re-parented) before its first sample is not counted; once seen, a process stays counted while it lives.",
+        "Wall time runs from just before the root process is spawned until it exits, including interpreter or runtime start-up; setup and teardown are excluded."
+      ]
+    },
+    {
+      "schema": "argus-bench-result-v1",
+      "tool": {
+        "name": "argus-bench",
+        "version": "0.0.0"
+      },
+      "created_utc": "2026-10-08T10:04:20Z",
+      "environment": {
+        "os": "linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04",
+        "arch": "x86_64",
+        "logical_cpus": 4,
+        "total_ram_bytes": 16876494848
+      },
+      "metric": {
+        "name": "rss",
+        "definition": "Linux resident set size per process (/proc/<pid>/statm resident), summed over the process tree; shared pages are counted once per process",
+        "interval_ms": 5,
+        "aggregation": "per sample: sum over every process in the tree; per run: highest sample (peak); over runs: median, min and max of the counted runs (warm-up and failed runs excluded)"
+      },
+      "mode": "run",
+      "status": "ok",
+      "status_reason": null,
+      "labels": {
+        "argus": "0.1.6.dev10",
+        "host": "shared-cloud-sandbox",
+        "python": "3.13.16",
+        "variant": "interval-5ms"
+      },
+      "scenario": {
+        "name": "python-help",
+        "description": "`argus --help` through the installed console script, warm.",
+        "tags": [
+          "python",
+          "baseline",
+          "spec-11"
+        ],
+        "file": "bench/scenarios/python-help.toml",
+        "command": [
+          "{ARGUS}",
+          "--help"
+        ],
+        "warmup": 1,
+        "expected_exit": 0,
+        "duration_ms": null,
+        "measure_after_ms": 0,
+        "pending": null
+      },
+      "attach": null,
+      "runs": [
+        {
+          "index": 1,
+          "warmup": true,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 288368,
+          "memory": {
+            "peak_tree_bytes": 44441600,
+            "peak_at_ms": 255,
+            "mean_tree_bytes": 27744938,
+            "samples": 54,
+            "counted_samples": 54,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44441600,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 307534,
+          "memory": {
+            "peak_tree_bytes": 44695552,
+            "peak_at_ms": 275,
+            "mean_tree_bytes": 25517485,
+            "samples": 62,
+            "counted_samples": 62,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44695552,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 261369,
+          "memory": {
+            "peak_tree_bytes": 44482560,
+            "peak_at_ms": 225,
+            "mean_tree_bytes": 26786217,
+            "samples": 53,
+            "counted_samples": 53,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44482560,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 321918,
+          "memory": {
+            "peak_tree_bytes": 44470272,
+            "peak_at_ms": 280,
+            "mean_tree_bytes": 27358570,
+            "samples": 65,
+            "counted_samples": 65,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44470272,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 5,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 412258,
+          "memory": {
+            "peak_tree_bytes": 44453888,
+            "peak_at_ms": 350,
+            "mean_tree_bytes": 27924751,
+            "samples": 83,
+            "counted_samples": 83,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44453888,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 6,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 436132,
+          "memory": {
+            "peak_tree_bytes": 44658688,
+            "peak_at_ms": 380,
+            "mean_tree_bytes": 26951162,
+            "samples": 88,
+            "counted_samples": 88,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 44658688,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        }
+      ],
+      "summary": {
+        "runs": 5,
+        "wall_us": {
+          "median": 321918,
+          "min": 261369,
+          "max": 436132
+        },
+        "peak_tree_bytes": {
+          "median": 44482560,
+          "min": 44453888,
+          "max": 44695552
+        },
+        "mean_tree_bytes": {
+          "median": 26951162,
+          "min": 25517485,
+          "max": 27924751
+        },
+        "distinct_processes": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "by_name": [
+          {
+            "name": "python3.13",
+            "peak_bytes": {
+              "median": 44482560,
+              "min": 44453888,
+              "max": 44695552
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          }
+        ]
+      },
+      "target": null,
+      "warnings": [],
+      "known_limits": [
+        "Processes that start and exit between two samples are never seen, and memory peaks shorter than the sampling interval can be missed.",
+        "Memory is summed per process: pages shared between processes (libraries, shared memory) are counted once per process, so the sum can exceed the physical memory in use.",
+        "A process that leaves the tree (is re-parented) before its first sample is not counted; once seen, a process stays counted while it lives.",
+        "Wall time runs from just before the root process is spawned until it exits, including interpreter or runtime start-up; setup and teardown are excluded."
+      ]
+    },
+    {
+      "schema": "argus-bench-result-v1",
+      "tool": {
+        "name": "argus-bench",
+        "version": "0.0.0"
+      },
+      "created_utc": "2026-10-08T10:04:14Z",
+      "environment": {
+        "os": "linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04",
+        "arch": "x86_64",
+        "logical_cpus": 4,
+        "total_ram_bytes": 16876494848
+      },
+      "metric": {
+        "name": "rss",
+        "definition": "Linux resident set size per process (/proc/<pid>/statm resident), summed over the process tree; shared pages are counted once per process",
+        "interval_ms": 50,
+        "aggregation": "per sample: sum over every process in the tree; per run: highest sample (peak); over runs: median, min and max of the counted runs (warm-up and failed runs excluded)"
+      },
+      "mode": "run",
+      "status": "ok",
+      "status_reason": null,
+      "labels": {
+        "argus": "0.1.6.dev10",
+        "host": "shared-cloud-sandbox",
+        "python": "3.13.16"
+      },
+      "scenario": {
+        "name": "python-cli-test-run",
+        "description": "`argus run` of a two-assertion CLI test (echo, exit code and stdout) in bench/fixtures/cli-project.",
+        "tags": [
+          "python",
+          "baseline",
+          "spec-11",
+          "adr-001"
+        ],
+        "file": "bench/scenarios/python-cli-test-run.toml",
+        "command": [
+          "{ARGUS}",
+          "run",
+          ".argus/two-assertions-{OS_FAMILY}.test.yaml"
+        ],
+        "warmup": 1,
+        "expected_exit": 0,
+        "duration_ms": null,
+        "measure_after_ms": 0,
+        "pending": null
+      },
+      "attach": null,
+      "runs": [
+        {
+          "index": 1,
+          "warmup": true,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 719813,
+          "memory": {
+            "peak_tree_bytes": 51609600,
+            "peak_at_ms": 650,
+            "mean_tree_bytes": 40953992,
+            "samples": 15,
+            "counted_samples": 15,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 51609600,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 618721,
+          "memory": {
+            "peak_tree_bytes": 51814400,
+            "peak_at_ms": 550,
+            "mean_tree_bytes": 37606636,
+            "samples": 13,
+            "counted_samples": 13,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 51814400,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 628809,
+          "memory": {
+            "peak_tree_bytes": 51695616,
+            "peak_at_ms": 550,
+            "mean_tree_bytes": 38857176,
+            "samples": 13,
+            "counted_samples": 13,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 51695616,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 618754,
+          "memory": {
+            "peak_tree_bytes": 51818496,
+            "peak_at_ms": 550,
+            "mean_tree_bytes": 36364918,
+            "samples": 13,
+            "counted_samples": 13,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 51818496,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 5,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 577848,
+          "memory": {
+            "peak_tree_bytes": 51773440,
+            "peak_at_ms": 550,
+            "mean_tree_bytes": 37807445,
+            "samples": 12,
+            "counted_samples": 12,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 51773440,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        },
+        {
+          "index": 6,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 653755,
+          "memory": {
+            "peak_tree_bytes": 51896320,
+            "peak_at_ms": 550,
+            "mean_tree_bytes": 34446774,
+            "samples": 14,
+            "counted_samples": 14,
+            "distinct_processes": 1,
+            "by_name": [
+              {
+                "name": "python3.13",
+                "peak_bytes": 51896320,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 0,
+          "leftover_names": [],
+          "note": null
+        }
+      ],
+      "summary": {
+        "runs": 5,
+        "wall_us": {
+          "median": 618754,
+          "min": 577848,
+          "max": 653755
+        },
+        "peak_tree_bytes": {
+          "median": 51814400,
+          "min": 51695616,
+          "max": 51896320
+        },
+        "mean_tree_bytes": {
+          "median": 37606636,
+          "min": 34446774,
+          "max": 38857176
+        },
+        "distinct_processes": {
+          "median": 1,
+          "min": 1,
+          "max": 1
+        },
+        "by_name": [
+          {
+            "name": "python3.13",
+            "peak_bytes": {
+              "median": 51814400,
+              "min": 51695616,
+              "max": 51896320
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          }
+        ]
+      },
+      "target": null,
+      "warnings": [],
+      "known_limits": [
+        "Processes that start and exit between two samples are never seen, and memory peaks shorter than the sampling interval can be missed.",
+        "Memory is summed per process: pages shared between processes (libraries, shared memory) are counted once per process, so the sum can exceed the physical memory in use.",
+        "A process that leaves the tree (is re-parented) before its first sample is not counted; once seen, a process stays counted while it lives.",
+        "Wall time runs from just before the root process is spawned until it exits, including interpreter or runtime start-up; setup and teardown are excluded."
+      ]
+    },
+    {
+      "schema": "argus-bench-result-v1",
+      "tool": {
+        "name": "argus-bench",
+        "version": "0.0.0"
+      },
+      "created_utc": "2026-10-08T10:04:22Z",
+      "environment": {
+        "os": "linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04",
+        "arch": "x86_64",
+        "logical_cpus": 4,
+        "total_ram_bytes": 16876494848
+      },
+      "metric": {
+        "name": "rss",
+        "definition": "Linux resident set size per process (/proc/<pid>/statm resident), summed over the process tree; shared pages are counted once per process",
+        "interval_ms": 50,
+        "aggregation": "per sample: sum over every process in the tree; per run: highest sample (peak); over runs: median, min and max of the counted runs (warm-up and failed runs excluded)"
+      },
+      "mode": "run",
+      "status": "ok",
+      "status_reason": null,
+      "labels": {
+        "argus": "0.1.6.dev10",
+        "host": "shared-cloud-sandbox",
+        "playwright": "1.56.0",
+        "python": "3.13.16"
+      },
+      "scenario": {
+        "name": "python-browser-one-assertion",
+        "description": "`argus run` of a one-assertion browser test (page title of an inline page) in bench/fixtures/browser-project.",
+        "tags": [
+          "python",
+          "baseline",
+          "spec-11",
+          "adr-001",
+          "browser"
+        ],
+        "file": "bench/scenarios/python-browser-one-assertion.toml",
+        "command": [
+          "{ARGUS}",
+          "run",
+          ".argus/one-assertion.test.yaml"
+        ],
+        "warmup": 1,
+        "expected_exit": 0,
+        "duration_ms": null,
+        "measure_after_ms": 0,
+        "pending": null
+      },
+      "attach": null,
+      "runs": [
+        {
+          "index": 1,
+          "warmup": true,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 1482418,
+          "memory": {
+            "peak_tree_bytes": 545624064,
+            "peak_at_ms": 1050,
+            "mean_tree_bytes": 166586914,
+            "samples": 30,
+            "counted_samples": 30,
+            "distinct_processes": 8,
+            "by_name": [
+              {
+                "name": "headless_shell.real",
+                "peak_bytes": 376696832,
+                "max_concurrent": 6,
+                "distinct": 6
+              },
+              {
+                "name": "node",
+                "peak_bytes": 108638208,
+                "max_concurrent": 1,
+                "distinct": 1
+              },
+              {
+                "name": "python3.13",
+                "peak_bytes": 61730816,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 3,
+          "leftover_names": [
+            "headless_shell.real",
+            "headless_shell.real",
+            "node"
+          ],
+          "note": null
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 1362576,
+          "memory": {
+            "peak_tree_bytes": 547614720,
+            "peak_at_ms": 950,
+            "mean_tree_bytes": 173977453,
+            "samples": 28,
+            "counted_samples": 28,
+            "distinct_processes": 8,
+            "by_name": [
+              {
+                "name": "headless_shell.real",
+                "peak_bytes": 378286080,
+                "max_concurrent": 6,
+                "distinct": 6
+              },
+              {
+                "name": "node",
+                "peak_bytes": 108982272,
+                "max_concurrent": 1,
+                "distinct": 1
+              },
+              {
+                "name": "python3.13",
+                "peak_bytes": 61874176,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 3,
+          "leftover_names": [
+            "headless_shell.real",
+            "headless_shell.real",
+            "node"
+          ],
+          "note": null
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 1470182,
+          "memory": {
+            "peak_tree_bytes": 551223296,
+            "peak_at_ms": 1100,
+            "mean_tree_bytes": 169357994,
+            "samples": 30,
+            "counted_samples": 30,
+            "distinct_processes": 8,
+            "by_name": [
+              {
+                "name": "headless_shell.real",
+                "peak_bytes": 379809792,
+                "max_concurrent": 6,
+                "distinct": 6
+              },
+              {
+                "name": "node",
+                "peak_bytes": 110993408,
+                "max_concurrent": 1,
+                "distinct": 1
+              },
+              {
+                "name": "python3.13",
+                "peak_bytes": 62009344,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 3,
+          "leftover_names": [
+            "headless_shell.real",
+            "headless_shell.real",
+            "node"
+          ],
+          "note": null
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 1387967,
+          "memory": {
+            "peak_tree_bytes": 551227392,
+            "peak_at_ms": 1000,
+            "mean_tree_bytes": 180413147,
+            "samples": 28,
+            "counted_samples": 28,
+            "distinct_processes": 8,
+            "by_name": [
+              {
+                "name": "headless_shell.real",
+                "peak_bytes": 381693952,
+                "max_concurrent": 6,
+                "distinct": 6
+              },
+              {
+                "name": "node",
+                "peak_bytes": 109404160,
+                "max_concurrent": 1,
+                "distinct": 1
+              },
+              {
+                "name": "python3.13",
+                "peak_bytes": 61657088,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 3,
+          "leftover_names": [
+            "headless_shell.real",
+            "headless_shell.real",
+            "node"
+          ],
+          "note": null
+        },
+        {
+          "index": 5,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 1278441,
+          "memory": {
+            "peak_tree_bytes": 551452672,
+            "peak_at_ms": 900,
+            "mean_tree_bytes": 179685691,
+            "samples": 26,
+            "counted_samples": 26,
+            "distinct_processes": 8,
+            "by_name": [
+              {
+                "name": "headless_shell.real",
+                "peak_bytes": 379940864,
+                "max_concurrent": 6,
+                "distinct": 6
+              },
+              {
+                "name": "node",
+                "peak_bytes": 111112192,
+                "max_concurrent": 1,
+                "distinct": 1
+              },
+              {
+                "name": "python3.13",
+                "peak_bytes": 61829120,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 3,
+          "leftover_names": [
+            "headless_shell.real",
+            "headless_shell.real",
+            "node"
+          ],
+          "note": null
+        },
+        {
+          "index": 6,
+          "warmup": false,
+          "exit_code": 0,
+          "signal": null,
+          "stopped_after_duration": false,
+          "timed_out": false,
+          "ok": true,
+          "wall_us": 1360302,
+          "memory": {
+            "peak_tree_bytes": 551858176,
+            "peak_at_ms": 950,
+            "mean_tree_bytes": 170458404,
+            "samples": 28,
+            "counted_samples": 28,
+            "distinct_processes": 8,
+            "by_name": [
+              {
+                "name": "headless_shell.real",
+                "peak_bytes": 380047360,
+                "max_concurrent": 6,
+                "distinct": 6
+              },
+              {
+                "name": "node",
+                "peak_bytes": 111362048,
+                "max_concurrent": 1,
+                "distinct": 1
+              },
+              {
+                "name": "python3.13",
+                "peak_bytes": 61898752,
+                "max_concurrent": 1,
+                "distinct": 1
+              }
+            ]
+          },
+          "leftover_processes": 3,
+          "leftover_names": [
+            "headless_shell.real",
+            "headless_shell.real",
+            "node"
+          ],
+          "note": null
+        }
+      ],
+      "summary": {
+        "runs": 5,
+        "wall_us": {
+          "median": 1362576,
+          "min": 1278441,
+          "max": 1470182
+        },
+        "peak_tree_bytes": {
+          "median": 551227392,
+          "min": 547614720,
+          "max": 551858176
+        },
+        "mean_tree_bytes": {
+          "median": 173977453,
+          "min": 169357994,
+          "max": 180413147
+        },
+        "distinct_processes": {
+          "median": 8,
+          "min": 8,
+          "max": 8
+        },
+        "by_name": [
+          {
+            "name": "headless_shell.real",
+            "peak_bytes": {
+              "median": 379940864,
+              "min": 378286080,
+              "max": 381693952
+            },
+            "runs_seen": 5,
+            "max_concurrent": 6
+          },
+          {
+            "name": "node",
+            "peak_bytes": {
+              "median": 110993408,
+              "min": 108982272,
+              "max": 111362048
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          },
+          {
+            "name": "python3.13",
+            "peak_bytes": {
+              "median": 61874176,
+              "min": 61657088,
+              "max": 62009344
+            },
+            "runs_seen": 5,
+            "max_concurrent": 1
+          }
+        ]
+      },
+      "target": null,
+      "warnings": [],
+      "known_limits": [
+        "Processes that start and exit between two samples are never seen, and memory peaks shorter than the sampling interval can be missed.",
+        "Memory is summed per process: pages shared between processes (libraries, shared memory) are counted once per process, so the sum can exceed the physical memory in use.",
+        "A process that leaves the tree (is re-parented) before its first sample is not counted; once seen, a process stays counted while it lives.",
+        "Wall time runs from just before the root process is spawned until it exits, including interpreter or runtime start-up; setup and teardown are excluded."
+      ]
+    }
+  ]
+}

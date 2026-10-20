@@ -1,0 +1,10 @@
+# Spec section 11 row "Knowledge, local embedder", `onnx` backend: <= 120 MB extra over the
+# same run without knowledge.
+schema = "argus-bench-scenario-v1"
+name = "argus-next-knowledge-onnx"
+description = "CLI test run with the local `onnx` embedder enabled (Rust); extra memory over argus-next-cli-test-run."
+tags = ["rust", "spec-11", "g-perf", "knowledge"]
+command = ["{ARGUS_NEXT}", "run", ".argus/two-assertions-{OS_FAMILY}.test.yaml"]
+cwd = "{WORKDIR}"
+timeout = "180s"
+pending = "needs argus-next feature: knowledge store with the onnx embedding backend (P4), and a fixture with a pre-downloaded model"

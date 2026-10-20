@@ -1,0 +1,27 @@
+# Spec section 11 row "Browser test, one assertion": no Node process; Argus <= 25 MB;
+# tree <= Chromium + 25 MB. These are checked from the per-name breakdown of the result
+# (no `node` entry; the argus-next entry <= 25 MiB; tree peak minus the Chromium entries
+# <= 25 MiB), so no single numeric [target] is set here.
+schema = "argus-bench-scenario-v1"
+name = "argus-next-browser-one-assertion"
+description = "`argus-next run` of the one-assertion browser test in bench/fixtures/browser-project (Rust, CDP)."
+tags = ["rust", "spec-11", "g-perf", "browser"]
+command = ["{ARGUS_NEXT}", "run", ".argus/one-assertion.test.yaml"]
+cwd = "{WORKDIR}"
+timeout = "120s"
+warmup = 1
+pending = "needs argus-next feature: browser adapter over CDP (P3)"
+
+[workdir]
+copy_from = "bench/fixtures/browser-project"
+create_dirs = ["home"]
+
+[env]
+HOME = "{WORKDIR}/home"
+USERPROFILE = "{WORKDIR}/home"
+APPDATA = "{WORKDIR}/home"
+LOCALAPPDATA = "{WORKDIR}/home"
+XDG_STATE_HOME = "{WORKDIR}/home"
+XDG_DATA_HOME = "{WORKDIR}/home"
+XDG_CONFIG_HOME = "{WORKDIR}/home"
+XDG_CACHE_HOME = "{WORKDIR}/home"

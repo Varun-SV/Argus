@@ -1,0 +1,11 @@
+# Spec section 11 row "Desktop app during a run": no periodic polling; live frames only while
+# visible. A person drives the run; the tree is sampled with `argus-bench attach` (see
+# docs/rearchitecture/benchmarks.md). This file documents the row and parses; it is not run.
+schema = "argus-bench-scenario-v1"
+name = "argus-next-desktop-run"
+description = "Tauri desktop app while a test runs (Rust); measured with attach mode while a person drives it."
+tags = ["rust", "spec-11", "g-perf", "desktop", "attach"]
+command = ["{ARGUS_NEXT}", "gui"]
+duration = "120s"
+warmup = 0
+pending = "needs argus-next feature: Tauri desktop app (P5); measure with `argus-bench attach --name argus-next`"

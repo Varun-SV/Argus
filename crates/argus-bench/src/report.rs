@@ -98,10 +98,10 @@ pub struct ScenarioInfo {
 /// Attach-mode details.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachInfo {
-    /// `pid` or `name`.
+    /// `pid`, `name` or `pid+name`: how the roots were selected.
     pub selector: String,
-    /// Process name given with `--name`.
-    pub name: Option<String>,
+    /// Process names given with `--name` (PIDs are not recorded; they mean nothing later).
+    pub names: Vec<String>,
     /// Number of root processes found.
     pub roots: u32,
     /// Requested sampling window in milliseconds.
@@ -131,6 +131,10 @@ pub struct RunRecord {
     pub memory: RunMemory,
     /// Tree members still alive when the root exited (terminated by the harness in run mode).
     pub leftover_processes: u32,
+    /// Names of those processes (sorted); the harness terminated them in run mode.
+    pub leftover_names: Vec<String>,
+    /// Why the run failed, or other notes.
+    pub note: Option<String>,
 }
 
 /// Summary of one process name across counted runs.
@@ -209,14 +213,48 @@ pub struct BenchResult {
     pub summary: Option<RunSummary>,
     /// Target comparison.
     pub target: Option<TargetCheck>,
+    /// Warnings about this particular result (for example too few samples per run).
+    pub warnings: Vec<String>,
     /// Known measurement limits.
     pub known_limits: Vec<String>,
+}
+
+/// Schema identifier of a set of result documents (`argus-bench merge`).
+pub const RESULT_SET_SCHEMA: &str = "argus-bench-result-set-v1";
+
+/// Several results in one file, e.g. a committed baseline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResultSet {
+    /// Always [`RESULT_SET_SCHEMA`].
+    pub schema: String,
+    /// Free text describing the set (how it was produced, caveats).
+    pub description: String,
+    /// The results, in the order given.
+    pub results: Vec<BenchResult>,
+}
+
+impl ResultSet {
+    /// Builds a set from result documents, rejecting documents of another schema.
+    pub fn from_results(description: &str, results: Vec<BenchResult>) -> Result<Self, String> {
+        if let Some(bad) = results.iter().find(|r| r.schema != RESULT_SCHEMA) {
+            return Err(format!(
+                "expected schema {RESULT_SCHEMA}, found `{}`",
+                bad.schema
+            ));
+        }
+        Ok(Self {
+            schema: RESULT_SET_SCHEMA.to_owned(),
+            description: description.to_owned(),
+            results,
+        })
+    }
 }
 
 /// Summarizes the counted runs: not warm-up, and `ok`.
 pub fn summarize_runs(runs: &[RunRecord]) -> Option<RunSummary> {
     let counted: Vec<&RunRecord> = runs.iter().filter(|r| !r.warmup && r.ok).collect();
-    let collect = |f: &dyn Fn(&RunRecord) -> u64| -> Vec<u64> { counted.iter().map(|r| f(r)).collect() };
+    let collect =
+        |f: &dyn Fn(&RunRecord) -> u64| -> Vec<u64> { counted.iter().map(|r| f(r)).collect() };
     let wall_us = summarize(&collect(&|r| r.wall_us))?;
     let peak = summarize(&collect(&|r| r.memory.peak_tree_bytes))?;
     let mean = summarize(&collect(&|r| r.memory.mean_tree_bytes))?;
@@ -265,6 +303,28 @@ pub fn summarize_runs(runs: &[RunRecord]) -> Option<RunSummary> {
     })
 }
 
+/// Fewest samples per counted run below which the peak is flagged as unreliable.
+pub const MIN_RELIABLE_SAMPLES: u64 = 3;
+
+/// Warnings derived from the runs: counted runs with fewer than [`MIN_RELIABLE_SAMPLES`]
+/// samples (the process lived only a few intervals, so its peak was probably missed).
+pub fn sample_warnings(runs: &[RunRecord], interval_ms: u64) -> Vec<String> {
+    let few = runs
+        .iter()
+        .filter(|r| !r.warmup && r.ok)
+        .map(|r| r.memory.samples)
+        .min()
+        .filter(|&n| n < MIN_RELIABLE_SAMPLES);
+    match few {
+        Some(n) => vec![format!(
+            "a counted run had only {n} sample(s) at {interval_ms} ms: the process lived only a \
+             few intervals and its peak memory is probably underestimated; rerun with a smaller \
+             --interval-ms (e.g. 5) for a usable peak"
+        )],
+        None => Vec::new(),
+    }
+}
+
 /// Bytes to MiB.
 pub fn mib(bytes: u64) -> f64 {
     // u64 -> f64 can round above 2^53 bytes (8 PiB); irrelevant for memory sizes.
@@ -281,10 +341,7 @@ pub fn ms(us: u64) -> f64 {
 }
 
 /// Compares the summary medians with the target.
-pub fn check_target(
-    target: &crate::scenario::Target,
-    summary: Option<&RunSummary>,
-) -> TargetCheck {
+pub fn check_target(target: &crate::scenario::Target, summary: Option<&RunSummary>) -> TargetCheck {
     let wall_within = match (target.wall_ms, summary) {
         (Some(bound), Some(s)) => Some(ms(s.wall_us.median) <= bound),
         _ => None,
@@ -330,10 +387,8 @@ pub fn render_table(result: &BenchResult) -> String {
     let mut out = String::new();
     let title = match (&result.scenario, &result.attach) {
         (Some(s), _) => format!("scenario {}", s.name),
-        (None, Some(a)) => match &a.name {
-            Some(name) => format!("attach --name {name}"),
-            None => "attach --pid".to_owned(),
-        },
+        (None, Some(a)) if a.names.is_empty() => "attach --pid".to_owned(),
+        (None, Some(a)) => format!("attach --name {}", a.names.join(", ")),
         (None, None) => "result".to_owned(),
     };
     let _ = writeln!(
@@ -361,6 +416,17 @@ pub fn render_table(result: &BenchResult) -> String {
         "  metric {} sampled every {} ms, summed over the process tree",
         result.metric.name, result.metric.interval_ms
     );
+    if !result.labels.is_empty() {
+        let labels: Vec<String> = result
+            .labels
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        let _ = writeln!(out, "  labels {}", labels.join(", "));
+    }
+    for warning in &result.warnings {
+        let _ = writeln!(out, "  WARNING: {warning}");
+    }
     if result.runs.is_empty() {
         return out;
     }
@@ -389,6 +455,16 @@ pub fn render_table(result: &BenchResult) -> String {
             run.leftover_processes,
             if run.ok { "" } else { "  <- failed" }
         );
+        if let Some(note) = &run.note {
+            let _ = writeln!(out, "         {note}");
+        }
+        if !run.leftover_names.is_empty() {
+            let _ = writeln!(
+                out,
+                "         still running when the root exited (terminated): {}",
+                run.leftover_names.join(", ")
+            );
+        }
     }
     if let Some(summary) = &result.summary {
         let _ = writeln!(out);
@@ -496,6 +572,8 @@ mod tests {
                 }],
             },
             leftover_processes: 0,
+            leftover_names: Vec::new(),
+            note: None,
         }
     }
 
@@ -510,7 +588,10 @@ mod tests {
         ];
         let s = summarize_runs(&runs).unwrap();
         assert_eq!(s.runs, 3);
-        assert_eq!((s.wall_us.median, s.wall_us.min, s.wall_us.max), (2_000, 1_000, 3_000));
+        assert_eq!(
+            (s.wall_us.median, s.wall_us.min, s.wall_us.max),
+            (2_000, 1_000, 3_000)
+        );
         assert_eq!(s.peak_tree_bytes.median, 20);
         assert_eq!(s.by_name[0].name, "py");
         assert_eq!(s.by_name[0].runs_seen, 3);
@@ -534,6 +615,19 @@ mod tests {
     #[test]
     fn no_counted_runs_means_no_summary() {
         assert!(summarize_runs(&[run(1, true, true, 1, 1)]).is_none());
+    }
+
+    #[test]
+    fn few_samples_are_flagged() {
+        let mut runs = vec![run(1, false, true, 1, 1), run(2, false, true, 1, 1)];
+        assert!(sample_warnings(&runs, 50).is_empty());
+        runs[1].memory.samples = 1;
+        let w = sample_warnings(&runs, 50);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("only 1 sample(s) at 50 ms"), "{}", w[0]);
+        // Warm-up and failed runs do not count.
+        runs[1].warmup = true;
+        assert!(sample_warnings(&runs, 50).is_empty());
     }
 
     #[test]

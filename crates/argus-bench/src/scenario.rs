@@ -37,7 +37,10 @@ pub const PLACEHOLDERS: &[(&str, &str)] = &[
         "repository root: --root, else the nearest ancestor of the scenario file with a bench/ dir",
     ),
     ("SCENARIO_DIR", "directory that contains the scenario file"),
-    ("WORKDIR", "fresh empty directory created for each run and deleted afterwards"),
+    (
+        "WORKDIR",
+        "fresh empty directory created for each run and deleted afterwards",
+    ),
     ("OS", "linux, macos or windows"),
     ("OS_FAMILY", "unix or windows"),
     ("EXE_SUFFIX", ".exe on Windows, empty elsewhere"),
@@ -250,7 +253,10 @@ pub fn expand(template: &str, values: &BTreeMap<String, String>) -> Result<Strin
             if let Some(len) = placeholder_len(&bytes[i + 1..]) {
                 let name = &template[i + 1..i + 1 + len];
                 let value = values.get(name).ok_or_else(|| {
-                    field_err("placeholder", format!("unknown or unset placeholder {{{name}}}"))
+                    field_err(
+                        "placeholder",
+                        format!("unknown or unset placeholder {{{name}}}"),
+                    )
                 })?;
                 out.push_str(&template[copied..i]);
                 out.push_str(value);
@@ -291,7 +297,10 @@ fn check_argv(field: &str, argv: &[String]) -> Result<(), ScenarioError> {
 fn check_relative(field: &str, value: &str) -> Result<(), ScenarioError> {
     let path = Path::new(value);
     if value.is_empty() || value.contains('\\') {
-        return Err(field_err(field, "must be a non-empty path using / separators"));
+        return Err(field_err(
+            field,
+            "must be a non-empty path using / separators",
+        ));
     }
     for component in path.components() {
         match component {
@@ -377,7 +386,10 @@ impl Scenario {
         };
         if let Some(duration) = duration {
             if measure_after >= duration {
-                return Err(field_err("measure_after", "must be shorter than `duration`"));
+                return Err(field_err(
+                    "measure_after",
+                    "must be shorter than `duration`",
+                ));
             }
         }
         let timeout = match raw.timeout.as_deref() {
@@ -501,19 +513,23 @@ command = ["{PYTON}", "-c", "pass"]
 
     #[test]
     fn python_braces_are_not_placeholders() {
-        assert_eq!(placeholders_in("print({'a': 1}) {x} {X1} {WORKDIR}/h"), vec!["X1", "WORKDIR"]);
+        assert_eq!(
+            placeholders_in("print({'a': 1}) {x} {X1} {WORKDIR}/h"),
+            vec!["X1", "WORKDIR"]
+        );
         let mut values = BTreeMap::new();
         values.insert("WORKDIR".to_owned(), "/w".to_owned());
-        assert_eq!(expand("{'k': {WORKDIR}}/{", &values).unwrap(), "{'k': /w}/{");
+        assert_eq!(
+            expand("{'k': {WORKDIR}}/{", &values).unwrap(),
+            "{'k': /w}/{"
+        );
         assert!(expand("{NOPE}", &values).is_err());
     }
 
     #[test]
     fn workdir_paths_must_stay_inside() {
         for bad in ["../x", "/abs", "a/../../b", "a\\b", ""] {
-            let text = format!(
-                "{MINIMAL}\n[workdir]\ncopy_from = {bad:?}\n"
-            );
+            let text = format!("{MINIMAL}\n[workdir]\ncopy_from = {bad:?}\n");
             assert!(Scenario::from_toml_str(&text).is_err(), "{bad}");
         }
         let ok = format!("{MINIMAL}\n[workdir]\ncopy_from = \"bench/fixtures/x\"\n");
