@@ -1,0 +1,6 @@
+# Unknown top-level keys are kept in raw and otherwise ignored, with no warning.
+provider: ollama
+telemetry: true
+providerz: openai
+browser:
+  headless: false

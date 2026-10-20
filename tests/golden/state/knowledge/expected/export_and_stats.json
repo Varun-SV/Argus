@@ -1,0 +1,105 @@
+{
+  "api": "argus knowledge / ArgusAPI.knowledge*",
+  "case": "knowledge/export_and_stats",
+  "environment": {
+    "COLUMNS": "120"
+  },
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "argus_knowledge_export": {
+      "args": [
+        "argus",
+        "knowledge",
+        "export",
+        "notepad.exe",
+        "--out",
+        "exported.graph.json"
+      ],
+      "exception": null,
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "✓ Exported to exported.graph.json\n"
+    },
+    "argus_knowledge_export_bytes_equal_graph": true,
+    "argus_knowledge_export_missing": {
+      "args": [
+        "argus",
+        "knowledge",
+        "export",
+        "missing-app"
+      ],
+      "exception": null,
+      "exit_code": 1,
+      "stderr": "",
+      "stdout": "✗ No graph found for 'missing-app' at \n<PROJECT>/.argus/knowledge/missing-app.graph.json\n"
+    },
+    "argus_knowledge_stats": {
+      "args": [
+        "argus",
+        "knowledge",
+        "stats"
+      ],
+      "exception": null,
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━┓\n┃ target                       ┃ states ┃ transitions ┃ bug nodes ┃\n┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━┩\n│ https-example-test-app.graph │      2 │           4 │         1 │\n│ notepad-exe.graph            │      2 │           2 │         1 │\n└──────────────────────────────┴────────┴─────────────┴───────────┘\n"
+    },
+    "argus_knowledge_stats_target": {
+      "args": [
+        "argus",
+        "knowledge",
+        "stats",
+        "--target",
+        "https://example.test/app"
+      ],
+      "exception": null,
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "┏━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━┓\n┃ target                   ┃ states ┃ transitions ┃ bug nodes ┃\n┡━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━┩\n│ https://example.test/app │      2 │           4 │         1 │\n└──────────────────────────┴────────┴─────────────┴───────────┘\n"
+    },
+    "gui_knowledge": {
+      "default": {
+        "backend": "JSON graph · keyword retrieval · no vector backend",
+        "bugs": 1,
+        "launch_target": null,
+        "ok": true,
+        "sessions": 1,
+        "states": 2,
+        "target": "https-example-test-app",
+        "targets": [
+          "https-example-test-app",
+          "notepad-exe"
+        ],
+        "transitions": 4
+      },
+      "example.test": {
+        "error": "Argus has no knowledge for 'example.test' yet. Known targets: https-example-test-app, notepad-exe.",
+        "ok": false
+      },
+      "notepad.exe": {
+        "backend": "JSON graph · keyword retrieval · no vector backend",
+        "bugs": 1,
+        "launch_target": "notepad.exe",
+        "ok": true,
+        "sessions": 1,
+        "states": 2,
+        "target": "notepad.exe",
+        "targets": [
+          "https-example-test-app",
+          "notepad-exe"
+        ],
+        "transitions": 2
+      },
+      "unknown-app": {
+        "error": "Argus has no knowledge for 'unknown-app' yet. Known targets: https-example-test-app, notepad-exe.",
+        "ok": false
+      }
+    },
+    "gui_knowledge_export": {
+      "ok": true,
+      "path": ".argus/exports/notepad-exe.graph.json",
+      "target": "notepad.exe"
+    },
+    "gui_knowledge_export_bytes_equal_graph": true
+  }
+}

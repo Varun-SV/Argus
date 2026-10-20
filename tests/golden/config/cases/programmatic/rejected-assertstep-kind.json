@@ -1,0 +1,5 @@
+{
+  "description": "AssertStep kind must be 'assert'.",
+  "construct": "AssertStep",
+  "args": {"assertion": "text_visible", "expected": "hi", "kind": "step"}
+}

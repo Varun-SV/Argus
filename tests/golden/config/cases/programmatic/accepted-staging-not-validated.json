@@ -1,0 +1,11 @@
+{
+  "description": "Programmatic staging entries are NOT validated (only the YAML parser checks them).",
+  "construct": "TestSpec",
+  "args": {
+    "name": "staging",
+    "adapter": "cli",
+    "launch": "tool",
+    "steps": [{"class": "NLStep", "args": {"text": "Run"}}],
+    "staging": [{"source": "/abs/source.txt", "destination": "../escape.txt", "sha256": "xyz"}]
+  }
+}

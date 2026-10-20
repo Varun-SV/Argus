@@ -1,0 +1,6 @@
+{
+  "description": "Collect paths that alias under Windows semantics are rejected.",
+  "construct": "TestSpec",
+  "args": {"name": "c", "adapter": "cli", "launch": "tool", "steps": [],
+           "collect": ["out/a.txt", "OUT\\A.TXT"]}
+}

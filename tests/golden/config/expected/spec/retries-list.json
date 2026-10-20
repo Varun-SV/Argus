@@ -1,0 +1,32 @@
+{
+  "case": "spec/retries-list",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "type_error",
+    "message": "int() argument must be a string, a bytes-like object or a real number, not 'list'",
+    "module": "builtins",
+    "type": "TypeError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/retries-list.test.yaml",
+        "sha256": "b8d6657b8cb8cae6f376d744acd0d8d7939698ce468f4e6b4efbdc30534d2a6f"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

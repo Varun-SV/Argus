@@ -1,0 +1,4 @@
+# Empty knowledge block: today's defaults (spec section 7.1, decision R-2):
+# vector_backend chroma, embedding_model all-MiniLM-L6-v2, enabled true.
+provider: ollama
+knowledge: {}

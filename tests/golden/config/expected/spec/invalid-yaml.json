@@ -1,0 +1,37 @@
+{
+  "case": "spec/invalid-yaml",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "cause": {
+      "message": "while parsing a flow mapping\n  in \"<unicode string>\", line 2, column 9:\n    target: {adapter: cli, launch: echo hi\n            ^\nexpected ',' or '}', but got ':'\n  in \"<unicode string>\", line 3, column 6:\n    steps:\n         ^",
+      "module": "yaml.parser",
+      "type": "ParserError"
+    },
+    "message": "invalid YAML: while parsing a flow mapping\n  in \"<unicode string>\", line 2, column 9:\n    target: {adapter: cli, launch: echo hi\n            ^\nexpected ',' or '}', but got ':'\n  in \"<unicode string>\", line 3, column 6:\n    steps:\n         ^",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/invalid-yaml.test.yaml",
+        "sha256": "491a9319425b0fb089429724b869912464c32c3dee7ec6b4c2a6137e01e642b7"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

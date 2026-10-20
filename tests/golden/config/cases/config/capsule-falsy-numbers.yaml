@@ -1,0 +1,10 @@
+# Zero is falsy: guest_port and the timeouts fall back to their defaults,
+# while memory_mb/cpu_count keep an explicit 0.
+provider: ollama
+execution:
+  capsule:
+    guest_port: 0
+    boot_timeout_seconds: 0
+    agent_timeout_seconds: 0
+    memory_mb: 0
+    cpu_count: 0

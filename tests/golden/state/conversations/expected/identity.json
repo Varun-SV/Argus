@@ -1,0 +1,25 @@
+{
+  "api": "argus.gui.state",
+  "case": "conversations/identity",
+  "note": "The exporter pins ArgusAPI._conversation_identity to the fake paths above; a real window pins project_identity(project) when it opens.",
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "gui_state_root": {
+      "ARGUS_GUI_STATE_DIR=/golden/gui-state-override": "/golden/gui-state-override",
+      "XDG_STATE_HOME set": "<STATE_HOME>/argus",
+      "XDG_STATE_HOME unset": "<HOME>/.local/state/argus",
+      "XDG_STATE_HOME=relative/state": "relative/state/argus"
+    },
+    "identity_derivation": {
+      "conversation_store": "<gui_state_root>/projects/<project_key>/conversations.json",
+      "project_identity": "os.path.normcase(str(Path(project).resolve(strict=True)))",
+      "project_key": "sha256(utf-8 identity).hexdigest()[:24]"
+    },
+    "keys": {
+      "/golden/legacy-project": "fb0959d3aee5bfdd1ee9246f",
+      "/golden/non-list-project": "0476c9897d0a0f3edee7087a",
+      "/golden/project": "889e4941b1a5915efdd691ce"
+    },
+    "project_identity_of_temp_project": "<PROJECT>"
+  }
+}

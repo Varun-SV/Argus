@@ -1,0 +1,70 @@
+{
+  "case": "spec/assert-expected-unvalidated",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/assert-expected-unvalidated.test.yaml",
+        "sha256": "fee96c4f367729aa64023ba4209c6db0a4c41605e72c68cf3216716c8ce32fe6"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "assert-expected-unvalidated.test.yaml",
+    "launch": "notepad.exe",
+    "name": "assert-expected-unvalidated.test",
+    "path": "<PROJECT>/.argus/assert-expected-unvalidated.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "assertion": "exit_code_is",
+        "class": "AssertStep",
+        "describe": "exit_code_is: 'zero'",
+        "expected": "zero",
+        "kind": "assert"
+      },
+      {
+        "assertion": "process_running",
+        "class": "AssertStep",
+        "describe": "process_running: 'maybe'",
+        "expected": "maybe",
+        "kind": "assert"
+      },
+      {
+        "assertion": "element_exists",
+        "class": "AssertStep",
+        "describe": "element_exists: [1, 2]",
+        "expected": [
+          1,
+          2
+        ],
+        "kind": "assert"
+      },
+      {
+        "assertion": "text_visible",
+        "class": "AssertStep",
+        "describe": "text_visible: None",
+        "expected": null,
+        "kind": "assert"
+      }
+    ]
+  }
+}

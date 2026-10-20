@@ -1,0 +1,32 @@
+{
+  "case": "spec/retries-not-integer",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "value_error",
+    "message": "invalid literal for int() with base 10: 'twice'",
+    "module": "builtins",
+    "type": "ValueError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/retries-not-integer.test.yaml",
+        "sha256": "a5cb0ad7e7b7016b31e8be17b58ac981307de6e58494d1b60152c6b8c28c8958"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

@@ -1,0 +1,5 @@
+# Empty vector_url / persist_dir become null.
+provider: ollama
+knowledge:
+  vector_url: ""
+  persist_dir: ""

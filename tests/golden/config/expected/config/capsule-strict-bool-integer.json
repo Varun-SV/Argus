@@ -1,0 +1,35 @@
+{
+  "case": "config/capsule-strict-bool-integer",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "value_error",
+    "message": "execution.capsule.allow_dhcp must be a boolean (true/false)",
+    "module": "builtins",
+    "type": "ValueError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/capsule-strict-bool-integer.yaml",
+        "sha256": "2b7b1eee9541c2a26c4a120bafbfbc44ab1966a4b9b0b98924f4d52255ff3b30"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

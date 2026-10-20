@@ -1,0 +1,4 @@
+provider: openai
+budgets:
+  time_minutes: "15"
+  max_tokens: "2000"

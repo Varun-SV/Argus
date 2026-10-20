@@ -1,0 +1,9 @@
+target:
+  launch: tool.exe
+steps:
+  - "Run it"
+staging:
+  - source: a.txt
+    destination: a.txt
+    mode: "0644"
+    owner: root

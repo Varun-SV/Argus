@@ -1,0 +1,65 @@
+{
+  "case": "spec/cli-command",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/cli-command.test.yaml",
+        "sha256": "160526b0922b93c89510061f2a4b1b06c9b6f81d6eac45b70fe376fc8f06f08e"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "cli",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "cli-command.test.yaml",
+    "launch": "python -c \"print('hello')\"",
+    "name": "cli prints a greeting",
+    "path": "<PROJECT>/.argus/cli-command.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Wait for the command to finish"
+      },
+      {
+        "assertion": "stdout_contains",
+        "class": "AssertStep",
+        "describe": "stdout_contains: 'hello'",
+        "expected": "hello",
+        "kind": "assert"
+      },
+      {
+        "assertion": "stderr_contains",
+        "class": "AssertStep",
+        "describe": "stderr_contains: ''",
+        "expected": "",
+        "kind": "assert"
+      },
+      {
+        "assertion": "exit_code_is",
+        "class": "AssertStep",
+        "describe": "exit_code_is: 0",
+        "expected": 0,
+        "kind": "assert"
+      }
+    ]
+  }
+}

@@ -1,0 +1,3 @@
+# An empty list is falsy and treated like an absent knowledge block.
+provider: ollama
+knowledge: []

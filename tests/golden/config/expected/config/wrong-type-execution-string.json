@@ -1,0 +1,35 @@
+{
+  "case": "config/wrong-type-execution-string",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "attribute_error",
+    "message": "'str' object has no attribute 'get'",
+    "module": "builtins",
+    "type": "AttributeError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/wrong-type-execution-string.yaml",
+        "sha256": "86ddc9aa87f7aecf104f3e12da9c0217b8f0fec7c3375cd3bc556100b09f635c"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

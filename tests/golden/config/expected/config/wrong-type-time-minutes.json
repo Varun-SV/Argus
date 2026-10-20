@@ -1,0 +1,35 @@
+{
+  "case": "config/wrong-type-time-minutes",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "value_error",
+    "message": "could not convert string to float: 'ten'",
+    "module": "builtins",
+    "type": "ValueError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/wrong-type-time-minutes.yaml",
+        "sha256": "0fa498503a563e0645abea1bde3019b45a1427d902bfaa59be668efe1a7a3d35"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

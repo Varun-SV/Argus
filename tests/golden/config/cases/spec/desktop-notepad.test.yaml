@@ -1,0 +1,18 @@
+# Same shape as the example written by `argus init`.
+name: Notepad types and finds text
+target:
+  adapter: desktop-gui
+  launch: notepad.exe
+
+steps:
+  - "Type the sentence 'hello from argus' into the editor"
+  - assert:
+      text_visible: "hello from argus"
+  - "Open the File menu"
+  - assert:
+      element_exists:
+        name: "Save"
+        control_type: MenuItem
+
+teardown:
+  - close

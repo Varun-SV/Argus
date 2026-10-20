@@ -1,0 +1,44 @@
+{
+  "case": "spec/scalar-coercions",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/scalar-coercions.test.yaml",
+        "sha256": "3263d68e117a61f5117e8056732e9df3bc0535eb4865b6f9049c90af127987fe"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "cli",
+    "collect": [],
+    "continue_on_failure": true,
+    "file_name": "scalar-coercions.test.yaml",
+    "launch": "42",
+    "name": "123",
+    "path": "<PROJECT>/.argus/scalar-coercions.test.yaml",
+    "retries": 3,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Run it"
+      }
+    ]
+  }
+}

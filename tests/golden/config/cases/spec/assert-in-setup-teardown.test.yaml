@@ -1,0 +1,11 @@
+# Assertion blocks are accepted in setup and teardown as well.
+target:
+  launch: notepad.exe
+setup:
+  - assert:
+      process_running: true
+steps:
+  - "Type hello"
+teardown:
+  - assert:
+      window_title_contains: Notepad

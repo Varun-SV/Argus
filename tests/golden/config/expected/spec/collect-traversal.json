@@ -1,0 +1,37 @@
+{
+  "case": "spec/collect-traversal",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "cause": {
+      "message": "Capsule transfer paths cannot contain empty, '.' or '..' segments",
+      "module": "argus.capsule.base",
+      "type": "CapsuleError"
+    },
+    "message": "collect[0] is invalid: Capsule transfer paths cannot contain empty, '.' or '..' segments",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/collect-traversal.test.yaml",
+        "sha256": "a5d9828f094e1ac19a9c5614d0ea702727686d8123a1de4ff1e8a602082e8fc5"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

@@ -1,0 +1,115 @@
+{
+  "case": "config/knowledge-persist-dir-home",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/knowledge-persist-dir-home.yaml",
+        "sha256": "19bd7187c7af4e6dbab241d34bae1a4a78d2513312ebd572292d13bd15ae6487"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "argus_dir": "<PROJECT>/.argus",
+    "budgets": {
+      "max_tokens": null,
+      "time_minutes": 10.0
+    },
+    "derived": {
+      "budget": {
+        "value": {
+          "max_seconds": 600.0,
+          "max_tokens": null
+        }
+      },
+      "knowledge_persist_dir": {
+        "value": "<HOME>/argus-knowledge"
+      },
+      "secret_references": []
+    },
+    "execution": {
+      "capsule": {
+        "agent_timeout_seconds": 60.0,
+        "allow_dhcp": true,
+        "allow_external_switch": false,
+        "allow_insecure_http": false,
+        "allow_llm_mode_change": false,
+        "allowed_execution_modes": [
+          "isolated"
+        ],
+        "boot_timeout_seconds": 120.0,
+        "control_root": "",
+        "cpu_count": null,
+        "default_execution_mode": "isolated",
+        "disable_guest_file_copy": true,
+        "egress_allowlist": [],
+        "environment_definition": "",
+        "failure_allow_llm_reconnect": false,
+        "failure_allow_reconnect": true,
+        "guest_address": "",
+        "guest_ca_cert": "",
+        "guest_input_mode": "physical",
+        "guest_os": "auto",
+        "guest_port": 8765,
+        "guest_token_env": "ARGUS_CAPSULE_GUEST_TOKEN",
+        "guest_token_ref": "",
+        "guest_transport": "https",
+        "image": "",
+        "image_cache_root": "",
+        "image_format": "",
+        "libvirt_arch": "",
+        "libvirt_machine": "",
+        "libvirt_network_cidr": "",
+        "libvirt_qemu_group": "",
+        "libvirt_uri": "qemu:///system",
+        "memory_mb": null,
+        "network_mode": "host_only",
+        "provider": "hyperv",
+        "provisioning_evidence_root": "",
+        "retain_on_failure": false,
+        "rotate_session_token": true,
+        "switch_name": "",
+        "vm_root": ""
+      },
+      "environment": "local"
+    },
+    "knowledge": {
+      "embedding_model": "all-MiniLM-L6-v2",
+      "enabled": true,
+      "persist_dir": "~/argus-knowledge",
+      "type": "local",
+      "vector_backend": "chroma",
+      "vector_url": null
+    },
+    "project_dir": "<PROJECT>",
+    "provider": {
+      "api_key": "",
+      "base_url": null,
+      "model": "gemma3:9b",
+      "type": "ollama"
+    },
+    "raw": {
+      "knowledge": {
+        "persist_dir": "~/argus-knowledge"
+      },
+      "provider": "ollama"
+    }
+  }
+}

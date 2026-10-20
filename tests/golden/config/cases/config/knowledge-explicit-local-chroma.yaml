@@ -1,0 +1,8 @@
+# The commented example from DEFAULT_CONFIG, written out explicitly.
+provider: ollama
+knowledge:
+  enabled: true
+  type: local
+  vector_backend: chroma
+  vector_url: null
+  embedding_model: all-MiniLM-L6-v2

@@ -1,0 +1,35 @@
+{
+  "case": "config/wrong-type-max-tokens",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "value_error",
+    "message": "invalid literal for int() with base 10: 'many'",
+    "module": "builtins",
+    "type": "ValueError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/wrong-type-max-tokens.yaml",
+        "sha256": "142ac5aa4886861d70adb8ba5216c99c86a3d3e487aad3c06d2f18bb82a64b19"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

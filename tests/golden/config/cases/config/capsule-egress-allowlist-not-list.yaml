@@ -1,0 +1,4 @@
+provider: ollama
+execution:
+  capsule:
+    egress_allowlist: 10.20.30.0/24

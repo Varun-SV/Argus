@@ -1,0 +1,4 @@
+# environment is stored as written; it is not validated at load time.
+provider: ollama
+execution:
+  environment: cloud

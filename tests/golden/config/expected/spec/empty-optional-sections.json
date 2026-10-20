@@ -1,0 +1,44 @@
+{
+  "case": "spec/empty-optional-sections",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/empty-optional-sections.test.yaml",
+        "sha256": "b89df5af92e59a10743c69d16be7c6c3ac7dd72a475ac161063513e6198045a8"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "empty-optional-sections.test.yaml",
+    "launch": "notepad.exe",
+    "name": "empty-optional-sections.test",
+    "path": "<PROJECT>/.argus/empty-optional-sections.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Type hello"
+      }
+    ]
+  }
+}

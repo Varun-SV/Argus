@@ -1,0 +1,44 @@
+{
+  "case": "spec/cp1252-encoding",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/cp1252-encoding.test.yaml",
+        "sha256": "ebf91b60a232bb44cd751cc81c8889a2a2447de1b53ae37d06bb78f678f8619a"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "cp1252-encoding.test.yaml",
+    "launch": "notepad.exe",
+    "name": "café menu",
+    "path": "<PROJECT>/.argus/cp1252-encoding.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Type café"
+      }
+    ]
+  }
+}

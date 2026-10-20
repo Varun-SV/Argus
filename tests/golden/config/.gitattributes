@@ -1,0 +1,4 @@
+# Golden inputs and outputs are compared byte for byte (sha256 and --check):
+# never convert line endings or re-encode them on checkout.
+cases/** -text
+expected/** -text

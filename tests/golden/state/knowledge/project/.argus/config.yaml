@@ -1,0 +1,5 @@
+# Golden fixture (tests/golden/state): graph-only JSON knowledge store.
+provider: ollama
+knowledge:
+  enabled: true
+  type: json

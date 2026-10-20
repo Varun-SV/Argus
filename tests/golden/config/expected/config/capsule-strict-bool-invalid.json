@@ -1,0 +1,35 @@
+{
+  "case": "config/capsule-strict-bool-invalid",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "value_error",
+    "message": "execution.capsule.retain_on_failure must be a boolean (true/false)",
+    "module": "builtins",
+    "type": "ValueError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/capsule-strict-bool-invalid.yaml",
+        "sha256": "4494e71e86498e8a52c2eff7ed1dfa026f96fcf031b63f9c15042197d6ff0836"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

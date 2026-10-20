@@ -1,0 +1,32 @@
+{
+  "case": "programmatic/rejected-mutated-nlstep-kind",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "steps[0] has unsupported kind 'cleanup'",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/rejected-mutated-nlstep-kind.json",
+        "sha256": "6108ab85f95c0de89e4306b19a24b2aaf3543c359067ee3bbd8a531e3119bacf"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.TestSpec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

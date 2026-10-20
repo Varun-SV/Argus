@@ -1,0 +1,6 @@
+# Entries are stringified and stripped but not validated as CIDRs at load time.
+provider: ollama
+execution:
+  capsule:
+    network_mode: allowlist
+    egress_allowlist: ["  10.0.0.0/8 ", "not-a-cidr", 42]

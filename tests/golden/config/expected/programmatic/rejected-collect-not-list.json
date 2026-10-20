@@ -1,0 +1,32 @@
+{
+  "case": "programmatic/rejected-collect-not-list",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "collect must be a list",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/rejected-collect-not-list.json",
+        "sha256": "4c85c4f9237fc075794029d4ddb717e067fb42e78abff7673c4d4771ad898b1f"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.TestSpec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

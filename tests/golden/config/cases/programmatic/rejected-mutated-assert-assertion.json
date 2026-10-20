@@ -1,0 +1,14 @@
+{
+  "description": "An AssertStep whose assertion is changed after construction is rejected.",
+  "construct": "TestSpec",
+  "args": {
+    "name": "mutated",
+    "adapter": "cli",
+    "launch": "tool",
+    "steps": [
+      {"class": "NLStep", "args": {"text": "Run"}},
+      {"class": "AssertStep", "args": {"assertion": "stdout_contains", "expected": "ok"},
+       "mutate": {"assertion": "eval_python"}}
+    ]
+  }
+}

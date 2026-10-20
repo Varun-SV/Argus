@@ -1,0 +1,2 @@
+# Active provider without a providers: block falls back to the built-in default model.
+provider: openai

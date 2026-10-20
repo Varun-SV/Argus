@@ -1,0 +1,16 @@
+# Steps are ordered setup -> steps -> teardown whatever the YAML key order.
+# A teardown entry spelled "close" in any case and padding becomes "close".
+teardown:
+  - "  CLOSE  "
+  - "Delete the scratch file"
+name: ordering and retries
+target:
+  adapter: desktop-gui
+  launch: notepad.exe
+retries: 2
+continue_on_failure: true
+steps:
+  - "Type hello"
+setup:
+  - "Create a scratch file"
+  - close

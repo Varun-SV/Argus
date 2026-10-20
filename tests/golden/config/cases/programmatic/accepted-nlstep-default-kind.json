@@ -1,0 +1,5 @@
+{
+  "description": "NLStep defaults to kind 'step'.",
+  "construct": "NLStep",
+  "args": {"text": "Open the File menu"}
+}

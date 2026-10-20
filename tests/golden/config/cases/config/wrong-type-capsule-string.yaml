@@ -1,0 +1,4 @@
+provider: ollama
+execution:
+  environment: capsule
+  capsule: hyperv

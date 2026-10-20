@@ -1,0 +1,2 @@
+# A non-string provider name is not converted to a string.
+provider: 42

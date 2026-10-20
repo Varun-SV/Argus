@@ -1,0 +1,5 @@
+# Without name the file stem is used (it keeps ".test"); without adapter, desktop-gui.
+target:
+  launch: calc.exe
+steps:
+  - "Compute 2 + 2"

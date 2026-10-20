@@ -1,0 +1,132 @@
+{
+  "case": "config/execution-capsule-provisioned",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/execution-capsule-provisioned.yaml",
+        "sha256": "2edd8800e8e98f9c0d54f07cef79a16db18e2951d5d99084b3d98c6a648cb07e"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "argus_dir": "<PROJECT>/.argus",
+    "budgets": {
+      "max_tokens": null,
+      "time_minutes": 10.0
+    },
+    "derived": {
+      "budget": {
+        "value": {
+          "max_seconds": 600.0,
+          "max_tokens": null
+        }
+      },
+      "knowledge_persist_dir": {
+        "value": null
+      },
+      "secret_references": []
+    },
+    "execution": {
+      "capsule": {
+        "agent_timeout_seconds": 60.0,
+        "allow_dhcp": true,
+        "allow_external_switch": false,
+        "allow_insecure_http": false,
+        "allow_llm_mode_change": true,
+        "allowed_execution_modes": [
+          "isolated",
+          "shared_user"
+        ],
+        "boot_timeout_seconds": 120.0,
+        "control_root": ".argus/control",
+        "cpu_count": null,
+        "default_execution_mode": "shared_user",
+        "disable_guest_file_copy": true,
+        "egress_allowlist": [],
+        "environment_definition": "environments/win11.yaml",
+        "failure_allow_llm_reconnect": true,
+        "failure_allow_reconnect": false,
+        "guest_address": "",
+        "guest_ca_cert": "",
+        "guest_input_mode": "physical",
+        "guest_os": "auto",
+        "guest_port": 8765,
+        "guest_token_env": "ARGUS_CAPSULE_GUEST_TOKEN",
+        "guest_token_ref": "",
+        "guest_transport": "https",
+        "image": "",
+        "image_cache_root": ".argus/images",
+        "image_format": "vhdx",
+        "libvirt_arch": "",
+        "libvirt_machine": "",
+        "libvirt_network_cidr": "",
+        "libvirt_qemu_group": "",
+        "libvirt_uri": "qemu:///system",
+        "memory_mb": null,
+        "network_mode": "host_only",
+        "provider": "auto",
+        "provisioning_evidence_root": ".argus/provisioning",
+        "retain_on_failure": false,
+        "rotate_session_token": true,
+        "switch_name": "",
+        "vm_root": ""
+      },
+      "environment": "capsule"
+    },
+    "knowledge": {
+      "embedding_model": "all-MiniLM-L6-v2",
+      "enabled": true,
+      "persist_dir": null,
+      "type": "local",
+      "vector_backend": "chroma",
+      "vector_url": null
+    },
+    "project_dir": "<PROJECT>",
+    "provider": {
+      "api_key": "",
+      "base_url": null,
+      "model": "gemma3:9b",
+      "type": "ollama"
+    },
+    "raw": {
+      "execution": {
+        "capsule": {
+          "allow_llm_mode_change": true,
+          "allowed_execution_modes": [
+            "isolated",
+            "shared_user"
+          ],
+          "control_root": ".argus/control",
+          "default_execution_mode": "shared_user",
+          "environment_definition": "environments/win11.yaml",
+          "failure_allow_llm_reconnect": true,
+          "failure_allow_reconnect": false,
+          "image_cache_root": ".argus/images",
+          "image_format": "vhdx",
+          "provider": "auto",
+          "provisioning_evidence_root": ".argus/provisioning"
+        },
+        "environment": "capsule"
+      },
+      "provider": "ollama"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "description": "collect entries must be non-empty strings.",
+  "construct": "TestSpec",
+  "args": {"name": "c", "adapter": "cli", "launch": "tool", "steps": [], "collect": [5]}
+}

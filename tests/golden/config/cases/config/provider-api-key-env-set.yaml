@@ -1,0 +1,6 @@
+# api_key_env names a variable that is set (test-only value) during export.
+provider: openai
+providers:
+  openai:
+    model: gpt-4o
+    api_key_env: ARGUS_GOLDEN_TEST_ONLY_KEY_C

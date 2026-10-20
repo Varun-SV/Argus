@@ -1,0 +1,44 @@
+{
+  "case": "spec/steps-as-mapping",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/steps-as-mapping.test.yaml",
+        "sha256": "2c6d7b3a7566da49b20e4045fef83153cb5c9682a8074cd80c90c3b5687cfda7"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "steps-as-mapping.test.yaml",
+    "launch": "notepad.exe",
+    "name": "steps-as-mapping.test",
+    "path": "<PROJECT>/.argus/steps-as-mapping.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "assert"
+      }
+    ]
+  }
+}

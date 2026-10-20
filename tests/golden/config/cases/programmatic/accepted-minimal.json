@@ -1,0 +1,13 @@
+{
+  "description": "A programmatically built spec with one natural-language step and one assertion.",
+  "construct": "TestSpec",
+  "args": {
+    "name": "programmatic",
+    "adapter": "cli",
+    "launch": "echo hello",
+    "steps": [
+      {"class": "NLStep", "args": {"text": "Run the command"}},
+      {"class": "AssertStep", "args": {"assertion": "stdout_contains", "expected": "hello"}}
+    ]
+  }
+}

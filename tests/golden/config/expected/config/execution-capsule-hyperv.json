@@ -1,0 +1,152 @@
+{
+  "case": "config/execution-capsule-hyperv",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/execution-capsule-hyperv.yaml",
+        "sha256": "57dbc541a83a1b8ea18517d7b617f66355edf5d0ea81c81c91af5d80c7132b5f"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "argus_dir": "<PROJECT>/.argus",
+    "budgets": {
+      "max_tokens": null,
+      "time_minutes": 10.0
+    },
+    "derived": {
+      "budget": {
+        "value": {
+          "max_seconds": 600.0,
+          "max_tokens": null
+        }
+      },
+      "knowledge_persist_dir": {
+        "value": null
+      },
+      "secret_references": [
+        {
+          "path": "execution.capsule.guest_token_ref",
+          "reference": "secret://argus/capsule/bootstrap",
+          "validate_secret_ref": "accepted"
+        }
+      ]
+    },
+    "execution": {
+      "capsule": {
+        "agent_timeout_seconds": 60.0,
+        "allow_dhcp": true,
+        "allow_external_switch": false,
+        "allow_insecure_http": false,
+        "allow_llm_mode_change": false,
+        "allowed_execution_modes": [
+          "isolated"
+        ],
+        "boot_timeout_seconds": 120.0,
+        "control_root": "",
+        "cpu_count": 2,
+        "default_execution_mode": "isolated",
+        "disable_guest_file_copy": true,
+        "egress_allowlist": [
+          "10.20.30.0/24",
+          "192.0.2.10/32"
+        ],
+        "environment_definition": "",
+        "failure_allow_llm_reconnect": false,
+        "failure_allow_reconnect": true,
+        "guest_address": "",
+        "guest_ca_cert": "C:\\Argus\\certs\\argus-guest-ca.pem",
+        "guest_input_mode": "physical",
+        "guest_os": "windows",
+        "guest_port": 8765,
+        "guest_token_env": "ARGUS_CAPSULE_GUEST_TOKEN",
+        "guest_token_ref": "secret://argus/capsule/bootstrap",
+        "guest_transport": "https",
+        "image": "C:\\Argus\\images\\windows-11-clean.vhdx",
+        "image_cache_root": "",
+        "image_format": "",
+        "libvirt_arch": "",
+        "libvirt_machine": "",
+        "libvirt_network_cidr": "",
+        "libvirt_qemu_group": "",
+        "libvirt_uri": "qemu:///system",
+        "memory_mb": 4096,
+        "network_mode": "allowlist",
+        "provider": "hyperv",
+        "provisioning_evidence_root": "",
+        "retain_on_failure": false,
+        "rotate_session_token": true,
+        "switch_name": "Argus Internal",
+        "vm_root": "C:\\Argus\\capsules"
+      },
+      "environment": "capsule"
+    },
+    "knowledge": {
+      "embedding_model": "all-MiniLM-L6-v2",
+      "enabled": true,
+      "persist_dir": null,
+      "type": "local",
+      "vector_backend": "chroma",
+      "vector_url": null
+    },
+    "project_dir": "<PROJECT>",
+    "provider": {
+      "api_key": "",
+      "base_url": null,
+      "model": "gemma3:9b",
+      "type": "ollama"
+    },
+    "raw": {
+      "execution": {
+        "capsule": {
+          "agent_timeout_seconds": 60,
+          "allow_dhcp": true,
+          "allow_external_switch": false,
+          "allow_insecure_http": false,
+          "boot_timeout_seconds": 120,
+          "cpu_count": 2,
+          "disable_guest_file_copy": true,
+          "egress_allowlist": [
+            "10.20.30.0/24",
+            "192.0.2.10/32"
+          ],
+          "guest_address": null,
+          "guest_ca_cert": "C:\\Argus\\certs\\argus-guest-ca.pem",
+          "guest_input_mode": "physical",
+          "guest_os": "windows",
+          "guest_port": 8765,
+          "guest_token_ref": "secret://argus/capsule/bootstrap",
+          "guest_transport": "https",
+          "image": "C:\\Argus\\images\\windows-11-clean.vhdx",
+          "memory_mb": 4096,
+          "network_mode": "allowlist",
+          "provider": "hyperv",
+          "retain_on_failure": false,
+          "rotate_session_token": true,
+          "switch_name": "Argus Internal",
+          "vm_root": "C:\\Argus\\capsules"
+        },
+        "environment": "capsule"
+      },
+      "provider": "ollama"
+    }
+  }
+}

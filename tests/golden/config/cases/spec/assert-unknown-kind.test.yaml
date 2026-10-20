@@ -1,0 +1,5 @@
+target:
+  launch: notepad.exe
+steps:
+  - assert:
+      screenshot_matches: baseline.png

@@ -1,0 +1,4 @@
+provider: ollama
+execution:
+  capsule:
+    guest_token_env: ARGUS_CAPSULE_GUEST_TOKEN

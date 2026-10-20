@@ -1,0 +1,4 @@
+provider: ollama
+execution:
+  capsule:
+    allowed_execution_modes: []

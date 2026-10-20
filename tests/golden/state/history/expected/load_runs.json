@@ -1,0 +1,633 @@
+{
+  "api": "argus.engine.results.load_runs",
+  "case": "history/load_runs",
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "limit_3": [
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 0.6,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767222000.0,
+        "status": "pass",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.25,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "act",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "noop"
+          }
+        ],
+        "test_file": "rollback.test.yaml",
+        "test_name": "rollback",
+        "tokens": {
+          "calls": 1,
+          "completion_tokens": 1,
+          "prompt_tokens": 5,
+          "total_tokens": 6
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 0.6,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225960.0,
+        "status": "pass",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.25,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "act",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "noop"
+          }
+        ],
+        "test_file": "suite/odd name & co.test.yaml",
+        "test_name": "odd name & co",
+        "tokens": {
+          "calls": 1,
+          "completion_tokens": 1,
+          "prompt_tokens": 5,
+          "total_tokens": 6
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 1.35,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225900.0,
+        "status": "pass",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 1.0,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "launch",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "launch the app"
+          },
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.5,
+            "expected": null,
+            "flaky": false,
+            "index": 1,
+            "kind": "assert",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "process is running"
+          }
+        ],
+        "test_file": "resave.test.yaml",
+        "test_name": "resave",
+        "tokens": {
+          "calls": 2,
+          "completion_tokens": 4,
+          "prompt_tokens": 20,
+          "total_tokens": 24
+        },
+        "transfer_error": null
+      }
+    ],
+    "limit_50_default": [
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 0.6,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767222000.0,
+        "status": "pass",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.25,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "act",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "noop"
+          }
+        ],
+        "test_file": "rollback.test.yaml",
+        "test_name": "rollback",
+        "tokens": {
+          "calls": 1,
+          "completion_tokens": 1,
+          "prompt_tokens": 5,
+          "total_tokens": 6
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 0.6,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225960.0,
+        "status": "pass",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.25,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "act",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "noop"
+          }
+        ],
+        "test_file": "suite/odd name & co.test.yaml",
+        "test_name": "odd name & co",
+        "tokens": {
+          "calls": 1,
+          "completion_tokens": 1,
+          "prompt_tokens": 5,
+          "total_tokens": 6
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 1.35,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225900.0,
+        "status": "pass",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 1.0,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "launch",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "launch the app"
+          },
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.5,
+            "expected": null,
+            "flaky": false,
+            "index": 1,
+            "kind": "assert",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "process is running"
+          }
+        ],
+        "test_file": "resave.test.yaml",
+        "test_name": "resave",
+        "tokens": {
+          "calls": 2,
+          "completion_tokens": 4,
+          "prompt_tokens": 20,
+          "total_tokens": 24
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 1.35,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225840.0,
+        "status": "fail",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 1.0,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "act",
+            "note": null,
+            "screenshot_path": null,
+            "status": "fail",
+            "text": "search for 'golden'"
+          }
+        ],
+        "test_file": "search.test.yaml",
+        "test_name": "search",
+        "tokens": {
+          "calls": 1,
+          "completion_tokens": 10,
+          "prompt_tokens": 50,
+          "total_tokens": 60
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 1.35,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225840.0,
+        "status": "pass",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 1.0,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "act",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "search for 'golden'"
+          }
+        ],
+        "test_file": "search.test.yaml",
+        "test_name": "search",
+        "tokens": {
+          "calls": 1,
+          "completion_tokens": 10,
+          "prompt_tokens": 50,
+          "total_tokens": 60
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 1.35,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225780.0,
+        "status": "fail",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 1.0,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "launch",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "launch the app"
+          },
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.0,
+            "expected": null,
+            "flaky": false,
+            "index": 1,
+            "kind": "act",
+            "note": "skipped: stopped by you",
+            "screenshot_path": null,
+            "status": "skipped",
+            "text": "sign in as the golden user"
+          }
+        ],
+        "test_file": "login.test.yaml",
+        "test_name": "login",
+        "tokens": {
+          "calls": 1,
+          "completion_tokens": 20,
+          "prompt_tokens": 100,
+          "total_tokens": 120
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [
+          {
+            "host_path": "artifacts/out.log",
+            "path": "C:\\ArgusStage\\out.log",
+            "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "size": 34
+          }
+        ],
+        "duration_s": 1.1,
+        "environment_type": "direct",
+        "error": "RuntimeError: process exited with code 3",
+        "failure_capsule": null,
+        "failure_capsule_error": {
+          "error": "retention timed out",
+          "recovery": "inspect the preserved Capsule manually",
+          "root_dir": "capsules/golden-failure-2",
+          "vm_name": "argus-golden-vm-2"
+        },
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [
+          {
+            "destination": "C:\\ArgusStage\\input.txt",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "size": 12,
+            "source": "fixtures/input.txt"
+          }
+        ],
+        "started_at": 1767225720.0,
+        "status": "error",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.75,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "launch",
+            "note": "adapter error: process exited with code 3",
+            "screenshot_path": null,
+            "status": "error",
+            "text": "launch the app"
+          },
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.0,
+            "expected": null,
+            "flaky": false,
+            "index": 1,
+            "kind": "act",
+            "note": "skipped after failure (continue_on_failure: false)",
+            "screenshot_path": null,
+            "status": "skipped",
+            "text": "open settings"
+          }
+        ],
+        "test_file": "settings.test.yaml",
+        "test_name": "settings",
+        "tokens": {
+          "calls": 0,
+          "completion_tokens": 0,
+          "prompt_tokens": 0,
+          "total_tokens": 0
+        },
+        "transfer_error": "artifact collection failed: guest path missing"
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 3.85,
+        "environment_type": "capsule",
+        "error": null,
+        "failure_capsule": {
+          "failure_id": "golden-failure-1",
+          "reason": "test failure",
+          "root_dir": "capsules/golden-failure-1",
+          "vm_name": "argus-golden-vm",
+          "vm_state": "Off"
+        },
+        "failure_capsule_error": null,
+        "isolated": true,
+        "location": "capsule/hyperv",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225660.0,
+        "status": "fail",
+        "steps": [
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 1.0,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "launch",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "launch the app"
+          },
+          {
+            "actions": [
+              "click 7"
+            ],
+            "actual": "Payment declined",
+            "duration_s": 2.0,
+            "expected": "Order placed",
+            "flaky": false,
+            "index": 1,
+            "kind": "assert",
+            "note": null,
+            "screenshot_path": "screenshots/step-2.png",
+            "status": "fail",
+            "text": "text 'Order placed' is visible"
+          },
+          {
+            "actions": [],
+            "actual": null,
+            "duration_s": 0.5,
+            "expected": null,
+            "flaky": false,
+            "index": 2,
+            "kind": "teardown",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "close the app"
+          }
+        ],
+        "test_file": "checkout.test.yaml",
+        "test_name": "checkout",
+        "tokens": {
+          "calls": 2,
+          "completion_tokens": 150,
+          "prompt_tokens": 800,
+          "total_tokens": 950
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "artifacts": [],
+        "duration_s": 5.35,
+        "environment_type": "direct",
+        "error": null,
+        "failure_capsule": null,
+        "failure_capsule_error": null,
+        "isolated": false,
+        "location": "unknown",
+        "provider": "ollama",
+        "staged_files": [],
+        "started_at": 1767225600.0,
+        "status": "pass",
+        "steps": [
+          {
+            "actions": [
+              "launch app.exe"
+            ],
+            "actual": null,
+            "duration_s": 1.25,
+            "expected": null,
+            "flaky": false,
+            "index": 0,
+            "kind": "launch",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "launch the app"
+          },
+          {
+            "actions": [
+              "click 4",
+              "type 'golden-user'",
+              "key enter"
+            ],
+            "actual": null,
+            "duration_s": 3.5,
+            "expected": null,
+            "flaky": false,
+            "index": 1,
+            "kind": "act",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "sign in as the golden user"
+          },
+          {
+            "actions": [],
+            "actual": "Dashboard - Golden App",
+            "duration_s": 0.25,
+            "expected": "Dashboard",
+            "flaky": false,
+            "index": 2,
+            "kind": "assert",
+            "note": null,
+            "screenshot_path": null,
+            "status": "pass",
+            "text": "window title contains 'Dashboard'"
+          }
+        ],
+        "test_file": "login.test.yaml",
+        "test_name": "login",
+        "tokens": {
+          "calls": 4,
+          "completion_tokens": 300,
+          "prompt_tokens": 1200,
+          "total_tokens": 1500
+        },
+        "transfer_error": null
+      },
+      {
+        "adapter": "desktop",
+        "duration_s": 2,
+        "provider": "ollama",
+        "started_at": 1767139200.0,
+        "status": "pass",
+        "steps": [
+          {
+            "status": "pass"
+          }
+        ],
+        "test_file": "legacy.test.yaml",
+        "test_name": "legacy",
+        "tokens": {
+          "total_tokens": 7
+        }
+      }
+    ]
+  }
+}

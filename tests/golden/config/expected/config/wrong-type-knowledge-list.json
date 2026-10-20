@@ -1,0 +1,35 @@
+{
+  "case": "config/wrong-type-knowledge-list",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "attribute_error",
+    "message": "'list' object has no attribute 'get'",
+    "module": "builtins",
+    "type": "AttributeError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/wrong-type-knowledge-list.yaml",
+        "sha256": "23bc2f1ecbcf4e4bdc66584fd625981be8a29758640481d5e34cdefe8fe5a9af"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

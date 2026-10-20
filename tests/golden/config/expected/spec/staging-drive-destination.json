@@ -1,0 +1,37 @@
+{
+  "case": "spec/staging-drive-destination",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "cause": {
+      "message": "Capsule transfer paths must be relative and drive-free",
+      "module": "argus.capsule.base",
+      "type": "CapsuleError"
+    },
+    "message": "staging[0] is invalid: Capsule transfer paths must be relative and drive-free",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/staging-drive-destination.test.yaml",
+        "sha256": "064d5aad711670105026ad23321d9a9adfde9d197029be5423921bf779d1ffb4"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

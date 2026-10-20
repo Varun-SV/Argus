@@ -1,0 +1,35 @@
+{
+  "case": "config/invalid-yaml-tab-indent",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "yaml_error",
+    "message": "while scanning for the next token\nfound character '\\t' that cannot start any token\n  in \"<unicode string>\", line 3, column 1:\n    \ttime_minutes: 10\n    ^",
+    "module": "yaml.scanner",
+    "type": "ScannerError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/invalid-yaml-tab-indent.yaml",
+        "sha256": "80b94a8594b301dd09d235b7771038f491b1856124787c2fdaf091f524b772b4"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

@@ -1,0 +1,15 @@
+provider: ollama
+execution:
+  environment: capsule
+  capsule:
+    provider: libvirt
+    guest_os: linux
+    image: /var/lib/libvirt/images/argus-linux-golden.qcow2
+    vm_root: /var/lib/libvirt/images/argus-capsules
+    libvirt_uri: qemu:///system
+    libvirt_network_cidr: 10.250.77.0/24
+    libvirt_arch: x86_64
+    libvirt_machine: q35
+    libvirt_qemu_group: kvm
+    network_mode: host_only
+    egress_allowlist: []

@@ -1,0 +1,1 @@
+{"bug_id": "802540c6", "title": "Save dialog ignores Escape", "severity": "high", "state_id": "35d9d9d0bb821bc6", "session_id": "sess-1", "expected": "dialog closes", "actual": "dialog stays open", "detail": "Escape is swallowed by the file name box", "timestamp": 1767232804.5}

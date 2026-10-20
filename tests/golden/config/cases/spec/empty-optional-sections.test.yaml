@@ -1,0 +1,8 @@
+target:
+  launch: notepad.exe
+setup: null
+steps:
+  - "Type hello"
+teardown: []
+staging: null
+collect: null

@@ -1,0 +1,32 @@
+{
+  "case": "spec/assert-unknown-kind",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "unknown assertion 'screenshot_matches' — supported: text_visible, window_title_contains, element_exists, process_running, dialog_open, stdout_contains, stderr_contains, exit_code_is, url_contains, page_title_contains",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/assert-unknown-kind.test.yaml",
+        "sha256": "aeaaaa7d1fcd6f5742957d52b73e91f7ac067d93c3ef2f7219ab943e7480ab3c"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

@@ -1,0 +1,28 @@
+# All ten assertion kinds. Load-time parsing does not check them against the adapter.
+name: every assertion kind
+target:
+  adapter: desktop-gui
+  launch: notepad.exe
+steps:
+  - assert:
+      text_visible: hello
+  - assert:
+      window_title_contains: Notepad
+  - assert:
+      element_exists:
+        name: Save
+        control_type: MenuItem
+  - assert:
+      process_running: true
+  - assert:
+      dialog_open: Error
+  - assert:
+      stdout_contains: ready
+  - assert:
+      stderr_contains: warning
+  - assert:
+      exit_code_is: 0
+  - assert:
+      url_contains: /dashboard
+  - assert:
+      page_title_contains: Example Domain

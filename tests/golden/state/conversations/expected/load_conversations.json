@@ -1,0 +1,811 @@
+{
+  "api": "argus.gui.app.ArgusAPI.load_conversations",
+  "case": "conversations/load_conversations",
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "busy_retention": {
+      "bounded_ids": [
+        "chat-00",
+        "chat-01",
+        "chat-02",
+        "chat-03",
+        "chat-04",
+        "chat-05",
+        "chat-06",
+        "chat-07",
+        "chat-08",
+        "chat-09",
+        "chat-10",
+        "chat-11",
+        "chat-12",
+        "chat-13",
+        "chat-14",
+        "chat-15",
+        "chat-16",
+        "chat-17",
+        "chat-18",
+        "chat-19",
+        "chat-20",
+        "chat-21",
+        "chat-22",
+        "chat-23",
+        "chat-24",
+        "chat-25",
+        "chat-26",
+        "chat-27",
+        "chat-28",
+        "chat-29",
+        "chat-30"
+      ],
+      "input_busy_flags": [
+        {
+          "busy": false,
+          "id": "chat-29"
+        },
+        {
+          "busy": true,
+          "id": "chat-30"
+        },
+        {
+          "busy": "true",
+          "id": "chat-31"
+        },
+        {
+          "busy": 1,
+          "id": "chat-32"
+        }
+      ],
+      "input_count": 33,
+      "load_conversations": [
+        {
+          "busy": false,
+          "id": "chat-00",
+          "msgs": [
+            {
+              "id": "chat-00-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-00-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 0."
+            }
+          ],
+          "seq": 3,
+          "title": "Résumé ✓ non-ASCII title",
+          "updated": 1767225600000
+        },
+        {
+          "busy": false,
+          "id": "chat-01",
+          "msgs": [
+            {
+              "id": "chat-01-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-01-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 1."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 1",
+          "updated": 1767225540000
+        },
+        {
+          "busy": false,
+          "id": "chat-02",
+          "msgs": [
+            {
+              "id": "chat-02-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-02-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 2."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 2",
+          "updated": 1767225480000
+        },
+        {
+          "busy": false,
+          "id": "chat-03",
+          "msgs": [
+            {
+              "id": "chat-03-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-03-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 3."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 3",
+          "updated": 1767225420000
+        },
+        {
+          "busy": false,
+          "id": "chat-04",
+          "msgs": [
+            {
+              "id": "chat-04-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-04-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 4."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 4",
+          "updated": 1767225360000
+        },
+        {
+          "busy": false,
+          "id": "chat-05",
+          "msgs": [
+            {
+              "id": "chat-05-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-05-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 5."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 5",
+          "updated": 1767225300000
+        },
+        {
+          "busy": false,
+          "id": "chat-06",
+          "msgs": [
+            {
+              "id": "chat-06-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-06-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 6."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 6",
+          "updated": 1767225240000
+        },
+        {
+          "busy": false,
+          "id": "chat-07",
+          "msgs": [
+            {
+              "id": "chat-07-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-07-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 7."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 7",
+          "updated": 1767225180000
+        },
+        {
+          "busy": false,
+          "id": "chat-08",
+          "msgs": [
+            {
+              "id": "chat-08-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-08-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 8."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 8",
+          "updated": 1767225120000
+        },
+        {
+          "busy": false,
+          "id": "chat-09",
+          "msgs": [
+            {
+              "id": "chat-09-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-09-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 9."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 9",
+          "updated": 1767225060000
+        },
+        {
+          "busy": false,
+          "id": "chat-10",
+          "msgs": [
+            {
+              "id": "chat-10-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-10-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 10."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 10",
+          "updated": 1767225000000
+        },
+        {
+          "busy": false,
+          "id": "chat-11",
+          "msgs": [
+            {
+              "id": "chat-11-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-11-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 11."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 11",
+          "updated": 1767224940000
+        },
+        {
+          "busy": false,
+          "id": "chat-12",
+          "msgs": [
+            {
+              "id": "chat-12-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-12-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 12."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 12",
+          "updated": 1767224880000
+        },
+        {
+          "busy": false,
+          "id": "chat-13",
+          "msgs": [
+            {
+              "id": "chat-13-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-13-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 13."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 13",
+          "updated": 1767224820000
+        },
+        {
+          "busy": false,
+          "id": "chat-14",
+          "msgs": [
+            {
+              "id": "chat-14-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-14-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 14."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 14",
+          "updated": 1767224760000
+        },
+        {
+          "busy": false,
+          "id": "chat-15",
+          "msgs": [
+            {
+              "id": "chat-15-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-15-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 15."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 15",
+          "updated": 1767224700000
+        },
+        {
+          "busy": false,
+          "id": "chat-16",
+          "msgs": [
+            {
+              "id": "chat-16-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-16-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 16."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 16",
+          "updated": 1767224640000
+        },
+        {
+          "busy": false,
+          "id": "chat-17",
+          "msgs": [
+            {
+              "id": "chat-17-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-17-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 17."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 17",
+          "updated": 1767224580000
+        },
+        {
+          "busy": false,
+          "id": "chat-18",
+          "msgs": [
+            {
+              "id": "chat-18-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-18-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 18."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 18",
+          "updated": 1767224520000
+        },
+        {
+          "busy": false,
+          "id": "chat-19",
+          "msgs": [
+            {
+              "id": "chat-19-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-19-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 19."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 19",
+          "updated": 1767224460000
+        },
+        {
+          "busy": false,
+          "id": "chat-20",
+          "msgs": [
+            {
+              "id": "chat-20-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-20-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 20."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 20",
+          "updated": 1767224400000
+        },
+        {
+          "busy": false,
+          "id": "chat-21",
+          "msgs": [
+            {
+              "id": "chat-21-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-21-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 21."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 21",
+          "updated": 1767224340000
+        },
+        {
+          "busy": false,
+          "id": "chat-22",
+          "msgs": [
+            {
+              "id": "chat-22-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-22-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 22."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 22",
+          "updated": 1767224280000
+        },
+        {
+          "busy": false,
+          "id": "chat-23",
+          "msgs": [
+            {
+              "id": "chat-23-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-23-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 23."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 23",
+          "updated": 1767224220000
+        },
+        {
+          "busy": false,
+          "id": "chat-24",
+          "msgs": [
+            {
+              "id": "chat-24-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-24-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 24."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 24",
+          "updated": 1767224160000
+        },
+        {
+          "busy": false,
+          "id": "chat-25",
+          "msgs": [
+            {
+              "id": "chat-25-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-25-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 25."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 25",
+          "updated": 1767224100000
+        },
+        {
+          "busy": false,
+          "id": "chat-26",
+          "msgs": [
+            {
+              "id": "chat-26-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-26-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 26."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 26",
+          "updated": 1767224040000
+        },
+        {
+          "busy": false,
+          "id": "chat-27",
+          "msgs": [
+            {
+              "id": "chat-27-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-27-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 27."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 27",
+          "updated": 1767223980000
+        },
+        {
+          "busy": false,
+          "id": "chat-28",
+          "msgs": [
+            {
+              "id": "chat-28-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-28-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 28."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 28",
+          "updated": 1767223920000
+        },
+        {
+          "busy": false,
+          "id": "chat-29",
+          "msgs": [
+            {
+              "id": "chat-29-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-29-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 29."
+            }
+          ],
+          "seq": 3,
+          "title": "Golden chat 29",
+          "updated": 1767223860000
+        },
+        {
+          "busy": true,
+          "id": "chat-30",
+          "msgs": [
+            {
+              "id": "chat-30-m1",
+              "kind": "text",
+              "role": "user",
+              "text": "/run login.test.yaml"
+            },
+            {
+              "id": "chat-30-m2",
+              "kind": "text",
+              "role": "argus",
+              "text": "Golden reply 30."
+            },
+            {
+              "id": "chat-30-m3",
+              "idx": 0,
+              "job": "job-golden",
+              "kind": "run",
+              "role": "argus",
+              "snap": {
+                "status": "running",
+                "test": "login.test.yaml"
+              }
+            }
+          ],
+          "seq": 4,
+          "title": "Golden chat 30",
+          "updated": 1767223800000
+        }
+      ],
+      "reopened_window_load": [
+        "chat-00",
+        "chat-01",
+        "chat-02",
+        "chat-03",
+        "chat-04",
+        "chat-05",
+        "chat-06",
+        "chat-07",
+        "chat-08",
+        "chat-09",
+        "chat-10",
+        "chat-11",
+        "chat-12",
+        "chat-13",
+        "chat-14",
+        "chat-15",
+        "chat-16",
+        "chat-17",
+        "chat-18",
+        "chat-19",
+        "chat-20",
+        "chat-21",
+        "chat-22",
+        "chat-23",
+        "chat-24",
+        "chat-25",
+        "chat-26",
+        "chat-27",
+        "chat-28",
+        "chat-29",
+        "chat-30"
+      ],
+      "save_conversations": {
+        "ok": true
+      },
+      "store_path": "<STATE_HOME>/argus/projects/889e4941b1a5915efdd691ce/conversations.json"
+    },
+    "legacy_project_local_migration": {
+      "input": "inputs/legacy-project/.argus/gui/conversations.json",
+      "input_count": 32,
+      "legacy_file_removed": true,
+      "load_conversations_ids": [
+        "chat-00",
+        "chat-01",
+        "chat-02",
+        "chat-03",
+        "chat-04",
+        "chat-05",
+        "chat-06",
+        "chat-07",
+        "chat-08",
+        "chat-09",
+        "chat-10",
+        "chat-11",
+        "chat-12",
+        "chat-13",
+        "chat-14",
+        "chat-15",
+        "chat-16",
+        "chat-17",
+        "chat-18",
+        "chat-19",
+        "chat-20",
+        "chat-21",
+        "chat-22",
+        "chat-23",
+        "chat-24",
+        "chat-25",
+        "chat-26",
+        "chat-27",
+        "chat-28",
+        "chat-29"
+      ],
+      "store_path": "<STATE_HOME>/argus/projects/fb0959d3aee5bfdd1ee9246f/conversations.json"
+    },
+    "non_list_store": {
+      "identity": "/golden/non-list-project",
+      "load_conversations": []
+    },
+    "project_required_window": {
+      "load_conversations": [],
+      "save_conversations": {
+        "error": "Open a project folder before saving conversations.",
+        "ok": false
+      }
+    }
+  }
+}

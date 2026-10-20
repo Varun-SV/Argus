@@ -1,0 +1,5 @@
+# The integer 1 is not a boolean for the strict parser (only the string "1" is).
+provider: ollama
+execution:
+  capsule:
+    allow_dhcp: 1

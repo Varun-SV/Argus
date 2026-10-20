@@ -1,0 +1,3 @@
+provider: ollama
+knowledge:
+  persist_dir: ~/argus-knowledge

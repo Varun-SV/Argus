@@ -1,0 +1,17 @@
+{
+  "description": "Setup, step and teardown NLSteps plus an AssertStep are accepted.",
+  "construct": "TestSpec",
+  "args": {
+    "name": "all step kinds",
+    "adapter": "desktop-gui",
+    "launch": "notepad.exe",
+    "retries": 1,
+    "continue_on_failure": true,
+    "steps": [
+      {"class": "NLStep", "args": {"text": "Create a file", "kind": "setup"}},
+      {"class": "NLStep", "args": {"text": "Type hello", "kind": "step"}},
+      {"class": "AssertStep", "args": {"assertion": "element_exists", "expected": {"name": "Save"}}},
+      {"class": "NLStep", "args": {"text": "close", "kind": "teardown"}}
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+provider: ollama
+execution:
+  capsule:
+    guest_token_env: MY_HOST_SECRET

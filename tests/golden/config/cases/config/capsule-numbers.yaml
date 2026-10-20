@@ -1,0 +1,9 @@
+# Numeric strings are converted; explicit null keeps memory_mb/cpu_count omitted.
+provider: ollama
+execution:
+  capsule:
+    memory_mb: "8192"
+    cpu_count: null
+    guest_port: "9000"
+    boot_timeout_seconds: "300"
+    agent_timeout_seconds: 45.5

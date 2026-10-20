@@ -1,0 +1,10 @@
+{
+  "description": "A plain mapping is not a step object.",
+  "construct": "TestSpec",
+  "args": {
+    "name": "raw",
+    "adapter": "cli",
+    "launch": "tool",
+    "steps": [{"class": "raw", "value": {"assert": {"stdout_contains": "ok"}}}]
+  }
+}

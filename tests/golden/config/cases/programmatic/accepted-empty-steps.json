@@ -1,0 +1,5 @@
+{
+  "description": "A programmatic TestSpec may have no steps (the YAML parser rejects that).",
+  "construct": "TestSpec",
+  "args": {"name": "empty", "adapter": "cli", "launch": "true", "steps": []}
+}

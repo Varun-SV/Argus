@@ -1,0 +1,37 @@
+{
+  "case": "spec/collect-absolute",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "cause": {
+      "message": "Capsule transfer paths must be relative and drive-free",
+      "module": "argus.capsule.base",
+      "type": "CapsuleError"
+    },
+    "message": "collect[0] is invalid: Capsule transfer paths must be relative and drive-free",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/collect-absolute.test.yaml",
+        "sha256": "2d4758987bae862d8a569916409dde3e2c31c11aac499aa0318c775bd34da17a"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

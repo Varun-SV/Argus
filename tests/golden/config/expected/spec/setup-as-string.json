@@ -1,0 +1,54 @@
+{
+  "case": "spec/setup-as-string",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/setup-as-string.test.yaml",
+        "sha256": "87de2c42030cd21828e7f908cfdcd1303de658e93ce0a530fd1bf140c2a25aa4"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "setup-as-string.test.yaml",
+    "launch": "notepad.exe",
+    "name": "setup-as-string.test",
+    "path": "<PROJECT>/.argus/setup-as-string.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "setup",
+        "text": "a"
+      },
+      {
+        "class": "NLStep",
+        "kind": "setup",
+        "text": "b"
+      },
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Type hello"
+      }
+    ]
+  }
+}

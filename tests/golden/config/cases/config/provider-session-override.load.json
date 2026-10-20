@@ -1,0 +1,8 @@
+{
+  "provider": "openai",
+  "env": {
+    "ARGUS_MODEL": "env-model-ignored-for-session",
+    "ARGUS_API_KEY": "TEST-ONLY-generic-key-ignored",
+    "ARGUS_GOLDEN_TEST_ONLY_KEY_B": "TEST-ONLY-env-key-b"
+  }
+}

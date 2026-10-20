@@ -1,0 +1,9 @@
+# Anchors, aliases and merge keys are resolved by the YAML loader.
+defaults: &model
+  model: shared-model
+  base_url: http://localhost:11434
+provider: ollama
+providers:
+  ollama:
+    <<: *model
+    model: gemma3:9b

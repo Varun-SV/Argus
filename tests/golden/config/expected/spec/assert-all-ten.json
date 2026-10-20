@@ -1,0 +1,112 @@
+{
+  "case": "spec/assert-all-ten",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/assert-all-ten.test.yaml",
+        "sha256": "5ac080dcf05bbbc5dc993923126f3cc2a43d1ec5db1455e488944305b5cc6653"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "assert-all-ten.test.yaml",
+    "launch": "notepad.exe",
+    "name": "every assertion kind",
+    "path": "<PROJECT>/.argus/assert-all-ten.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "assertion": "text_visible",
+        "class": "AssertStep",
+        "describe": "text_visible: 'hello'",
+        "expected": "hello",
+        "kind": "assert"
+      },
+      {
+        "assertion": "window_title_contains",
+        "class": "AssertStep",
+        "describe": "window_title_contains: 'Notepad'",
+        "expected": "Notepad",
+        "kind": "assert"
+      },
+      {
+        "assertion": "element_exists",
+        "class": "AssertStep",
+        "describe": "element_exists: {name: Save, control_type: MenuItem}",
+        "expected": {
+          "control_type": "MenuItem",
+          "name": "Save"
+        },
+        "kind": "assert"
+      },
+      {
+        "assertion": "process_running",
+        "class": "AssertStep",
+        "describe": "process_running: True",
+        "expected": true,
+        "kind": "assert"
+      },
+      {
+        "assertion": "dialog_open",
+        "class": "AssertStep",
+        "describe": "dialog_open: 'Error'",
+        "expected": "Error",
+        "kind": "assert"
+      },
+      {
+        "assertion": "stdout_contains",
+        "class": "AssertStep",
+        "describe": "stdout_contains: 'ready'",
+        "expected": "ready",
+        "kind": "assert"
+      },
+      {
+        "assertion": "stderr_contains",
+        "class": "AssertStep",
+        "describe": "stderr_contains: 'warning'",
+        "expected": "warning",
+        "kind": "assert"
+      },
+      {
+        "assertion": "exit_code_is",
+        "class": "AssertStep",
+        "describe": "exit_code_is: 0",
+        "expected": 0,
+        "kind": "assert"
+      },
+      {
+        "assertion": "url_contains",
+        "class": "AssertStep",
+        "describe": "url_contains: '/dashboard'",
+        "expected": "/dashboard",
+        "kind": "assert"
+      },
+      {
+        "assertion": "page_title_contains",
+        "class": "AssertStep",
+        "describe": "page_title_contains: 'Example Domain'",
+        "expected": "Example Domain",
+        "kind": "assert"
+      }
+    ]
+  }
+}

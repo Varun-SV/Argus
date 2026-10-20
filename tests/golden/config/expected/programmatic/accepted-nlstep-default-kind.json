@@ -1,0 +1,31 @@
+{
+  "case": "programmatic/accepted-nlstep-default-kind",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/accepted-nlstep-default-kind.json",
+        "sha256": "dc1c6d8b5d4f4b6bda21ea97a5c4b4360c5be6a54669e85c475db11a72e6a2f6"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.NLStep",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "class": "NLStep",
+    "kind": "step",
+    "text": "Open the File menu"
+  }
+}

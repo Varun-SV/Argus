@@ -1,0 +1,51 @@
+{
+  "case": "spec/unknown-keys",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/unknown-keys.test.yaml",
+        "sha256": "de80140d353ed5530cdf974baff846b4166f70ddcce904cc3e3e9bf95f6f8e95"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "cli",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "unknown-keys.test.yaml",
+    "launch": "echo hi",
+    "name": "unknown keys",
+    "path": "<PROJECT>/.argus/unknown-keys.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Run it"
+      },
+      {
+        "assertion": "stdout_contains",
+        "class": "AssertStep",
+        "describe": "stdout_contains: 'hi'",
+        "expected": "hi",
+        "kind": "assert"
+      }
+    ]
+  }
+}

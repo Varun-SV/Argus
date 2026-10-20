@@ -1,0 +1,44 @@
+{
+  "case": "spec/name-and-adapter-defaults",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/name-and-adapter-defaults.test.yaml",
+        "sha256": "fb6892565af2e0d60c0a2a1f22f0af604bd0f692ea90e824094a18e3a1aa34ce"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "name-and-adapter-defaults.test.yaml",
+    "launch": "calc.exe",
+    "name": "name-and-adapter-defaults.test",
+    "path": "<PROJECT>/.argus/name-and-adapter-defaults.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Compute 2 + 2"
+      }
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "case": "programmatic/rejected-assertstep-kind",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "assertion step kind must be 'assert'",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/rejected-assertstep-kind.json",
+        "sha256": "c0b364ca38031487e7061ccdc1897e250a7dbf15e67971de52ff4eb81c51361d"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.AssertStep",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

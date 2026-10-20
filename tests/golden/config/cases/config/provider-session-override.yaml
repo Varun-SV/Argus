@@ -1,0 +1,9 @@
+# The desktop session picker (load_config(provider=...)) selects another configured
+# provider; the generic ARGUS_MODEL/ARGUS_API_KEY values are then NOT applied.
+provider: ollama
+providers:
+  ollama:
+    model: gemma3:9b
+  openai:
+    model: gpt-4o
+    api_key_env: ARGUS_GOLDEN_TEST_ONLY_KEY_B

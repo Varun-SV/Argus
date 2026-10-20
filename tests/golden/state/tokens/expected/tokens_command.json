@@ -1,0 +1,127 @@
+{
+  "api": "argus tokens",
+  "case": "tokens/tokens_command",
+  "environment": {
+    "COLUMNS": "120"
+  },
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "edge_cases": [
+      {
+        "argus_tokens": {
+          "args": [
+            "argus",
+            "tokens"
+          ],
+          "exception": null,
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "prompt tokens      0\ncompletion tokens  0\ntotal tokens       0\nLLM calls          0\n"
+        },
+        "case": "corrupt-json",
+        "load_persisted": {
+          "value": {
+            "calls": 0,
+            "completion_tokens": 0,
+            "prompt_tokens": 0,
+            "total_tokens": 0
+          }
+        },
+        "persist_one_call": {
+          "value": null
+        },
+        "usage_json_after": "{\n  \"prompt_tokens\": 5,\n  \"completion_tokens\": 5,\n  \"calls\": 1,\n  \"total_tokens\": 10\n}",
+        "usage_json_before": "{ not json"
+      },
+      {
+        "argus_tokens": {
+          "args": [
+            "argus",
+            "tokens"
+          ],
+          "exception": {
+            "message": "'total_tokens'",
+            "type": "KeyError"
+          },
+          "exit_code": 1,
+          "stderr": "",
+          "stdout": ""
+        },
+        "case": "missing-total-tokens",
+        "load_persisted": {
+          "value": {
+            "calls": 1,
+            "completion_tokens": 4,
+            "prompt_tokens": 3
+          }
+        },
+        "persist_one_call": {
+          "value": null
+        },
+        "usage_json_after": "{\n  \"prompt_tokens\": 8,\n  \"completion_tokens\": 9,\n  \"calls\": 2,\n  \"total_tokens\": 17\n}",
+        "usage_json_before": "{\"prompt_tokens\": 3, \"completion_tokens\": 4, \"calls\": 1}"
+      },
+      {
+        "argus_tokens": {
+          "args": [
+            "argus",
+            "tokens"
+          ],
+          "exception": null,
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "prompt tokens      1\ncompletion tokens  2\ntotal tokens       3\nLLM calls          1\n"
+        },
+        "case": "extra-keys",
+        "load_persisted": {
+          "value": {
+            "calls": 1,
+            "completion_tokens": 2,
+            "note": "kept",
+            "prompt_tokens": 1,
+            "total_tokens": 3
+          }
+        },
+        "persist_one_call": {
+          "value": null
+        },
+        "usage_json_after": "{\n  \"prompt_tokens\": 6,\n  \"completion_tokens\": 7,\n  \"calls\": 2,\n  \"total_tokens\": 13,\n  \"note\": \"kept\"\n}",
+        "usage_json_before": "{\"prompt_tokens\": 1, \"completion_tokens\": 2, \"total_tokens\": 3, \"calls\": 1, \"note\": \"kept\"}"
+      },
+      {
+        "argus_tokens": {
+          "args": [
+            "argus",
+            "tokens"
+          ],
+          "exception": {
+            "message": "list indices must be integers or slices, not str",
+            "type": "TypeError"
+          },
+          "exit_code": 1,
+          "stderr": "",
+          "stdout": ""
+        },
+        "case": "json-list",
+        "load_persisted": {
+          "value": []
+        },
+        "persist_one_call": {
+          "value": null
+        },
+        "usage_json_after": "{\n  \"prompt_tokens\": 5,\n  \"completion_tokens\": 5,\n  \"calls\": 1,\n  \"total_tokens\": 10\n}",
+        "usage_json_before": "[]"
+      }
+    ],
+    "project": {
+      "args": [
+        "argus",
+        "tokens"
+      ],
+      "exception": null,
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "prompt tokens      2,090\ncompletion tokens  545  \ntotal tokens       2,635\nLLM calls          6    \n"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+# max_tokens is kept in the config but the Ollama budget never limits tokens.
+provider: ollama
+budgets:
+  time_minutes: 5
+  max_tokens: 1000

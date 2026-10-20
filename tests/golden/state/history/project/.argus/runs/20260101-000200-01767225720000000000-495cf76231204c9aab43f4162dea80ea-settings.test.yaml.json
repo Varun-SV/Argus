@@ -1,0 +1,71 @@
+{
+  "test_name": "settings",
+  "test_file": "settings.test.yaml",
+  "adapter": "desktop",
+  "provider": "ollama",
+  "environment_type": "direct",
+  "isolated": false,
+  "location": "unknown",
+  "status": "error",
+  "started_at": 1767225720.0,
+  "duration_s": 1.1,
+  "steps": [
+    {
+      "index": 0,
+      "kind": "launch",
+      "text": "launch the app",
+      "status": "error",
+      "duration_s": 0.75,
+      "actions": [],
+      "expected": null,
+      "actual": null,
+      "note": "adapter error: process exited with code 3",
+      "flaky": false,
+      "screenshot_path": null
+    },
+    {
+      "index": 1,
+      "kind": "act",
+      "text": "open settings",
+      "status": "skipped",
+      "duration_s": 0.0,
+      "actions": [],
+      "expected": null,
+      "actual": null,
+      "note": "skipped after failure (continue_on_failure: false)",
+      "flaky": false,
+      "screenshot_path": null
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "calls": 0
+  },
+  "error": "RuntimeError: process exited with code 3",
+  "staged_files": [
+    {
+      "source": "fixtures/input.txt",
+      "destination": "C:\\ArgusStage\\input.txt",
+      "size": 12,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "C:\\ArgusStage\\out.log",
+      "host_path": "artifacts/out.log",
+      "size": 34,
+      "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "transfer_error": "artifact collection failed: guest path missing",
+  "failure_capsule": null,
+  "failure_capsule_error": {
+    "error": "retention timed out",
+    "vm_name": "argus-golden-vm-2",
+    "root_dir": "capsules/golden-failure-2",
+    "recovery": "inspect the preserved Capsule manually"
+  }
+}

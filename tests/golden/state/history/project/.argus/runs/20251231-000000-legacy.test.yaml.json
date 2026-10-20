@@ -1,0 +1,17 @@
+{
+  "test_file": "legacy.test.yaml",
+  "test_name": "legacy",
+  "status": "pass",
+  "adapter": "desktop",
+  "provider": "ollama",
+  "duration_s": 2,
+  "tokens": {
+    "total_tokens": 7
+  },
+  "steps": [
+    {
+      "status": "pass"
+    }
+  ],
+  "started_at": 1767139200.0
+}

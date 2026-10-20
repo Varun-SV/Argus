@@ -1,0 +1,5 @@
+{
+  "description": "NLStep rejects kinds other than step/setup/teardown at construction.",
+  "construct": "NLStep",
+  "args": {"text": "Check it", "kind": "assert"}
+}

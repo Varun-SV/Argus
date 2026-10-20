@@ -1,0 +1,277 @@
+{
+  "files": {
+    "conversations/expected/identity.json": {
+      "bytes": 1081,
+      "sha256": "4bdf505f005b4904b19c5acc40021fede24c246f7eb650246b7ca81eda3e3f6c"
+    },
+    "conversations/expected/load_conversations.json": {
+      "bytes": 19889,
+      "sha256": "3bf4fa7d5605beeea54851abcf87b1c28db41dc26b1d33ab762571c1184861de"
+    },
+    "conversations/inputs/legacy-project/.argus/gui/conversations.json": {
+      "bytes": 8812,
+      "sha256": "61b9ae9941d80d2c995c915a83c52bfbe2aee6845496ff62a72c233bec1760f8"
+    },
+    "conversations/xdg-state/argus/projects/0476c9897d0a0f3edee7087a/conversations.json": {
+      "bytes": 17,
+      "sha256": "43440e04d039b7b0da322d227ee796701ee3b1f8c3abfeb7279eeaca62946043"
+    },
+    "conversations/xdg-state/argus/projects/889e4941b1a5915efdd691ce/conversations.json": {
+      "bytes": 8704,
+      "sha256": "5d73df3a88346a6b70edd2f4c649754fbfd435069c82c79c5dcf970fb6a91eee"
+    },
+    "conversations/xdg-state/argus/projects/fb0959d3aee5bfdd1ee9246f/conversations.json": {
+      "bytes": 8260,
+      "sha256": "c05172e4e8eb736cc82dd82a6924df3cf3643a6e1bd0193d4db12345ab161d74"
+    },
+    "history/expected/history_order.json": {
+      "bytes": 6832,
+      "sha256": "076e9ccc74e1470115b0a281ce1406d77c9b1873f31f4ec6a3f39f1198ee04f0"
+    },
+    "history/expected/load_runs.json": {
+      "bytes": 17325,
+      "sha256": "aeca085b5cfe2cfde7a86fbfbc81ce5f6a6de3359dbf08b20e4b0fbc0d6a5867"
+    },
+    "history/expected/recent_runs.json": {
+      "bytes": 4681,
+      "sha256": "0260e1f625bf9dcfb6c3b179bd8560a402771aa0db492720a43fd2761e2463f4"
+    },
+    "history/expected/report_command.json": {
+      "bytes": 3467,
+      "sha256": "5d4ca923273ec8ae9ff6f24e9ff05b4690f1dc7f5d2ccc3e0330b02e93700c44"
+    },
+    "history/project/.argus/runs/.storage-order": {
+      "bytes": 19,
+      "sha256": "bb5d8a62f5df585d9d7a897827a212f60df095f5142d6b1e01cef949458e7e6f"
+    },
+    "history/project/.argus/runs/20251231-000000-legacy.test.yaml.json": {
+      "bytes": 273,
+      "sha256": "64592ba09c4ba00e91320ee02dbf9468a33eb5ace53b1b44f21f64ff602945e1"
+    },
+    "history/project/.argus/runs/20251231-230000-01767225961000000002-7555c95961574c64be8958d5f587bd6d-rollback.test.yaml.json": {
+      "bytes": 796,
+      "sha256": "f6013c49019559c991d80dc66045c97e4d565829d4036bf741cc9c75f4b3f386"
+    },
+    "history/project/.argus/runs/20251231-230000-01767225961000000002-7555c95961574c64be8958d5f587bd6d-rollback.test.yaml/report.md": {
+      "bytes": 495,
+      "sha256": "2f2ee01f3ccdbdd78f19f1c1a117cda83f200851812e90876250b28cc354ed44"
+    },
+    "history/project/.argus/runs/20251231-230000-01767225961000000002-7555c95961574c64be8958d5f587bd6d-rollback.test.yaml/result.json": {
+      "bytes": 796,
+      "sha256": "f6013c49019559c991d80dc66045c97e4d565829d4036bf741cc9c75f4b3f386"
+    },
+    "history/project/.argus/runs/20260101-000000-01767225601000000000-a7a6498a7f8d4c2699bba5f46bad57fb-login.test.yaml.json": {
+      "bytes": 1526,
+      "sha256": "c848f834cdeea002f595cc11d8c17453f311aa9e433b08417476972740b0d4b6"
+    },
+    "history/project/.argus/runs/20260101-000000-01767225601000000000-a7a6498a7f8d4c2699bba5f46bad57fb-login.test.yaml/report.md": {
+      "bytes": 1038,
+      "sha256": "2a6af1d6f7dec6646b28da2575183f0d87b64b7c60fc94584af940eeaa5536c3"
+    },
+    "history/project/.argus/runs/20260101-000000-01767225601000000000-a7a6498a7f8d4c2699bba5f46bad57fb-login.test.yaml/result.json": {
+      "bytes": 1526,
+      "sha256": "c848f834cdeea002f595cc11d8c17453f311aa9e433b08417476972740b0d4b6"
+    },
+    "history/project/.argus/runs/20260101-000100-01767225661000000000-5eecdc84df794f0baad2dc398b6a202b-checkout.test.yaml.json": {
+      "bytes": 1628,
+      "sha256": "76a28caa28ec059fd3b38c190c55741a047e1fd4a6011fab29ee573281199f55"
+    },
+    "history/project/.argus/runs/20260101-000100-01767225661000000000-5eecdc84df794f0baad2dc398b6a202b-checkout.test.yaml/report.md": {
+      "bytes": 1398,
+      "sha256": "b90bf054c8784cd9fb5f9dd4af94f7715ee1a28b1cf5f77894f0109b6377c266"
+    },
+    "history/project/.argus/runs/20260101-000100-01767225661000000000-5eecdc84df794f0baad2dc398b6a202b-checkout.test.yaml/result.json": {
+      "bytes": 1628,
+      "sha256": "76a28caa28ec059fd3b38c190c55741a047e1fd4a6011fab29ee573281199f55"
+    },
+    "history/project/.argus/runs/20260101-000200-01767225720000000000-495cf76231204c9aab43f4162dea80ea-settings.test.yaml.json": {
+      "bytes": 1830,
+      "sha256": "078bd65da5de8dd2778f63c6b99430236450db5edd1a666e44b773115cf6099f"
+    },
+    "history/project/.argus/runs/20260101-000200-01767225720000000000-495cf76231204c9aab43f4162dea80ea-settings.test.yaml/report.md": {
+      "bytes": 1874,
+      "sha256": "f59b329ff0be079557b0ee91932c94ddd5e8a3058b20e6098380f6a14f3a57d6"
+    },
+    "history/project/.argus/runs/20260101-000200-01767225720000000000-495cf76231204c9aab43f4162dea80ea-settings.test.yaml/result.json": {
+      "bytes": 1830,
+      "sha256": "078bd65da5de8dd2778f63c6b99430236450db5edd1a666e44b773115cf6099f"
+    },
+    "history/project/.argus/runs/20260101-000300-01767225781000000000-d9adb971d888472db7da079833f24d70-login.test.yaml.json": {
+      "bytes": 1116,
+      "sha256": "bbb7f6038dd5f305b2d66797ff05549612843b93e914a5f2cbaa1540ea560cda"
+    },
+    "history/project/.argus/runs/20260101-000300-01767225781000000000-d9adb971d888472db7da079833f24d70-login.test.yaml/report.md": {
+      "bytes": 723,
+      "sha256": "9a7cd037fddc783ae82e405f2f4b31e137b097dfcbaae1fee58edc2be482bc9a"
+    },
+    "history/project/.argus/runs/20260101-000300-01767225781000000000-d9adb971d888472db7da079833f24d70-login.test.yaml/result.json": {
+      "bytes": 1116,
+      "sha256": "bbb7f6038dd5f305b2d66797ff05549612843b93e914a5f2cbaa1540ea560cda"
+    },
+    "history/project/.argus/runs/20260101-000400-01767225841000000000-999e629231224f12a0052c46506ae06b-search.test.yaml.json": {
+      "bytes": 810,
+      "sha256": "f57669f47cb4807dff2446242c6295fbb04432957b034285b4a8577c63d950ed"
+    },
+    "history/project/.argus/runs/20260101-000400-01767225841000000000-999e629231224f12a0052c46506ae06b-search.test.yaml/report.md": {
+      "bytes": 524,
+      "sha256": "2773954c1492662c9fac2feaa65506928fb38dd424dab3290de7dc1423506dbb"
+    },
+    "history/project/.argus/runs/20260101-000400-01767225841000000000-999e629231224f12a0052c46506ae06b-search.test.yaml/result.json": {
+      "bytes": 810,
+      "sha256": "f57669f47cb4807dff2446242c6295fbb04432957b034285b4a8577c63d950ed"
+    },
+    "history/project/.argus/runs/20260101-000400-01767225841000000002-92b2141cc9064895afaaeec33d08d530-search.test.yaml.json": {
+      "bytes": 810,
+      "sha256": "8b08631d52b38f4db0a380beedf25625cbb0cfce1b49f3bd873f0fa442e27b84"
+    },
+    "history/project/.argus/runs/20260101-000400-01767225841000000002-92b2141cc9064895afaaeec33d08d530-search.test.yaml/report.md": {
+      "bytes": 524,
+      "sha256": "21a97245b7f4f9ab68b55e6413dd1011725939ef31c89f45413777555f73898d"
+    },
+    "history/project/.argus/runs/20260101-000400-01767225841000000002-92b2141cc9064895afaaeec33d08d530-search.test.yaml/result.json": {
+      "bytes": 810,
+      "sha256": "8b08631d52b38f4db0a380beedf25625cbb0cfce1b49f3bd873f0fa442e27b84"
+    },
+    "history/project/.argus/runs/20260101-000500-01767225901000000000-8f51575a835f40e28c78d0ab9214d7b6-resave.test.yaml.json": {
+      "bytes": 1086,
+      "sha256": "6f16df464f226804ca2ab9a7960a4d4a56bc4bf9917c79289d45f6d170b3d998"
+    },
+    "history/project/.argus/runs/20260101-000500-01767225901000000000-8f51575a835f40e28c78d0ab9214d7b6-resave.test.yaml/report.md": {
+      "bytes": 670,
+      "sha256": "4fa448a7b3556c753078fcb90c0ade6a383b91563966e7a9f8d1a488f8ad60b7"
+    },
+    "history/project/.argus/runs/20260101-000500-01767225901000000000-8f51575a835f40e28c78d0ab9214d7b6-resave.test.yaml/result.json": {
+      "bytes": 1086,
+      "sha256": "6f16df464f226804ca2ab9a7960a4d4a56bc4bf9917c79289d45f6d170b3d998"
+    },
+    "history/project/.argus/runs/20260101-000600-01767225961000000000-55dd0f20a883407b851ed5fc7af5fdc5-suite_odd_name___co.test.yaml.json": {
+      "bytes": 812,
+      "sha256": "4a5b07344d4ed041c31f8c39c003c31080f285f6e1f78538171661d87604b0af"
+    },
+    "history/project/.argus/runs/20260101-000600-01767225961000000000-55dd0f20a883407b851ed5fc7af5fdc5-suite_odd_name___co.test.yaml/report.md": {
+      "bytes": 500,
+      "sha256": "e1a6fe77a853ec659321fe1a8a7c9d8ea05dae265f94a391c769770a0a9ee230"
+    },
+    "history/project/.argus/runs/20260101-000600-01767225961000000000-55dd0f20a883407b851ed5fc7af5fdc5-suite_odd_name___co.test.yaml/result.json": {
+      "bytes": 812,
+      "sha256": "4a5b07344d4ed041c31f8c39c003c31080f285f6e1f78538171661d87604b0af"
+    },
+    "history/project/.argus/runs/20260102-000000-99999999999999999997-cccccccccccccccccccccccccccccccc-list.test.yaml.json": {
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "history/project/.argus/runs/20260102-000000-99999999999999999998-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cancelled.test.yaml.json": {
+      "bytes": 65,
+      "sha256": "8c53685dab4e15039c7f62d7f50cca46b41122ee6e5685ae8395957557853c60"
+    },
+    "history/project/.argus/runs/20260102-000000-99999999999999999999-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-broken.test.yaml.json": {
+      "bytes": 18,
+      "sha256": "0fb1db0e71e178183d7581080c63c2b80630b1e60c182cae9fd866701a751329"
+    },
+    "knowledge/expected/export_and_stats.json": {
+      "bytes": 4247,
+      "sha256": "49fe4c241083a06c155a2ab4739e5ddf1f900e95a24180d10c199830fd24047f"
+    },
+    "knowledge/expected/store.json": {
+      "bytes": 3805,
+      "sha256": "27c98226693898d5dc454d3691d46c39e800976e69264ea75ee48af4fc5df95e"
+    },
+    "knowledge/project/.argus/config.yaml": {
+      "bytes": 129,
+      "sha256": "8552fd31f16994fb6322248d3e4a31f78f6179d18470b723fc9e24ba9f1b40b7"
+    },
+    "knowledge/project/.argus/knowledge/https-example-test-app.bugs.ndjson": {
+      "bytes": 230,
+      "sha256": "e9b9310a43c87c1aec72f376085e0c1d2a8fbd44fb5d7867b880e15ec4cd19d0"
+    },
+    "knowledge/project/.argus/knowledge/https-example-test-app.graph.json": {
+      "bytes": 797,
+      "sha256": "34d36784e5cf2000740674639e5f8b0a07e0102eeedfa7c76f72d0c2250bb89e"
+    },
+    "knowledge/project/.argus/knowledge/https-example-test-app.states.ndjson": {
+      "bytes": 488,
+      "sha256": "bedd903117569cb040c958cad143df9bcceb52c86dfd962c3e427e633fb49760"
+    },
+    "knowledge/project/.argus/knowledge/notepad-exe.bugs.ndjson": {
+      "bytes": 279,
+      "sha256": "62c06f11c79e22446fe45535a5ddf17de0e44991279e77f67e558c1cb34b6124"
+    },
+    "knowledge/project/.argus/knowledge/notepad-exe.graph.json": {
+      "bytes": 603,
+      "sha256": "0f5c8d39be37bd0ed3928219e68f8ac379eab1363ff0525b7ae9886c4f038fec"
+    },
+    "knowledge/project/.argus/knowledge/notepad-exe.states.ndjson": {
+      "bytes": 641,
+      "sha256": "205f5bf6082cde5910d898f4ee8264ab96d4d8fa0efa3674e338d7caa695f489"
+    },
+    "secrets/expected/list_command.json": {
+      "bytes": 1178,
+      "sha256": "c9540dc8aebf1cb8d7294d42a64b4400e49195b3739d2e890ce83fc2a4d2d01d"
+    },
+    "secrets/expected/references.json": {
+      "bytes": 4161,
+      "sha256": "d7848a2626aa11ad91795a11831e8fd8aa6f810fba2abfe56c4db2066d747524"
+    },
+    "secrets/expected/store.json": {
+      "bytes": 4051,
+      "sha256": "e86a576b8a1484738b7c8f4c33cc6fced0efc01a2266664337e7a769357dac91"
+    },
+    "secrets/xdg-data/argus/secrets/secrets.key": {
+      "bytes": 32,
+      "sha256": "e5412f33a8cf553a0ef550df7d0f452c3f8b69c8b31c8267bf2eb3f760c5ec67"
+    },
+    "secrets/xdg-data/argus/secrets/secrets.sqlite3": {
+      "compare": "sqlite-logical-dump"
+    },
+    "tokens/expected/token_usage.json": {
+      "bytes": 2324,
+      "sha256": "dcc79fc41f13ab7f4c98c31d7e5c5a224bb7341b864335c755a401d8810fb0cf"
+    },
+    "tokens/expected/tokens_command.json": {
+      "bytes": 3641,
+      "sha256": "f76652050528c05036a540236fe194ee30bcf904213004e6d8ae158d3e2dddc2"
+    },
+    "tokens/project/.argus/config.yaml": {
+      "bytes": 134,
+      "sha256": "7fd2ff3886fbc2d972f1bbd06b7a3f039353c7f18b4ee9bef759ae1d46dc6f70"
+    },
+    "tokens/project/.argus/usage.json": {
+      "bytes": 93,
+      "sha256": "5fbd7706b0d599f0793697891c792e39a90c45e2f9f203d7987a2ae1cbdc6458"
+    }
+  },
+  "generated_with": {
+    "_note": "informational; ignored by --check",
+    "argus_package_version": "0.1.6.dev30+gb559e9790.d20261008",
+    "git_commit": "b559e9790165c0d468e511abbf53ca1f7703280a",
+    "python": "3.13.16",
+    "sources_last_commit": "417127353d64e3edd3c7d5591388c5591a7001e5",
+    "sqlite": "3.45.1"
+  },
+  "generator": "scripts/golden/export_state.py",
+  "implementation": {
+    "name": "argus (Python)",
+    "sources": {
+      "argus/cli.py": "9df7e96869ef48a7f4c0c15243f7012cc7586de32257e4b5dc772f0071d2abbd",
+      "argus/config.py": "e42858ba44aa912599bdf339d4bd6995bd5687b6d4ecd23f21efb505688b3174",
+      "argus/engine/results.py": "c3be8cdd94ec44de879e575ab1b75f1ad1f72c0272eab4d903c86e411bfce6ce",
+      "argus/gui/app.py": "396b059fd17b600e8fe554276bc0afd6bef6232e496def6b5467f19dcbe9f1a2",
+      "argus/gui/state.py": "cc5cdc9d7706b62071002992b6fd20597e6aec3e68f319731f02ff5769c39e82",
+      "argus/knowledge/__init__.py": "a343c443b71bbfe930f6d810bd3841952890cf5a14579007fb45bd818d1b2bcc",
+      "argus/knowledge/fingerprint.py": "fa36d529e5eb5d69d5908a10671c9cf967d74c50d5a3bc24256f89fefe396f9e",
+      "argus/knowledge/json_store.py": "faa87cf8c73871b58081f27c1259ee1aa11499e48ce56f9fa55142fe9d44d01b",
+      "argus/knowledge/storage.py": "64684f20162cf5b4f0427624292df35ecda3a474480b9fcd09bc3293ba11cced",
+      "argus/secrets.py": "56bcf09ac7c6c99d7b318cd256e33e1041a1658c80cef42432143f86884a5db8",
+      "argus/tokens.py": "06d66cc08e4aee94ca7e2b524ebc370fbdd81caf2be1466dfba3534942de96c6"
+    },
+    "sources_sha256": "2a81d293258a2841c941f0baac7c3cc46e6351219ac0ce0987e5f01015037a39"
+  },
+  "schema": "argus-golden-state-v1",
+  "sections": [
+    "history",
+    "tokens",
+    "conversations",
+    "knowledge",
+    "secrets"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "case": "spec/assert-in-setup-teardown",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/assert-in-setup-teardown.test.yaml",
+        "sha256": "46186d1fdaa35822be7555976ce2497e65855a138fa76ede8110395bd8dda72d"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "assert-in-setup-teardown.test.yaml",
+    "launch": "notepad.exe",
+    "name": "assert-in-setup-teardown.test",
+    "path": "<PROJECT>/.argus/assert-in-setup-teardown.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "assertion": "process_running",
+        "class": "AssertStep",
+        "describe": "process_running: True",
+        "expected": true,
+        "kind": "assert"
+      },
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Type hello"
+      },
+      {
+        "assertion": "window_title_contains",
+        "class": "AssertStep",
+        "describe": "window_title_contains: 'Notepad'",
+        "expected": "Notepad",
+        "kind": "assert"
+      }
+    ]
+  }
+}

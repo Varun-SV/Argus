@@ -1,0 +1,63 @@
+{
+  "case": "programmatic/accepted-all-step-kinds",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/accepted-all-step-kinds.json",
+        "sha256": "b3de35da7064e72b121cf4f0bc515c6dcede5029b67f45dd6f3cc2667c0cd444"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.TestSpec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": true,
+    "file_name": "all step kinds",
+    "launch": "notepad.exe",
+    "name": "all step kinds",
+    "path": null,
+    "retries": 1,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "setup",
+        "text": "Create a file"
+      },
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Type hello"
+      },
+      {
+        "assertion": "element_exists",
+        "class": "AssertStep",
+        "describe": "element_exists: {name: Save}",
+        "expected": {
+          "name": "Save"
+        },
+        "kind": "assert"
+      },
+      {
+        "class": "NLStep",
+        "kind": "teardown",
+        "text": "close"
+      }
+    ]
+  }
+}

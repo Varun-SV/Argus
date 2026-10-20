@@ -1,0 +1,32 @@
+{
+  "case": "programmatic/rejected-nlstep-kind",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "unknown natural-language step kind 'assert' — supported: step, setup, teardown",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/rejected-nlstep-kind.json",
+        "sha256": "658d431e63de82c575dcd3303ed3590ae7645e436bbc8754332d8b9e5165fd07"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.NLStep",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

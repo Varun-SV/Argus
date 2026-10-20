@@ -1,0 +1,5 @@
+# Zero is falsy: both budgets become null (no limit).
+provider: openai
+budgets:
+  time_minutes: 0
+  max_tokens: 0

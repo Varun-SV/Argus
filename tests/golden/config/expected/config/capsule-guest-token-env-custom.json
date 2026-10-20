@@ -1,0 +1,35 @@
+{
+  "case": "config/capsule-guest-token-env-custom",
+  "category": "config",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "value_error",
+    "message": "execution.capsule.guest_token_env cannot select arbitrary host environment variables; only ARGUS_CAPSULE_GUEST_TOKEN is allowed",
+    "module": "builtins",
+    "type": "ValueError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "config_file": "present",
+    "env": {},
+    "files": [
+      {
+        "path": "cases/config/capsule-guest-token-env-custom.yaml",
+        "sha256": "95f6ab885cb56378f72150fbf9f6540febd9a1d27ec21f53b737787ec8505013"
+      }
+    ],
+    "provider_argument": null
+  },
+  "loader": "argus.config.load_config",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

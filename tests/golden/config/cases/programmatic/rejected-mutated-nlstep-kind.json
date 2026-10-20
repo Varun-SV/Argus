@@ -1,0 +1,10 @@
+{
+  "description": "A step whose kind is changed after construction is rejected by TestSpec.",
+  "construct": "TestSpec",
+  "args": {
+    "name": "mutated",
+    "adapter": "cli",
+    "launch": "tool",
+    "steps": [{"class": "NLStep", "args": {"text": "Run"}, "mutate": {"kind": "cleanup"}}]
+  }
+}

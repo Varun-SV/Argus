@@ -1,0 +1,16 @@
+# Provisioned-image keys and execution-mode policy.
+provider: ollama
+execution:
+  environment: capsule
+  capsule:
+    provider: auto
+    environment_definition: environments/win11.yaml
+    image_cache_root: .argus/images
+    provisioning_evidence_root: .argus/provisioning
+    image_format: vhdx
+    control_root: .argus/control
+    default_execution_mode: shared_user
+    allowed_execution_modes: [isolated, shared_user]
+    allow_llm_mode_change: true
+    failure_allow_reconnect: false
+    failure_allow_llm_reconnect: true

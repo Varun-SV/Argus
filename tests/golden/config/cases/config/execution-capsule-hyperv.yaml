@@ -1,0 +1,28 @@
+# Capsule on Hyper-V with the PR6 control-plane and network-isolation keys.
+provider: ollama
+execution:
+  environment: capsule
+  capsule:
+    provider: hyperv
+    guest_os: windows
+    image: C:\Argus\images\windows-11-clean.vhdx
+    switch_name: Argus Internal
+    vm_root: C:\Argus\capsules
+    memory_mb: 4096
+    cpu_count: 2
+    guest_port: 8765
+    guest_token_ref: secret://argus/capsule/bootstrap
+    guest_input_mode: physical
+    guest_address: null
+    boot_timeout_seconds: 120
+    agent_timeout_seconds: 60
+    retain_on_failure: false
+    guest_transport: https
+    guest_ca_cert: C:\Argus\certs\argus-guest-ca.pem
+    allow_insecure_http: false
+    rotate_session_token: true
+    network_mode: allowlist
+    egress_allowlist: ["10.20.30.0/24", "192.0.2.10/32"]
+    allow_dhcp: true
+    disable_guest_file_copy: true
+    allow_external_switch: false

@@ -1,0 +1,7 @@
+# Native provider block. The key is read from a test-only environment variable
+# name that is unset during export, so api_key resolves to "".
+provider: anthropic
+providers:
+  anthropic:
+    model: example-model-a
+    api_key_env: ARGUS_GOLDEN_TEST_ONLY_KEY_A

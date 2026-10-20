@@ -1,0 +1,2 @@
+# Smallest useful configuration: the active provider only.
+provider: ollama

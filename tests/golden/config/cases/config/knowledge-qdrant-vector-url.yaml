@@ -1,0 +1,5 @@
+provider: ollama
+knowledge:
+  type: qdrant
+  vector_backend: qdrant
+  vector_url: http://localhost:6333

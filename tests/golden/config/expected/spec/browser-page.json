@@ -1,0 +1,58 @@
+{
+  "case": "spec/browser-page",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/browser-page.test.yaml",
+        "sha256": "7ddd8d68556bc623c37e5360c7e6b28dda544ec0d843b290b24b81ae643301ac"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "browser",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "browser-page.test.yaml",
+    "launch": "https://example.com",
+    "name": "browser opens the example page",
+    "path": "<PROJECT>/.argus/browser-page.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Open the page and wait until it has loaded"
+      },
+      {
+        "assertion": "url_contains",
+        "class": "AssertStep",
+        "describe": "url_contains: 'example.com'",
+        "expected": "example.com",
+        "kind": "assert"
+      },
+      {
+        "assertion": "page_title_contains",
+        "class": "AssertStep",
+        "describe": "page_title_contains: 'Example'",
+        "expected": "Example",
+        "kind": "assert"
+      }
+    ]
+  }
+}

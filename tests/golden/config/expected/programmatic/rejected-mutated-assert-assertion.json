@@ -1,0 +1,32 @@
+{
+  "case": "programmatic/rejected-mutated-assert-assertion",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "steps[1] has unsupported assertion metadata",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/rejected-mutated-assert-assertion.json",
+        "sha256": "7c597c146de40388c685c7bf8080a6419684fc38fcd811fa65aceab04ae61abb"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.TestSpec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

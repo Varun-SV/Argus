@@ -1,0 +1,58 @@
+{
+  "case": "spec/staging-collect",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/staging-collect.test.yaml",
+        "sha256": "137b1c5292c5a68ecce8cfb5bb547f4e4c8240c8f5475c2df056ce52e89bfd91"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "cli",
+    "collect": [
+      "out/report.txt",
+      "logs/run.log"
+    ],
+    "continue_on_failure": false,
+    "file_name": "staging-collect.test.yaml",
+    "launch": "tool.exe --input input/data.csv",
+    "name": "capsule file movement",
+    "path": "<PROJECT>/.argus/staging-collect.test.yaml",
+    "retries": 0,
+    "staging": [
+      {
+        "destination": "input/data.csv",
+        "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "source": "fixtures/data.csv"
+      },
+      {
+        "destination": "input/config.json",
+        "sha256": "",
+        "source": "fixtures/config.json"
+      }
+    ],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Run the tool"
+      }
+    ]
+  }
+}

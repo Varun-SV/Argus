@@ -1,0 +1,3 @@
+target: notepad.exe
+steps:
+  - "Type hello"

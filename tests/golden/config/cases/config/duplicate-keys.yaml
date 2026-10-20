@@ -1,0 +1,3 @@
+# PyYAML keeps the last value of a duplicated key without a warning.
+provider: openai
+provider: ollama

@@ -1,0 +1,71 @@
+{
+  "case": "spec/desktop-notepad",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/desktop-notepad.test.yaml",
+        "sha256": "4c44948fc8e168112a37b61799eb4348c767c56d9f763250feb63bd8847d2eb3"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "desktop-notepad.test.yaml",
+    "launch": "notepad.exe",
+    "name": "Notepad types and finds text",
+    "path": "<PROJECT>/.argus/desktop-notepad.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Type the sentence 'hello from argus' into the editor"
+      },
+      {
+        "assertion": "text_visible",
+        "class": "AssertStep",
+        "describe": "text_visible: 'hello from argus'",
+        "expected": "hello from argus",
+        "kind": "assert"
+      },
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Open the File menu"
+      },
+      {
+        "assertion": "element_exists",
+        "class": "AssertStep",
+        "describe": "element_exists: {name: Save, control_type: MenuItem}",
+        "expected": {
+          "control_type": "MenuItem",
+          "name": "Save"
+        },
+        "kind": "assert"
+      },
+      {
+        "class": "NLStep",
+        "kind": "teardown",
+        "text": "close"
+      }
+    ]
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "case": "programmatic/accepted-empty-steps",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/accepted-empty-steps.json",
+        "sha256": "0d1c403b8460b88597cd2d129e83585335cc85aa7b68101d4005c1724564f358"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.TestSpec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "cli",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "empty",
+    "launch": "true",
+    "name": "empty",
+    "path": null,
+    "retries": 0,
+    "staging": [],
+    "steps": []
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "case": "spec/setup-teardown-retries",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "1adddfda282cd63925d5fc8b32b29bc938790d9c287221d5d529fde90a715245",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/setup-teardown-retries.test.yaml",
+        "sha256": "283c179d763c0e8450ec2265ca10126fa5f6b75b0e1d68a101d04a922ac147fa"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": true,
+    "file_name": "setup-teardown-retries.test.yaml",
+    "launch": "notepad.exe",
+    "name": "ordering and retries",
+    "path": "<PROJECT>/.argus/setup-teardown-retries.test.yaml",
+    "retries": 2,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "setup",
+        "text": "Create a scratch file"
+      },
+      {
+        "class": "NLStep",
+        "kind": "setup",
+        "text": "close"
+      },
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Type hello"
+      },
+      {
+        "class": "NLStep",
+        "kind": "teardown",
+        "text": "close"
+      },
+      {
+        "class": "NLStep",
+        "kind": "teardown",
+        "text": "Delete the scratch file"
+      }
+    ]
+  }
+}

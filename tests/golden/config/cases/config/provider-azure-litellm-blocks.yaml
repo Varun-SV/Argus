@@ -1,0 +1,10 @@
+# Several provider blocks; only the active one is read into provider.*.
+provider: litellm
+providers:
+  azure:
+    model: my-deployment
+    base_url: https://example-resource.openai.azure.com/openai/v1
+  litellm:
+    model: anything
+    base_url: http://localhost:4000/v1
+    api_key_env: LITELLM_API_KEY

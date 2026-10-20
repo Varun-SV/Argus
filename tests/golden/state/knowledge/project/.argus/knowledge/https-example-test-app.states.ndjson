@@ -1,0 +1,2 @@
+{"state_id": "094194aa6d4a72b1", "window_title": "Golden App", "desc": "Window: Golden App. URL: https://example.test/app. Elements: Sign in, Search.", "session_id": "sess-2", "action_index": 0, "timestamp": 1767232864.5}
+{"state_id": "a14f69389284f968", "window_title": "Golden App - Error", "desc": "Window: Golden App - Error. URL: https://example.test/app/error. Error: HTTP 500. Elements: Something went wrong.", "session_id": "sess-2", "action_index": 1, "timestamp": 1767232866.0}

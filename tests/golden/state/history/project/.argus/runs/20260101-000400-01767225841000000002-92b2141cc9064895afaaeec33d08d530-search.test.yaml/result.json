@@ -1,0 +1,39 @@
+{
+  "test_name": "search",
+  "test_file": "search.test.yaml",
+  "adapter": "desktop",
+  "provider": "ollama",
+  "environment_type": "direct",
+  "isolated": false,
+  "location": "unknown",
+  "status": "fail",
+  "started_at": 1767225840.0,
+  "duration_s": 1.35,
+  "steps": [
+    {
+      "index": 0,
+      "kind": "act",
+      "text": "search for 'golden'",
+      "status": "fail",
+      "duration_s": 1.0,
+      "actions": [],
+      "expected": null,
+      "actual": null,
+      "note": null,
+      "flaky": false,
+      "screenshot_path": null
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 50,
+    "completion_tokens": 10,
+    "total_tokens": 60,
+    "calls": 1
+  },
+  "error": null,
+  "staged_files": [],
+  "artifacts": [],
+  "transfer_error": null,
+  "failure_capsule": null,
+  "failure_capsule_error": null
+}
