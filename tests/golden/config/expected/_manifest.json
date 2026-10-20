@@ -166,7 +166,7 @@
   "generated_with": {
     "_note": "informational; ignored by --check",
     "argus_package_version": "0.1.6.dev30+gb559e9790.d20261008",
-    "git_commit": "b559e9790165c0d468e511abbf53ca1f7703280a",
+    "git_commit": "5b4fb09d39e4ae48be3803270f60c30cb7f65486",
     "loader_sources_last_commit": "d5ab6fc3e3a3da53852d669bf07a4d9e5e96f952",
     "python": "3.13.16",
     "pyyaml": "6.0.3"
