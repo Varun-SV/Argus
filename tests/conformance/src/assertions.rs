@@ -162,7 +162,11 @@ pub fn check_file(sb: &Sandbox, f: &FileAssert, failures: &mut Vec<String>) {
     }
     for needle in &f.tree_not_contains {
         if meta.is_none() {
-            continue; // Nothing on disk cannot contain the value.
+            // A missing path would pass for any needle, so it is a failure.
+            failures.push(format!(
+                "{label} does not exist, so it cannot be shown to omit a value"
+            ));
+            continue;
         }
         match tree_contains(&path, needle.as_bytes(), 0) {
             Ok(None) => {}
@@ -263,7 +267,7 @@ pub fn check_json(sb: &Sandbox, j: &JsonAssert, failures: &mut Vec<String>) {
 pub fn check_step(sb: &Sandbox, expect: &Expect, obs: &Observed) -> Vec<String> {
     let mut failures = Vec::new();
     if expect.timeout {
-        if !obs.timed_out {
+        if !obs.timed_out || obs.exit_code.is_some() {
             failures.push(format!(
                 "expected the step to still be running at its timeout; it exited with {:?}",
                 obs.exit_code
@@ -622,5 +626,56 @@ mod tests {
             &mut f,
         );
         assert_eq!(f.len(), 6, "{f:?}");
+    }
+
+    #[test]
+    fn timeout_step_fails_when_the_process_already_exited() {
+        let sb = Sandbox::create(None).unwrap();
+        let expect = Expect {
+            timeout: true,
+            ..Expect::default()
+        };
+        // Exited with a status, but a leftover child held its pipe, so timed_out is set.
+        let exited = Observed {
+            exit_code: Some(3),
+            timed_out: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        assert!(!check_step(&sb, &expect, &exited).is_empty());
+        // Still running at the timeout: killed, so there is no exit code.
+        let running = Observed {
+            exit_code: None,
+            timed_out: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        assert!(check_step(&sb, &expect, &running).is_empty());
+    }
+
+    #[test]
+    fn tree_not_contains_fails_on_a_missing_path() {
+        let sb = Sandbox::create(None).unwrap();
+        let missing = FileAssert {
+            path: "absent".into(),
+            root: Root::Sandbox,
+            exists: None,
+            kind: None,
+            contains: Vec::new(),
+            not_contains: Vec::new(),
+            tree_not_contains: vec!["needle".into()],
+        };
+        let mut failures = Vec::new();
+        check_file(&sb, &missing, &mut failures);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+
+        std::fs::write(sb.root().join("present.txt"), "haystack").unwrap();
+        let present = FileAssert {
+            path: "present.txt".into(),
+            ..missing
+        };
+        let mut ok = Vec::new();
+        check_file(&sb, &present, &mut ok);
+        assert!(ok.is_empty(), "{ok:?}");
     }
 }

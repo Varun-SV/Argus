@@ -19,6 +19,7 @@ All commands run from the repository root.
 
 ```sh
 # Python implementation: `<python> -m argus`. The interpreter must have Argus installed.
+# Windows: `--python '.venv\Scripts\python.exe'` (single quotes keep the backslashes in PowerShell).
 cargo run -p argus-conformance -- run --impl python --python .venv/bin/python
 ARGUS_CONFORMANCE_PYTHON=.venv/bin/python cargo run -p argus-conformance -- run --impl python
 

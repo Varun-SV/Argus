@@ -1,6 +1,7 @@
 //! Minimal POSIX-like splitting for `--cmd '<argv...>'`: whitespace separates words, single
-//! quotes are literal, double quotes allow `\"` and `\\`, a backslash outside quotes escapes
-//! the next character.
+//! quotes are literal, double quotes allow `\"` and `\\`. Outside quotes a backslash is literal
+//! unless it precedes a quote character, so Windows paths such as `C:\bin\argus-next.exe`
+//! survive unchanged.
 
 /// Split a command line into words.
 pub fn split(s: &str) -> Result<Vec<String>, String> {
@@ -46,9 +47,12 @@ pub fn split(s: &str) -> Result<Vec<String>, String> {
             }
             '\\' => {
                 in_word = true;
-                match chars.next() {
-                    Some(ch) => cur.push(ch),
-                    None => return Err("trailing backslash".into()),
+                match chars.clone().next() {
+                    Some(q @ ('"' | '\'')) => {
+                        chars.next();
+                        cur.push(q);
+                    }
+                    _ => cur.push('\\'),
                 }
             }
             ch => {
@@ -71,17 +75,26 @@ mod tests {
     fn splits_words_and_quotes() {
         assert_eq!(split("  a b\tc ").unwrap(), ["a", "b", "c"]);
         assert_eq!(
-            split(r#"py -m 'argus x' "q \"y\"" e\ f ''"#).unwrap(),
-            ["py", "-m", "argus x", "q \"y\"", "e f", ""]
+            split(r#"py -m 'argus x' "q \"y\"" ''"#).unwrap(),
+            ["py", "-m", "argus x", "q \"y\"", ""]
         );
         assert_eq!(split(r#""a\nb""#).unwrap(), [r"a\nb"]);
         assert!(split("").unwrap().is_empty());
     }
 
     #[test]
-    fn rejects_unterminated_input() {
+    fn keeps_windows_paths_intact() {
+        assert_eq!(
+            split(r"C:\bin\argus-next.exe --version").unwrap(),
+            [r"C:\bin\argus-next.exe", "--version"]
+        );
+        assert_eq!(split(r"it\'s").unwrap(), ["it's"]);
+        assert_eq!(split(r"dir\").unwrap(), [r"dir\"]);
+    }
+
+    #[test]
+    fn rejects_unterminated_quotes() {
         assert!(split("'a").is_err());
         assert!(split("\"a").is_err());
-        assert!(split("a\\").is_err());
     }
 }
