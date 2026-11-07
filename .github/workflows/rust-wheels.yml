@@ -1,0 +1,136 @@
+name: Rust wheels (argus-next preview)
+
+# Phase P0 "maturin wheels" (docs/rearchitecture/specification.md §10, §12): one platform wheel
+# per target, carrying both the native `argus-next` binary (crates/argus-cli, staged into the
+# wheel data directory) and the PyO3 extension `argus_next._native` (crates/argus-py).
+# Design and verification: docs/rearchitecture/p0-packaging-findings.md.
+#
+# The wheels are build artifacts only. Nothing here publishes to PyPI.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "python/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/rust-wheels.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "python/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/rust-wheels.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-wheels-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Pinned build tools (spec §14).
+  MATURIN_VERSION: "1.16.0"
+  ZIGLANG_VERSION: "0.17.1"
+  CARGO_ZIGBUILD_VERSION: "0.24.1"
+
+jobs:
+  wheel:
+    name: Wheel · ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64 (manylinux_2_28)
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            zig_glibc: "2.28"
+            maturin_args: --zig --compatibility manylinux_2_28 --target x86_64-unknown-linux-gnu
+          - label: Linux ARM64 (manylinux_2_28)
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            zig_glibc: "2.28"
+            maturin_args: --zig --compatibility manylinux_2_28 --target aarch64-unknown-linux-gnu
+          - label: Windows x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            maturin_args: --target x86_64-pc-windows-msvc
+          - label: Windows ARM64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            maturin_args: --target aarch64-pc-windows-msvc
+          - label: macOS universal2
+            runner: macos-15
+            universal2: true
+            maturin_args: --target universal2-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Rust toolchain and targets
+        run: |
+          rustup toolchain install stable --profile minimal
+          if [ "${{ matrix.universal2 }}" = "true" ]; then
+            rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          else
+            rustup target add "${{ matrix.target }}"
+          fi
+          cargo --version
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "maturin==${MATURIN_VERSION}"
+          if [ -n "${{ matrix.zig_glibc }}" ]; then
+            python -m pip install "ziglang==${ZIGLANG_VERSION}"
+            cargo install --locked "cargo-zigbuild@${CARGO_ZIGBUILD_VERSION}"
+          fi
+      - name: Build and stage the argus-next binary
+        working-directory: python
+        run: |
+          if [ "${{ matrix.universal2 }}" = "true" ]; then
+            python build_backend/argus_next_build.py stage-cli --universal2 --locked
+          elif [ -n "${{ matrix.zig_glibc }}" ]; then
+            python build_backend/argus_next_build.py stage-cli --locked \
+              --target "${{ matrix.target }}" --zig-glibc "${{ matrix.zig_glibc }}"
+          else
+            python build_backend/argus_next_build.py stage-cli --locked --target "${{ matrix.target }}"
+          fi
+      - name: Build the wheel
+        working-directory: python
+        env:
+          ARGUS_NEXT_CLI_PRESTAGED: "1"
+        run: maturin build --release --locked ${{ matrix.maturin_args }} --out "${GITHUB_WORKSPACE}/dist"
+      - name: Smoke-test the wheel in a clean virtual environment
+        run: |
+          python -m venv "${RUNNER_TEMP}/wheel-venv"
+          if [ -d "${RUNNER_TEMP}/wheel-venv/Scripts" ]; then
+            BIN="${RUNNER_TEMP}/wheel-venv/Scripts"
+          else
+            BIN="${RUNNER_TEMP}/wheel-venv/bin"
+          fi
+          "${BIN}/python" -m pip install dist/*.whl
+          # Run outside the source tree so python/argus_next does not shadow the install.
+          cd "${RUNNER_TEMP}"
+          "${BIN}/argus-next" --version
+          "${BIN}/python" -c "import argus_next; print(argus_next.native_version())"
+          "${BIN}/python" -m argus_next --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: argus-next-wheel-${{ matrix.universal2 && 'macos-universal2' || matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14

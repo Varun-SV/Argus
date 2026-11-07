@@ -310,11 +310,20 @@ def get_requires_for_build_editable(config_settings=None):
     return _maturin().get_requires_for_build_editable(config_settings)
 
 
+def _ensure_data_dir() -> None:
+    # pyproject.toml sets tool.maturin.data, and maturin refuses to run, even for metadata,
+    # when that directory is missing. It is gitignored and only filled by stage-cli, so a
+    # fresh checkout or sdist has none: create it empty. build_wheel stages the binary later.
+    data_scripts_dir().mkdir(parents=True, exist_ok=True)
+
+
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
+    _ensure_data_dir()
     return _maturin().prepare_metadata_for_build_wheel(metadata_directory, config_settings)
 
 
 def prepare_metadata_for_build_editable(metadata_directory, config_settings=None):
+    _ensure_data_dir()
     return _maturin().prepare_metadata_for_build_editable(metadata_directory, config_settings)
 
 
