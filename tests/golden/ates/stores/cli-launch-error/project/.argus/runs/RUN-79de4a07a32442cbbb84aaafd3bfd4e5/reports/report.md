@@ -11,7 +11,7 @@
 
     {
       "adapter_type": "cli",
-      "argus_version": "0.1.1.dev705+gf6ff07581.d20261107",
+      "argus_version": "0.0.0+golden",
       "configuration_commitment": {
         "canonicalization_profile": "ates-runtime-config-v1",
         "method": "hmac-sha256",
@@ -330,7 +330,7 @@
             "effective_status": "failed",
             "evidence_revision": 1,
             "finalization_id": "FINAL-d1cd6efadb5e48bdb79b3bd3df27d915",
-            "manifest_digest": "sha256:48d0f7a4b33eca1305234e759b0bd919b3e7fc614417d7cfd2cc90a4cbe5d4a5",
+            "manifest_digest": "sha256:7f1e92772139f06c0542499f7d47d842a8f71613ddc08334f6a93f2dd24b6a06",
             "revision": 1,
             "run_id": "RUN-79de4a07a32442cbbb84aaafd3bfd4e5"
           },
@@ -434,7 +434,7 @@
           },
           {
             "path": "audit.jsonl",
-            "sha256": "sha256:34b737166de0b84e17856017441178de5e791a4ec47c2550ddb59ad58196065a",
+            "sha256": "sha256:ad434ce28c69b3d870f338e869435f80a4a0658d9306ecf9f5870c4044b2335a",
             "size_bytes": 574,
             "state": "present"
           }
@@ -442,7 +442,7 @@
         "snapshot_version": "ates-detached-ledger-snapshot-v1"
       },
       "evidence_manifest_path": "manifests/manifest-0001.json",
-      "evidence_manifest_sha256": "sha256:48d0f7a4b33eca1305234e759b0bd919b3e7fc614417d7cfd2cc90a4cbe5d4a5",
+      "evidence_manifest_sha256": "sha256:7f1e92772139f06c0542499f7d47d842a8f71613ddc08334f6a93f2dd24b6a06",
       "evidence_revision": 1,
       "finalization_id": "FINAL-d1cd6efadb5e48bdb79b3bd3df27d915",
       "run_id": "RUN-79de4a07a32442cbbb84aaafd3bfd4e5"

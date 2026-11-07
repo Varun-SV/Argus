@@ -105,12 +105,15 @@ class Determinism:
             def utcnow(cls):  # type: ignore[override]
                 return cls._make(clock._next_datetime().replace(tzinfo=None))
 
+        # Read the real version once: the loop below pins argus.__version__ itself, so it
+        # cannot be the comparison value.
+        real_version = argus.__version__
         for name, module in list(sys.modules.items()):
             if not name.startswith("argus") or module is None:
                 continue
             if getattr(module, "datetime", None) is _dt.datetime:
                 module.datetime = _FrozenDatetime  # type: ignore[attr-defined]
-            if getattr(module, "__version__", None) == argus.__version__:
+            if getattr(module, "__version__", None) == real_version:
                 module.__version__ = pinned_version  # type: ignore[attr-defined]
         _time.time = self._seconds  # type: ignore[assignment]
         _time.time_ns = self._nanoseconds  # type: ignore[assignment]
@@ -122,6 +125,13 @@ class Determinism:
         _secrets.token_urlsafe = (  # type: ignore[assignment]
             lambda n=32: base64.urlsafe_b64encode(self.bytes(n)).rstrip(b"=").decode("ascii"))
         os.urandom = self.bytes  # type: ignore[assignment]
+
+    def snapshot(self) -> tuple[int, dict[str, int]]:
+        """The clock and counter state, for code whose own consumption must not count."""
+        return self._ticks, dict(self._counters)
+
+    def restore(self, state: tuple[int, dict[str, int]]) -> None:
+        self._ticks, self._counters = state[0], dict(state[1])
 
     def _tick(self) -> int:
         self._ticks += 1

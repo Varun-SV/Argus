@@ -23,8 +23,8 @@
   },
   "generated_with": {
     "_note": "informational; ignored by --check",
-    "argus_package_version": "0.1.1.dev705+gf6ff07581.d20261107",
-    "git_commit": "8a8be9d6bc59b51c9943e40d5ebd42ac441b00f7",
+    "argus_package_version": "0.1.1.dev720+g6b036a958.d20261107",
+    "git_commit": "6b036a958622472ac32690c78a4d1bf62cd477c0",
     "python": "3.13.18",
     "sources_last_commit": "9c93bbba09f31b8b5c6ab43f473a02388517a3d5"
   },

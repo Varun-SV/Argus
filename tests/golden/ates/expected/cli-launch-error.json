@@ -48,7 +48,7 @@
         "value": {
           "binding_path": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/run.json",
           "evidence_manifest_bytes": {
-            "sha256": "sha256:48d0f7a4b33eca1305234e759b0bd919b3e7fc614417d7cfd2cc90a4cbe5d4a5",
+            "sha256": "sha256:7f1e92772139f06c0542499f7d47d842a8f71613ddc08334f6a93f2dd24b6a06",
             "size": 976
           },
           "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/manifests/manifest-0001.json",

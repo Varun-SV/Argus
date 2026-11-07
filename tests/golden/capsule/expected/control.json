@@ -1,0 +1,117 @@
+{
+  "api": "argus.capsule.control",
+  "case": "control",
+  "schema": "argus-golden-capsule-v1",
+  "value": {
+    "active": {
+      "base_image_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "capsule_id": "cap-cccccccccccccccccccccccccccccccc",
+      "created_at": "2026-01-01T00:00:00.002000+00:00",
+      "effective_execution_mode": "isolated",
+      "environment_id": "env-sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "highest_reserved_generation": 2,
+      "last_committed_generation_known_by_host": 2,
+      "lifecycle_state": "active",
+      "mutable_disk_identity": "sha256:1716ba0221b99166a75aee52306a061981e8b7c20f57d87fc33c8cf5a1b874c5",
+      "network_policy_identity": "host_only:v1",
+      "provider": "hyperv",
+      "provider_resource_identity": "vm-guid:11111111-2222-3333-4444-555555555555",
+      "record_version": "argus-capsule-control-v1",
+      "updated_at": "2026-01-01T00:00:00.006000+00:00"
+    },
+    "committed": {
+      "base_image_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "capsule_id": "cap-cccccccccccccccccccccccccccccccc",
+      "created_at": "2026-01-01T00:00:00.002000+00:00",
+      "effective_execution_mode": "isolated",
+      "environment_id": "env-sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "highest_reserved_generation": 2,
+      "last_committed_generation_known_by_host": 2,
+      "lifecycle_state": "active",
+      "mutable_disk_identity": "sha256:1716ba0221b99166a75aee52306a061981e8b7c20f57d87fc33c8cf5a1b874c5",
+      "network_policy_identity": "host_only:v1",
+      "provider": "hyperv",
+      "provider_resource_identity": "vm-guid:11111111-2222-3333-4444-555555555555",
+      "record_version": "argus-capsule-control-v1",
+      "updated_at": "2026-01-01T00:00:00.005000+00:00"
+    },
+    "guest_from_mapping": {
+      "as_written": {
+        "value": {
+          "capsule_id": "cap-cccccccccccccccccccccccccccccccc",
+          "highest_committed_generation": 2,
+          "last_execution_mode": "isolated",
+          "last_session_id": "session-golden",
+          "schema_version": "argus-guest-control-v1"
+        }
+      },
+      "identity_without_generation": {
+        "error": {
+          "message": "guest Capsule identity and generation high-watermark must initialize together",
+          "type": "CapsuleError"
+        }
+      },
+      "schema_version_v2": {
+        "error": {
+          "message": "unsupported guest control-state version",
+          "type": "CapsuleError"
+        }
+      }
+    },
+    "guest_replayed_generation": {
+      "error": {
+        "message": "stale guest control generation was rejected",
+        "type": "CapsuleError"
+      }
+    },
+    "guest_state": {
+      "capsule_id": "cap-cccccccccccccccccccccccccccccccc",
+      "highest_committed_generation": 2,
+      "last_execution_mode": "isolated",
+      "last_session_id": "session-golden",
+      "schema_version": "argus-guest-control-v1"
+    },
+    "record_from_mapping": {
+      "as_written": {
+        "value": {
+          "base_image_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "capsule_id": "cap-cccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00.002000+00:00",
+          "effective_execution_mode": "isolated",
+          "environment_id": "env-sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "highest_reserved_generation": 2,
+          "last_committed_generation_known_by_host": 2,
+          "lifecycle_state": "active",
+          "mutable_disk_identity": "sha256:1716ba0221b99166a75aee52306a061981e8b7c20f57d87fc33c8cf5a1b874c5",
+          "network_policy_identity": "host_only:v1",
+          "provider": "hyperv",
+          "provider_resource_identity": "vm-guid:11111111-2222-3333-4444-555555555555",
+          "record_version": "argus-capsule-control-v1",
+          "updated_at": "2026-01-01T00:00:00.006000+00:00"
+        }
+      },
+      "record_version_v2": {
+        "error": {
+          "message": "unsupported Capsule control record version",
+          "type": "CapsuleError"
+        }
+      },
+      "unknown_lifecycle_state": {
+        "error": {
+          "message": "Capsule lifecycle state is unsupported",
+          "type": "CapsuleError"
+        }
+      }
+    },
+    "reserved_generations": [
+      1,
+      2
+    ],
+    "stale_commit": {
+      "error": {
+        "message": "stale Capsule control generation cannot be committed",
+        "type": "CapsuleError"
+      }
+    }
+  }
+}

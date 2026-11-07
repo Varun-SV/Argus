@@ -1,0 +1,65 @@
+{
+  "files": {
+    "bootstrap/bootstrap.json": {
+      "bytes": 516,
+      "sha256": "cb3031967e387ea901e025ddb556612d079418f054e2cc8de6cab67510e1fecd"
+    },
+    "bootstrap/bootstrap.token": {
+      "bytes": 65,
+      "sha256": "c878e2524cf0bb6aeb9650bbed83b2230228f5094d30ca9403f062557738aadb"
+    },
+    "bootstrap/tls-cert.pem": {
+      "bytes": 611,
+      "sha256": "9f187d5aedb667ca306603d9f9e9cde7782a7b665500c3656581033fba849fc8"
+    },
+    "control/guest/control.json": {
+      "bytes": 197,
+      "sha256": "d97be2f52f4fd8d5e20d68dbdc8fd3178cc39d186a95d6e35533b8b93877802a"
+    },
+    "control/host/cap-cccccccccccccccccccccccccccccccc.json": {
+      "bytes": 752,
+      "sha256": "6e5ca1c5f9343f8880d5b2c6b5fd0da619e79be1e2482dcf71989abca076687f"
+    },
+    "expected/bootstrap.json": {
+      "bytes": 1921,
+      "sha256": "030443daae5e1c45bbb6d0ebd3857519df8bda99795842a8d31b1925494bc4ce"
+    },
+    "expected/control.json": {
+      "bytes": 4597,
+      "sha256": "af247626604ca3fb393bbb53a4ce695ef5c4684b439f2204c612f34abbc63c0e"
+    },
+    "expected/runtime-bundle.json": {
+      "bytes": 4981,
+      "sha256": "95910d38ec6830e29493d96983cbfb2b6738729f28b868d5a388079aacc903d6"
+    },
+    "runtime-bundle/argus-guest-runtime.zip": {
+      "bytes": 816,
+      "sha256": "74907e6ee7a4b0066fe778a63e58bce7d51c931bc5ae3019533216c90eb6a102"
+    },
+    "runtime-bundle/argus-runtime-manifest.json": {
+      "bytes": 501,
+      "sha256": "48a3f8e94fda508066028bdc1f4d22d0106b5f144062d85d5b20e08761354d23"
+    }
+  },
+  "generated_with": {
+    "_note": "informational; ignored by --check",
+    "argus_package_version": "0.1.1.dev720+g6b036a958.d20261107",
+    "git_commit": "6b036a958622472ac32690c78a4d1bf62cd477c0",
+    "python": "3.13.18",
+    "sources_last_commit": "c331d225c550dc82bf50dde2e36db4c8b1ca445d"
+  },
+  "generator": "scripts/golden/export_capsule.py",
+  "implementation": {
+    "name": "argus (Python)",
+    "sources": {
+      "argus/capsule/bootstrap.py": "bb130b9d4d3d5119bddfb4cae7d0a1c0bbedfccad4d8e93d625b839d2f9ec07a",
+      "argus/capsule/control.py": "0bcfea9f06af20f974ecfebcf0ac489016b97b7ebdf3693063db582b5827e627",
+      "argus/capsule/files.py": "41a257b95994a7b0145496cc6a3cbd0516750e533040f02168a776d8521c2ca6",
+      "argus/provisioning/model.py": "e6af5e35038a5475c7504bc6564fa76c0a26e8b226f01a0536e080c0cbc64379",
+      "argus/provisioning/runtime_bundle.py": "8448c9d97a8980cab1d45a79cfcb3eb02ae013c7576a2cb1c3a1598062838aa7"
+    },
+    "sources_sha256": "0f5ea9070257270624ce9cfea47ba3a9b1789d3f744a02a1c61d3c43a0e594f3"
+  },
+  "pinned_version": "0.0.0+golden",
+  "schema": "argus-golden-capsule-v1"
+}
