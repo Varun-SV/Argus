@@ -1512,7 +1512,7 @@
 
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.uniformMatrix4fv(U.uPV, false, PV); gl.uniformMatrix4fv(U.uM, false, M);
-      gl.uniform1f(U.uMix, e); gl.uniform1f(U.uTime, t);
+      gl.uniform1f(U.uMix, e); gl.uniform1f(U.uTime, reduced ? 0 : t); // frozen: no drift, pulses or flow waves
       gl.uniform1f(U.uIntro, reduced ? 1 : clamp(t / 2.8, 0, 1));
       gl.uniform1f(U.uOpen, reduced ? 1 : sstep(1.5, 2.6, t));
       gl.uniform1f(U.uBlinkT, bt);
@@ -1555,6 +1555,9 @@
           L.el.style.opacity = op.toFixed(3);
           if (!L.vis) { L.el.style.visibility = "visible"; L.vis = true; }
         }
+      } else {
+        // narrow layout (e.g. a tablet rotated to portrait): labels don't apply, so clear any left visible
+        for (var lj = 0; lj < LABELS.length; lj++) if (LABELS[lj].vis) { LABELS[lj].el.style.visibility = "hidden"; LABELS[lj].el.style.opacity = "0"; LABELS[lj].vis = false; }
       }
       return { s: sS, pulse: pulseA, w: wts, n: drawCount };
     }
@@ -1605,7 +1608,8 @@
       if (!reticle.classList.contains("on")) reticle.classList.add("on");
     }
     if (frameNo % 6 === 0) {
-      hudTrk.textContent = (ptr.sx >= 0 ? "+" : "−") + Math.abs(ptr.sx).toFixed(3) + " " + (ptr.sy >= 0 ? "+" : "−") + Math.abs(ptr.sy).toFixed(3);
+      var fx = Math.round(ptr.sx * 1000) / 1000, fy = Math.round(ptr.sy * 1000) / 1000;
+      hudTrk.textContent = (fx < 0 ? "−" : "+") + Math.abs(fx).toFixed(3) + " " + (fy < 0 ? "−" : "+") + Math.abs(fy).toFixed(3);
       if (info) hudPts.textContent = info.n.toLocaleString("en-US") + " PTS";
     }
     requestAnimationFrame(loop);
