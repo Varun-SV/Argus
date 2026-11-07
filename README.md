@@ -376,9 +376,16 @@ Fleet deliberately preserves `ExecutionEnvironment -> Capsule -> Adapter`. Sched
 
 ```bash
 pip install "argus-app-testing[serve]"
-argus serve
-argus serve --host 0.0.0.0 --port 8080
+argus serve                  # binds 127.0.0.1:5000
+argus serve --port 8080
 ```
+
+The dashboard can start programs on the host (the **Remote Roam** page launches the target you type), so it is locked down:
+
+- **Access token.** Each launch prints a one-time link such as `http://127.0.0.1:5000/?token=…`. Opening it stores the token in an HttpOnly, `SameSite=Strict` cookie and redirects to a URL without the token. Every page and every `/api/*` route needs that cookie; without it you get `401`, with a wrong token `403`. The token changes every time `argus serve` starts and is not shown again, so keep the terminal output private.
+- **Same-origin writes.** `POST` requests must carry the dashboard's own `Origin` header. Cross-site requests are refused.
+- **Loopback only.** `argus serve` refuses a non-loopback `--host` (for example `0.0.0.0`). To reach the dashboard from another machine, prefer an SSH tunnel (`ssh -L 5000:127.0.0.1:5000 host`). If you really need to bind a network address, pass `--allow-remote`; Argus prints a warning, and traffic is plain HTTP unless you put TLS in front of it.
+- **No debugger.** `--debug` only turns on verbose logging. The Werkzeug interactive debugger is never enabled, even if `FLASK_DEBUG` is set.
 
 The current dashboard shows run history and roam-session summaries. The Fleet Observer described above is a future architecture and should not be confused with the existing dashboard.
 

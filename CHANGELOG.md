@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redesigned project website (`index.html`) in the same design language
 ### Changed
 - Project website (`index.html`) rebuilt as a scroll-driven 3D experience: a dependency-free WebGL particle system morphs through one form per chapter (an iris that tracks the cursor, the observe/decide/act/verify loop, a Capsule VM, the three adapters, a roam graph whose findings light up, the ATES evidence helix, the Fleet constellation) and ends with a hundred eyes that follow the visitor. Includes reduced-motion support, a no-WebGL fallback, adaptive quality, keyboard-accessible tabs, and mobile layouts down to 320px
+### Security
+- `argus serve` now requires a per-launch access token (one-time `?token=` link exchanged for an HttpOnly, SameSite=Strict cookie) on every page and `/api/*` route, refuses state-changing requests from another `Origin`, refuses a non-loopback `--host` unless `--allow-remote` is passed (with a warning), never enables the Werkzeug debugger (`--debug` only raises log verbosity), and no longer shows the project path to unauthenticated visitors (spec §8.1, SEC-01…05)
 ### Fixed
 - Hyper-V session-storage removal retries briefly on transient Windows sharing violations (e.g. antivirus holding the new session disk) instead of reporting a cleanup failure
 - Integrated ISO-backed provisioning and secure Capsule generation/reconnect contracts from PR #27 while preserving the desktop theme and session provider picker

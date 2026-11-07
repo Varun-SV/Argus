@@ -1,16 +1,23 @@
 """Flask web dashboard for Argus — shows run history and roam reports.
 
 Remote workflow: ``argus serve`` keeps running after you close your SSH/RDP
-session (use tmux/screen/nohup). Then reconnect from any browser to start or
-monitor a roam session via the /roam control page.
+session (use tmux/screen/nohup). Then reconnect through an SSH tunnel to start
+or monitor a roam session via the /roam control page.
+
+Every route requires the per-launch access token printed at startup. The
+``?token=`` link is exchanged once for an HttpOnly, SameSite=Strict cookie,
+and state-changing requests must also carry the dashboard's own ``Origin``.
 """
 from __future__ import annotations
 
+import hmac
 import json
+import secrets
 import time
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
+from urllib.parse import urlencode
 
 if TYPE_CHECKING:
     from argus.config import ArgusConfig
@@ -30,6 +37,20 @@ def set_live_screenshot(png: bytes) -> None:
 def append_live_event(line: str) -> None:
     with _live_lock:
         _live_log.append(line)
+
+
+def new_access_token() -> str:
+    """A fresh random access token for one ``argus serve`` launch."""
+    return secrets.token_urlsafe(32)
+
+
+def _token_matches(candidate: Optional[str], token: str) -> bool:
+    if not candidate:
+        return False
+    return hmac.compare_digest(candidate.encode("utf-8"), token.encode("utf-8"))
+
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 # ── HTML templates ─────────────────────────────────────────────────────────
@@ -245,9 +266,23 @@ function esc(s) {
 </html>"""
 
 
+_UNAUTHORIZED_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Argus Dashboard</title>
+<style>body{font-family:system-ui,sans-serif;margin:2rem;background:#0d1117;color:#c9d1d9}</style>
+</head>
+<body>
+<h1>Access token required</h1>
+<p>Open the link that <code>argus serve</code> printed when it started.</p>
+</body>
+</html>"""
+
+
 # ── Flask app ──────────────────────────────────────────────────────────────
 
-def create_app(cfg: "ArgusConfig"):
+def create_app(cfg: "ArgusConfig", *, access_token: str):
+    if not access_token:
+        raise ValueError("access_token is required")
     try:
         from flask import Flask
         from jinja2 import Template
@@ -260,11 +295,61 @@ def create_app(cfg: "ArgusConfig"):
     from argus.engine.results import load_runs
 
     flask_app = Flask(__name__)
+    # Never run with Flask debug on, even if FLASK_DEBUG is set (SEC-04).
+    flask_app.debug = False
     dashboard_tmpl = Template(_DASHBOARD_HTML)
 
     # Per-app roam session state (shared across requests in the same process).
     _roam: dict = {"running": False, "log": [], "report": None, "findings": 0, "stop": False}
     _roam_lock = threading.Lock()
+
+    # ── access control ─────────────────────────────────────────────────────
+
+    def _cookie_name() -> str:
+        # Cookies are not port-scoped, so keep instances on different ports apart.
+        from flask import request
+        _, _, port = request.host.rpartition(":")
+        return f"argus_access_{port if port.isdigit() else 'default'}"
+
+    def _deny(status: int, message: str):
+        from flask import Response, jsonify, request
+        if request.path.startswith("/api/"):
+            resp = jsonify({"ok": False, "error": message})
+            resp.status_code = status
+            return resp
+        return Response(_UNAUTHORIZED_HTML, status=status, mimetype="text/html")
+
+    @flask_app.before_request
+    def _require_access():
+        from flask import redirect, request
+
+        if request.method == "GET" and "token" in request.args:
+            if not _token_matches(request.args.get("token"), access_token):
+                return _deny(403, "invalid access token")
+            rest = [(k, v) for k, v in request.args.items(multi=True) if k != "token"]
+            # Collapse leading slashes so "//host" cannot become an off-site redirect.
+            location = "/" + request.path.lstrip("/")
+            if rest:
+                location += "?" + urlencode(rest)
+            resp = redirect(location, code=303)
+            resp.headers["Cache-Control"] = "no-store"
+            resp.set_cookie(
+                _cookie_name(), access_token,
+                httponly=True, samesite="Strict", secure=request.is_secure, path="/",
+            )
+            return resp
+
+        cookie = request.cookies.get(_cookie_name())
+        if cookie is None:
+            return _deny(401, "access token required")
+        if not _token_matches(cookie, access_token):
+            return _deny(403, "invalid access token")
+
+        if request.method not in _SAFE_METHODS:
+            expected = f"{request.scheme}://{request.host}"
+            if request.headers.get("Origin") != expected:
+                return _deny(403, "cross-origin request refused")
+        return None
 
     # ── pages ──────────────────────────────────────────────────────────────
 
