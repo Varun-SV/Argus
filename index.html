@@ -1491,7 +1491,8 @@
       // pointer: real pointer when recent, otherwise a slow idle gaze
       var idle = !ptr.has || now - ptr.last > 4000;
       var tx = idle ? (reduced ? 0 : Math.sin(t * 0.37) * 0.55) : ptr.nx, ty = idle ? (reduced ? 0 : Math.sin(t * 0.53 + 1) * 0.35) : ptr.ny;
-      var k = 1 - Math.exp(-dt * (idle ? 1.6 : 7));
+      // reduced motion: follow the real pointer directly and never drift on our own
+      var k = reduced ? (idle ? 0 : 1) : 1 - Math.exp(-dt * (idle ? 1.6 : 7));
       ptr.sx += (tx - ptr.sx) * k; ptr.sy += (ty - ptr.sy) * k;
       if (!reduced) { rx += -ptr.sy * 0.16 * pa; ry += ptr.sx * 0.24 * pa; rx += Math.sin(t * 0.21) * 0.025; ry += Math.sin(t * 0.17) * 0.04; }
       ry += (frac - e) * 0.9;
