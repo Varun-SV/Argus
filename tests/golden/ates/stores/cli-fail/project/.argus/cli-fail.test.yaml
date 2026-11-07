@@ -1,0 +1,9 @@
+name: CLI fails
+target:
+  adapter: cli
+  launch: 'python3 -c "import sys; sys.stderr.write(''boom''); sys.exit(3)"'
+steps:
+  - assert:
+      stderr_contains: "boom"
+  - assert:
+      exit_code_is: 0

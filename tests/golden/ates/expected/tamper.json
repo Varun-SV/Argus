@@ -1,0 +1,457 @@
+{
+  "api": "argus.ates verifiers on modified copies of stores/cli-pass",
+  "case": "tamper",
+  "note": "every case must be rejected by both implementations",
+  "schema": "argus-golden-ates-v1",
+  "value": [
+    {
+      "case": "evidence-byte-flipped",
+      "member": "evidence.jsonl",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": "canonical evidence digest does not match binding",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "invalid"
+          }
+        },
+        "verify_finalized_run": {
+          "error": {
+            "message": "canonical evidence digest does not match binding",
+            "type": "FinalizationError"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "canonical evidence digest does not match binding",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "evidence-last-event-removed",
+      "member": "evidence.jsonl",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": "canonical evidence size does not match binding",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "invalid"
+          }
+        },
+        "verify_finalized_run": {
+          "error": {
+            "message": "canonical evidence size does not match binding",
+            "type": "FinalizationError"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "canonical evidence size does not match binding",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "evidence-manifest-byte-flipped",
+      "member": "manifests/manifest-0001.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": "manifest-0001.json is not strict JSON",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "invalid"
+          }
+        },
+        "verify_finalized_run": {
+          "error": {
+            "message": "manifest-0001.json is not strict JSON",
+            "type": "FinalizationError"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "manifest-0001.json is not strict JSON",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "evidence-manifest-digest-altered",
+      "member": "manifests/manifest-0001.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": "bound evidence manifest digest does not match binding",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "invalid"
+          }
+        },
+        "verify_finalized_run": {
+          "error": {
+            "message": "bound evidence manifest digest does not match binding",
+            "type": "FinalizationError"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "bound evidence manifest digest does not match binding",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "package-manifest-byte-flipped",
+      "member": "manifests/package-manifest-0001.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": "package-manifest-0001.json is not strict JSON",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "invalid"
+          }
+        },
+        "verify_finalized_run": {
+          "error": {
+            "message": "package-manifest-0001.json is not strict JSON",
+            "type": "FinalizationError"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "package-manifest-0001.json is not strict JSON",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "package-manifest-digest-altered",
+      "member": "manifests/package-manifest-0001.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": "bound package manifest digest does not match binding",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "invalid"
+          }
+        },
+        "verify_finalized_run": {
+          "error": {
+            "message": "bound package manifest digest does not match binding",
+            "type": "FinalizationError"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "bound package manifest digest does not match binding",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "run-binding-byte-flipped",
+      "member": "run.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": "run.json is not strict JSON",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "invalid"
+          }
+        },
+        "verify_finalized_run": {
+          "error": {
+            "message": "run.json is not strict JSON",
+            "type": "FinalizationError"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "run.json is not strict JSON",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "run-binding-digest-altered",
+      "member": "run.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": "bound evidence manifest digest does not match binding",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "invalid"
+          }
+        },
+        "verify_finalized_run": {
+          "error": {
+            "message": "bound evidence manifest digest does not match binding",
+            "type": "FinalizationError"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "bound evidence manifest digest does not match binding",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "audit-byte-flipped",
+      "member": "audit.jsonl",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": null,
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_finalized_run": {
+          "value": {
+            "binding_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/run.json",
+            "evidence_manifest_bytes": "b'{\"artifacts\":[],\"ates_version\":\"0.1\",\"effective_status\":\"passed\",\"evidence\":{\"event_count\":15,\"final_event_id\":\"EVT-68c33b8722304ddcb980753d3891f229\",\"final_event_type\":\"RUN_COMPLETED\",\"final_sequence\":15,\"path\":\"evidence.jsonl\",\"sha256\":\"sha256:61e84828008a78810e5e21ae6c2c21ef4c97ac12b8d6a9dd4239d9027ec5dabb\",\"size_bytes\":11652},\"evidence_revision\":1,\"finalization\":{\"authorization\":null,\"correction_ids\":[],\"effective_status\":\"passed\",\"evidence_revision\":1,\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\",\"supersedes_finalization_id\":null,\"verification\":null},\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"manifest_version\":\"ates-manifest-v1\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\"}\\n'",
+            "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/manifest-0001.json",
+            "outcome": {
+              "authorization": null,
+              "correction_ids": [],
+              "effective_status": "passed",
+              "evidence_revision": 1,
+              "finalization_id": "FINAL-43e278e89bf64b77b9715e95f824dd0c",
+              "finalized_at": "2026-01-01T00:00:00.034000+00:00",
+              "revision": 1,
+              "run_id": "RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+              "status_policy_version": "ates-status-v1",
+              "supersedes_finalization_id": null,
+              "verification": null
+            },
+            "package_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/package-manifest-0001.json",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "semantic regeneration differs for report.json",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "report-md-byte-flipped",
+      "member": "reports/report.md",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": null,
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_finalized_run": {
+          "value": {
+            "binding_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/run.json",
+            "evidence_manifest_bytes": "b'{\"artifacts\":[],\"ates_version\":\"0.1\",\"effective_status\":\"passed\",\"evidence\":{\"event_count\":15,\"final_event_id\":\"EVT-68c33b8722304ddcb980753d3891f229\",\"final_event_type\":\"RUN_COMPLETED\",\"final_sequence\":15,\"path\":\"evidence.jsonl\",\"sha256\":\"sha256:61e84828008a78810e5e21ae6c2c21ef4c97ac12b8d6a9dd4239d9027ec5dabb\",\"size_bytes\":11652},\"evidence_revision\":1,\"finalization\":{\"authorization\":null,\"correction_ids\":[],\"effective_status\":\"passed\",\"evidence_revision\":1,\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\",\"supersedes_finalization_id\":null,\"verification\":null},\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"manifest_version\":\"ates-manifest-v1\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\"}\\n'",
+            "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/manifest-0001.json",
+            "outcome": {
+              "authorization": null,
+              "correction_ids": [],
+              "effective_status": "passed",
+              "evidence_revision": 1,
+              "finalization_id": "FINAL-43e278e89bf64b77b9715e95f824dd0c",
+              "finalized_at": "2026-01-01T00:00:00.034000+00:00",
+              "revision": 1,
+              "run_id": "RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+              "status_policy_version": "ates-status-v1",
+              "supersedes_finalization_id": null,
+              "verification": null
+            },
+            "package_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/package-manifest-0001.json",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "report byte binding failed for report.md",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "report-manifest-byte-flipped",
+      "member": "reports/report-manifest-0001.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": null,
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_finalized_run": {
+          "value": {
+            "binding_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/run.json",
+            "evidence_manifest_bytes": "b'{\"artifacts\":[],\"ates_version\":\"0.1\",\"effective_status\":\"passed\",\"evidence\":{\"event_count\":15,\"final_event_id\":\"EVT-68c33b8722304ddcb980753d3891f229\",\"final_event_type\":\"RUN_COMPLETED\",\"final_sequence\":15,\"path\":\"evidence.jsonl\",\"sha256\":\"sha256:61e84828008a78810e5e21ae6c2c21ef4c97ac12b8d6a9dd4239d9027ec5dabb\",\"size_bytes\":11652},\"evidence_revision\":1,\"finalization\":{\"authorization\":null,\"correction_ids\":[],\"effective_status\":\"passed\",\"evidence_revision\":1,\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\",\"supersedes_finalization_id\":null,\"verification\":null},\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"manifest_version\":\"ates-manifest-v1\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\"}\\n'",
+            "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/manifest-0001.json",
+            "outcome": {
+              "authorization": null,
+              "correction_ids": [],
+              "effective_status": "passed",
+              "evidence_revision": 1,
+              "finalization_id": "FINAL-43e278e89bf64b77b9715e95f824dd0c",
+              "finalized_at": "2026-01-01T00:00:00.034000+00:00",
+              "revision": 1,
+              "run_id": "RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+              "status_policy_version": "ates-status-v1",
+              "supersedes_finalization_id": null,
+              "verification": null
+            },
+            "package_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/package-manifest-0001.json",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "report manifest is not strict JSON",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "report-manifest-digest-altered",
+      "member": "reports/report-manifest-0001.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": null,
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_finalized_run": {
+          "value": {
+            "binding_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/run.json",
+            "evidence_manifest_bytes": "b'{\"artifacts\":[],\"ates_version\":\"0.1\",\"effective_status\":\"passed\",\"evidence\":{\"event_count\":15,\"final_event_id\":\"EVT-68c33b8722304ddcb980753d3891f229\",\"final_event_type\":\"RUN_COMPLETED\",\"final_sequence\":15,\"path\":\"evidence.jsonl\",\"sha256\":\"sha256:61e84828008a78810e5e21ae6c2c21ef4c97ac12b8d6a9dd4239d9027ec5dabb\",\"size_bytes\":11652},\"evidence_revision\":1,\"finalization\":{\"authorization\":null,\"correction_ids\":[],\"effective_status\":\"passed\",\"evidence_revision\":1,\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\",\"supersedes_finalization_id\":null,\"verification\":null},\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"manifest_version\":\"ates-manifest-v1\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\"}\\n'",
+            "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/manifest-0001.json",
+            "outcome": {
+              "authorization": null,
+              "correction_ids": [],
+              "effective_status": "passed",
+              "evidence_revision": 1,
+              "finalization_id": "FINAL-43e278e89bf64b77b9715e95f824dd0c",
+              "finalized_at": "2026-01-01T00:00:00.034000+00:00",
+              "revision": 1,
+              "run_id": "RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+              "status_policy_version": "ates-status-v1",
+              "supersedes_finalization_id": null,
+              "verification": null
+            },
+            "package_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/package-manifest-0001.json",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "report manifest differs from regenerated canonical manifest",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    },
+    {
+      "case": "report-json-removed",
+      "member": "reports/report.json",
+      "source": "cli-pass",
+      "verifiers": {
+        "inspect_finalization_trust": {
+          "value": {
+            "error": null,
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_finalized_run": {
+          "value": {
+            "binding_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/run.json",
+            "evidence_manifest_bytes": "b'{\"artifacts\":[],\"ates_version\":\"0.1\",\"effective_status\":\"passed\",\"evidence\":{\"event_count\":15,\"final_event_id\":\"EVT-68c33b8722304ddcb980753d3891f229\",\"final_event_type\":\"RUN_COMPLETED\",\"final_sequence\":15,\"path\":\"evidence.jsonl\",\"sha256\":\"sha256:61e84828008a78810e5e21ae6c2c21ef4c97ac12b8d6a9dd4239d9027ec5dabb\",\"size_bytes\":11652},\"evidence_revision\":1,\"finalization\":{\"authorization\":null,\"correction_ids\":[],\"effective_status\":\"passed\",\"evidence_revision\":1,\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\",\"supersedes_finalization_id\":null,\"verification\":null},\"finalization_id\":\"FINAL-43e278e89bf64b77b9715e95f824dd0c\",\"finalized_at\":\"2026-01-01T00:00:00.034000+00:00\",\"manifest_version\":\"ates-manifest-v1\",\"revision\":1,\"run_id\":\"RUN-0ac4300f6bdd4e038fbb02d67fb8e258\",\"status_policy_version\":\"ates-status-v1\"}\\n'",
+            "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/manifest-0001.json",
+            "outcome": {
+              "authorization": null,
+              "correction_ids": [],
+              "effective_status": "passed",
+              "evidence_revision": 1,
+              "finalization_id": "FINAL-43e278e89bf64b77b9715e95f824dd0c",
+              "finalized_at": "2026-01-01T00:00:00.034000+00:00",
+              "revision": 1,
+              "run_id": "RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+              "status_policy_version": "ates-status-v1",
+              "supersedes_finalization_id": null,
+              "verification": null
+            },
+            "package_manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/package-manifest-0001.json",
+            "run_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258",
+            "trust_state": "bound_verified"
+          }
+        },
+        "verify_report_bundle": {
+          "value": {
+            "error": "rendered report report.json cannot be read safely",
+            "manifest_path": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json",
+            "report_dir": "<PROJECT>/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports",
+            "trust_state": "invalid"
+          }
+        }
+      }
+    }
+  ]
+}

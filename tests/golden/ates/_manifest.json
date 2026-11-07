@@ -1,0 +1,211 @@
+{
+  "cases": [
+    "cli-pass",
+    "cli-fail",
+    "cli-launch-error"
+  ],
+  "files": {
+    "expected/cli-fail.json": {
+      "bytes": 4675,
+      "sha256": "20858f768423fc1316b309435e9f7b063f6671afa7efcc6a286d4189823461df"
+    },
+    "expected/cli-launch-error.json": {
+      "bytes": 4533,
+      "sha256": "755cb7cd85de7280b8ebf0a6232124faf5368b98c01dc5cdcdbda062109345d5"
+    },
+    "expected/cli-pass.json": {
+      "bytes": 4623,
+      "sha256": "ffa9cf1b74a3f773a6f10fcae10f80f164ededda4b2db3e0335765d53d1b8204"
+    },
+    "expected/tamper.json": {
+      "bytes": 23731,
+      "sha256": "c7d2adccd413b68516499034ad4556c61101002f9ad733fa6591ac3de5e75b73"
+    },
+    "stores/cli-fail/project/.argus/cli-fail.test.yaml": {
+      "bytes": 199,
+      "sha256": "ca2793423889ffa30d0eb205303d5f5141dabf63a362c4323f3a630a7a32a8b9"
+    },
+    "stores/cli-fail/project/.argus/runs/.ates-runtime-identity.key": {
+      "bytes": 32,
+      "sha256": "12522042c79e34133afdae921afeb1ef63c5659806c785dc87a421eaa73c4aa1"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/approvals.jsonl": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/audit.jsonl": {
+      "bytes": 574,
+      "sha256": "baa8dc92a16811e515d2fcd6d467d172b5b9ecf0d01521d60fb6153a0939a182"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/evidence.jsonl": {
+      "bytes": 12127,
+      "sha256": "d716081c076a482b69e1123e470e12c248a925ec3d70b09c84aca4d1d6d07fef"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/manifests/manifest-0001.json": {
+      "bytes": 977,
+      "sha256": "5465cbccfcb2e6ae475e71977235a8f93fc331fa71c724e7063b6767e9fc87af"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/manifests/package-manifest-0001.json": {
+      "bytes": 1013,
+      "sha256": "d263ff8a34ecb8ef483eb9418d63bdb4df86d170ded5a6f988db2cb77ab026c7"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/junit.xml": {
+      "bytes": 665,
+      "sha256": "5e2470a4a4c1e8186f7fbec1449c6e6ba8a42b289876c354560f38bd9ab55579"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report-manifest-0001.json": {
+      "bytes": 1550,
+      "sha256": "90af5734644ab6e52f3165114044c794241fd124c33f974f36b403cc54a5a72c"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report.html": {
+      "bytes": 24885,
+      "sha256": "0b2e953f4f949faef15f26759472203ba32816f566b559a99d840b5d83f3ffc1"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report.json": {
+      "bytes": 18856,
+      "sha256": "1e6ce41b8d9dd76a765a6c51be74ab81ee68fa7d407840c44477945d76c9c06e"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report.md": {
+      "bytes": 19413,
+      "sha256": "b208aac149b13c0eb79b516664ef711d94e61213a410b2c9c3c17f026f9824cb"
+    },
+    "stores/cli-fail/project/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/run.json": {
+      "bytes": 1111,
+      "sha256": "e2d2a642ac70eac070037b43a98a2f7e590f1c935e6b056d20a1be8891ed6ef4"
+    },
+    "stores/cli-launch-error/project/.argus/cli-launch-error.test.yaml": {
+      "bytes": 136,
+      "sha256": "87c10cd106a364540d7d81dc7e814f75da0274c35c845c5955bf8e1c07ff0324"
+    },
+    "stores/cli-launch-error/project/.argus/runs/.ates-runtime-identity.key": {
+      "bytes": 32,
+      "sha256": "ef498abe9ecfb1c9d25b90b6e3f6089dcab278d012e0c743982b514f9bc3c6bc"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/approvals.jsonl": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/audit.jsonl": {
+      "bytes": 574,
+      "sha256": "34b737166de0b84e17856017441178de5e791a4ec47c2550ddb59ad58196065a"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/evidence.jsonl": {
+      "bytes": 7966,
+      "sha256": "d2c80b6900d9c2c4f728606d7ac6f73ef4a812c98725fc6d5da1c96b6211d600"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/manifests/manifest-0001.json": {
+      "bytes": 976,
+      "sha256": "48d0f7a4b33eca1305234e759b0bd919b3e7fc614417d7cfd2cc90a4cbe5d4a5"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/manifests/package-manifest-0001.json": {
+      "bytes": 1012,
+      "sha256": "687629e126c9a3e03348ab8233c00271666900aa47b2821dfd19c5f17f4f3064"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/junit.xml": {
+      "bytes": 665,
+      "sha256": "f85c0ed1c5b9c572e704609e975673267b752d02ecd129f2e21b37db2abaf944"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report-manifest-0001.json": {
+      "bytes": 1550,
+      "sha256": "d98f4d7586e7449763727e0825ea11bcfe59aef17544f0c782de5f2b45027bee"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report.html": {
+      "bytes": 17806,
+      "sha256": "147c5d816c20423ae4199e8278dc2540c08e852f0c1f4b2cf024ca32f30a7a83"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report.json": {
+      "bytes": 13503,
+      "sha256": "81fe69f94cac3ba785cab2ecddebd9db61b817d802b3dc1313cff2907bcf6114"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report.md": {
+      "bytes": 13694,
+      "sha256": "5af83c4b202f0f72e925bd8299d8e189a99047b0ec6c799a75b53fe6fc0f080e"
+    },
+    "stores/cli-launch-error/project/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/run.json": {
+      "bytes": 1111,
+      "sha256": "b11de256d70ba4207646a36ba59a80127125310bd7fc9c83f766bccfccb8e87e"
+    },
+    "stores/cli-pass/project/.argus/cli-pass.test.yaml": {
+      "bytes": 160,
+      "sha256": "1f057a30fd58231eb12b0f897cb21fad3f65309bbb7162226e7cbc45f79632cb"
+    },
+    "stores/cli-pass/project/.argus/runs/.ates-runtime-identity.key": {
+      "bytes": 32,
+      "sha256": "6ffb02d340ab2edbf4dd412423fad724ad95ff482d9838b8baeea65dc8ba2ee4"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/approvals.jsonl": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/audit.jsonl": {
+      "bytes": 574,
+      "sha256": "188fbdb8dfdb399fd7e1d223dc01338a738b44658b41a16c58c6c42926577a4a"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/evidence.jsonl": {
+      "bytes": 11652,
+      "sha256": "61e84828008a78810e5e21ae6c2c21ef4c97ac12b8d6a9dd4239d9027ec5dabb"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/manifest-0001.json": {
+      "bytes": 977,
+      "sha256": "85a5564bbcf735420e5e37783676faa71855f6271b6ada88c523d32be2af74ff"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/manifests/package-manifest-0001.json": {
+      "bytes": 1013,
+      "sha256": "c974f96b76527271a6dc589c37d41818177654b1a7f8cd57b335fc4cf9246c4f"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/junit.xml": {
+      "bytes": 598,
+      "sha256": "fbc3e063beeca23524749dae9288663205e98da8d04a8d9e47f0820da9d9cbae"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report-manifest-0001.json": {
+      "bytes": 1550,
+      "sha256": "a71a5b35c2c6954bc3811a6f08d65eae071570498cfd692d1fe8f72d36e81da6"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report.html": {
+      "bytes": 22140,
+      "sha256": "ac927c1f4893c3949f365f4efe6f4044d8fc3d0ebf0ec9ef6a185548e776b0b8"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report.json": {
+      "bytes": 16793,
+      "sha256": "69080b47654e833f58a969ab07d48c77194b1f28faa7aa373196e1ad67aa6c5a"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/reports/report.md": {
+      "bytes": 17216,
+      "sha256": "e5aff90e7d5afae7b5affafa37fc1650f55903bb8acb732bce7daf3943414083"
+    },
+    "stores/cli-pass/project/.argus/runs/RUN-0ac4300f6bdd4e038fbb02d67fb8e258/run.json": {
+      "bytes": 1111,
+      "sha256": "5db113a212f6502237149b020db4e97b4f8bd12bf6f02c794372f6098abe84a0"
+    }
+  },
+  "generated_with": {
+    "_note": "informational; ignored by --check",
+    "argus_package_version": "0.1.1.dev705+gf6ff07581.d20261107",
+    "git_commit": "5a51ea35772d9f4aa32f69978ccb7ee2a1da8890",
+    "python": "3.13.18",
+    "sources_last_commit": "8ee5d87e1ae0457bed5d3d3ef4218d5d3f7c2865"
+  },
+  "generator": "scripts/golden/export_ates.py",
+  "implementation": {
+    "name": "argus (Python)",
+    "pinned_version": "0.0.0+golden",
+    "sources": {
+      "argus/adapters/cli_adapter.py": "2621796cd60387d02819bfaf3a2170d073e451b1ce2b3ec748a2f8c8934b3c77",
+      "argus/ates/artifacts.py": "946e27b58ef06b6925686a87af055e9aeff72ed4fb0a58bf1769df0aca27c455",
+      "argus/ates/audit.py": "dabbe3ccc26ae589d4fb88a0206fac8a70295cc5ae2510264f1eadae8c8578d8",
+      "argus/ates/core.py": "a27c40d3e92522afc7ff29d1cb4146da746ad55ccf9c7547b83f61288261c950",
+      "argus/ates/evidence_validation.py": "5e9d72d43ffc4488f8cd30391b017a70d5ebbbbd73bdb0e9e8f9284eed197274",
+      "argus/ates/finalization.py": "047eb51bb6008cc6e4a4dab894ea0248b34e6e3c44e2d1ec6548d44e2bef62e8",
+      "argus/ates/finalization_io.py": "90668f0dcca3fc73ba3cfa966ac746dce701747d36df94584c572bb9e5105766",
+      "argus/ates/package.py": "061c0674a9037af09c68e97536de8c1f88649b6f2f0cbbd045c595d015f15cd0",
+      "argus/ates/privacy.py": "414c4e78e9381825a1d7086f48cb075a7cbd377ac37103a4efcb09fc9a309c4a",
+      "argus/ates/reports.py": "4cbf4e89f4dde218c84a01bf2365f96b6bfa0bd65e6394251a9074e9bc86efd3",
+      "argus/ates/status.py": "f09a1072a036ecf1ba3fb74e5bbd5504dd3bca008b50f085ef9767cacc50007e",
+      "argus/ates/store.py": "7281acad7d362475b64b62fba7ed0096e6da472d517350fd262d3c01c98a8468",
+      "argus/engine/ates_runtime.py": "8785ec175f069610a14146d14c61a5bc1dc76e1976e652c3ea0f6db1a390dc91",
+      "argus/engine/runner_impl.py": "aab16ad5eb4e1b2549f6614af1e266570fddfaf74856d7f1f5cac968dde24ecb"
+    },
+    "sources_sha256": "e8b2eafeeb0a2f40582529fc60b415b6cee4f3b11e839eeb79612ffee8e50b5f"
+  },
+  "schema": "argus-golden-ates-v1"
+}

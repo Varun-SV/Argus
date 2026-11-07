@@ -1,0 +1,5 @@
+# Golden stores and expectations are compared byte for byte (sha256 and --check), and the
+# runtime identity key is binary: never convert line endings or re-encode them on checkout.
+stores/** -text
+expected/** -text
+_manifest.json -text

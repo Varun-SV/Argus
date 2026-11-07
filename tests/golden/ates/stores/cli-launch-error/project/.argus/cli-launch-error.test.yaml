@@ -1,0 +1,7 @@
+name: CLI cannot launch
+target:
+  adapter: cli
+  launch: "argus-golden-no-such-program --flag"
+steps:
+  - assert:
+      exit_code_is: 0
