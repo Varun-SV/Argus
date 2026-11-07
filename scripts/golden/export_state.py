@@ -230,7 +230,7 @@ class _Determinism:
 
 
 def _sorted_directory_listing() -> None:
-    """Make ``Path.glob``, ``Path.rglob`` and ``Path.iterdir`` yield in sorted order.
+    """Make ``os.listdir``, ``Path.glob``, ``Path.rglob`` and ``Path.iterdir`` sorted.
 
     Directory enumeration order is up to the filesystem (ext4 hashes names, so two machines
     can disagree). Some readers list what they find unsorted, for example
@@ -239,6 +239,9 @@ def _sorted_directory_listing() -> None:
     """
     import pathlib
 
+    # The project-confined knowledge store lists through a directory file descriptor.
+    original_listdir = os.listdir
+    os.listdir = lambda *args, **kwargs: sorted(original_listdir(*args, **kwargs))
     for name in ("glob", "rglob", "iterdir"):
         original = getattr(pathlib.Path, name)
 

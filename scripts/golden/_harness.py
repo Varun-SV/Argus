@@ -64,7 +64,7 @@ class Determinism:
     ``time.time_ns``, ``time.monotonic`` and ``time.perf_counter`` advance in the same steps;
     ``uuid.uuid4``, ``secrets.token_bytes``/``token_hex``/``token_urlsafe`` and ``os.urandom``
     return SHA-256 counters over ``label``; ``argus.__version__`` is pinned; and
-    ``Path.glob``/``rglob``/``iterdir`` yield in sorted order.
+    ``os.listdir`` and ``Path.glob``/``rglob``/``iterdir`` return sorted results.
     """
 
     def __init__(self, label: str, pinned_version: str) -> None:
