@@ -159,7 +159,7 @@ The shipped Flask dashboard was a live security hole, and it is fixed in the cur
 
 The Python `0.1.x` line MUST:
 
-- SEC-01: require a per-launch access token on every `/api/*` route and on every page that shows project data. The Python line delivers the token as a one-time `?token=` link printed at startup, which is exchanged for an `HttpOnly`, `SameSite=Strict` cookie and removed from the address by a redirect.;
+- SEC-01: require a per-launch access token on every `/api/*` route and on every page that shows project data. The Python line delivers the token as a one-time `?token=` link printed at startup, which is exchanged for an `HttpOnly`, `SameSite=Strict` cookie and removed from the address by a redirect;
 - SEC-02: reject state-changing requests whose `Origin` is missing or is not the dashboard's own origin;
 - SEC-03: bind only to loopback addresses by default, and refuse a non-loopback `--host` unless the operator passes `--allow-remote`, which prints a warning;
 - SEC-04: never enable the Werkzeug debugger; `--debug` only raises log verbosity;
