@@ -150,22 +150,22 @@ Today the default local backend pulls in chromadb or sentence-transformers/PyTor
 
 ### 8.1 Critical fix in the Python line now
 
-The shipped Flask dashboard is a live security hole, and it is fixed in the current Python release. It does not wait for P5. This is the kind of critical fix the Python line still receives until the switch ([ADR-001 §5](tech-stack-decision.md#5-decision), item 4). What is wrong at `8e7ebe5`:
+The shipped Flask dashboard was a live security hole, and it is fixed in the current Python release. It does not wait for P5. This is the kind of critical fix the Python line still receives until the switch ([ADR-001 §5](tech-stack-decision.md#5-decision), item 4). What was wrong at `8e7ebe5`:
 
-- `POST /api/roam/start` accepts any request, from any `Origin`, with no authentication. The only check is that `target` is non-empty. The `target` string then goes straight to `create_adapter("desktop-gui").launch(target)` (`argus/serve/app.py`). Anyone who can reach the port can therefore launch any program on the host.
-- The README suggested `argus serve --host 0.0.0.0`, which exposes this to the network.
-- `argus serve --debug` passes `debug=True` to Flask's `app.run` (`argus/cli.py`), which enables the Werkzeug interactive debugger.
-- The dashboard shows the absolute project path to every visitor.
+- `POST /api/roam/start` accepted any request, from any `Origin`, with no authentication. The only check was that `target` is non-empty. The `target` string then went straight to `create_adapter("desktop-gui").launch(target)` (`argus/serve/app.py`). Anyone who could reach the port could therefore launch any program on the host.
+- The README suggested `argus serve --host 0.0.0.0`, which exposed this to the network.
+- `argus serve --debug` passed `debug=True` to Flask's `app.run` (`argus/cli.py`), which enabled the Werkzeug interactive debugger.
+- The dashboard showed the absolute project path to every visitor.
 
-The next Python `0.1.x` release MUST:
+The Python `0.1.x` line MUST:
 
-- SEC-01: require a per-launch access token on every `/api/*` route and on every page that shows project data, using the same rules as §8;
+- SEC-01: require a per-launch access token on every `/api/*` route and on every page that shows project data. The Python line delivers the token as a one-time `?token=` link printed at startup, which is exchanged for an `HttpOnly`, `SameSite=Strict` cookie and removed from the address by a redirect.;
 - SEC-02: reject state-changing requests whose `Origin` is missing or is not the dashboard's own origin;
-- SEC-03: bind only to loopback addresses by default, and refuse a non-loopback `--host` unless the operator passes an explicit opt-in flag that prints a warning;
+- SEC-03: bind only to loopback addresses by default, and refuse a non-loopback `--host` unless the operator passes `--allow-remote`, which prints a warning;
 - SEC-04: never enable the Werkzeug debugger; `--debug` only raises log verbosity;
 - SEC-05: stop showing the absolute project path to visitors who have not authenticated.
 
-The README no longer suggests `--host 0.0.0.0`. Until SEC-01…05 ship, it warns operators to keep the dashboard on loopback and not to use `--debug`. The P5 gate (G-UI) re-checks SEC-01…05 against the Rust server.
+These are implemented in the Python line (PR #31). The README no longer suggests `--host 0.0.0.0`; it documents the token link, the `Origin` rule and `--allow-remote`. The P5 gate (G-UI) re-checks SEC-01…05 against the Rust server.
 
 ## 9. Desktop app (Tauri 2)
 
