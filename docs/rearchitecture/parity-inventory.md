@@ -4,12 +4,14 @@ Status: **Draft checklist for the Rust re-architecture.** Source of truth: `main
 
 The operator's rule is that **no functionality is removed**. Every row below must be implemented by the Rust version, or explicitly marked *superseded* with the replacement named, before the Python implementation is retired ([specification §12](specification.md#12-migration-plan), gate G-PARITY).
 
-Two operator-approved scope changes are recorded here so they are not mistaken for regressions:
+These operator-approved changes are recorded here so they are not mistaken for regressions:
 
 | Area | Python today | Rust target | Why |
 |---|---|---|---|
 | Browser engines | Playwright `browser_type` (Chromium default; Firefox/WebKit possible) | Chromium family only (Chrome, Edge, Chromium) via CDP | Operator decision, [ADR-001](tech-stack-decision.md) §5 |
 | Python imports | Every `argus.*` module importable | Only the documented Python API (§10 below) | Operator decision, ADR-001 §5 |
+| Chromium sandbox | Off (Playwright's default `--no-sandbox`) | On by default; `browser.sandbox: false` opts out and is recorded in evidence | Operator decision L-2, [Linux platform §8](linux-platform.md#8-operator-decisions-2026-10-07) |
+| Linux desktop testing on a Wayland session | Only X11/XWayland windows can be driven | The application under test runs on an Argus-owned virtual X11 display; the visible Wayland desktop is not driven | Operator decision L-1, [Linux platform §8](linux-platform.md#8-operator-decisions-2026-10-07) |
 
 Legend: **Keep** = same behaviour and same user-visible contract. **Fix** = keep, and also close a listed stabilization issue. **Superseded** = replaced by an equivalent, named.
 
@@ -21,7 +23,7 @@ Legend: **Keep** = same behaviour and same user-visible contract. **Fix** = keep
 | `argus run [TEST]` | `--minutes`, `--max-tokens`, `--dry-run` | Keep |
 | `argus roam TARGET` | `--minutes`, `--max-tokens`, `--no-regressions`, `--adapter`, `--memory/--no-memory` | Fix (ARG-03, ARG-05, ARG-07) |
 | `argus watch` | `--minutes`, `--max-tokens` | Keep (native file watcher) |
-| `argus serve` | `--host`, `--port`, `--debug`; new `--allow-remote` | **Fix**: serves the PR #28 UI over HTTP instead of the Flask templates, with a per-launch access token and an `Origin` check (see [specification §8](specification.md#8-argus-serve-uses-the-same-ui)). `--host` and `--port` keep their meaning. Documented behaviour change (C-07): a non-loopback `--host` such as `0.0.0.0` requires `--allow-remote`, and without it the command exits non-zero naming that flag. `--debug` is verbose logging only, with no debugger or reloader |
+| `argus serve` | `--host`, `--port`, `--debug`; new `--allow-remote` | **Fix**: serves the PR #28 UI over HTTP instead of the Flask templates, with a per-launch access token, an `Origin` check and a loopback-only default (see [specification §8](specification.md#8-argus-serve-uses-the-same-ui)). `--host` and `--port` keep their meaning. Documented behaviour change (C-07): a non-loopback `--host` such as `0.0.0.0` requires `--allow-remote`, and without it the command exits non-zero naming that flag. `--debug` is verbose logging only, with no debugger or reloader. The Python line already ships SEC-01…05 ([specification §8.1](specification.md#81-critical-fix-in-the-python-line-now)) |
 | `argus gui` / `argus-gui` | – | Keep (Tauri app) |
 | `argus providers` | – | Fix (ARG-01: readiness states) |
 | `argus report` | `--limit` | Keep |
@@ -29,7 +31,7 @@ Legend: **Keep** = same behaviour and same user-visible contract. **Fix** = keep
 | `argus knowledge stats/export/reset` | `TARGET` | Keep |
 | `argus knowledge docker up/down/status` | – | Keep (Qdrant stays an optional backend) |
 | `argus secrets set/list/remove` | `SECRET://ARGUS/NAME` references | Keep (same per-user store, values never printed) |
-| `argus-guest-runtime-build` | – | Superseded by a native guest-agent build target (`cargo build -p argus-guest`), same approved-bundle manifest and digests |
+| `argus-guest-runtime-build` | `OUTPUT`, `--runtime-version` | Keep. Still installed by the wheel on Windows x64 and manylinux x86_64. It packages the prebuilt native `argus-guest` binary shipped in that wheel instead of freezing Python with PyInstaller. The approved-bundle manifest and digests are the same, and no Rust toolchain or checkout is needed ([specification §10](specification.md#10-python-packaging-and-api)). Developers can also build the binary with `cargo build -p argus-guest` |
 
 Exit codes, the `rich` console summaries (✓/✗ lines, step durations, summary line) and `--help` text stay equivalent.
 
