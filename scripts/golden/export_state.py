@@ -212,6 +212,7 @@ class _Determinism:
         _time.time_ns = self.clock.time_ns  # type: ignore[assignment]
         _uuid.uuid4 = self._uuid4  # type: ignore[assignment]
         _secrets.token_bytes = self._token_bytes  # type: ignore[assignment]
+        _sorted_directory_listing()
 
     def _uuid4(self):
         import uuid as _uuid
@@ -226,6 +227,25 @@ class _Determinism:
         self._nonce_counter += 1
         seed = f"argus-golden-state-nonce-{self._nonce_counter}".encode("ascii")
         return hashlib.sha256(seed).digest()[: n or 32]
+
+
+def _sorted_directory_listing() -> None:
+    """Make ``Path.glob``, ``Path.rglob`` and ``Path.iterdir`` yield in sorted order.
+
+    Directory enumeration order is up to the filesystem (ext4 hashes names, so two machines
+    can disagree). Some readers list what they find unsorted, for example
+    ``JsonKnowledgeStore.stats()`` and therefore ``argus knowledge stats``, so their order is
+    unspecified in Python and must not leak into the fixtures as if it were a contract.
+    """
+    import pathlib
+
+    for name in ("glob", "rglob", "iterdir"):
+        original = getattr(pathlib.Path, name)
+
+        def ordered(self, *args, _original=original, **kwargs):
+            return iter(sorted(_original(self, *args, **kwargs)))
+
+        setattr(pathlib.Path, name, ordered)
 
 
 def _block_network() -> None:

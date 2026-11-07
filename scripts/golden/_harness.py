@@ -26,6 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.golden.export_state import (  # noqa: E402 - path set up above
     CONSOLE_WIDTH,
+    _sorted_directory_listing,
     PASSTHROUGH_ENV,
     _comparable_manifest,
     _git,
@@ -62,7 +63,8 @@ class Determinism:
     whose ``now()`` starts at ``CLOCK_START`` and advances 1 ms per call; ``time.time``,
     ``time.time_ns``, ``time.monotonic`` and ``time.perf_counter`` advance in the same steps;
     ``uuid.uuid4``, ``secrets.token_bytes``/``token_hex``/``token_urlsafe`` and ``os.urandom``
-    return SHA-256 counters over ``label``; and ``argus.__version__`` is pinned.
+    return SHA-256 counters over ``label``; ``argus.__version__`` is pinned; and
+    ``Path.glob``/``rglob``/``iterdir`` yield in sorted order.
     """
 
     def __init__(self, label: str, pinned_version: str) -> None:
@@ -125,6 +127,8 @@ class Determinism:
         _secrets.token_urlsafe = (  # type: ignore[assignment]
             lambda n=32: base64.urlsafe_b64encode(self.bytes(n)).rstrip(b"=").decode("ascii"))
         os.urandom = self.bytes  # type: ignore[assignment]
+        # Directory enumeration order is up to the filesystem; see export_state.py.
+        _sorted_directory_listing()
 
     def snapshot(self) -> tuple[int, dict[str, int]]:
         """The clock and counter state, for code whose own consumption must not count."""

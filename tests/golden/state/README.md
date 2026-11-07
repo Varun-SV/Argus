@@ -76,6 +76,12 @@ Documented monkeypatches in the worker make two runs byte-identical:
   per-user key (`sha256(identity)[:24]`) independent of the temporary directory.
   `identity.json` records the derivation inputs.
 
+* `pathlib.Path.glob`, `rglob` and `iterdir` → sorted. Directory enumeration order is up
+  to the filesystem, and some readers list what they find unsorted (for example
+  `argus knowledge stats`, through `JsonKnowledgeStore.stats()`). In Python that row order
+  is therefore unspecified; the fixtures record the sorted order and the Rust
+  implementation is not bound to any particular order there.
+
 Absolute temporary paths in recorded output are replaced by `<PROJECT>`,
 `<STATE_HOME>`, `<DATA_HOME>`, `<CONFIG_HOME>`, `<HOME>`, `<TMP>` and `<REPO>`.
 
