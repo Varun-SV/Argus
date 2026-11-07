@@ -387,53 +387,61 @@ def _run_all(test: Optional[str], cfg, minutes, max_tokens) -> None:
 # ---------------------------------------------------------------- serve ----
 
 
+def _is_loopback_host(host: str) -> bool:
+    import ipaddress
+
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip().strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 @main.command()
-@click.option("--host", default="127.0.0.1", show_default=True,
-              help="Address to bind. Non-loopback addresses need --allow-remote.")
+@click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=5000, show_default=True)
 @click.option("--allow-remote", is_flag=True,
-              help="Allow binding a non-loopback address. The access token and "
-                   "Origin check still apply.")
-@click.option("--debug", is_flag=True,
-              help="Verbose request and diagnostic logging (never an interactive "
-                   "debugger or reloader).")
+              help="Allow binding a non-loopback --host (exposes the dashboard to the network).")
+@click.option("--debug", is_flag=True, help="Verbose logging (never enables the Werkzeug debugger).")
 def serve(host: str, port: int, allow_remote: bool, debug: bool) -> None:
-    """Start the Argus web dashboard (requires Flask).
+    """Start the Argus web dashboard (requires Flask)."""
+    import logging
 
-    A new access token is printed once at startup; sign in with it at /login or
-    send it in an "Authorization: Bearer" header.
-    """
-    from argus.serve.app import create_app, generate_access_token, is_loopback_host
-
-    if not allow_remote and not is_loopback_host(host):
-        raise click.UsageError(
-            f"--host {host} is not a loopback address; pass --allow-remote to "
-            "serve the dashboard on a non-loopback address."
-        )
-    cfg = load_config()
-    token = generate_access_token()
     try:
-        app = create_app(cfg, token, host=host, port=port, allow_remote=allow_remote,
-                         verbose=debug)
+        from argus.serve.app import create_app, new_access_token
     except ImportError:
         _die(
             "Flask is required for `argus serve` — "
             "install with: pip install argus-app-testing[serve]"
         )
+    if not _is_loopback_host(host):
+        if not allow_remote:
+            _die(
+                f"refusing to bind non-loopback host {host!r}: the dashboard can start "
+                "programs on this machine. Use an SSH tunnel, or pass --allow-remote "
+                "if you really mean to expose it."
+            )
+        console.print(
+            f"[yellow]![/yellow] binding {host} exposes the dashboard to the network; "
+            "anyone with the access token can start programs on this machine. "
+            "Traffic is plain HTTP unless you put TLS in front of it."
+        )
+    if debug:
+        logging.basicConfig(level=logging.DEBUG)
+        logging.getLogger("werkzeug").setLevel(logging.DEBUG)
+    cfg = load_config()
+    token = new_access_token()
+    app = create_app(cfg, access_token=token)
     url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
     console.print(
-        f"[green]✓[/green] Argus dashboard at [cyan]http://{url_host}:{port}[/cyan]"
+        f"[green]✓[/green] Argus dashboard at [cyan]http://{url_host}:{port}/?token={token}[/cyan]",
+        soft_wrap=True,
     )
-    if allow_remote:
-        console.print(
-            "[yellow]![/yellow] remote access allowed: traffic is plain HTTP unless "
-            "a TLS proxy is in front"
-        )
-    console.print(f"  sign in at [cyan]http://{url_host}:{port}/login[/cyan]")
-    console.print("  access token (valid until the server stops):")
-    click.echo(f"  {token}")
-    app.run(host=host, port=port, debug=False, use_reloader=False,
-            use_debugger=False, use_evalex=False)
+    console.print("[dim]open this link once; the token is not shown again.[/dim]")
+    # SEC-04: never pass `debug`, and pin the debugger, reloader and .env loading off so
+    # FLASK_DEBUG or a project .env file cannot turn the Werkzeug debugger back on.
+    app.run(host=host, port=port, load_dotenv=False, use_debugger=False, use_reloader=False)
 
 
 # ----------------------------------------------------------- providers ----

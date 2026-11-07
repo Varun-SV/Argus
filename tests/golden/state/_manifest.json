@@ -242,17 +242,17 @@
   },
   "generated_with": {
     "_note": "informational; ignored by --check",
-    "argus_package_version": "0.1.6.dev30+gb559e9790.d20261008",
-    "git_commit": "61f79fb35bba7fbf7dc6bc29318aaaaeb4747c27",
-    "python": "3.13.16",
+    "argus_package_version": "0.1.1.dev705+gf6ff07581",
+    "git_commit": "f6ff0758136f56774a4a66959c13502478e849ab",
+    "python": "3.13.18",
     "sources_last_commit": "417127353d64e3edd3c7d5591388c5591a7001e5",
-    "sqlite": "3.45.1"
+    "sqlite": "3.53.1"
   },
   "generator": "scripts/golden/export_state.py",
   "implementation": {
     "name": "argus (Python)",
     "sources": {
-      "argus/cli.py": "9df7e96869ef48a7f4c0c15243f7012cc7586de32257e4b5dc772f0071d2abbd",
+      "argus/cli.py": "acd0c6584368506b13baafee4444d99d03673ad2cc643025d9e554d300202d32",
       "argus/config.py": "e42858ba44aa912599bdf339d4bd6995bd5687b6d4ecd23f21efb505688b3174",
       "argus/engine/results.py": "c3be8cdd94ec44de879e575ab1b75f1ad1f72c0272eab4d903c86e411bfce6ce",
       "argus/gui/app.py": "396b059fd17b600e8fe554276bc0afd6bef6232e496def6b5467f19dcbe9f1a2",
@@ -264,7 +264,7 @@
       "argus/secrets.py": "56bcf09ac7c6c99d7b318cd256e33e1041a1658c80cef42432143f86884a5db8",
       "argus/tokens.py": "06d66cc08e4aee94ca7e2b524ebc370fbdd81caf2be1466dfba3534942de96c6"
     },
-    "sources_sha256": "2a81d293258a2841c941f0baac7c3cc46e6351219ac0ce0987e5f01015037a39"
+    "sources_sha256": "558e8e00e85748e8c0e5c439c7105953ebb94cdec21d1843459072cafcf22bbd"
   },
   "schema": "argus-golden-state-v1",
   "sections": [

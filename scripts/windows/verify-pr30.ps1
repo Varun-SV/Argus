@@ -153,7 +153,7 @@ if ($Abort) {
     Add-Result "Python targeted tests" "NOT RUN" "setup failed"
     Add-Result "Python full suite" "NOT RUN" "setup failed"
 } else {
-    Test-Pytest -Name "Python targeted tests" -Log (Join-Path $LogDir "python-tests.log") -PytestArgs @("tests/test_serve_auth.py", "tests/test_browser_element_mapping.py")
+    Test-Pytest -Name "Python targeted tests" -Log (Join-Path $LogDir "python-tests.log") -PytestArgs @("tests/test_serve_security.py", "tests/test_browser_element_mapping.py")
     Test-Pytest -Name "Python full suite" -Log (Join-Path $LogDir "python-tests-full.log")
 }
 
