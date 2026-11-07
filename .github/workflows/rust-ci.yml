@@ -94,6 +94,36 @@ jobs:
           rustup toolchain install "$MSRV" --profile minimal
           cargo "+$MSRV" check --workspace --all-targets --locked
 
+  golden:
+    # Golden fixtures for C-01…C-05 (spec §13) are exported from the Python implementation.
+    # --check regenerates them in a scrubbed child process and fails on any drift. The
+    # conformance suite runs against Python here; a Rust case that fails where Python passes
+    # is a parity bug.
+    name: Golden fixtures + Python conformance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo --version
+      - name: Install the Python implementation
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" "networkx>=3.2"
+      - name: Golden fixtures have not drifted
+        run: |
+          python scripts/golden/export_config.py --check
+          python scripts/golden/export_state.py --check
+          python scripts/golden/export_ates.py --check
+          python scripts/golden/export_fleet.py --check
+          python scripts/golden/export_capsule.py --check
+      - name: Conformance suite against Python
+        run: cargo run --locked -p argus-conformance -- run --impl python --python "$(command -v python)"
+
   test:
     name: Test · ${{ matrix.label }}
     strategy:
