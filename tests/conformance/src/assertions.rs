@@ -516,6 +516,7 @@ mod tests {
         )
         .unwrap();
         fs::write(sb.project().join("bad.json"), "{nope").unwrap();
+        fs::write(sb.project().join("n.json"), r#"{"k":null,"v":0}"#).unwrap();
         let ja = |path: &str| JsonAssert {
             file: "r.json".into(),
             root: Root::Project,
@@ -576,6 +577,20 @@ mod tests {
             },
             &mut f,
         );
+        // `"equals": null` asserts a JSON null and is not skipped.
+        let null_at = |path: &str| JsonAssert {
+            file: "n.json".into(),
+            equals: Some(serde_json::Value::Null),
+            ..ja(path)
+        };
+        check_json(&sb, &null_at("$.k"), &mut f);
+        assert!(f.is_empty(), "{f:?}");
+        check_json(&sb, &null_at("$.v"), &mut f);
+        check_json(&sb, &null_at("$.absent"), &mut f);
+        assert_eq!(f.len(), 2, "{f:?}");
+        assert!(f[0].contains("expected null, got 0"), "{f:?}");
+        assert!(f[1].contains("value missing"), "{f:?}");
+        f.clear();
         assert!(f.is_empty(), "{f:?}");
         check_json(
             &sb,

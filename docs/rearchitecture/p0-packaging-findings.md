@@ -28,9 +28,9 @@ both:
 
 - `build_wheel` and `build_editable` build and stage the CLI binary for the host first
   (or, with `ARGUS_NEXT_CLI_PRESTAGED=1`, require a binary staged beforehand);
-- the metadata hooks create the empty `argus_next.data/scripts/` directory, because maturin
-  refuses to run, even for metadata, when the configured `data` directory is missing, and that
-  directory is gitignored;
+- the metadata hooks and `build_sdist` create the empty `argus_next.data/scripts/` directory,
+  because maturin refuses to run, even for metadata or an sdist, when the configured `data`
+  directory is missing, and that directory is gitignored;
 - `build_sdist` adds `crates/argus-cli` to the sdist, which maturin leaves out because it is not
   a path dependency of `argus-py`;
 - `python build_backend/argus_next_build.py stage-cli` is the command-line entry CI uses:
@@ -73,7 +73,7 @@ On a Linux x86_64 host (Python 3.13, Rust stable):
 | The CI path (`stage-cli --zig-glibc 2.28`, `maturin build --zig --compatibility manylinux_2_28`) | builds `argus_next-0.0.0-cp310-abi3-manylinux_2_28_x86_64.whl` |
 | glibc symbols the staged binary needs (`objdump -T`) | at most `GLIBC_2.28`, so the binary is also manylinux_2_28 (maturin's own audit covers only the extension) |
 | Install into a clean venv; `argus-next --version`, `native_version()`, `python -m argus_next --version` | `argus-next 0.0.0`, `0.0.0`, `argus-next 0.0.0` |
-| `python/tests` (launcher tests) | 7 passed |
+| `python/tests` (launcher tests) | 9 passed |
 
 Not verified here: the Windows and macOS wheels and the Linux ARM64 wheel, which are built and
 smoke-tested only by the CI workflow. Code signing and notarization of the binaries are out of

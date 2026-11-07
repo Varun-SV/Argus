@@ -1,7 +1,8 @@
 """``python -m argus_next``: run the native ``argus-next`` binary installed with this package.
 
-The wheel installs the binary into the interpreter's scripts directory (``bin`` or ``Scripts``),
-next to the Python console scripts. This module finds it there and runs it with the same
+The wheel installs the binary into the scripts directory (``bin`` or ``Scripts``) of the
+installation it goes into, next to the Python console scripts. This module looks first in the
+scripts directory of the installation it was imported from and runs the binary with the same
 arguments. The exit code is the binary's exit code (spec section 10: ``python -m`` keeps working
 by executing the binary).
 
@@ -27,17 +28,43 @@ def binary_name() -> str:
     return BINARY_STEM + suffix
 
 
-def _candidate_dirs() -> list[Path]:
-    """Directories where an installer puts the wheel's scripts, most specific first."""
-    dirs = [Path(sysconfig.get_path("scripts"))]
+def _package_root() -> Path:
+    """The site directory (or ``--target`` directory) this package was imported from."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _install_schemes() -> list[tuple[set[Path], Path]]:
+    """``(site directories, scripts directory)`` for the default and the user install scheme."""
+    names: list[str | None] = [None]
     try:
-        user_scheme = sysconfig.get_preferred_scheme("user")
-        dirs.append(Path(sysconfig.get_path("scripts", user_scheme)))
+        names.append(sysconfig.get_preferred_scheme("user"))
     except (KeyError, ValueError):  # pragma: no cover - interpreter without a user scheme
         pass
+    schemes: list[tuple[set[Path], Path]] = []
+    for name in names:
+        try:
+            paths = sysconfig.get_paths() if name is None else sysconfig.get_paths(name)
+        except KeyError:  # pragma: no cover - unknown scheme
+            continue
+        sites = {Path(paths[key]).resolve() for key in ("purelib", "platlib") if key in paths}
+        schemes.append((sites, Path(paths["scripts"])))
+    return schemes
+
+
+def _candidate_dirs() -> list[Path]:
+    """Directories where an installer puts the wheel's scripts, most specific first.
+
+    The scripts directory of the installation this package was imported from comes first, so
+    a user-site or ``--target`` install runs its own binary and not another version that is
+    installed in the interpreter's scripts directory.
+    """
+    package_root = _package_root()
     # ``pip install --target DIR`` puts packages in DIR and scripts in DIR/bin (DIR/Scripts).
-    package_root = Path(__file__).resolve().parent.parent
-    dirs.append(package_root / ("Scripts" if os.name == "nt" else "bin"))
+    target_scripts = package_root / ("Scripts" if os.name == "nt" else "bin")
+    schemes = _install_schemes()
+    owning = [scripts for sites, scripts in schemes if package_root in sites]
+    dirs = owning if owning else [target_scripts]
+    dirs += [scripts for _, scripts in schemes] + [target_scripts]
     unique: list[Path] = []
     for directory in dirs:
         if directory not in unique:

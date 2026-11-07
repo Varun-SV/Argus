@@ -486,6 +486,20 @@ def test_contenteditable_is_verified_by_text():
         adapter.act({"action": "type", "element_id": 0, "text": "a note"})
 
 
+@pytest.mark.parametrize("text", ["note\n", "a\u00a0b", "x\u00a0\n\n"])
+def test_contenteditable_normalizes_intended_and_read_back_text_alike(text):
+    # innerText renders a non-breaking space as a space and drops a trailing line break;
+    # the intended text must be normalized the same way, or a correct fill is reported
+    # as a mismatch.
+    editor = FakeHandle("div", role="textbox", aria_label="notes", content_editable=True)
+    editor.transform = lambda value: value.replace("\u00a0", " ").rstrip("\n")
+    page = FakePage([editor])
+    adapter = _adapter(page)
+    obs = adapter.observe(include_screenshot=False)
+    note = adapter.act({"action": "type", "element_id": obs.elements[0].element_id, "text": text})
+    assert note.startswith("filled element")
+
+
 # ---- R5: other behaviour unchanged -------------------------------------------
 
 
@@ -698,6 +712,10 @@ def test_real_browser_read_back_mismatch_fails_and_hides_passwords():
         out["ed"] = attempt({{"action": "type", "element_id": found["div:editor"],
                              "text": "a note"}})
         out["ed_text"] = page.inner_text("#ed")
+        out["ed_newline"] = attempt({{"action": "type", "element_id": found["div:editor"],
+                                     "text": "note\\n"}})
+        out["ed_nbsp"] = attempt({{"action": "type", "element_id": found["div:editor"],
+                                  "text": "a\\u00a0b"}})
         """
     )
     assert not out["short"]["ok"] and "did not match" in out["short"]["error"]
@@ -707,3 +725,5 @@ def test_real_browser_read_back_mismatch_fails_and_hides_passwords():
     assert out["pw2_value"] == "hunter22"
     assert out["ed"]["ok"], out["ed"]
     assert out["ed_text"] == "a note"
+    assert out["ed_newline"]["ok"], out["ed_newline"]
+    assert out["ed_nbsp"]["ok"], out["ed_nbsp"]

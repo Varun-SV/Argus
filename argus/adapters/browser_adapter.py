@@ -194,7 +194,7 @@ class BrowserAdapter(Adapter):
             if probe.get("tag") in {"input", "textarea"}:
                 actual = el.input_value()
             else:
-                actual = el.inner_text().replace("\xa0", " ").rstrip("\n")
+                actual = el.inner_text()
         except Exception as exc:
             raise AdapterError(
                 f"type into {label} could not be verified: value read-back failed "
@@ -279,7 +279,12 @@ class BrowserAdapter(Adapter):
 
 
 def _normalize(value: str, probe: dict) -> str:
+    """Normalize intended and read-back text the same way before comparing them."""
     value = str(value).replace("\r\n", "\n")
+    if probe.get("tag") not in {"input", "textarea"}:
+        # contenteditable: innerText renders non-breaking spaces as spaces and drops a
+        # trailing line break, so both sides lose them before the comparison.
+        value = value.replace("\xa0", " ").rstrip("\n")
     if probe.get("type") == "color":
         value = value.lower()
     return value

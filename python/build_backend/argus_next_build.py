@@ -338,6 +338,7 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
 
 
 def build_sdist(sdist_directory, config_settings=None):
+    _ensure_data_dir()
     name = _maturin().build_sdist(sdist_directory, config_settings)
     add_cli_crate_to_sdist(Path(sdist_directory) / name, workspace_root())
     return name

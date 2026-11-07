@@ -101,6 +101,11 @@ pub fn sample_loop(
     let mut tree_gone = false;
     let mut last_alive: Vec<ProcId>;
     let mut exit: Option<RootExit> = None;
+    // The loop must wake at the timeout and the duration even when the interval is longer.
+    let deadline = limits
+        .duration
+        .map_or(limits.timeout, |d| d.min(limits.timeout));
+    let deadline = start.checked_add(deadline);
 
     loop {
         let elapsed = start.elapsed();
@@ -130,8 +135,10 @@ pub fn sample_loop(
         while next <= now {
             next += interval;
         }
-        // Wait for the root to exit until the next sample is due (at most one interval).
-        if let Some(found) = waiter.wait_for(next.saturating_duration_since(Instant::now())) {
+        // Wait for the root to exit until the next sample is due (at most one interval), the
+        // timeout or the duration, whichever comes first.
+        let wake = deadline.map_or(next, |d| next.min(d));
+        if let Some(found) = waiter.wait_for(wake.saturating_duration_since(Instant::now())) {
             exit = Some(found);
             break;
         }
@@ -300,6 +307,43 @@ mod tests {
         assert_eq!(out.leftover.len(), 1);
         assert_eq!(out.leftover[0].pid, 11);
         assert!(!out.timed_out && !out.stopped_after_duration);
+    }
+
+    /// Never reports an exit; records how long each wait was allowed to take.
+    #[derive(Debug, Default)]
+    struct RecordingWaiter {
+        waits: Vec<Duration>,
+    }
+
+    impl RootWaiter for RecordingWaiter {
+        fn wait_for(&mut self, timeout: Duration) -> Option<RootExit> {
+            self.waits.push(timeout);
+            None
+        }
+    }
+
+    #[test]
+    fn waits_never_run_past_the_timeout_or_duration() {
+        for (timeout, duration) in [(30, None), (5_000, Some(30))] {
+            let mut source = FakeSource::new(vec![vec![proc(10, None, "app", 10)]]);
+            let mut tracker = TreeTracker::new(&[10]);
+            let mut waiter = RecordingWaiter::default();
+            let lim = LoopLimits {
+                interval: Duration::from_secs(10),
+                timeout: Duration::from_millis(timeout),
+                duration: duration.map(Duration::from_millis),
+                // Leave out the deliberate EXIT_GRACE wait after terminating the tree.
+                terminate_on_stop: false,
+                ..limits()
+            };
+            let out = sample_loop(&mut source, &mut tracker, &mut waiter, &lim, Instant::now());
+            assert!(out.timed_out || out.stopped_after_duration);
+            let longest = waiter.waits.iter().max().copied().unwrap_or_default();
+            assert!(
+                longest <= Duration::from_millis(30),
+                "a wait of {longest:?} overshoots the 30 ms deadline"
+            );
+        }
     }
 
     #[test]

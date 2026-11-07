@@ -49,7 +49,7 @@ randomized), so it was generated once by the real code and is reused; see
 | Fix | State |
 |---|---|
 | SEC-1, `argus serve` lockdown ([§8.1](specification.md#81-critical-fix-in-the-python-line-now)) | Shipped in PR #31 (37 tests) |
-| ARG-06, browser typing reports false success | In this PR: `argus/adapters/browser_adapter.py`; `tests/test_browser_element_mapping.py`, 29 tests, 4 of them against real Chromium, all pass |
+| ARG-06, browser typing reports false success | In this PR: `argus/adapters/browser_adapter.py`; `tests/test_browser_element_mapping.py`, 32 tests, 4 of them against real Chromium, all pass |
 
 ## What closes the gate
 

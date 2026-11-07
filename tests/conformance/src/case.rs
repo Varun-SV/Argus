@@ -267,7 +267,9 @@ pub struct JsonAssert {
     pub path: String,
     #[serde(default)]
     pub exists: Option<bool>,
-    #[serde(default)]
+    /// The value must equal this. A present `"equals": null` is `Some(Value::Null)` and asserts
+    /// a JSON `null`; only an absent key is `None`.
+    #[serde(default, deserialize_with = "present_value")]
     pub equals: Option<serde_json::Value>,
     /// `null`, `bool`, `number`, `string`, `array` or `object`.
     #[serde(default, rename = "type")]
@@ -278,6 +280,16 @@ pub struct JsonAssert {
     /// Minimum length of a string, array or object.
     #[serde(default)]
     pub min_len: Option<usize>,
+}
+
+/// Deserializes a field that is present in the JSON as `Some`, including an explicit `null`
+/// (plain `Option<Value>` folds `null` into `None`). With `#[serde(default)]`, an absent field
+/// stays `None`.
+fn present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 /// A case file that could not be loaded.
@@ -503,6 +515,22 @@ mod tests {
         assert_eq!(c.steps[0].timeout(), DEFAULT_TIMEOUT_S);
         assert_eq!(c.steps[0].expect.exit, Some(ExitSpec::Code(0)));
         assert!(c.setup.files.is_empty());
+    }
+
+    #[test]
+    fn json_equals_null_is_kept_and_absent_equals_is_none() {
+        let step = |json: &str| {
+            minimal(&format!(
+                r#"{{"args":[],"expect":{{"exit":0,"json":[{json}]}}}}"#
+            ))
+        };
+        let c = parse_case(&step(r#"{"file":"o.json","path":"$.k","equals":null}"#)).unwrap();
+        assert_eq!(
+            c.steps[0].expect.json[0].equals,
+            Some(serde_json::Value::Null)
+        );
+        let c = parse_case(&step(r#"{"file":"o.json","path":"$.k"}"#)).unwrap();
+        assert_eq!(c.steps[0].expect.json[0].equals, None);
     }
 
     #[test]

@@ -61,10 +61,42 @@ def test_finds_binary_in_interpreter_scripts_dir(tmp_path, monkeypatch):
     assert main.find_argus_next_bin() == str(binary)
 
 
-def test_scripts_dir_is_first_candidate():
+def test_scripts_dir_of_owning_installation_is_first_candidate(tmp_path, monkeypatch):
+    main = _load_main()
+    system_site, user_site = tmp_path / "sys" / "site", tmp_path / "user" / "site"
+    system_scripts, user_scripts = tmp_path / "sys" / "bin", tmp_path / "user" / "bin"
+    schemes = [({system_site.resolve()}, system_scripts), ({user_site.resolve()}, user_scripts)]
+    monkeypatch.setattr(main, "_install_schemes", lambda: schemes)
+
+    monkeypatch.setattr(main, "_package_root", lambda: system_site.resolve())
+    assert main._candidate_dirs()[0] == system_scripts
+
+    # A user-site install runs its own binary, not another version in the interpreter's
+    # scripts directory.
+    monkeypatch.setattr(main, "_package_root", lambda: user_site.resolve())
+    assert main._candidate_dirs()[:2] == [user_scripts, system_scripts]
+    _fake_binary(system_scripts, main.binary_name(), 0)
+    user_binary = _fake_binary(user_scripts, main.binary_name(), 0)
+    assert main.find_argus_next_bin() == str(user_binary)
+
+
+def test_target_install_bin_dir_comes_first_for_a_target_install(tmp_path, monkeypatch):
+    main = _load_main()
+    target = (tmp_path / "target").resolve()
+    system_scripts = tmp_path / "sys" / "bin"
+    schemes = [({(tmp_path / "sys" / "site").resolve()}, system_scripts)]
+    monkeypatch.setattr(main, "_install_schemes", lambda: schemes)
+    monkeypatch.setattr(main, "_package_root", lambda: target)
+    sub = "Scripts" if os.name == "nt" else "bin"
+    assert main._candidate_dirs() == [target / sub, system_scripts]
+
+
+def test_interpreter_scripts_dir_is_first_for_this_interpreter_install(monkeypatch):
     import sysconfig
 
     main = _load_main()
+    purelib = Path(sysconfig.get_path("purelib")).resolve()
+    monkeypatch.setattr(main, "_package_root", lambda: purelib)
     assert main._candidate_dirs()[0] == Path(sysconfig.get_path("scripts"))
 
 
