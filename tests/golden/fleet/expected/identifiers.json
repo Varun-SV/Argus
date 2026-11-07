@@ -1,0 +1,17 @@
+{
+  "api": "argus.fleet module-level version identifiers",
+  "case": "identifiers",
+  "schema": "argus-golden-fleet-v1",
+  "value": {
+    "argus.fleet.ates_transport.FLEET_ATES_TRANSPORT_VERSION": "argus-fleet-ates-transport-v1",
+    "argus.fleet.enrollment.BOOTSTRAP_DIGEST_PROFILE": "argus-fleet-bootstrap-sha256-v1",
+    "argus.fleet.enrollment.FLEET_REGISTRY_VERSION": "argus-fleet-registry-v1",
+    "argus.fleet.heartbeat_impl.CLOCK_ASSESSMENT_VERSION": "argus-fleet-clock-assessment-v1",
+    "argus.fleet.heartbeat_impl.FLEET_HEARTBEAT_VERSION": "argus-fleet-heartbeat-v1",
+    "argus.fleet.identity.FLEET_IDENTITY_VERSION": "argus-fleet-node-ed25519-v1",
+    "argus.fleet.identity.PRIVATE_KEY_FILE_VERSION": "argus-fleet-node-key-v1",
+    "argus.fleet.placement.PLACEMENT_AUTH_VERSION": "argus-fleet-placement-auth-v1",
+    "argus.fleet.placement.PLACEMENT_VERSION": "argus-fleet-placement-v1",
+    "argus.fleet.placement.RETIREMENT_AUTH_VERSION": "argus-fleet-generation-retirement-v1"
+  }
+}
