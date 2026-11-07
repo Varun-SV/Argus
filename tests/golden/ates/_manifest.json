@@ -6,20 +6,20 @@
   ],
   "files": {
     "expected/cli-fail.json": {
-      "bytes": 4675,
-      "sha256": "20858f768423fc1316b309435e9f7b063f6671afa7efcc6a286d4189823461df"
+      "bytes": 3733,
+      "sha256": "7a0f2d54707e0c377f20e55cb1f65206523a37cc0653e887eb65a4f15056dcfa"
     },
     "expected/cli-launch-error.json": {
-      "bytes": 4533,
-      "sha256": "755cb7cd85de7280b8ebf0a6232124faf5368b98c01dc5cdcdbda062109345d5"
+      "bytes": 3592,
+      "sha256": "02d976a559430660a38c11b9cd3dc221ea37725cfc7855ea2d2cfb20379012f1"
     },
     "expected/cli-pass.json": {
-      "bytes": 4623,
-      "sha256": "ffa9cf1b74a3f773a6f10fcae10f80f164ededda4b2db3e0335765d53d1b8204"
+      "bytes": 3681,
+      "sha256": "285de71f9be178e7014253736cd6707cc3b4aa98974a78bf9aec75ad14993b27"
     },
     "expected/tamper.json": {
-      "bytes": 23731,
-      "sha256": "c7d2adccd413b68516499034ad4556c61101002f9ad733fa6591ac3de5e75b73"
+      "bytes": 19051,
+      "sha256": "78ee1a5e1736dbf65d53862a1efa246f6e1115837253d87ad8cc41749b3adc4d"
     },
     "stores/cli-fail/project/.argus/cli-fail.test.yaml": {
       "bytes": 199,
@@ -181,14 +181,13 @@
   "generated_with": {
     "_note": "informational; ignored by --check",
     "argus_package_version": "0.1.1.dev705+gf6ff07581.d20261107",
-    "git_commit": "5a51ea35772d9f4aa32f69978ccb7ee2a1da8890",
+    "git_commit": "81811a4ec9d253b591200a9a621ab2a6a3677326",
     "python": "3.13.18",
     "sources_last_commit": "8ee5d87e1ae0457bed5d3d3ef4218d5d3f7c2865"
   },
   "generator": "scripts/golden/export_ates.py",
   "implementation": {
     "name": "argus (Python)",
-    "pinned_version": "0.0.0+golden",
     "sources": {
       "argus/adapters/cli_adapter.py": "2621796cd60387d02819bfaf3a2170d073e451b1ce2b3ec748a2f8c8934b3c77",
       "argus/ates/artifacts.py": "946e27b58ef06b6925686a87af055e9aeff72ed4fb0a58bf1769df0aca27c455",
@@ -207,5 +206,6 @@
     },
     "sources_sha256": "e8b2eafeeb0a2f40582529fc60b415b6cee4f3b11e839eeb79612ffee8e50b5f"
   },
+  "pinned_version": "0.0.0+golden",
   "schema": "argus-golden-ates-v1"
 }

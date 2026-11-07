@@ -40,17 +40,11 @@ no host path.
 
 from __future__ import annotations
 
-import argparse
-import datetime as _dt
-import hashlib
 import io
 import json
 import os
 import shutil
-import subprocess
 import sys
-import tempfile
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -58,25 +52,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.golden.export_state import (  # noqa: E402 - path set up above
-    CONSOLE_WIDTH,
-    PASSTHROUGH_ENV,
-    _block_network,
-    _comparable_manifest,
-    _git,
-    _sha256,
-    _text_diff,
-    render,
-)
+from scripts.golden import _harness as harness  # noqa: E402 - path set up above
+from scripts.golden.export_state import _block_network, render  # noqa: E402
 
 SCHEMA = "argus-golden-ates-v1"
 GOLDEN_DIR = REPO_ROOT / "tests" / "golden" / "ates"
-MANIFEST_NAME = "_manifest.json"
-README_NAME = "README.md"
-# Hand-written files that live next to the generated ones.
-UNGENERATED = (README_NAME, ".gitattributes")
 PINNED_VERSION = "0.0.0+golden"
-CLOCK_START = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 
 # Python sources whose behaviour the generated files describe.
 SOURCES = (
@@ -144,135 +125,15 @@ CASES: dict[str, dict[str, Any]] = {
 # --------------------------------------------------------------------------- worker side
 
 
-class _Determinism:
-    """Documented monkeypatches that make one ``argus run`` reproducible."""
-
-    def __init__(self) -> None:
-        import pkgutil
-        import secrets as _secrets
-        import time as _time
-        import uuid as _uuid
-
-        import argus
-
-        # Import every argus module first, so that modules the run would import lazily are
-        # patched too. Optional extras that are not installed are skipped.
-        for info in pkgutil.walk_packages(argus.__path__, "argus."):
-            if info.name.startswith(("argus.gui", "argus.serve")):
-                continue
-            try:
-                __import__(info.name)
-            except Exception:  # noqa: BLE001 - optional dependencies
-                pass
-
-        self._ticks = 0
-        self._counters: dict[str, int] = {}
-        clock = self
-
-        class _FrozenDatetime(_dt.datetime):
-            # Return instances of this class: argus modules check
-            # ``isinstance(value, datetime)`` against the (replaced) module-level name.
-            @classmethod
-            def _make(cls, value: _dt.datetime) -> "_dt.datetime":
-                return cls(value.year, value.month, value.day, value.hour, value.minute,
-                           value.second, value.microsecond, tzinfo=value.tzinfo)
-
-            @classmethod
-            def now(cls, tz=None):  # type: ignore[override]
-                value = clock._next_datetime()
-                return cls._make(value.astimezone(tz) if tz is not None
-                                 else value.replace(tzinfo=None))
-
-            @classmethod
-            def utcnow(cls):  # type: ignore[override]
-                return cls._make(clock._next_datetime().replace(tzinfo=None))
-
-        for name, module in list(sys.modules.items()):
-            if not name.startswith("argus") or module is None:
-                continue
-            if getattr(module, "datetime", None) is _dt.datetime:
-                module.datetime = _FrozenDatetime  # type: ignore[attr-defined]
-            if getattr(module, "__version__", None) == argus.__version__:
-                module.__version__ = PINNED_VERSION  # type: ignore[attr-defined]
-        _time.time = self._seconds  # type: ignore[assignment]
-        _time.time_ns = self._nanoseconds  # type: ignore[assignment]
-        _time.monotonic = self._seconds  # type: ignore[assignment]
-        _time.perf_counter = self._seconds  # type: ignore[assignment]
-        _uuid.uuid4 = self._uuid4  # type: ignore[assignment]
-        _secrets.token_bytes = self._bytes  # type: ignore[assignment]
-        _secrets.token_hex = lambda n=32: self._bytes(n).hex()  # type: ignore[assignment]
-        os.urandom = self._bytes  # type: ignore[assignment]
-
-    def _tick(self) -> int:
-        self._ticks += 1
-        return self._ticks
-
-    def _next_datetime(self) -> _dt.datetime:
-        return CLOCK_START + _dt.timedelta(milliseconds=self._tick())
-
-    def _seconds(self) -> float:
-        return CLOCK_START.timestamp() + self._tick() / 1000
-
-    def _nanoseconds(self) -> int:
-        return int(CLOCK_START.timestamp()) * 1_000_000_000 + self._tick() * 1_000_000
-
-    def _derive(self, label: str, n: int) -> bytes:
-        index = self._counters.get(label, 0) + 1
-        self._counters[label] = index
-        out, block = b"", 0
-        while len(out) < n:
-            out += hashlib.sha256(f"argus-golden-ates-{label}-{index}-{block}".encode()).digest()
-            block += 1
-        return out[:n]
-
-    def _uuid4(self):
-        import uuid as _uuid
-
-        return _uuid.UUID(bytes=self._derive("uuid", 16), version=4)
-
-    def _bytes(self, n: int | None = None) -> bytes:
-        return self._derive("bytes", 32 if n is None else n)
-
-
-def _plain(value: Any) -> Any:
-    """JSON-compatible view of verifier results (dataclasses, enums, paths)."""
-    from dataclasses import fields, is_dataclass
-    from enum import Enum
-
-    if is_dataclass(value) and not isinstance(value, type):
-        return {item.name: _plain(getattr(value, item.name)) for item in fields(value)}
-    if isinstance(value, Enum):
-        return value.value
-    if isinstance(value, Path):
-        return value.as_posix()
-    if isinstance(value, _dt.datetime):
-        return value.isoformat()
-    if isinstance(value, Mapping):
-        return {str(k): _plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, frozenset, set)):
-        items = [_plain(v) for v in value]
-        return sorted(items, key=repr) if isinstance(value, (set, frozenset)) else items
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return repr(value)
-
-
 def _verify(run_dir: Path, project: Path) -> dict[str, Any]:
     from argus.ates import inspect_finalization_trust, verify_finalized_run, verify_report_bundle
 
-    def attempt(fn):
-        try:
-            result = _plain(fn(run_dir))
-        except Exception as exc:  # noqa: BLE001 - rejections are part of the contract
-            return {"error": {"message": str(exc).replace(str(project), "<PROJECT>"),
-                              "type": type(exc).__name__}}
-        text = json.dumps(result).replace(str(project), "<PROJECT>")
-        return {"value": json.loads(text)}
-
+    replace = {str(project): "<PROJECT>"}
     return {
-        "inspect_finalization_trust": attempt(inspect_finalization_trust),
-        "verify_finalized_run": attempt(verify_finalized_run),
-        "verify_report_bundle": attempt(verify_report_bundle),
+        "inspect_finalization_trust": harness.attempt(
+            lambda: inspect_finalization_trust(run_dir), replace),
+        "verify_finalized_run": harness.attempt(lambda: verify_finalized_run(run_dir), replace),
+        "verify_report_bundle": harness.attempt(lambda: verify_report_bundle(run_dir), replace),
     }
 
 
@@ -356,12 +217,9 @@ def worker(tmp_root: Path) -> int:
     """Child-process entry point: build every case under ``<tmp_root>/out``."""
     _block_network()
     tmp_root = tmp_root.resolve()
-    home = Path(os.environ.get("HOME", "")).resolve()
-    if tmp_root not in home.parents:
-        print("refusing to run: HOME is not redirected into the export directory",
-              file=sys.stderr)
+    if not harness.worker_guard(tmp_root):
         return 2
-    _Determinism()
+    harness.Determinism("ates", PINNED_VERSION)
     from click.testing import CliRunner
 
     from argus.cli import main as argus_main
@@ -442,152 +300,17 @@ def worker(tmp_root: Path) -> int:
 # --------------------------------------------------------------------------- parent side
 
 
-def _source_hashes() -> dict[str, str]:
-    return {rel: _sha256((REPO_ROOT / rel).read_bytes().replace(b"\r\n", b"\n"))
-            for rel in SOURCES}
-
-
-def _manifest(files: dict[str, bytes]) -> dict[str, Any]:
-    hashes = _source_hashes()
-    combined = _sha256("".join(f"{rel}\0{hashes[rel]}\n" for rel in sorted(hashes)).encode())
-    try:
-        from importlib.metadata import version
-
-        package_version = version("argus-app-testing")
-    except Exception:  # noqa: BLE001 - informational only
-        package_version = "unknown"
-    return {
-        "cases": list(CASES),
-        "files": {rel: {"bytes": len(data), "sha256": _sha256(data)}
-                  for rel, data in sorted(files.items())},
-        "generated_with": {
-            "_note": "informational; ignored by --check",
-            "argus_package_version": package_version,
-            "git_commit": _git("rev-parse", "HEAD"),
-            "python": ".".join(str(part) for part in sys.version_info[:3]),
-            "sources_last_commit": _git("log", "-1", "--format=%H", "--", *SOURCES),
-        },
-        "generator": "scripts/golden/export_ates.py",
-        "implementation": {
-            "name": "argus (Python)",
-            "pinned_version": PINNED_VERSION,
-            "sources": hashes,
-            "sources_sha256": combined,
-        },
-        "schema": SCHEMA,
-    }
-
-
 def build_outputs() -> dict[str, bytes]:
-    with tempfile.TemporaryDirectory(prefix="argus-golden-ates-") as tmp:
-        tmp_root = Path(tmp).resolve()
-        env = {name: os.environ[name] for name in PASSTHROUGH_ENV if name in os.environ}
-        env.update({
-            "COLUMNS": CONSOLE_WIDTH,
-            "HOME": str(tmp_root / "home"),
-            "LC_ALL": "C.UTF-8",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONHASHSEED": "0",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONPATH": str(REPO_ROOT),
-            "TERM": "dumb",
-            "TMPDIR": str(tmp_root / "tmp"),
-            "TZ": "UTC",
-            "XDG_CACHE_HOME": str(tmp_root / "xdg" / "cache"),
-            "XDG_CONFIG_HOME": str(tmp_root / "xdg" / "config"),
-            "XDG_DATA_HOME": str(tmp_root / "xdg" / "data"),
-            "XDG_STATE_HOME": str(tmp_root / "xdg" / "state"),
-        })
-        for key in ("home", "tmp", "xdg/cache", "xdg/config", "xdg/data", "xdg/state"):
-            (tmp_root / key).mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run(
-            [sys.executable, "-B", str(Path(__file__).resolve()), "--_worker", str(tmp_root)],
-            cwd=tmp_root, env=env, capture_output=True, text=True, encoding="utf-8",
-            timeout=600, check=False,
-        )
-        if proc.returncode != 0:
-            sys.stderr.write(proc.stdout)
-            sys.stderr.write(proc.stderr)
-            raise SystemExit(f"golden export worker failed with exit code {proc.returncode}")
-        out_root = tmp_root / "out"
-        files = {path.relative_to(out_root).as_posix(): path.read_bytes()
-                 for path in sorted(out_root.rglob("*")) if path.is_file()}
-    files[MANIFEST_NAME] = render(_manifest(files)).encode("utf-8")
-    return files
-
-
-def _existing() -> list[str]:
-    if not GOLDEN_DIR.is_dir():
-        return []
-    return sorted(path.relative_to(GOLDEN_DIR).as_posix() for path in GOLDEN_DIR.rglob("*")
-                  if path.is_file()
-                  and path.relative_to(GOLDEN_DIR).as_posix() not in UNGENERATED)
-
-
-def write(outputs: dict[str, bytes]) -> int:
-    for rel in _existing():
-        if rel not in outputs:
-            (GOLDEN_DIR / rel).unlink()
-            print(f"removed stale {rel}")
-    changed = 0
-    for rel, data in sorted(outputs.items()):
-        path = GOLDEN_DIR / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists() or path.read_bytes() != data:
-            path.write_bytes(data)
-            changed += 1
-    for directory in sorted(GOLDEN_DIR.rglob("*"), reverse=True):
-        if directory.is_dir() and not any(directory.iterdir()):
-            directory.rmdir()
-    print(f"wrote {len(outputs)} files under tests/golden/ates ({changed} changed)")
-    return 0
-
-
-def check(outputs: dict[str, bytes]) -> int:
-    problems: list[tuple[str, str, list[str]]] = []
-    for rel, data in sorted(outputs.items()):
-        path = GOLDEN_DIR / rel
-        if not path.is_file():
-            problems.append((rel, "missing committed file", []))
-            continue
-        current = path.read_bytes()
-        if rel == MANIFEST_NAME:
-            have, want = _comparable_manifest(current), _comparable_manifest(data)
-            if have != want:
-                problems.append((rel, "differs", _text_diff(rel, have, want)))
-        elif current != data:
-            problems.append((rel, "differs", _text_diff(
-                rel, current.decode("utf-8", "replace"), data.decode("utf-8", "replace"))))
-    for rel in _existing():
-        if rel not in outputs:
-            problems.append((rel, "stale committed file (not generated)", []))
-    if not problems:
-        print(f"OK: {len(outputs)} files under tests/golden/ates match (no drift)")
-        return 0
-    for rel, reason, diff in problems:
-        print(f"DRIFT {rel}: {reason}")
-        for line in diff[:40]:
-            print(f"    {line}")
-    print(f"FAILED: {len(problems)} file(s) drifted; "
-          "run scripts/golden/export_ates.py --write and review the diff")
-    return 1
+    return harness.build_outputs(
+        Path(__file__).resolve(), "argus-golden-ates-",
+        lambda files: harness.manifest(
+            files, schema=SCHEMA, generator="scripts/golden/export_ates.py", sources=SOURCES,
+            cases=list(CASES), pinned_version=PINNED_VERSION))
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--write", action="store_true", help="regenerate tests/golden/ates")
-    mode.add_argument("--check", action="store_true", help="fail when tests/golden/ates drifts")
-    mode.add_argument("--_worker", metavar="TMP_ROOT", help=argparse.SUPPRESS)
-    args = parser.parse_args(argv)
-    if args._worker:
-        return worker(Path(args._worker))
-    if not sys.platform.startswith("linux"):
-        print("tests/golden/ates is generated on Linux (see its README.md); "
-              f"this host is {sys.platform}", file=sys.stderr)
-        return 2
-    outputs = build_outputs()
-    return write(outputs) if args.write else check(outputs)
+    return harness.main(argv, doc=__doc__ or "", golden_dir=GOLDEN_DIR,
+                        script=Path(__file__).resolve(), worker=worker, build=build_outputs)
 
 
 if __name__ == "__main__":

@@ -51,7 +51,10 @@
       "verify_finalized_run": {
         "value": {
           "binding_path": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/run.json",
-          "evidence_manifest_bytes": "b'{\"artifacts\":[],\"ates_version\":\"0.1\",\"effective_status\":\"failed\",\"evidence\":{\"event_count\":16,\"final_event_id\":\"EVT-e8231540e11d4d65932ba05c0252bf75\",\"final_event_type\":\"RUN_COMPLETED\",\"final_sequence\":16,\"path\":\"evidence.jsonl\",\"sha256\":\"sha256:d716081c076a482b69e1123e470e12c248a925ec3d70b09c84aca4d1d6d07fef\",\"size_bytes\":12127},\"evidence_revision\":1,\"finalization\":{\"authorization\":null,\"correction_ids\":[],\"effective_status\":\"failed\",\"evidence_revision\":1,\"finalization_id\":\"FINAL-be3df88f06474ee592669ab21347ef85\",\"finalized_at\":\"2026-01-01T00:00:00.079000+00:00\",\"revision\":1,\"run_id\":\"RUN-34765ecacaf14128acb51334a3c81eb9\",\"status_policy_version\":\"ates-status-v1\",\"supersedes_finalization_id\":null,\"verification\":null},\"finalization_id\":\"FINAL-be3df88f06474ee592669ab21347ef85\",\"finalized_at\":\"2026-01-01T00:00:00.079000+00:00\",\"manifest_version\":\"ates-manifest-v1\",\"revision\":1,\"run_id\":\"RUN-34765ecacaf14128acb51334a3c81eb9\",\"status_policy_version\":\"ates-status-v1\"}\\n'",
+          "evidence_manifest_bytes": {
+            "sha256": "sha256:5465cbccfcb2e6ae475e71977235a8f93fc331fa71c724e7063b6767e9fc87af",
+            "size": 977
+          },
           "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/manifests/manifest-0001.json",
           "outcome": {
             "authorization": null,
