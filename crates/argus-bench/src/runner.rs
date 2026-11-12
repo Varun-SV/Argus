@@ -275,8 +275,15 @@ fn exit_parts(status: &ExitStatus) -> (Option<i32>, Option<i32>) {
     (status.code(), signal)
 }
 
-/// Runs an auxiliary command (setup, teardown, probe) to completion with a timeout.
+/// How often a running auxiliary command's process tree is recorded, so that descendants
+/// that were re-parented (daemonised) can still be terminated on timeout.
+const AUX_TREE_SCAN: Duration = Duration::from_millis(250);
+
+/// Runs an auxiliary command (setup, teardown, probe) to completion with a timeout. On timeout
+/// the whole process tree is terminated, not only the direct child (a hung browser-launch
+/// probe would otherwise leave browser processes running into later measurements).
 fn run_aux(mut command: Command, timeout: Duration, log: Option<&Path>) -> Result<(), String> {
+    let mut source = crate::process::SysinfoSource::new();
     match log.map(|p| File::options().create(true).append(true).open(p)) {
         Some(Ok(file)) => {
             let err = file.try_clone().map_err(|e| e.to_string())?;
@@ -288,6 +295,8 @@ fn run_aux(mut command: Command, timeout: Duration, log: Option<&Path>) -> Resul
     }
     let mut child = command.spawn().map_err(|e| format!("cannot start: {e}"))?;
     let start = Instant::now();
+    let mut tree = TreeTracker::new(&[child.id()]);
+    let mut next_scan = start;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -303,6 +312,11 @@ fn run_aux(mut command: Command, timeout: Duration, log: Option<&Path>) -> Resul
                 };
             }
             Ok(None) if start.elapsed() >= timeout => {
+                // Record the tree as it is now, then terminate every member still alive
+                // (including re-parented ones) together with the child.
+                tree.observe(&source.snapshot());
+                let members: Vec<_> = tree.members().iter().copied().collect();
+                source.terminate(&members);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
@@ -310,7 +324,13 @@ fn run_aux(mut command: Command, timeout: Duration, log: Option<&Path>) -> Resul
                     humantime::format_duration(timeout)
                 ));
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                if Instant::now() >= next_scan {
+                    tree.observe(&source.snapshot());
+                    next_scan = Instant::now() + AUX_TREE_SCAN;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             Err(e) => return Err(e.to_string()),
         }
     }
@@ -687,6 +707,42 @@ pub fn run_scenario(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// State letter of a Linux process (`Z` for a zombie), or `None` once it is gone.
+    #[cfg(target_os = "linux")]
+    fn linux_state(pid: u32) -> Option<char> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit(") ").next()?.chars().next()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn aux_timeout_terminates_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        let mut command = Command::new("sh");
+        // A detached grandchild (as a hung browser launch would leave) plus a hung child.
+        command.arg("-c").arg(format!(
+            "sleep 30 & echo $! > '{}'; sleep 30",
+            pid_file.display()
+        ));
+        let err = run_aux(command, Duration::from_millis(600), None).unwrap_err();
+        assert!(err.starts_with("timed out"), "{err}");
+        let grandchild: u32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !matches!(linux_state(grandchild), None | Some('Z')) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let state = linux_state(grandchild);
+        assert!(
+            matches!(state, None | Some('Z')),
+            "grandchild {grandchild} still running (state {state:?})"
+        );
+    }
 
     #[test]
     fn placeholders_resolve_from_flags_env_and_defaults() {

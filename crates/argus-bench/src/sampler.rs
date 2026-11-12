@@ -51,7 +51,9 @@ pub struct LoopLimits {
     pub timeout: Duration,
     /// Samples before this offset do not count towards peaks.
     pub measure_after: Duration,
-    /// End the loop when no process of the tree is left (attach mode).
+    /// End the loop when no process of the tree is left (attach mode). The caller has already
+    /// confirmed that the roots exist, so an empty sample, including the first, means the tree
+    /// exited.
     pub stop_when_tree_gone: bool,
     /// Terminate the remaining tree when `duration` or `timeout` is reached (run mode).
     pub terminate_on_stop: bool,
@@ -95,7 +97,6 @@ pub fn sample_loop(
     let interval = limits.interval.max(Duration::from_millis(1));
     let mut acc = RunAccumulator::new(millis(limits.measure_after));
     let mut next = start;
-    let mut seen_any = false;
     let mut stopped_after_duration = false;
     let mut timed_out = false;
     let mut tree_gone = false;
@@ -116,9 +117,7 @@ pub fn sample_loop(
             .iter()
             .map(crate::process::ProcInfo::id)
             .collect();
-        seen_any |= !sample.processes.is_empty();
-
-        if limits.stop_when_tree_gone && seen_any && sample.processes.is_empty() {
+        if limits.stop_when_tree_gone && sample.processes.is_empty() {
             tree_gone = true;
             break;
         }
@@ -344,6 +343,27 @@ mod tests {
                 "a wait of {longest:?} overshoots the 30 ms deadline"
             );
         }
+    }
+
+    #[test]
+    fn attached_tree_gone_before_the_first_sample_is_reported_as_gone() {
+        // attach() saw the root, but it exited before the loop's first snapshot.
+        let mut source = FakeSource::new(vec![vec![proc(1, None, "init", 1_000)]]);
+        let mut tracker = TreeTracker::with_roots(&[proc(10, None, "app", 10).id()]);
+        let mut waiter = FakeWaiter {
+            polls: None,
+            code: 0,
+        };
+        let lim = LoopLimits {
+            duration: Some(Duration::from_secs(5)),
+            stop_when_tree_gone: true,
+            terminate_on_stop: false,
+            ..limits()
+        };
+        let out = sample_loop(&mut source, &mut tracker, &mut waiter, &lim, Instant::now());
+        assert!(out.tree_gone);
+        assert!(!out.stopped_after_duration);
+        assert_eq!(source.snapshots, 1);
     }
 
     #[test]
