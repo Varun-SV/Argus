@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- **Argus 2 preview** (`argus2/`, command `argus2`): a new, minimal Argus written from scratch and independent of the existing package. One local app with a Settings page for providers, API keys and models (live model list, real connection test, no YAML editing), plain-language tests and exploration for websites and command lines (including programs kept open and typed into), a live observe → decide → act → verify view, and results with screenshots or the terminal transcript. See [docs/argus2.md](docs/argus2.md)
 - Desktop app redesigned as a chat with Argus (Claude-style design): warm ivory layout, sidebar with tests and recent conversations, result cards for runs, roams, drafted specs, dry runs, providers, tokens, history, knowledge, ATES evidence, execution environment and watch mode, and a live-view panel with the latest screenshot
 - Free-text messages in the desktop app are routed through the configured provider to a fixed, validated intent set; slash commands (`/run`, `/roam`, `/write`, `/evidence`, …) skip that routing call
 - Free text never changes anything by itself: a run, roam, stop, save, setup, watch, provider/environment change, provider check or knowledge reset/export comes back as a proposal showing the exact slash command, and only clicking it (or typing the command) acts. `/run` accepts several test files plus `--env local|capsule|hyperv|libvirt` and `--retain`/`--no-retain`; `/env` accepts `--retain`/`--no-retain`

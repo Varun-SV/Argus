@@ -23,6 +23,17 @@ Running checkout.test.yaml…
 4 passed · 0 failed · 0 skipped · 3.6s · 1840 tokens · exit 0
 ```
 
+## Argus 2 (preview)
+
+A new, minimal Argus written from scratch lives in `argus2/`. It is one local app: configure a provider, API key and model on its Settings page, point it at a website or a command line, describe the behaviour in plain words, and watch the observe → decide → act → verify loop live.
+
+```bash
+pip install "argus-app-testing[app]"
+argus2
+```
+
+See [docs/argus2.md](docs/argus2.md). The existing `argus` command and desktop app below are unchanged.
+
 ## Production architecture: Argus Capsules
 
 Argus now separates **how a target is driven** from **where it executes**.
