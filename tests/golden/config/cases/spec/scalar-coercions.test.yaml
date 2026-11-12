@@ -1,0 +1,9 @@
+# Scalars are converted with str()/int()/bool(): a quoted "false" is true.
+name: 123
+target:
+  adapter: cli
+  launch: 42
+retries: "3"
+continue_on_failure: "false"
+steps:
+  - "Run it"

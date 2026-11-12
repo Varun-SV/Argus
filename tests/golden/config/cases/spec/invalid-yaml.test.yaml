@@ -1,0 +1,4 @@
+name: broken
+target: {adapter: cli, launch: echo hi
+steps:
+  - "Run it"

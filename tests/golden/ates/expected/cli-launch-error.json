@@ -1,0 +1,83 @@
+{
+  "api": "argus run <spec>; argus.ates.inspect_finalization_trust / verify_finalized_run / verify_report_bundle",
+  "case": "cli-launch-error",
+  "note": "the target program does not exist",
+  "schema": "argus-golden-ates-v1",
+  "value": {
+    "argus_run_exit_code": 1,
+    "effective_status": "failed",
+    "event_types": [
+      "RUN_STARTED",
+      "ENVIRONMENT_PREPARED",
+      "TARGET_LAUNCHED",
+      "STEP_ATTEMPT_STARTED",
+      "OBSERVATION_CAPTURED",
+      "ARTIFACT_SUPPRESSED",
+      "ASSERTION_EVALUATED",
+      "STEP_ATTEMPT_COMPLETED",
+      "TARGET_CLOSED",
+      "ENVIRONMENT_RELEASED",
+      "RUN_MARKED_INCOMPLETE",
+      "RUN_COMPLETED"
+    ],
+    "files": [
+      ".argus/runs/.ates-runtime-identity.key",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/approvals.jsonl",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/audit.jsonl",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/evidence.jsonl",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/manifests/manifest-0001.json",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/manifests/package-manifest-0001.json",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/junit.xml",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report-manifest-0001.json",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report.html",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report.json",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report.md",
+      ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/run.json"
+    ],
+    "run_dir": ".argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5",
+    "trust_state": "bound_verified",
+    "verifiers": {
+      "inspect_finalization_trust": {
+        "value": {
+          "error": null,
+          "run_dir": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5",
+          "trust_state": "bound_verified"
+        }
+      },
+      "verify_finalized_run": {
+        "value": {
+          "binding_path": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/run.json",
+          "evidence_manifest_bytes": {
+            "sha256": "sha256:7f1e92772139f06c0542499f7d47d842a8f71613ddc08334f6a93f2dd24b6a06",
+            "size": 976
+          },
+          "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/manifests/manifest-0001.json",
+          "outcome": {
+            "authorization": null,
+            "correction_ids": [],
+            "effective_status": "failed",
+            "evidence_revision": 1,
+            "finalization_id": "FINAL-d1cd6efadb5e48bdb79b3bd3df27d915",
+            "finalized_at": "2026-01-01T00:00:00.114000+00:00",
+            "revision": 1,
+            "run_id": "RUN-79de4a07a32442cbbb84aaafd3bfd4e5",
+            "status_policy_version": "ates-status-v1",
+            "supersedes_finalization_id": null,
+            "verification": null
+          },
+          "package_manifest_path": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/manifests/package-manifest-0001.json",
+          "run_dir": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5",
+          "trust_state": "bound_verified"
+        }
+      },
+      "verify_report_bundle": {
+        "value": {
+          "error": null,
+          "manifest_path": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports/report-manifest-0001.json",
+          "report_dir": "<PROJECT>/.argus/runs/RUN-79de4a07a32442cbbb84aaafd3bfd4e5/reports",
+          "trust_state": "regenerated_verified"
+        }
+      }
+    }
+  }
+}

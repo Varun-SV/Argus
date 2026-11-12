@@ -1,0 +1,40 @@
+# Spec section 11 row "Browser test, one assertion"; ADR-001 section 2 row
+# "argus run - one browser assertion". Headless Chromium through Playwright on an inline
+# data: URL: no model call, no network access. Skipped cleanly when Playwright cannot launch
+# Chromium on this machine (not installed, browser revision missing, no sandbox support).
+schema = "argus-bench-scenario-v1"
+name = "python-browser-one-assertion"
+description = "`argus run` of a one-assertion browser test (page title of an inline page) in bench/fixtures/browser-project."
+tags = ["python", "baseline", "spec-11", "adr-001", "browser"]
+command = ["{ARGUS}", "run", ".argus/one-assertion.test.yaml"]
+cwd = "{WORKDIR}"
+timeout = "180s"
+warmup = 1
+expected_exit = 0
+
+[workdir]
+copy_from = "bench/fixtures/browser-project"
+create_dirs = ["home", "home/state", "home/data", "home/config", "home/cache"]
+
+[env]
+HOME = "{WORKDIR}/home"
+USERPROFILE = "{WORKDIR}/home"
+APPDATA = "{WORKDIR}/home/data"
+LOCALAPPDATA = "{WORKDIR}/home/data"
+XDG_STATE_HOME = "{WORKDIR}/home/state"
+XDG_DATA_HOME = "{WORKDIR}/home/data"
+XDG_CONFIG_HOME = "{WORKDIR}/home/config"
+XDG_CACHE_HOME = "{WORKDIR}/home/cache"
+ARGUS_GUI_STATE_DIR = "{WORKDIR}/home/state/argus"
+# HOME/LOCALAPPDATA point into {WORKDIR}, so Playwright must be told where the host's
+# browsers are (the env var if set, else the per-OS default cache).
+PLAYWRIGHT_BROWSERS_PATH = "{PLAYWRIGHT_BROWSERS_PATH}"
+
+[skip_unless]
+command = [
+  "{PYTHON}",
+  "-c",
+  "from playwright.sync_api import sync_playwright\nwith sync_playwright() as p:\n    p.chromium.launch(headless=True).close()\n",
+]
+reason = "Playwright cannot launch headless Chromium on this machine"
+timeout = "90s"

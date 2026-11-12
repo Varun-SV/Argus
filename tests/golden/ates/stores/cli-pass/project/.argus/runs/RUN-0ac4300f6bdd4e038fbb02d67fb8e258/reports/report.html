@@ -1,0 +1,502 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline'"><meta name="referrer" content="no-referrer"><title>Argus ATES report</title><style>body{font-family:system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f5;padding:1rem}</style></head><body><h1>Argus ATES Test Execution Report</h1><p><strong>Run:</strong> <code>RUN-0ac4300f6bdd4e038fbb02d67fb8e258</code></p><p><strong>Canonical status:</strong> <code>passed</code></p><p><strong>Evidence trust:</strong> bound_verified &middot; <strong>Report trust:</strong> unverified_derived</p><p>Evidence-controlled URLs and artifact paths are inert text; no active links or embeds are generated.</p><section><h2>Execution / source</h2><pre>{
+  &quot;adapter_type&quot;: &quot;cli&quot;,
+  &quot;argus_version&quot;: &quot;0.0.0+golden&quot;,
+  &quot;configuration_commitment&quot;: {
+    &quot;canonicalization_profile&quot;: &quot;ates-runtime-config-v1&quot;,
+    &quot;method&quot;: &quot;hmac-sha256&quot;,
+    &quot;value&quot;: &quot;hmac:73a729a9d576bcb52b5726b0b9b357f4b5a9a99105808ffb55279c192ca3d229&quot;,
+    &quot;verification_ref&quot;: &quot;protected://ates-runtime-identity-key&quot;
+  },
+  &quot;environment_type&quot;: &quot;local&quot;,
+  &quot;evidence_profile&quot;: &quot;ates-privacy-v1&quot;,
+  &quot;execution_kind&quot;: &quot;scripted&quot;,
+  &quot;model&quot;: &quot;MODEL-d7d72e854872fb97d9bf8899&quot;,
+  &quot;model_provider&quot;: &quot;ollama&quot;,
+  &quot;provider&quot;: &quot;ollama&quot;,
+  &quot;run_id&quot;: &quot;RUN-0ac4300f6bdd4e038fbb02d67fb8e258&quot;,
+  &quot;source&quot;: {
+    &quot;commitment&quot;: {
+      &quot;canonicalization_profile&quot;: &quot;ates-runtime-scripted-source-v1&quot;,
+      &quot;method&quot;: &quot;hmac-sha256&quot;,
+      &quot;value&quot;: &quot;hmac:f52cba79d3808c519f9a31861a1eeffe9f012f9cb4bcf1752578132e29bd0465&quot;,
+      &quot;verification_ref&quot;: &quot;protected://ates-runtime-identity-key&quot;
+    },
+    &quot;kind&quot;: &quot;test_spec&quot;,
+    &quot;test_case_id&quot;: &quot;TEST-24f1a6e0f4c4ea96c0a72eb5&quot;
+  },
+  &quot;started_at&quot;: &quot;2026-01-01T00:00:00.006000+00:00&quot;
+}</pre></section><section><h2>Outcome</h2><pre>{
+  &quot;authorization&quot;: null,
+  &quot;correction_ids&quot;: [],
+  &quot;effective_status&quot;: &quot;passed&quot;,
+  &quot;evidence_revision&quot;: 1,
+  &quot;finalization_id&quot;: &quot;FINAL-43e278e89bf64b77b9715e95f824dd0c&quot;,
+  &quot;finalized_at&quot;: &quot;2026-01-01T00:00:00.034000+00:00&quot;,
+  &quot;revision&quot;: 1,
+  &quot;run_id&quot;: &quot;RUN-0ac4300f6bdd4e038fbb02d67fb8e258&quot;,
+  &quot;status_policy_version&quot;: &quot;ates-status-v1&quot;,
+  &quot;supersedes_finalization_id&quot;: null,
+  &quot;verification&quot;: null
+}</pre></section><section><h2>Logical steps</h2><pre>[
+  {
+    &quot;instruction&quot;: {
+      &quot;disposition&quot;: &quot;redacted&quot;,
+      &quot;protected_ref&quot;: null,
+      &quot;reason&quot;: &quot;privacy.authored_text&quot;,
+      &quot;secret_refs&quot;: [],
+      &quot;value&quot;: &quot;&lt;redacted&gt;&quot;
+    },
+    &quot;kind&quot;: &quot;assert&quot;,
+    &quot;step_id&quot;: &quot;STEP-4260a4a119614f5b9cb7a8a3c4393c02&quot;
+  },
+  {
+    &quot;instruction&quot;: {
+      &quot;disposition&quot;: &quot;redacted&quot;,
+      &quot;protected_ref&quot;: null,
+      &quot;reason&quot;: &quot;privacy.authored_text&quot;,
+      &quot;secret_refs&quot;: [],
+      &quot;value&quot;: &quot;&lt;redacted&gt;&quot;
+    },
+    &quot;kind&quot;: &quot;assert&quot;,
+    &quot;step_id&quot;: &quot;STEP-ed13a63b4a3b4d7098c483255d1c22e2&quot;
+  }
+]</pre></section><section><h2>Attempt history</h2><pre>[
+  {
+    &quot;attempt&quot;: 1,
+    &quot;ended_at&quot;: &quot;2026-01-01T00:00:00.017000+00:00&quot;,
+    &quot;retry_reason&quot;: null,
+    &quot;started_at&quot;: &quot;2026-01-01T00:00:00.012000+00:00&quot;,
+    &quot;status&quot;: &quot;passed&quot;,
+    &quot;step_attempt_id&quot;: &quot;STEPATT-0a3cb5f7c34e46b8a10e59c92f8ba9d2&quot;,
+    &quot;step_id&quot;: &quot;STEP-4260a4a119614f5b9cb7a8a3c4393c02&quot;
+  },
+  {
+    &quot;attempt&quot;: 1,
+    &quot;ended_at&quot;: &quot;2026-01-01T00:00:00.027000+00:00&quot;,
+    &quot;retry_reason&quot;: null,
+    &quot;started_at&quot;: &quot;2026-01-01T00:00:00.022000+00:00&quot;,
+    &quot;status&quot;: &quot;passed&quot;,
+    &quot;step_attempt_id&quot;: &quot;STEPATT-ec27602d040e4bdba08810683128fed5&quot;,
+    &quot;step_id&quot;: &quot;STEP-ed13a63b4a3b4d7098c483255d1c22e2&quot;
+  }
+]</pre></section><section><h2>Assertions</h2><pre>[
+  {
+    &quot;actual&quot;: {
+      &quot;disposition&quot;: &quot;suppressed&quot;,
+      &quot;protected_ref&quot;: null,
+      &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+      &quot;secret_refs&quot;: [],
+      &quot;value&quot;: null
+    },
+    &quot;assertion_id&quot;: &quot;ASSERT-51126ff402d44d528db07e3ec9584e0d&quot;,
+    &quot;expected&quot;: {
+      &quot;disposition&quot;: &quot;redacted&quot;,
+      &quot;protected_ref&quot;: null,
+      &quot;reason&quot;: &quot;privacy.assertion_value&quot;,
+      &quot;secret_refs&quot;: [],
+      &quot;value&quot;: &quot;&lt;redacted&gt;&quot;
+    },
+    &quot;kind&quot;: &quot;exit_code_is&quot;,
+    &quot;method&quot;: &quot;deterministic.adapter_observation&quot;,
+    &quot;observation_id&quot;: &quot;OBS-f1a993bdfb9042a990ef3ac00d2364eb&quot;,
+    &quot;required&quot;: true,
+    &quot;requirement&quot;: null,
+    &quot;result&quot;: &quot;passed&quot;,
+    &quot;step_attempt_id&quot;: &quot;STEPATT-0a3cb5f7c34e46b8a10e59c92f8ba9d2&quot;,
+    &quot;step_id&quot;: &quot;STEP-4260a4a119614f5b9cb7a8a3c4393c02&quot;
+  },
+  {
+    &quot;actual&quot;: {
+      &quot;disposition&quot;: &quot;suppressed&quot;,
+      &quot;protected_ref&quot;: null,
+      &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+      &quot;secret_refs&quot;: [],
+      &quot;value&quot;: null
+    },
+    &quot;assertion_id&quot;: &quot;ASSERT-d24e8b6d263f4fe08a37ffb80ed103b1&quot;,
+    &quot;expected&quot;: {
+      &quot;disposition&quot;: &quot;redacted&quot;,
+      &quot;protected_ref&quot;: null,
+      &quot;reason&quot;: &quot;privacy.assertion_value&quot;,
+      &quot;secret_refs&quot;: [],
+      &quot;value&quot;: &quot;&lt;redacted&gt;&quot;
+    },
+    &quot;kind&quot;: &quot;stdout_contains&quot;,
+    &quot;method&quot;: &quot;deterministic.adapter_observation&quot;,
+    &quot;observation_id&quot;: &quot;OBS-1eb9eccbc25442d8b41f4cc0ebb96d5b&quot;,
+    &quot;required&quot;: true,
+    &quot;requirement&quot;: null,
+    &quot;result&quot;: &quot;passed&quot;,
+    &quot;step_attempt_id&quot;: &quot;STEPATT-ec27602d040e4bdba08810683128fed5&quot;,
+    &quot;step_id&quot;: &quot;STEP-ed13a63b4a3b4d7098c483255d1c22e2&quot;
+  }
+]</pre></section><section><h2>Observations</h2><pre>[
+  {
+    &quot;capture_policy&quot;: &quot;ates-privacy-v1&quot;,
+    &quot;captured_at&quot;: &quot;2026-01-01T00:00:00.014000+00:00&quot;,
+    &quot;facts&quot;: {
+      &quot;dialog_count&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: 0
+      },
+      &quot;dialogs&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;element_count&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: 0
+      },
+      &quot;error&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;has_error&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: false
+      },
+      &quot;has_stderr&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: true
+      },
+      &quot;has_stdout&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: true
+      },
+      &quot;has_url&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: false
+      },
+      &quot;process_alive&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: true
+      },
+      &quot;screenshot_present&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: false
+      },
+      &quot;stderr&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;stdout&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;ui_tree&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;url&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;window_title&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      }
+    },
+    &quot;observation_id&quot;: &quot;OBS-f1a993bdfb9042a990ef3ac00d2364eb&quot;,
+    &quot;source&quot;: &quot;cli&quot;,
+    &quot;step_attempt_id&quot;: &quot;STEPATT-0a3cb5f7c34e46b8a10e59c92f8ba9d2&quot;
+  },
+  {
+    &quot;capture_policy&quot;: &quot;ates-privacy-v1&quot;,
+    &quot;captured_at&quot;: &quot;2026-01-01T00:00:00.024000+00:00&quot;,
+    &quot;facts&quot;: {
+      &quot;dialog_count&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: 0
+      },
+      &quot;dialogs&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;element_count&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: 0
+      },
+      &quot;error&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;has_error&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: false
+      },
+      &quot;has_stderr&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: true
+      },
+      &quot;has_stdout&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: true
+      },
+      &quot;has_url&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: false
+      },
+      &quot;process_alive&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: true
+      },
+      &quot;screenshot_present&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: false
+      },
+      &quot;stderr&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;stdout&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;ui_tree&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;url&quot;: {
+        &quot;disposition&quot;: &quot;safe&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: null,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      },
+      &quot;window_title&quot;: {
+        &quot;disposition&quot;: &quot;suppressed&quot;,
+        &quot;protected_ref&quot;: null,
+        &quot;reason&quot;: &quot;privacy.target_generated&quot;,
+        &quot;secret_refs&quot;: [],
+        &quot;value&quot;: null
+      }
+    },
+    &quot;observation_id&quot;: &quot;OBS-1eb9eccbc25442d8b41f4cc0ebb96d5b&quot;,
+    &quot;source&quot;: &quot;cli&quot;,
+    &quot;step_attempt_id&quot;: &quot;STEPATT-ec27602d040e4bdba08810683128fed5&quot;
+  }
+]</pre></section><section><h2>Artifacts (inert references only)</h2><pre>[]</pre></section><section><h2>Findings</h2><pre>[]</pre></section><section><h2>Failures / ambiguous outcomes</h2><pre>[]</pre></section><section><h2>Requirement traceability</h2><pre>[]</pre></section><section><h2>Approvals</h2><pre>{
+  &quot;records&quot;: [],
+  &quot;verified_effective_approval_count&quot;: 0
+}</pre></section><section><h2>Audit</h2><pre>{
+  &quot;local_chain_state&quot;: &quot;locally_chain_verified&quot;,
+  &quot;records&quot;: [
+    {
+      &quot;actor&quot;: &quot;argus.finalizer&quot;,
+      &quot;audit_id&quot;: &quot;AUDIT-28812ed61cfc4b9ba91cbead109bb828&quot;,
+      &quot;dedupe_key&quot;: &quot;finalization:FINAL-43e278e89bf64b77b9715e95f824dd0c&quot;,
+      &quot;details&quot;: {
+        &quot;effective_status&quot;: &quot;passed&quot;,
+        &quot;evidence_revision&quot;: 1,
+        &quot;finalization_id&quot;: &quot;FINAL-43e278e89bf64b77b9715e95f824dd0c&quot;,
+        &quot;manifest_digest&quot;: &quot;sha256:72af0cd9df3f78bb15d1bbca9c66c13ceae4bec2980eddfc2bea3352b6a7719e&quot;,
+        &quot;revision&quot;: 1,
+        &quot;run_id&quot;: &quot;RUN-0ac4300f6bdd4e038fbb02d67fb8e258&quot;
+      },
+      &quot;event_type&quot;: &quot;finalization.bound&quot;,
+      &quot;ledger_version&quot;: &quot;ates-audit-ledger-v1&quot;,
+      &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.034000+00:00&quot;,
+      &quot;previous_record_digest&quot;: null
+    }
+  ],
+  &quot;trust_note&quot;: &quot;The local chain is not an external tamper-evidence boundary.&quot;
+}</pre></section><section><h2>Timeline</h2><pre>[
+  {
+    &quot;event_id&quot;: &quot;EVT-3ba16b4f8cf948da9d5f17e5ef0f2723&quot;,
+    &quot;event_type&quot;: &quot;RUN_STARTED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.007000+00:00&quot;,
+    &quot;sequence&quot;: 1
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-ea10fd02d7df4ca790da597101032bfa&quot;,
+    &quot;event_type&quot;: &quot;ENVIRONMENT_PREPARED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.008000+00:00&quot;,
+    &quot;sequence&quot;: 2
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-5c27fc8f595d406696c390779fab45b3&quot;,
+    &quot;event_type&quot;: &quot;TARGET_LAUNCHED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.009000+00:00&quot;,
+    &quot;sequence&quot;: 3
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-c8fee17825f4494ca65bfa7dc420c039&quot;,
+    &quot;event_type&quot;: &quot;STEP_ATTEMPT_STARTED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.013000+00:00&quot;,
+    &quot;sequence&quot;: 4
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-98741f5ed68a47b489376d10eb3c6fd1&quot;,
+    &quot;event_type&quot;: &quot;OBSERVATION_CAPTURED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.015000+00:00&quot;,
+    &quot;sequence&quot;: 5
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-05323b2cbff14bbba87e1a23598261a6&quot;,
+    &quot;event_type&quot;: &quot;ASSERTION_EVALUATED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.016000+00:00&quot;,
+    &quot;sequence&quot;: 6
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-b45b524f744b44af8f75a4f994beb0a1&quot;,
+    &quot;event_type&quot;: &quot;STEP_ATTEMPT_COMPLETED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.018000+00:00&quot;,
+    &quot;sequence&quot;: 7
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-475f253073d34519b8f061a6d23c0c77&quot;,
+    &quot;event_type&quot;: &quot;STEP_ATTEMPT_STARTED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.023000+00:00&quot;,
+    &quot;sequence&quot;: 8
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-e52dbfee00a940cb929bf13736915659&quot;,
+    &quot;event_type&quot;: &quot;OBSERVATION_CAPTURED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.025000+00:00&quot;,
+    &quot;sequence&quot;: 9
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-1606df39bce441079179bdd5c32453b3&quot;,
+    &quot;event_type&quot;: &quot;ASSERTION_EVALUATED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.026000+00:00&quot;,
+    &quot;sequence&quot;: 10
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-33c6d64f076d4513a317fe611f649369&quot;,
+    &quot;event_type&quot;: &quot;STEP_ATTEMPT_COMPLETED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.028000+00:00&quot;,
+    &quot;sequence&quot;: 11
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-0c8db1852ffe4fae9a1e040e924b9bf5&quot;,
+    &quot;event_type&quot;: &quot;TARGET_CLOSED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.030000+00:00&quot;,
+    &quot;sequence&quot;: 12
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-af8d56e3465a4333be43cf62675d4098&quot;,
+    &quot;event_type&quot;: &quot;ENVIRONMENT_RELEASED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.032000+00:00&quot;,
+    &quot;sequence&quot;: 13
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-e0d53927d4fe4c3cbf352ce5ddaa457e&quot;,
+    &quot;event_type&quot;: &quot;RUN_MARKED_INCOMPLETE&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.033000+00:00&quot;,
+    &quot;sequence&quot;: 14
+  },
+  {
+    &quot;event_id&quot;: &quot;EVT-68c33b8722304ddcb980753d3891f229&quot;,
+    &quot;event_type&quot;: &quot;RUN_COMPLETED&quot;,
+    &quot;occurred_at&quot;: &quot;2026-01-01T00:00:00.034000+00:00&quot;,
+    &quot;sequence&quot;: 15
+  }
+]</pre></section><section><h2>Integrity / source binding</h2><pre>{
+  &quot;detached_ledger_snapshot&quot;: {
+    &quot;freshness_note&quot;: &quot;These entries identify the detached-ledger state used to render this report. A member may be explicitly absent; present-member digests do not prove the files are still current. Call verify_report_bundle().&quot;,
+    &quot;members&quot;: [
+      {
+        &quot;path&quot;: &quot;approvals.jsonl&quot;,
+        &quot;sha256&quot;: &quot;sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855&quot;,
+        &quot;size_bytes&quot;: 0,
+        &quot;state&quot;: &quot;present&quot;
+      },
+      {
+        &quot;path&quot;: &quot;audit.jsonl&quot;,
+        &quot;sha256&quot;: &quot;sha256:36a5102a35c758962a1a3d75b65d371aa064b5ccfc4634d63f5189c41ff0726f&quot;,
+        &quot;size_bytes&quot;: 574,
+        &quot;state&quot;: &quot;present&quot;
+      }
+    ],
+    &quot;snapshot_version&quot;: &quot;ates-detached-ledger-snapshot-v1&quot;
+  },
+  &quot;evidence_manifest_path&quot;: &quot;manifests/manifest-0001.json&quot;,
+  &quot;evidence_manifest_sha256&quot;: &quot;sha256:72af0cd9df3f78bb15d1bbca9c66c13ceae4bec2980eddfc2bea3352b6a7719e&quot;,
+  &quot;evidence_revision&quot;: 1,
+  &quot;finalization_id&quot;: &quot;FINAL-43e278e89bf64b77b9715e95f824dd0c&quot;,
+  &quot;run_id&quot;: &quot;RUN-0ac4300f6bdd4e038fbb02d67fb8e258&quot;
+}</pre></section></body></html>

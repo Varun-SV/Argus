@@ -1,0 +1,62 @@
+{
+  "api": "argus.capsule.bootstrap",
+  "case": "bootstrap",
+  "schema": "argus-golden-capsule-v1",
+  "value": {
+    "load": {
+      "value": {
+        "capsule_id": "cap-cccccccccccccccccccccccccccccccc",
+        "control_generation": 1,
+        "created_at": "2026-01-01T00:00:00.001000+00:00",
+        "execution_mode": "isolated",
+        "runtime_identity": "runtime-sha256-74907e6ee7a4b0066fe778a63e58bce7d51c931bc5ae3019533216c90eb6a102",
+        "schema_version": "argus-bootstrap-v1",
+        "session_id": "334d2f4be15946a488beb86a936a384b",
+        "tls_cert_file": "tls-cert.pem",
+        "tls_cert_sha256": "8b588f44dfeec9a9bd8cd593a0680c7c51ae766198bb7bf15cba964226e5becc",
+        "tls_key_file": "tls-key.pem",
+        "token_file": "bootstrap.token"
+      }
+    },
+    "load_rejections": {
+      "certificate_digest_changed": {
+        "error": {
+          "message": "Capsule bootstrap certificate digest mismatch",
+          "type": "CapsuleError"
+        }
+      },
+      "created_at_missing": {
+        "error": {
+          "message": "Capsule bootstrap manifest shape is invalid",
+          "type": "CapsuleError"
+        }
+      },
+      "generation_zero": {
+        "error": {
+          "message": "Capsule bootstrap generation must be positive",
+          "type": "CapsuleError"
+        }
+      },
+      "schema_version_v2": {
+        "error": {
+          "message": "unsupported Capsule bootstrap schema",
+          "type": "CapsuleError"
+        }
+      },
+      "token_file_with_path": {
+        "error": {
+          "message": "Capsule bootstrap token_file must be a leaf filename",
+          "type": "CapsuleError"
+        }
+      },
+      "unknown_field": {
+        "error": {
+          "message": "unknown Capsule bootstrap manifest field(s): runtime_kind",
+          "type": "CapsuleError"
+        }
+      }
+    },
+    "schema_version": "argus-bootstrap-v1",
+    "token_length": 64
+  }
+}

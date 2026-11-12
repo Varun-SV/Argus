@@ -1,0 +1,158 @@
+{
+  "api": "argus.provisioning.runtime_bundle",
+  "case": "runtime-bundle",
+  "schema": "argus-golden-capsule-v1",
+  "value": {
+    "build_result": {
+      "value": {
+        "manifest": {
+          "bootstrap_schema_version": "argus-bootstrap-v1",
+          "bootstrap_service_policy_version": "argus-bootstrap-service-v2",
+          "content_sha256": "58d0613771ef3d85cfc08f27c913cdece58fa96101155dc62fb56e74a1842f2a",
+          "entrypoint": "argus-guest/argus-guest.exe",
+          "format_version": "argus-guest-runtime-bundle-v1",
+          "installation_policy_version": "argus-runtime-install-v2",
+          "runtime_version": "0.1.0-golden",
+          "signature": null,
+          "signature_algorithm": null,
+          "signing_key_id": null,
+          "target_architecture": "x86_64",
+          "target_os": "windows-11"
+        },
+        "path": "<BUNDLE_DIR>/argus-guest-runtime.zip",
+        "sha256": "74907e6ee7a4b0066fe778a63e58bce7d51c931bc5ae3019533216c90eb6a102"
+      }
+    },
+    "bundle_sha256": "74907e6ee7a4b0066fe778a63e58bce7d51c931bc5ae3019533216c90eb6a102",
+    "manifest_from_mapping": {
+      "as_written": {
+        "value": {
+          "bootstrap_schema_version": "argus-bootstrap-v1",
+          "bootstrap_service_policy_version": "argus-bootstrap-service-v2",
+          "content_sha256": "58d0613771ef3d85cfc08f27c913cdece58fa96101155dc62fb56e74a1842f2a",
+          "entrypoint": "argus-guest/argus-guest.exe",
+          "format_version": "argus-guest-runtime-bundle-v1",
+          "installation_policy_version": "argus-runtime-install-v2",
+          "runtime_version": "0.1.0-golden",
+          "signature": null,
+          "signature_algorithm": null,
+          "signing_key_id": null,
+          "target_architecture": "x86_64",
+          "target_os": "windows-11"
+        }
+      },
+      "unsupported_format_version": {
+        "error": {
+          "message": "unsupported guest runtime bundle format",
+          "type": "ProvisioningError"
+        }
+      },
+      "with_runtime_kind_native": {
+        "error": {
+          "message": "unknown guest runtime manifest field(s): runtime_kind",
+          "type": "ProvisioningError"
+        }
+      },
+      "with_runtime_kind_python_pyinstaller": {
+        "error": {
+          "message": "unknown guest runtime manifest field(s): runtime_kind",
+          "type": "ProvisioningError"
+        }
+      }
+    },
+    "members": [
+      [
+        "argus-guest/_internal/base_library.zip",
+        [
+          1980,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        33188,
+        8
+      ],
+      [
+        "argus-guest/argus-guest.exe",
+        [
+          1980,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        33261,
+        8
+      ],
+      [
+        "argus-runtime-manifest.json",
+        [
+          1980,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        33188,
+        8
+      ]
+    ],
+    "verify": {
+      "value": {
+        "file": {
+          "path": "<BUNDLE_DIR>/argus-guest-runtime.zip",
+          "sha256": "74907e6ee7a4b0066fe778a63e58bce7d51c931bc5ae3019533216c90eb6a102",
+          "size": 816
+        },
+        "manifest": {
+          "bootstrap_schema_version": "argus-bootstrap-v1",
+          "bootstrap_service_policy_version": "argus-bootstrap-service-v2",
+          "content_sha256": "58d0613771ef3d85cfc08f27c913cdece58fa96101155dc62fb56e74a1842f2a",
+          "entrypoint": "argus-guest/argus-guest.exe",
+          "format_version": "argus-guest-runtime-bundle-v1",
+          "installation_policy_version": "argus-runtime-install-v2",
+          "runtime_version": "0.1.0-golden",
+          "signature": null,
+          "signature_algorithm": null,
+          "signing_key_id": null,
+          "target_architecture": "x86_64",
+          "target_os": "windows-11"
+        },
+        "payload_files": [
+          "argus-guest/_internal/base_library.zip",
+          "argus-guest/argus-guest.exe"
+        ]
+      }
+    },
+    "verify_rejections": {
+      "member_changed_manifest_not": {
+        "error": {
+          "message": "guest runtime bundle payload digest mismatch",
+          "type": "ProvisioningError"
+        }
+      },
+      "wrong_outer_digest": {
+        "error": {
+          "message": "SHA-256 mismatch for <BUNDLE_DIR>/argus-guest-runtime.zip: expected 0000000000000000000000000000000000000000000000000000000000000000, got 74907e6ee7a4b0066fe778a63e58bce7d51c931bc5ae3019533216c90eb6a102",
+          "type": "ProvisioningError"
+        }
+      },
+      "wrong_runtime_version": {
+        "error": {
+          "message": "guest runtime manifest runtime_version contradicts environment identity",
+          "type": "ProvisioningError"
+        }
+      },
+      "wrong_target_os": {
+        "error": {
+          "message": "guest runtime manifest target_os contradicts environment identity",
+          "type": "ProvisioningError"
+        }
+      }
+    }
+  }
+}

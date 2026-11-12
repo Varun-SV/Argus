@@ -1,0 +1,4 @@
+provider: ollama
+execution:
+  capsule:
+    memory_mb: lots

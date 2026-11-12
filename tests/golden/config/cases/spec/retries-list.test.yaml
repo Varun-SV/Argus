@@ -1,0 +1,5 @@
+target:
+  launch: notepad.exe
+retries: [1]
+steps:
+  - "Type hello"

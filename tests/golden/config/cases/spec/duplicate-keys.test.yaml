@@ -1,0 +1,7 @@
+# PyYAML keeps the last value of a duplicated key without a warning.
+name: first
+name: second
+target:
+  launch: notepad.exe
+steps:
+  - "Type hello"

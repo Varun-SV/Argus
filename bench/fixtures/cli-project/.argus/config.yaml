@@ -1,0 +1,16 @@
+# Benchmark fixture project (bench/fixtures/cli-project). Used by the python-cli-test-run
+# scenario. Assertion-only tests: no model call and no network access is made, so the
+# provider entry below is never contacted. Knowledge is not configured (graph store off).
+provider: ollama
+
+providers:
+  ollama:
+    model: bench-unused
+    base_url: http://127.0.0.1:9
+
+budgets:
+  time_minutes: 1
+  max_tokens: null
+
+execution:
+  environment: local

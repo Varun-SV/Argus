@@ -1,0 +1,8 @@
+{
+  "env": {
+    "ARGUS_PROVIDER": "openai",
+    "ARGUS_MODEL": "env-model",
+    "ARGUS_BASE_URL": "http://localhost:8080/v1",
+    "ARGUS_API_KEY": "TEST-ONLY-env-generic-key"
+  }
+}

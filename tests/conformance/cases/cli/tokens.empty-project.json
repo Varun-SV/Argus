@@ -1,0 +1,52 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.tokens.empty-project",
+  "title": "argus tokens on a fresh project reports zero usage",
+  "requirements": [
+    "C-07",
+    "PARITY-1"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "init"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    },
+    {
+      "args": [
+        "tokens"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "regex": [
+            "(?i)prompt\\s+tokens\\D*\\b0\\b",
+            "(?i)completion\\s+tokens\\D*\\b0\\b",
+            "(?i)total\\s+tokens\\D*\\b0\\b",
+            "(?i)calls\\D*\\b0\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

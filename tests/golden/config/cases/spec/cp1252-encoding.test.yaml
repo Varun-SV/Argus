@@ -1,0 +1,6 @@
+# Not valid UTF-8: the loader falls back to cp1252.
+name: café menu
+target:
+  launch: notepad.exe
+steps:
+  - "Type café"

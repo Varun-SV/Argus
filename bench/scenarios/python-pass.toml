@@ -1,0 +1,7 @@
+# ADR-001 section 2 row "python -c pass": bare interpreter start-up and exit.
+schema = "argus-bench-scenario-v1"
+name = "python-pass"
+description = "Bare Python interpreter: start, run `pass`, exit. Baseline for the interpreter's own cost."
+tags = ["python", "baseline", "adr-001"]
+command = ["{PYTHON}", "-c", "pass"]
+timeout = "30s"

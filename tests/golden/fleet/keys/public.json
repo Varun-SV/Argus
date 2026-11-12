@@ -1,0 +1,11 @@
+{
+  "control_center": {
+    "fingerprint": "sha256:93d492f3548ab0152ad370b04a4b46a08556d28f0e0ce87dec7906321f4707c6",
+    "public_key_b64": "_gy-ELpjmzCUuiXtiRDH1BQmUgcK6wsNv2w_WCCuCKs"
+  },
+  "node": {
+    "fingerprint": "sha256:3955dee20beeb65947e4747793abc6fa6287a517628f3c8c5e37ca3a38329321",
+    "public_key_b64": "lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU"
+  },
+  "note": "TEST ONLY keys derived from fixed seeds in scripts/golden/export_fleet.py"
+}

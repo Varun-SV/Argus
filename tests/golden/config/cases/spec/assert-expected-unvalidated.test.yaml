@@ -1,0 +1,12 @@
+# Expected values are not type-checked at load time.
+target:
+  launch: notepad.exe
+steps:
+  - assert:
+      exit_code_is: zero
+  - assert:
+      process_running: maybe
+  - assert:
+      element_exists: [1, 2]
+  - assert:
+      text_visible: null

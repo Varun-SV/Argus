@@ -35,7 +35,7 @@ Everything in this table is kept (C-01…C-07 of the main specification). The ro
 |---|---|
 | `argus` CLI, `argus serve`, guest agent | glibc 2.28 or later (`manylinux_2_28`), x86_64 and aarch64 |
 | Desktop app (`argus-gui`) | WebKitGTK 4.1 and GTK 3 (Ubuntu 22.04, Debian 12, Fedora 36 or later) |
-| Desktop GUI testing | an X11 server: the user's X11 session, XWayland (X11 apps only), or an Argus-owned Xvfb (§3) |
+| Desktop GUI testing | an X11 server: an Argus-owned Xvfb (the default on Wayland sessions and when no usable X11 display exists), the user's X11 session, or XWayland (X11 apps only, with `display: host`), selected as in §3.1 |
 | libvirt Capsules | KVM (`/dev/kvm`), libvirt with `qemu:///system`, `virsh`, `qemu-img`, iproute2 `ip` (§5) |
 
 **Tested distributions:** Ubuntu 22.04 and 24.04 LTS, Debian 12, and the current Fedora release, on x86_64; Ubuntu 24.04 on aarch64. Other distributions that meet the table are expected to work but are not gated.
@@ -44,14 +44,17 @@ Everything in this table is kept (C-01…C-07 of the main specification). The ro
 
 ### 3.1 Display
 
-- **Owned Xvfb (default when there is no usable X11 display).** Argus starts Xvfb with `-displayfd`, so the X server picks a free display number. This replaces the fixed `:99`, which collides when two runs or two Matrix cases use it at once. Each Xvfb gets `-nolisten tcp` and a fresh per-session Xauthority cookie. Screen size stays 1920×1080×24 unless configured otherwise. Teardown stops it even after failures.
-- **Existing X11 display.** As today: when `DISPLAY` is set, Argus drives that display.
-- **Wayland sessions.** The rule depends on how Argus is configured:
-  - by default, Argus launches the target on an owned Xvfb display. It sets `DISPLAY` and removes `WAYLAND_DISPLAY` from the target's environment, so GTK and Qt apps use their X11 backend;
-  - driving windows on the visible Wayland desktop is not supported, because Wayland does not allow global input injection or screen capture without portals;
-  - preflight explains this before the run starts instead of failing during it.
+**Selection.** Argus picks the display by these rules, in order; the first rule that matches wins:
 
-  This is operator decision L-1 (§8).
+1. **Explicit configuration.** `display: owned` or `display: host` overrides detection. With `display: host` and no usable X11 display, preflight fails with the reason; it does not fall back to Xvfb.
+2. **Wayland session** (`XDG_SESSION_TYPE=wayland`, or `WAYLAND_DISPLAY` set). Argus uses an owned Xvfb, even when XWayland provides `DISPLAY`. It sets `DISPLAY` and removes `WAYLAND_DISPLAY` from the target's environment, so GTK and Qt apps use their X11 backend.
+3. **Usable X11 display.** If `DISPLAY` is set and that display is usable, Argus drives it, as today.
+4. **Otherwise** Argus uses an owned Xvfb.
+
+A **usable X11 display** is one where Argus can connect with the available Xauthority, the server offers the XTEST extension, and a `GetImage` request on the root window succeeds. Preflight reports which display was chosen and why.
+
+- **Owned Xvfb.** Argus starts Xvfb with `-displayfd`, so the X server picks a free display number. This replaces the fixed `:99`, which collides when two runs or two Matrix cases use it at once. Each Xvfb gets `-nolisten tcp` and a fresh per-session Xauthority cookie. Screen size stays 1920×1080×24 unless configured otherwise. Teardown stops it even after failures.
+- **Visible Wayland desktop.** Driving native Wayland windows is not supported, because Wayland does not allow global input injection or screen capture without portals. Preflight explains this before the run starts instead of failing during it. See §8, question L-1.
 
 ### 3.2 Input, screenshots and window identity
 
@@ -78,7 +81,7 @@ Everything in this table is kept (C-01…C-07 of the main specification). The ro
 
 **CLI.** Command mode and the persistent interactive mode use a POSIX PTY (`openpty` via `portable-pty`), as specified in main specification §6.1. The process-group rules from §3.4 apply. Interactive mode has no version restriction on Linux.
 
-**Browser discovery.** Argus looks for an installed browser in this order: `google-chrome-stable`, `chromium`, `chromium-browser`, `microsoft-edge-stable`. On aarch64, where Google Chrome may be unavailable, it uses Chromium. If none is found, it downloads a pinned Chromium and verifies its hash.
+**Browser discovery.** A configured browser path comes first, as on every platform (main specification §6.2). Otherwise Argus looks for an installed browser in this order: `google-chrome-stable`, `chromium`, `chromium-browser`, `microsoft-edge-stable`. On aarch64, where Google Chrome may be unavailable, it uses Chromium. If none is found, it downloads a pinned Chromium with the operator's consent and verifies its hash (main specification §6.2).
 
 **Snap and Flatpak browsers.** Ubuntu's `chromium` is a Snap. A confined browser may not accept Argus's profile directory or the `--remote-debugging-pipe` file descriptors.
 - Argus detects a Snap- or Flatpak-wrapped browser.
@@ -88,7 +91,7 @@ Everything in this table is kept (C-01…C-07 of the main specification). The ro
 
 **Chromium sandbox.** Today Playwright launches Chromium with `--no-sandbox` by default. The new default keeps the sandbox on.
 - On hosts where it cannot start (for example Ubuntu 23.10 and later restrict unprivileged user namespaces through AppArmor), preflight reports it with the fix: use the distribution's Chrome or Chromium, which ships a profile, or install the profile for the pinned build.
-- `browser.sandbox: false` remains as an explicit opt-out and is recorded in the ATES evidence of every run that uses it. This is operator decision L-2 (§8).
+- `browser.sandbox: false` remains as an explicit opt-out and is recorded in the ATES evidence of every run that uses it. The record is an additive, opt-in field (main specification C-03): it appears only in runs that use the opt-out, its encoding is fixed by the ATES additive-fields amendment at gate G-ATES, and the last Python release is not expected to accept it. This is operator decision L-2 (§8).
 
 **Headed or headless.** The browser runs headless by default, as today. Headed runs use the X11 display chosen in §3.1.
 
@@ -149,23 +152,24 @@ The native agent replaces the PyInstaller runtime under the same approval and di
 
 ## 8. Operator decisions (2026-10-07)
 
-The operator accepted both recommendations:
+The operator accepted both recommendations ([specification §18, R-6](specification.md#18-amendment-b--reconciliation-decisions)):
 
 - **L-1. Wayland desktops: owned virtual X11 display.**
-  - On a Wayland session, Argus runs the application under test on an Argus-owned Xvfb display, as described in §3.1. This works on every Linux host. It is not visible on the desktop; the operator watches it through the live view.
+  - On a Wayland session, Argus runs the application under test on an Argus-owned Xvfb display, as described in §3.1. This works on every Linux host. It is not visible on the desktop; the operator watches it through the live view. `display: host` drives an XWayland display instead (X11 apps only).
   - Driving windows on the visible Wayland desktop is not supported. Preflight says so before a run starts.
   - Driving the visible desktop through the RemoteDesktop/ScreenCast portals (libei) is not planned. It would need a permission prompt every session and differs per desktop environment. It is specified only if the operator asks for it.
 - **L-2. Chromium sandbox: on by default.**
   - The browser runs with Chromium's sandbox, as described in §4. Today it runs without it, because that is Playwright's default.
   - On a host where the sandbox cannot start, preflight explains the fix before the run.
-  - `browser.sandbox: false` turns it off explicitly. Every run that uses it records this in its ATES evidence.
+  - `browser.sandbox: false` turns it off explicitly. Every run that uses it records this in its ATES evidence as an additive field (§4).
 
 ## 9. Testing and gates
 
 **Acceptance.** P3 native acceptance on Linux covers each of the following on a real host:
 - an X11 session;
 - an owned Xvfb, including two concurrent runs;
-- a GNOME Wayland session (Ubuntu 24.04);
+- a GNOME Wayland session (Ubuntu 24.04), where the owned Xvfb is used even though XWayland provides `DISPLAY`;
+- the display selection order of §3.1, including `display: owned`, `display: host` and an unusable `DISPLAY`;
 - AT-SPI on a GTK and a Qt target;
 - process-group teardown with a daemonising target;
 - PTY interactive mode;

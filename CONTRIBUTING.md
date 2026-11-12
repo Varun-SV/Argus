@@ -49,3 +49,30 @@ Use `release:none` for changes that should land on `main` without publishing a n
 ## Security
 
 Do not report sensitive vulnerabilities in ordinary public issues. Follow [SECURITY.md](SECURITY.md).
+
+## Rust workspace (preview, phase P0)
+
+The Rust re-architecture is built in `crates/` next to the Python package, which stays the
+shipped product until the switch. The design is in
+[docs/rearchitecture/specification.md](docs/rearchitecture/specification.md).
+
+- **Toolchain:** stable Rust via `rust-toolchain.toml` (rustup installs it, with rustfmt and
+  clippy, on first use). The minimum supported version is `rust-version` in `Cargo.toml`.
+- **Preview binary:** the CLI builds as `argus-next` until the switch, so it never shadows the
+  `argus` command from the Python package.
+- **Before opening a PR**, run from the repository root:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --release -p argus-cli && ./target/release/argus-next --version
+# Dependency policy (install once: cargo install --locked cargo-deny cargo-audit)
+cargo deny check
+cargo audit
+```
+
+- Dependencies are declared once in `[workspace.dependencies]` with exact versions, and
+  `Cargo.lock` is committed. New dependencies must pass `cargo deny check` (`deny.toml`).
+- `unsafe` code is forbidden in every crate except the PyO3 boundary in `crates/argus-py`.
+- The `Rust CI` workflow runs these checks on Linux, Windows and macOS, x64 and ARM64.

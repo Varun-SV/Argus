@@ -1,0 +1,74 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.run.invalid-spec",
+  "title": "argus run on an invalid spec exits 2 and names the file and problem",
+  "requirements": [
+    "C-07",
+    "PARITY-1",
+    "PARITY-2"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "setup": {
+    "files": [
+      {
+        "path": ".argus/config.yaml",
+        "content": "provider: ollama\nproviders:\n  ollama:\n    model: conformance-model\n    base_url: http://127.0.0.1:9\nbudgets:\n  time_minutes: 1\n"
+      },
+      {
+        "path": ".argus/broken.test.yaml",
+        "content": "name: broken\nsteps: 5\n"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "args": [
+        "run",
+        "broken.test.yaml"
+      ],
+      "expect": {
+        "exit": 2,
+        "output": {
+          "contains": [
+            "broken.test.yaml"
+          ],
+          "regex": [
+            "(?i)\\btarget\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    },
+    {
+      "args": [
+        "run",
+        "broken.test.yaml",
+        "--dry-run"
+      ],
+      "expect": {
+        "exit": 2,
+        "output": {
+          "contains": [
+            "broken.test.yaml"
+          ],
+          "regex": [
+            "(?i)\\btarget\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

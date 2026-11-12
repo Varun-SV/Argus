@@ -1,0 +1,10 @@
+# Destinations that alias under Windows case-insensitive semantics collide.
+target:
+  launch: tool.exe
+steps:
+  - "Run it"
+staging:
+  - source: a.txt
+    destination: Input/Data.txt
+  - source: b.txt
+    destination: input/data.txt

@@ -1,0 +1,32 @@
+{
+  "case": "spec/step-mapping-without-assert",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "step must be a string or an assert block, got: {'click': 'OK'}",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/step-mapping-without-assert.test.yaml",
+        "sha256": "b04e6da0c43659ba604a4f405292e6e1e3f79864933f0164dcc6e2e2fbeb8d2e"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

@@ -1,0 +1,10 @@
+# One structured assertion against a headless Chromium page; no natural-language steps, so no
+# model call. The page is an inline data: URL, so no network access is needed.
+# Mirrors the "Browser test, one assertion" row of spec section 11.
+name: Bench browser test (one assertion)
+target:
+  adapter: browser
+  launch: "data:text/html,<title>Argus bench page</title><p>Argus bench ready</p>"
+steps:
+  - assert:
+      page_title_contains: Argus bench page

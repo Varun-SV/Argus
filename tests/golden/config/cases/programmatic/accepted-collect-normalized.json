@@ -1,0 +1,11 @@
+{
+  "description": "collect entries are normalized for programmatic specs too.",
+  "construct": "TestSpec",
+  "args": {
+    "name": "collect",
+    "adapter": "cli",
+    "launch": "tool",
+    "steps": [{"class": "NLStep", "args": {"text": "Run"}}],
+    "collect": [" out\\report.txt ", "logs/run.log"]
+  }
+}

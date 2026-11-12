@@ -1,0 +1,7 @@
+target:
+  launch: tool.exe
+steps:
+  - "Run it"
+staging:
+  - source: /etc/hosts
+    destination: hosts

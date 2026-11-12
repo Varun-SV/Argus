@@ -1,0 +1,6 @@
+target:
+  launch: notepad.exe
+steps:
+  - assert:
+      text_visible: hello
+      window_title_contains: Notepad

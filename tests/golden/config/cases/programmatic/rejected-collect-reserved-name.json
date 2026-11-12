@@ -1,0 +1,5 @@
+{
+  "description": "Reserved Windows device names are rejected in collect paths.",
+  "construct": "TestSpec",
+  "args": {"name": "c", "adapter": "cli", "launch": "tool", "steps": [], "collect": ["logs/nul.txt"]}
+}

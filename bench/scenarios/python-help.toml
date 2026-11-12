@@ -1,0 +1,8 @@
+# Spec section 11 row "`argus --help`, warm" (Python baseline).
+schema = "argus-bench-scenario-v1"
+name = "python-help"
+description = "`argus --help` through the installed console script, warm."
+tags = ["python", "baseline", "spec-11"]
+command = ["{ARGUS}", "--help"]
+timeout = "60s"
+warmup = 1

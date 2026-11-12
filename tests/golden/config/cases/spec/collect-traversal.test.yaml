@@ -1,0 +1,6 @@
+target:
+  launch: tool.exe
+steps:
+  - "Run it"
+collect:
+  - ../secrets.txt

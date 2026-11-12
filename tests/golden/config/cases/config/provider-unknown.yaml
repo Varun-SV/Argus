@@ -1,0 +1,5 @@
+# An unknown provider name loads; it only fails when a client is created.
+provider: mystery-llm
+providers:
+  mystery-llm:
+    base_url: http://localhost:9999

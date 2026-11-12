@@ -1,0 +1,32 @@
+{
+  "case": "programmatic/rejected-collect-nonstring",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "collect[0] must be a non-empty path string",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/rejected-collect-nonstring.json",
+        "sha256": "0958e221ad950df52caf786cb8265b0d81ee9103f01ae1b1ef592348c041b35a"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.TestSpec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

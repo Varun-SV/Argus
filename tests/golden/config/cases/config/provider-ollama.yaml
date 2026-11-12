@@ -1,0 +1,5 @@
+provider: ollama
+providers:
+  ollama:
+    model: llama3.2-vision:11b
+    base_url: http://localhost:11434

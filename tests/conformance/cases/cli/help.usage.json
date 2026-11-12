@@ -1,0 +1,34 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.help.usage",
+  "title": "argus --help exits 0 and prints usage",
+  "requirements": [
+    "C-07"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "active"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "--help"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "regex": [
+            "(?i)\\busage\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# Spec section 11 row "Knowledge, graph only": <= 10 MB extra over the same run without
+# knowledge (compare with argus-next-cli-test-run). The fixture with knowledge enabled is
+# added together with the feature.
+schema = "argus-bench-scenario-v1"
+name = "argus-next-knowledge-graph"
+description = "CLI test run with the graph-only knowledge store enabled (Rust); extra memory over argus-next-cli-test-run."
+tags = ["rust", "spec-11", "g-perf", "knowledge"]
+command = ["{ARGUS_NEXT}", "run", ".argus/two-assertions-{OS_FAMILY}.test.yaml"]
+cwd = "{WORKDIR}"
+timeout = "60s"
+pending = "needs argus-next feature: knowledge store, graph only (P4), and a knowledge-enabled fixture"

@@ -1,0 +1,6 @@
+# A string where a list is expected is iterated character by character.
+target:
+  launch: notepad.exe
+setup: ab
+steps:
+  - "Type hello"

@@ -8,7 +8,14 @@ Reference: [PR #29](https://github.com/Varun-SV/Argus/pull/29), its `docs/enviro
 
 ## Amendment A — implementation in the Rust re-architecture (2026-10-07)
 
-The operator decided to rebuild Argus in Rust with a Tauri 2 desktop app ([ADR-001](rearchitecture/tech-stack-decision.md)) and to fix ARG-01…ARG-13 **in the new implementation** rather than twice. The requirements and acceptance gates below are unchanged, apart from the three reinterpretations listed at the end of this amendment. They become gates of the [re-architecture plan](rearchitecture/specification.md#12-migration-plan), which maps each issue to a phase. The delivery order in §11 is superseded by that plan. The current Python release receives only critical fixes until the switch gate. The first of these is the `argus serve` security fix ([re-architecture specification §8.1](rearchitecture/specification.md#81-critical-fix-in-the-python-line-now)).
+The operator decided to rebuild Argus in Rust with a Tauri 2 desktop app ([ADR-001](rearchitecture/tech-stack-decision.md)) and to fix ARG-01…ARG-13 **in the new implementation** rather than twice. The requirements and acceptance gates below are unchanged, apart from the three reinterpretations listed at the end of this amendment. They become gates of the [re-architecture plan](rearchitecture/specification.md#12-migration-plan), which maps each issue to a phase. The delivery order in §11 is superseded by that plan. The current Python release receives only **critical** fixes until the switch gate. A fix is critical when the defect is a security vulnerability, or can produce a false pass or wrong verdict, where evidence or the UI says an effect happened when it did not ([re-architecture specification §18, R-7](rearchitecture/specification.md#18-amendment-b--reconciliation-decisions)). Two fixes are backported to the Python line now, so these are fixed in both lines:
+
+- SEC-1: unauthenticated `argus serve` ([re-architecture specification §8.1](rearchitecture/specification.md#81-critical-fix-in-the-python-line-now)). Fixed with a per-launch access token, an `Origin` check, a loopback guard and the `--allow-remote` flag.
+- ARG-06: browser typing reports false success. Fixed with an observation-scoped element map and a read-back of the typed value.
+
+Every other issue in the register is fixed only in the new implementation unless the operator reclassifies it.
+
+Gate A07 is checked in two parts, as the re-architecture plan's phase table defines. The local half (command prompt, Python REPL, EOF, prompt wait, timeout, cancellation, flood and owned-child cleanup) is gated at P3. The in-Capsule half is gated at P6, because it needs the Capsule provider and the native guest agent. ARG-04 is therefore closed at P6. The A07 requirements themselves are unchanged.
 
 The Rust design has no Playwright and no Node, so three requirements are **reinterpreted**. They keep their intent and change only the resources they name:
 

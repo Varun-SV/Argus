@@ -1,0 +1,32 @@
+{
+  "case": "spec/target-not-mapping",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "test needs target: {adapter: ..., launch: ...}",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/target-not-mapping.test.yaml",
+        "sha256": "86a157de2ea3a920c4a474ac7bf080b579e809d4648bd51eaf3282e795422da3"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

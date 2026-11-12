@@ -1,0 +1,45 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.help.serve",
+  "title": "argus serve --help exits 0 and documents its options",
+  "requirements": [
+    "C-07",
+    "PARITY-1",
+    "R-3"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "serve",
+        "--help"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "contains": [
+            "--host",
+            "--port",
+            "--debug",
+            "--allow-remote"
+          ],
+          "regex": [
+            "(?i)\\busage\\b",
+            "127\\.0\\.0\\.1"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

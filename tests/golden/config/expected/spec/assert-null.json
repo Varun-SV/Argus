@@ -1,0 +1,32 @@
+{
+  "case": "spec/assert-null",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "assert block must contain exactly one assertion, got: None",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/assert-null.test.yaml",
+        "sha256": "324064d34f4ed7f282c74404327c19115bad9d11bb3bb228c3623ab2a392ef24"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

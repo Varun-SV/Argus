@@ -1,0 +1,126 @@
+{
+  "api": "argus.knowledge.json_store.JsonKnowledgeStore",
+  "case": "knowledge/store",
+  "note": "Produced with knowledge.type=json (graph only). The networkx node_link dialect written by the local/docker/external backends is not produced here.",
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "backend_info": {
+      "label": "JSON graph · keyword retrieval · no vector backend",
+      "type": "json"
+    },
+    "confidence_for_state": {
+      "after_graph_loaded": 2,
+      "fresh_store": 0
+    },
+    "files": {
+      "https-example-test-app.bugs.ndjson": {
+        "bytes": 230,
+        "sha256": "e9b9310a43c87c1aec72f376085e0c1d2a8fbd44fb5d7867b880e15ec4cd19d0"
+      },
+      "https-example-test-app.graph.json": {
+        "bytes": 797,
+        "sha256": "34d36784e5cf2000740674639e5f8b0a07e0102eeedfa7c76f72d0c2250bb89e"
+      },
+      "https-example-test-app.states.ndjson": {
+        "bytes": 488,
+        "sha256": "bedd903117569cb040c958cad143df9bcceb52c86dfd962c3e427e633fb49760"
+      },
+      "notepad-exe.bugs.ndjson": {
+        "bytes": 279,
+        "sha256": "62c06f11c79e22446fe45535a5ddf17de0e44991279e77f67e558c1cb34b6124"
+      },
+      "notepad-exe.graph.json": {
+        "bytes": 603,
+        "sha256": "0f5c8d39be37bd0ed3928219e68f8ac379eab1363ff0525b7ae9886c4f038fec"
+      },
+      "notepad-exe.states.ndjson": {
+        "bytes": 641,
+        "sha256": "205f5bf6082cde5910d898f4ee8264ab96d4d8fa0efa3674e338d7caa695f489"
+      }
+    },
+    "get_stats_all": {
+      "https-example-test-app.graph": {
+        "bug_nodes": 1,
+        "bugs": 1,
+        "sessions": 1,
+        "states": 2,
+        "transitions": 4
+      },
+      "notepad-exe.graph": {
+        "bug_nodes": 1,
+        "bugs": 1,
+        "sessions": 1,
+        "states": 2,
+        "transitions": 2
+      }
+    },
+    "get_stats_target": {
+      "https://example.test/app": {
+        "https://example.test/app": {
+          "bug_nodes": 1,
+          "bugs": 1,
+          "sessions": 1,
+          "states": 2,
+          "transitions": 4
+        }
+      },
+      "notepad.exe": {
+        "notepad.exe": {
+          "bug_nodes": 1,
+          "bugs": 1,
+          "sessions": 1,
+          "states": 2,
+          "transitions": 2
+        }
+      }
+    },
+    "ids": {
+      "bug": "802540c6",
+      "editor": "1b2e066aa1ea19bf",
+      "editor_again": "1b2e066aa1ea19bf",
+      "save_as": "35d9d9d0bb821bc6",
+      "web_error": "a14f69389284f968",
+      "web_home": "094194aa6d4a72b1"
+    },
+    "retrieve": {
+      "format": "Known bugs near this area:\n  [high] Save dialog ignores Escape\nSimilar past states:\n  'Save As' (BUG FOUND HERE)\n    tried: key escape\n  'Untitled - Notepad'\n    tried: menu File>Save As",
+      "past_bugs": [
+        {
+          "detail": "dialog stays open",
+          "severity": "high",
+          "state_id": "35d9d9d0bb821bc6",
+          "title": "Save dialog ignores Escape"
+        }
+      ],
+      "similar_states": [
+        {
+          "actions_taken": [
+            "key escape"
+          ],
+          "bug_found": true,
+          "similarity": 0.8970852271450606,
+          "state_id": "35d9d9d0bb821bc6",
+          "window_title": "Save As"
+        },
+        {
+          "actions_taken": [
+            "menu File>Save As"
+          ],
+          "bug_found": false,
+          "similarity": 0.1889822365046136,
+          "state_id": "1b2e066aa1ea19bf",
+          "window_title": "Untitled - Notepad"
+        }
+      ],
+      "unexplored_hints": []
+    },
+    "target_key": {
+      "  ": "target",
+      "Calc": "calc",
+      "https://example.test/app": "https-example-test-app",
+      "notepad.exe": "notepad-exe",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "Ünïcode App": "n-code-app"
+    }
+  }
+}

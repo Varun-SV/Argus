@@ -1,0 +1,46 @@
+{
+  "files": {
+    "expected/flow.json": {
+      "bytes": 12299,
+      "sha256": "55bb97d1cc28591e99c19be18f5e9c3f057f68a71504cdf00e88750522ef9965"
+    },
+    "expected/identifiers.json": {
+      "bytes": 1000,
+      "sha256": "bceb44e9e8032edb18859585b860246989c6de52470762c4ef81dffa91d933d3"
+    },
+    "expected/messages.json": {
+      "bytes": 14583,
+      "sha256": "ee3644ec45a20eddf7be189a51dc76f683ac2a98318d6fc8ba310b950de28a3a"
+    },
+    "keys/node.key.json": {
+      "bytes": 197,
+      "sha256": "3e89d4d98cd43d3bcbd92574da4d6a28a400b4a0826312d722cef13c10444df9"
+    },
+    "keys/public.json": {
+      "bytes": 458,
+      "sha256": "5752c8814e9b0e82939d592cfa5ac6982df4ce46cd5f2c361ade8309e721d131"
+    }
+  },
+  "generated_with": {
+    "_note": "informational; ignored by --check",
+    "argus_package_version": "0.1.1.dev720+g6b036a958.d20261107",
+    "git_commit": "6b036a958622472ac32690c78a4d1bf62cd477c0",
+    "python": "3.13.18",
+    "sources_last_commit": "9c93bbba09f31b8b5c6ab43f473a02388517a3d5"
+  },
+  "generator": "scripts/golden/export_fleet.py",
+  "implementation": {
+    "name": "argus (Python)",
+    "sources": {
+      "argus/fleet/ates_transport.py": "f3f2a4d9b4237c470407f24be263cb798088c6a538d0c314bba0c86b39745c1e",
+      "argus/fleet/enrollment.py": "5bd1db01edbde447cd2f1ce659d315f8d9f7aa50c8bcd50fd58dc3d303c9a14f",
+      "argus/fleet/heartbeat.py": "7a423f95be09d6d9ad512f9482187dec16bc015429044fbe6052edb1b9aa545e",
+      "argus/fleet/heartbeat_impl.py": "ebd06dbf135aa49f1c9ce102439e9cebae485257757912bc6de638403b2709bd",
+      "argus/fleet/identity.py": "d1211cb8d053a122a86aaaf417e48920127928127f19632d3ca1d5ec885a0641",
+      "argus/fleet/placement.py": "b08a617bca3e65ba0e63e8494aadadff4a05aac26f21aa630813f658ef4e628a"
+    },
+    "sources_sha256": "051b01ee3978993fbce370d1d25b8068591a199ad911b8793f7a95bcc0795767"
+  },
+  "pinned_version": "0.0.0+golden",
+  "schema": "argus-golden-fleet-v1"
+}

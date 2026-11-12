@@ -1,0 +1,288 @@
+{
+  "api": "argus.fleet registries over one enrollment-to-transport flow",
+  "case": "flow",
+  "schema": "argus-golden-fleet-v1",
+  "value": {
+    "ates_transport": {
+      "batch_canonical_lines": [
+        "{\"ates_version\":\"0.1\",\"event_id\":\"EVT-35414711a801485aa8dc9fd68ca9c2aa\",\"event_type\":\"RUN_STARTED\",\"occurred_at\":\"2026-01-01T00:00:00.001000+00:00\",\"payload\":{\"name\":\"fleet-golden\"},\"run_id\":\"RUN-33333333333333333333333333333333\",\"sequence\":1}\n",
+        "{\"ates_version\":\"0.1\",\"event_id\":\"EVT-5b72d61b1e924cf6a169ea55863dc211\",\"event_type\":\"ENVIRONMENT_PREPARED\",\"occurred_at\":\"2026-01-01T00:00:00.002000+00:00\",\"payload\":{\"isolated\":true},\"run_id\":\"RUN-33333333333333333333333333333333\",\"sequence\":2}\n",
+        "{\"ates_version\":\"0.1\",\"event_id\":\"EVT-4361a8d4a0414b2a8c8ea609c3b7bd20\",\"event_type\":\"TARGET_LAUNCHED\",\"occurred_at\":\"2026-01-01T00:00:00.003000+00:00\",\"payload\":{\"target\":{\"disposition\":\"suppressed\",\"reason\":\"golden\"}},\"run_id\":\"RUN-33333333333333333333333333333333\",\"sequence\":3}\n"
+      ],
+      "bind_run": {
+        "value": null
+      },
+      "binding": {
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "placement_generation": 1,
+        "placement_request_digest": "sha256:e1e01db9c83e8cf0dcd87f9d514779650bd5970fa0557a0260f4082bed68dd8c",
+        "run_id": "RUN-33333333333333333333333333333333",
+        "session_request_id": "SESSION-golden"
+      },
+      "foreign_node_binding": {
+        "error": {
+          "message": "ATES run rebind must preserve immutable run identity and advance exactly one placement generation",
+          "type": "FleetAtesConflict"
+        }
+      },
+      "mirror_matches_source": true,
+      "receipts": {
+        "value": [
+          {
+            "clock_offset_ms": null,
+            "clock_sample_age_ms": null,
+            "clock_uncertainty_ms": null,
+            "event_digest": "sha256:a33eb536d683fdb026843002d95cbac56dd01708979fe89977ecad3641c19703",
+            "event_id": "EVT-35414711a801485aa8dc9fd68ca9c2aa",
+            "first_received_at": 2000.0,
+            "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+            "placement_generation": 1,
+            "run_id": "RUN-33333333333333333333333333333333",
+            "sequence": 1,
+            "state": "committed"
+          },
+          {
+            "clock_offset_ms": null,
+            "clock_sample_age_ms": null,
+            "clock_uncertainty_ms": null,
+            "event_digest": "sha256:deba1bd0e326aeb8aa5bbb31f3b777eb1f3c73f522c78462eeee0543e1e3f39f",
+            "event_id": "EVT-5b72d61b1e924cf6a169ea55863dc211",
+            "first_received_at": 2000.0,
+            "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+            "placement_generation": 1,
+            "run_id": "RUN-33333333333333333333333333333333",
+            "sequence": 2,
+            "state": "committed"
+          },
+          {
+            "clock_offset_ms": null,
+            "clock_sample_age_ms": null,
+            "clock_uncertainty_ms": null,
+            "event_digest": "sha256:df51fdbf808633cfdb322cceb08a6c18adaadb2cfb8863b751609dfd2a61284c",
+            "event_id": "EVT-4361a8d4a0414b2a8c8ea609c3b7bd20",
+            "first_received_at": 2000.0,
+            "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+            "placement_generation": 1,
+            "run_id": "RUN-33333333333333333333333333333333",
+            "sequence": 3,
+            "state": "committed"
+          }
+        ]
+      },
+      "replayed_batch": {
+        "value": [
+          {
+            "clock_offset_ms": null,
+            "clock_sample_age_ms": null,
+            "clock_uncertainty_ms": null,
+            "event_digest": "sha256:a33eb536d683fdb026843002d95cbac56dd01708979fe89977ecad3641c19703",
+            "event_id": "EVT-35414711a801485aa8dc9fd68ca9c2aa",
+            "first_received_at": 2000.0,
+            "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+            "placement_generation": 1,
+            "run_id": "RUN-33333333333333333333333333333333",
+            "sequence": 1,
+            "state": "committed"
+          },
+          {
+            "clock_offset_ms": null,
+            "clock_sample_age_ms": null,
+            "clock_uncertainty_ms": null,
+            "event_digest": "sha256:deba1bd0e326aeb8aa5bbb31f3b777eb1f3c73f522c78462eeee0543e1e3f39f",
+            "event_id": "EVT-5b72d61b1e924cf6a169ea55863dc211",
+            "first_received_at": 2000.0,
+            "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+            "placement_generation": 1,
+            "run_id": "RUN-33333333333333333333333333333333",
+            "sequence": 2,
+            "state": "committed"
+          },
+          {
+            "clock_offset_ms": null,
+            "clock_sample_age_ms": null,
+            "clock_uncertainty_ms": null,
+            "event_digest": "sha256:df51fdbf808633cfdb322cceb08a6c18adaadb2cfb8863b751609dfd2a61284c",
+            "event_id": "EVT-4361a8d4a0414b2a8c8ea609c3b7bd20",
+            "first_received_at": 2000.0,
+            "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+            "placement_generation": 1,
+            "run_id": "RUN-33333333333333333333333333333333",
+            "sequence": 3,
+            "state": "committed"
+          }
+        ]
+      },
+      "version": "argus-fleet-ates-transport-v1"
+    },
+    "clock_probe": {
+      "assessment": {
+        "value": {
+          "boot_id": "BOOTID-11111111111111111111111111111111",
+          "measured_at": 1000.05,
+          "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+          "node_minus_control_offset_ms": 100.00000000002274,
+          "probe_id": "CLOCKPROBE-86c4e6db698545dd94e0bc328add5859",
+          "round_trip_ms": 39.99999999996362,
+          "sample_age_ms": 0.0,
+          "uncertainty_ms": 19.99999999998181
+        }
+      },
+      "challenge": {
+        "control_center_id": "cc://golden",
+        "control_sent_at": 1000.0,
+        "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "probe_id": "CLOCKPROBE-86c4e6db698545dd94e0bc328add5859"
+      }
+    },
+    "enrollment": {
+      "active": {
+        "acknowledged_at": 102.0,
+        "control_center_id": "cc://golden",
+        "created_at": 101.0,
+        "enrollment_request_id": "ENROLL-84ef01531b2142efb0174f1a046e966f",
+        "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "public_key_fingerprint": "sha256:3955dee20beeb65947e4747793abc6fa6287a517628f3c8c5e37ca3a38329321",
+        "revoked_at": null,
+        "state": "active"
+      },
+      "bootstrap_credential": {
+        "control_center_id": "cc://golden",
+        "credential_id": "BOOT-17844963066c4830bc52205793a8b19a",
+        "expires_at": 160.0,
+        "secret": "<TEST ONLY; derived>"
+      },
+      "pending": {
+        "acknowledged_at": null,
+        "control_center_id": "cc://golden",
+        "created_at": 101.0,
+        "enrollment_request_id": "ENROLL-84ef01531b2142efb0174f1a046e966f",
+        "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "public_key_fingerprint": "sha256:3955dee20beeb65947e4747793abc6fa6287a517628f3c8c5e37ca3a38329321",
+        "revoked_at": null,
+        "state": "pending_ack"
+      },
+      "replayed_acknowledgement": {
+        "value": {
+          "acknowledged_at": 102.0,
+          "control_center_id": "cc://golden",
+          "created_at": 101.0,
+          "enrollment_request_id": "ENROLL-84ef01531b2142efb0174f1a046e966f",
+          "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+          "public_key_fingerprint": "sha256:3955dee20beeb65947e4747793abc6fa6287a517628f3c8c5e37ca3a38329321",
+          "revoked_at": null,
+          "state": "active"
+        }
+      }
+    },
+    "heartbeat": {
+      "payload": {
+        "active_session_ids": [
+          "SESSION-golden"
+        ],
+        "agent_version": "0.1.0",
+        "boot_id": "BOOTID-11111111111111111111111111111111",
+        "capacity": {
+          "active_sessions": 1,
+          "available_memory_mb": 20000,
+          "disk_free_mb": 100000,
+          "max_sessions": 4,
+          "memory_mb": 32768
+        },
+        "control_center_id": "cc://golden",
+        "degraded_conditions": [],
+        "heartbeat_id": "HEARTBEAT-22222222222222222222222222222222",
+        "heartbeat_version": "argus-fleet-heartbeat-v1",
+        "host_os": "windows",
+        "images": [
+          {
+            "alias": "win11-qa",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "guest_os": "windows",
+            "image_id": "IMG-WIN11-QA-2026-09"
+          }
+        ],
+        "monotonic_seconds": 51.0,
+        "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "node_time": 1001.0,
+        "previous_boot_id": null,
+        "provider": "hyperv",
+        "public_key_b64": "lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU",
+        "sequence": 1,
+        "sync_status": "unknown"
+      },
+      "receipt": {
+        "value": {
+          "health_state": "healthy",
+          "heartbeat_id": "HEARTBEAT-22222222222222222222222222222222",
+          "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+          "received_at": 1001.5,
+          "request_digest": "sha256:cead40b265cd12d3faacdc3f60371de8e1c6e35cf4d87b9f8f7a6663624a938b"
+        }
+      },
+      "request_digest": "sha256:cead40b265cd12d3faacdc3f60371de8e1c6e35cf4d87b9f8f7a6663624a938b"
+    },
+    "placement": {
+      "admission": {
+        "value": {
+          "placement_generation": 1,
+          "request_digest": "sha256:e1e01db9c83e8cf0dcd87f9d514779650bd5970fa0557a0260f4082bed68dd8c",
+          "requested_slots": 1,
+          "retired": false,
+          "run_id": "RUN-33333333333333333333333333333333",
+          "session_request_id": "SESSION-golden",
+          "state": "reserved"
+        }
+      },
+      "authorization_payload": {
+        "authorization_version": "argus-fleet-placement-auth-v1",
+        "control_center_id": "cc://golden",
+        "dispatch_operation_id": "DISPATCH-5531ea6dcade4e23a16f419bfddd5619",
+        "owner_node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "placement_generation": 1,
+        "request_digest": "sha256:e1e01db9c83e8cf0dcd87f9d514779650bd5970fa0557a0260f4082bed68dd8c",
+        "run_id": "RUN-33333333333333333333333333333333",
+        "session_request_id": "SESSION-golden",
+        "signer_public_key_b64": "_gy-ELpjmzCUuiXtiRDH1BQmUgcK6wsNv2w_WCCuCKs"
+      },
+      "record": {
+        "cancellation_operation_id": null,
+        "cancellation_state": "none",
+        "dispatch_operation_id": "DISPATCH-5531ea6dcade4e23a16f419bfddd5619",
+        "owner_node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "placement_generation": 1,
+        "request_digest": "sha256:e1e01db9c83e8cf0dcd87f9d514779650bd5970fa0557a0260f4082bed68dd8c",
+        "run_id": "RUN-33333333333333333333333333333333",
+        "session_request_id": "SESSION-golden",
+        "state": "dispatching"
+      },
+      "session_request_digest": "sha256:e1e01db9c83e8cf0dcd87f9d514779650bd5970fa0557a0260f4082bed68dd8c",
+      "session_request_payload": {
+        "guest_os": "windows",
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "isolation_policy": {
+          "secure": true
+        },
+        "network_policy": {
+          "mode": "host_only"
+        },
+        "placement_version": "argus-fleet-placement-v1",
+        "provider": "hyperv",
+        "requested_slots": 1,
+        "run_id": "RUN-33333333333333333333333333333333",
+        "session_request_id": "SESSION-golden",
+        "spec_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "staged_inputs": [
+          {
+            "logical_name": "application-under-test",
+            "provenance_method": "sha256",
+            "provenance_value": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "sensitive": false,
+            "size_bytes": 1234,
+            "transfer_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      }
+    }
+  }
+}

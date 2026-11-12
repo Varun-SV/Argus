@@ -1,0 +1,12 @@
+# A CLI test that keeps a job active for about 30 seconds (ping waits one second between
+# its 31 echo requests to the loopback address), so the desktop app can be measured
+# "during a run" (spec section 11). Two assertions, no natural-language steps, no model call.
+name: Bench desktop run (30 s)
+target:
+  adapter: cli
+  launch: cmd.exe /d /c ping -n 31 127.0.0.1
+steps:
+  - assert:
+      exit_code_is: 0
+  - assert:
+      stdout_contains: "127.0.0.1"

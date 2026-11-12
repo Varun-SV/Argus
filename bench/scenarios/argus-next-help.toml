@@ -1,0 +1,14 @@
+# Spec section 11 row "`argus --help`, warm": target <= 30 ms. Placeholder until the Rust CLI
+# has its command set; the P0 skeleton's --help is not representative.
+schema = "argus-bench-scenario-v1"
+name = "argus-next-help"
+description = "`argus-next --help`, warm (Rust CLI)."
+tags = ["rust", "spec-11", "g-perf"]
+command = ["{ARGUS_NEXT}", "--help"]
+timeout = "30s"
+warmup = 1
+pending = "needs argus-next feature: the full command set (P4 CLI-level parity); the P0 skeleton is not representative"
+
+[target]
+wall_ms = 30
+source = "spec section 11 row 1"

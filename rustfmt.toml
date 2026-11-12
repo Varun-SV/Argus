@@ -1,0 +1,3 @@
+# rustfmt defaults, with the edition stated explicitly so that `rustfmt <file>` formats the
+# same way as `cargo fmt`.
+edition = "2024"

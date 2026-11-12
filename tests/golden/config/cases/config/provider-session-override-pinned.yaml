@@ -1,0 +1,7 @@
+# ARGUS_PROVIDER (process pin) takes precedence over the session provider argument.
+provider: ollama
+providers:
+  ollama:
+    model: gemma3:9b
+  openai:
+    model: gpt-4o

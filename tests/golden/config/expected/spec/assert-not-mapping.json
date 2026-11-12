@@ -1,0 +1,32 @@
+{
+  "case": "spec/assert-not-mapping",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "assert block must contain exactly one assertion, got: 'text_visible hello'",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/assert-not-mapping.test.yaml",
+        "sha256": "b3da35ee464d1ea0acc6b0ccaf0620cfe7117e00fc59e386f0813b2b5d688186"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

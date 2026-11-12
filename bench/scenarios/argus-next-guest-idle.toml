@@ -1,0 +1,16 @@
+# Spec section 11 row "Capsule guest runtime": native binary <= 15 MB (file size, see
+# docs/rearchitecture/benchmarks.md) and idle <= 10 MB (this scenario, inside the guest).
+schema = "argus-bench-scenario-v1"
+name = "argus-next-guest-idle"
+description = "Native Capsule guest agent idle for 60 s inside a guest (Rust)."
+tags = ["rust", "spec-11", "g-perf", "capsule"]
+command = ["{ARGUS_NEXT}", "guest", "serve"]
+duration = "60s"
+measure_after = "10s"
+warmup = 0
+pending = "needs argus-next feature: native guest agent argus-guest (P6); runs inside the guest"
+
+[target]
+# 10 MB = 10,000,000 bytes = 9.54 MiB (stricter decimal reading).
+peak_tree_mib = 9.54
+source = "spec section 11 row 8, idle (10 MB = 9.54 MiB)"

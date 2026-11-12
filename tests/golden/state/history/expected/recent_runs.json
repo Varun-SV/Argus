@@ -1,0 +1,142 @@
+{
+  "api": "argus.gui.app.ArgusAPI.recent_runs",
+  "case": "history/recent_runs",
+  "note": "Newest first by allocation order; malformed rows are skipped and do not count toward the limit; legacy names sort after every allocation-ordered name.",
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "limit_20_default": [
+      {
+        "duration": 0.6,
+        "id": "history:20251231-230000-01767225961000000002-7555c95961574c64be8958d5f587bd6d-rollback.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767222000.0,
+        "status": "pass",
+        "steps": "1/1",
+        "test": "rollback.test.yaml",
+        "tokens": 6
+      },
+      {
+        "duration": 0.6,
+        "id": "history:20260101-000600-01767225961000000000-55dd0f20a883407b851ed5fc7af5fdc5-suite_odd_name___co.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225960.0,
+        "status": "pass",
+        "steps": "1/1",
+        "test": "suite/odd name & co.test.yaml",
+        "tokens": 6
+      },
+      {
+        "duration": 1.4,
+        "id": "history:20260101-000500-01767225901000000000-8f51575a835f40e28c78d0ab9214d7b6-resave.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225900.0,
+        "status": "pass",
+        "steps": "2/2",
+        "test": "resave.test.yaml",
+        "tokens": 24
+      },
+      {
+        "duration": 1.4,
+        "id": "history:20260101-000400-01767225841000000002-92b2141cc9064895afaaeec33d08d530-search.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225840.0,
+        "status": "fail",
+        "steps": "0/1",
+        "test": "search.test.yaml",
+        "tokens": 60
+      },
+      {
+        "duration": 1.4,
+        "id": "history:20260101-000400-01767225841000000000-999e629231224f12a0052c46506ae06b-search.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225840.0,
+        "status": "pass",
+        "steps": "1/1",
+        "test": "search.test.yaml",
+        "tokens": 60
+      },
+      {
+        "duration": 1.4,
+        "id": "history:20260101-000300-01767225781000000000-d9adb971d888472db7da079833f24d70-login.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225780.0,
+        "status": "fail",
+        "steps": "1/2",
+        "test": "login.test.yaml",
+        "tokens": 120
+      },
+      {
+        "duration": 1.1,
+        "id": "history:20260101-000200-01767225720000000000-495cf76231204c9aab43f4162dea80ea-settings.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225720.0,
+        "status": "error",
+        "steps": "0/2",
+        "test": "settings.test.yaml",
+        "tokens": 0
+      },
+      {
+        "duration": 3.9,
+        "id": "history:20260101-000100-01767225661000000000-5eecdc84df794f0baad2dc398b6a202b-checkout.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225660.0,
+        "status": "fail",
+        "steps": "2/3",
+        "test": "checkout.test.yaml",
+        "tokens": 950
+      },
+      {
+        "duration": 5.3,
+        "id": "history:20260101-000000-01767225601000000000-a7a6498a7f8d4c2699bba5f46bad57fb-login.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225600.0,
+        "status": "pass",
+        "steps": "3/3",
+        "test": "login.test.yaml",
+        "tokens": 1500
+      },
+      {
+        "duration": 2.0,
+        "id": "history:20251231-000000-legacy.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767139200.0,
+        "status": "pass",
+        "steps": "1/1",
+        "test": "legacy.test.yaml",
+        "tokens": 7
+      }
+    ],
+    "limit_3": [
+      {
+        "duration": 0.6,
+        "id": "history:20251231-230000-01767225961000000002-7555c95961574c64be8958d5f587bd6d-rollback.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767222000.0,
+        "status": "pass",
+        "steps": "1/1",
+        "test": "rollback.test.yaml",
+        "tokens": 6
+      },
+      {
+        "duration": 0.6,
+        "id": "history:20260101-000600-01767225961000000000-55dd0f20a883407b851ed5fc7af5fdc5-suite_odd_name___co.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225960.0,
+        "status": "pass",
+        "steps": "1/1",
+        "test": "suite/odd name & co.test.yaml",
+        "tokens": 6
+      },
+      {
+        "duration": 1.4,
+        "id": "history:20260101-000500-01767225901000000000-8f51575a835f40e28c78d0ab9214d7b6-resave.test.yaml.json",
+        "provider": "ollama",
+        "started_at": 1767225900.0,
+        "status": "pass",
+        "steps": "2/2",
+        "test": "resave.test.yaml",
+        "tokens": 24
+      }
+    ]
+  }
+}

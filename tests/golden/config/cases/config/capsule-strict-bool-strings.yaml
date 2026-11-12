@@ -1,0 +1,8 @@
+# Strict booleans accept true/false and the strings 1/0, yes/no, on/off, true/false.
+provider: ollama
+execution:
+  capsule:
+    retain_on_failure: "yes"
+    allow_dhcp: "0"
+    rotate_session_token: "On"
+    allow_insecure_http: "false"

@@ -1,0 +1,12 @@
+name: cli prints a greeting
+target:
+  adapter: cli
+  launch: python -c "print('hello')"
+steps:
+  - "Wait for the command to finish"
+  - assert:
+      stdout_contains: hello
+  - assert:
+      stderr_contains: ""
+  - assert:
+      exit_code_is: 0

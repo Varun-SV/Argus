@@ -1,0 +1,4 @@
+provider: ollama
+execution:
+  capsule:
+    retain_on_failure: maybe

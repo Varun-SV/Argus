@@ -1,0 +1,29 @@
+# Spec section 11 row "CLI test run (two assertions)"; ADR-001 section 2 row
+# "argus run - CLI test (two assertions)". The fixture project is copied into a fresh
+# {WORKDIR} for every run, so run history never accumulates and the repository stays clean.
+# The test is assertion-only: no model call, no network access.
+schema = "argus-bench-scenario-v1"
+name = "python-cli-test-run"
+description = "`argus run` of a two-assertion CLI test (echo, exit code and stdout) in bench/fixtures/cli-project."
+tags = ["python", "baseline", "spec-11", "adr-001"]
+command = ["{ARGUS}", "run", ".argus/two-assertions-{OS_FAMILY}.test.yaml"]
+cwd = "{WORKDIR}"
+timeout = "120s"
+warmup = 1
+expected_exit = 0
+
+[workdir]
+copy_from = "bench/fixtures/cli-project"
+create_dirs = ["home", "home/state", "home/data", "home/config", "home/cache"]
+
+# Keep every per-user file Argus might touch inside {WORKDIR}.
+[env]
+HOME = "{WORKDIR}/home"
+USERPROFILE = "{WORKDIR}/home"
+APPDATA = "{WORKDIR}/home/data"
+LOCALAPPDATA = "{WORKDIR}/home/data"
+XDG_STATE_HOME = "{WORKDIR}/home/state"
+XDG_DATA_HOME = "{WORKDIR}/home/data"
+XDG_CONFIG_HOME = "{WORKDIR}/home/config"
+XDG_CACHE_HOME = "{WORKDIR}/home/cache"
+ARGUS_GUI_STATE_DIR = "{WORKDIR}/home/state/argus"

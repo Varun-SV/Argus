@@ -1,0 +1,13 @@
+{
+  "description": "An AssertStep whose kind is changed after construction is rejected.",
+  "construct": "TestSpec",
+  "args": {
+    "name": "mutated",
+    "adapter": "cli",
+    "launch": "tool",
+    "steps": [
+      {"class": "AssertStep", "args": {"assertion": "stdout_contains", "expected": "ok"},
+       "mutate": {"kind": "step"}}
+    ]
+  }
+}

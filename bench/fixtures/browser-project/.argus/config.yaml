@@ -1,0 +1,17 @@
+# Benchmark fixture project (bench/fixtures/browser-project). Used by the
+# python-browser-one-assertion scenario. The test is assertion-only and loads an inline
+# data: URL, so no model call and no network access is made; the provider entry below is
+# never contacted. Knowledge is not configured (graph store off).
+provider: ollama
+
+providers:
+  ollama:
+    model: bench-unused
+    base_url: http://127.0.0.1:9
+
+budgets:
+  time_minutes: 2
+  max_tokens: null
+
+execution:
+  environment: local

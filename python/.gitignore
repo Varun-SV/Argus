@@ -1,0 +1,2 @@
+# Staged native binary for the wheel data directory (build_backend/argus_next_build.py).
+argus_next.data/

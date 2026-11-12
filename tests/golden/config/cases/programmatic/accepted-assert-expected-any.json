@@ -1,0 +1,5 @@
+{
+  "description": "AssertStep does not validate the expected value.",
+  "construct": "AssertStep",
+  "args": {"assertion": "exit_code_is", "expected": ["not", "an", "int"]}
+}

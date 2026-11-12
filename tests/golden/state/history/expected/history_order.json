@@ -1,0 +1,156 @@
+{
+  "api": "argus.engine.results.run_history_paths",
+  "case": "history/history_order",
+  "note": "card_status is argus.gui.app._run_card_status (a stopped run shows 'stopped'); bounded_name is argus.engine.results._bounded_name (directory name suffix).",
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "bounded_name": {
+      "login.test.yaml": "login.test.yaml",
+      "suite/odd name & co.test.yaml": "suite_odd_name___co.test.yaml",
+      "suite/very-long-segment-very-long-segment-very-long-segment-very-long-segment-very-long-segment-very-long-segment-very-long-segment-very-long-segment-.test.yaml": "suite_very-long-segment-very-long-segment-very-long-segment-very-long-segment-very-long-segment-very-long-s-03614237ba48",
+      "Ünïcode name.test.yaml": "Ünïcode_name.test.yaml",
+      "üüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüü.test.yaml": "üüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüü-8c4507312106"
+    },
+    "counter_file": {
+      "name": ".storage-order",
+      "value": "1767225961000000002"
+    },
+    "ordered": [
+      {
+        "card_status": null,
+        "history_id": "20260102-000000-99999999999999999999-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-broken.test.yaml.json",
+        "valid_run_history": false,
+        "writer": {
+          "label": "synthesized",
+          "note": "hand-made row, not written by RunResult.save"
+        }
+      },
+      {
+        "card_status": null,
+        "history_id": "20260102-000000-99999999999999999998-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cancelled.test.yaml.json",
+        "valid_run_history": false,
+        "writer": {
+          "label": "synthesized",
+          "note": "hand-made row, not written by RunResult.save"
+        }
+      },
+      {
+        "card_status": null,
+        "history_id": "20260102-000000-99999999999999999997-cccccccccccccccccccccccccccccccc-list.test.yaml.json",
+        "valid_run_history": false,
+        "writer": {
+          "label": "synthesized",
+          "note": "hand-made row, not written by RunResult.save"
+        }
+      },
+      {
+        "card_status": "pass",
+        "history_id": "20251231-230000-01767225961000000002-7555c95961574c64be8958d5f587bd6d-rollback.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20251231-230000-01767225961000000002-7555c95961574c64be8958d5f587bd6d-rollback.test.yaml.json",
+          "label": "clock-rollback",
+          "note": "wall clock moved back an hour: the stamp is older, the order is newest",
+          "status": "pass"
+        }
+      },
+      {
+        "card_status": "pass",
+        "history_id": "20260101-000600-01767225961000000000-55dd0f20a883407b851ed5fc7af5fdc5-suite_odd_name___co.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20260101-000600-01767225961000000000-55dd0f20a883407b851ed5fc7af5fdc5-suite_odd_name___co.test.yaml.json",
+          "label": "odd-name",
+          "note": "unsafe characters in the test file name replaced by '_'",
+          "status": "pass"
+        }
+      },
+      {
+        "card_status": "pass",
+        "history_id": "20260101-000500-01767225901000000000-8f51575a835f40e28c78d0ab9214d7b6-resave.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20260101-000500-01767225901000000000-8f51575a835f40e28c78d0ab9214d7b6-resave.test.yaml.json",
+          "label": "running-then-pass",
+          "note": "saved while running, then re-saved as pass",
+          "status": "pass"
+        }
+      },
+      {
+        "card_status": "fail",
+        "history_id": "20260101-000400-01767225841000000002-92b2141cc9064895afaaeec33d08d530-search.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20260101-000400-01767225841000000002-92b2141cc9064895afaaeec33d08d530-search.test.yaml.json",
+          "label": "same-second-2",
+          "note": "two runs of the same test file started in the same second",
+          "status": "fail"
+        }
+      },
+      {
+        "card_status": "pass",
+        "history_id": "20260101-000400-01767225841000000000-999e629231224f12a0052c46506ae06b-search.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20260101-000400-01767225841000000000-999e629231224f12a0052c46506ae06b-search.test.yaml.json",
+          "label": "same-second-1",
+          "note": "two runs of the same test file started in the same second",
+          "status": "pass"
+        }
+      },
+      {
+        "card_status": "stopped",
+        "history_id": "20260101-000300-01767225781000000000-d9adb971d888472db7da079833f24d70-login.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20260101-000300-01767225781000000000-d9adb971d888472db7da079833f24d70-login.test.yaml.json",
+          "label": "cancelled",
+          "note": "run stopped by the user: stored as status 'fail'",
+          "status": "fail"
+        }
+      },
+      {
+        "card_status": "error",
+        "history_id": "20260101-000200-01767225720000000000-495cf76231204c9aab43f4162dea80ea-settings.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20260101-000200-01767225720000000000-495cf76231204c9aab43f4162dea80ea-settings.test.yaml.json",
+          "label": "error",
+          "note": "error run saved without claim_project_order (order reserved at save time)",
+          "status": "error"
+        }
+      },
+      {
+        "card_status": "fail",
+        "history_id": "20260101-000100-01767225661000000000-5eecdc84df794f0baad2dc398b6a202b-checkout.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20260101-000100-01767225661000000000-5eecdc84df794f0baad2dc398b6a202b-checkout.test.yaml.json",
+          "label": "fail",
+          "note": "failing assertion with a retained Capsule",
+          "status": "fail"
+        }
+      },
+      {
+        "card_status": "pass",
+        "history_id": "20260101-000000-01767225601000000000-a7a6498a7f8d4c2699bba5f46bad57fb-login.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "history_id": "20260101-000000-01767225601000000000-a7a6498a7f8d4c2699bba5f46bad57fb-login.test.yaml.json",
+          "label": "pass",
+          "note": "plain passing run",
+          "status": "pass"
+        }
+      },
+      {
+        "card_status": "pass",
+        "history_id": "20251231-000000-legacy.test.yaml.json",
+        "valid_run_history": true,
+        "writer": {
+          "label": "synthesized",
+          "note": "hand-made row, not written by RunResult.save"
+        }
+      }
+    ]
+  }
+}

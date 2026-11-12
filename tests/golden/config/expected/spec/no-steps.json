@@ -1,0 +1,32 @@
+{
+  "case": "spec/no-steps",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "message": "test has no steps",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/no-steps.test.yaml",
+        "sha256": "50cb999352d55bcb3e24698dbb7a208308557dff8aaf7bebd4bc1a4aec65e910"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

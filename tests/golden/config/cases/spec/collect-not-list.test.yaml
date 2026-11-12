@@ -1,0 +1,5 @@
+target:
+  launch: tool.exe
+steps:
+  - "Run it"
+collect: out/report.txt

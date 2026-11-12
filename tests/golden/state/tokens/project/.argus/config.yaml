@@ -1,0 +1,6 @@
+# Golden fixture (tests/golden/state): token usage project.
+provider: ollama
+budgets:
+  max_tokens: 50000
+knowledge:
+  enabled: false

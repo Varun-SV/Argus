@@ -1,0 +1,1 @@
+{"bug_id": "b1903784", "title": "assertion:text_visible", "severity": "medium", "state_id": "a14f69389284f968", "session_id": "sess-2", "expected": "Welcome", "actual": "assertion_failed", "detail": "", "timestamp": 1767232867.5}

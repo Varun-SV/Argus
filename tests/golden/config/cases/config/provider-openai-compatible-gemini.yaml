@@ -1,0 +1,7 @@
+# Gemini reached through the generic OpenAI-compatible provider and its base_url.
+provider: openai
+providers:
+  openai:
+    model: gemini-2.0-flash
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY

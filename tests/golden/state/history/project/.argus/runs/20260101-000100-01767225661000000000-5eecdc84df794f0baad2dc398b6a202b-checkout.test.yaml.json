@@ -1,0 +1,73 @@
+{
+  "test_name": "checkout",
+  "test_file": "checkout.test.yaml",
+  "adapter": "desktop",
+  "provider": "ollama",
+  "environment_type": "capsule",
+  "isolated": true,
+  "location": "capsule/hyperv",
+  "status": "fail",
+  "started_at": 1767225660.0,
+  "duration_s": 3.85,
+  "steps": [
+    {
+      "index": 0,
+      "kind": "launch",
+      "text": "launch the app",
+      "status": "pass",
+      "duration_s": 1.0,
+      "actions": [],
+      "expected": null,
+      "actual": null,
+      "note": null,
+      "flaky": false,
+      "screenshot_path": null
+    },
+    {
+      "index": 1,
+      "kind": "assert",
+      "text": "text 'Order placed' is visible",
+      "status": "fail",
+      "duration_s": 2.0,
+      "actions": [
+        "click 7"
+      ],
+      "expected": "Order placed",
+      "actual": "Payment declined",
+      "note": null,
+      "flaky": false,
+      "screenshot_path": "screenshots/step-2.png"
+    },
+    {
+      "index": 2,
+      "kind": "teardown",
+      "text": "close the app",
+      "status": "pass",
+      "duration_s": 0.5,
+      "actions": [],
+      "expected": null,
+      "actual": null,
+      "note": null,
+      "flaky": false,
+      "screenshot_path": null
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 800,
+    "completion_tokens": 150,
+    "total_tokens": 950,
+    "calls": 2
+  },
+  "error": null,
+  "staged_files": [],
+  "artifacts": [],
+  "transfer_error": null,
+  "failure_capsule": {
+    "failure_id": "golden-failure-1",
+    "vm_name": "argus-golden-vm",
+    "vm_state": "Off",
+    "root_dir": "capsules/golden-failure-1",
+    "reason": "test failure"
+  },
+  "failure_capsule_error": null
+}

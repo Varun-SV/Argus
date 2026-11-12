@@ -1,0 +1,32 @@
+# Spec section 11 row "CLI test run (two assertions)": target <= 0.2 s and <= 15 MB.
+# Same fixture project and test as python-cli-test-run.
+schema = "argus-bench-scenario-v1"
+name = "argus-next-cli-test-run"
+description = "`argus-next run` of the two-assertion CLI test in bench/fixtures/cli-project (Rust)."
+tags = ["rust", "spec-11", "g-perf"]
+command = ["{ARGUS_NEXT}", "run", ".argus/two-assertions-{OS_FAMILY}.test.yaml"]
+cwd = "{WORKDIR}"
+timeout = "60s"
+warmup = 1
+pending = "needs argus-next feature: `run` with the CLI adapter (P3 adapters, P4 runner)"
+
+[workdir]
+copy_from = "bench/fixtures/cli-project"
+create_dirs = ["home"]
+
+[env]
+HOME = "{WORKDIR}/home"
+USERPROFILE = "{WORKDIR}/home"
+APPDATA = "{WORKDIR}/home"
+LOCALAPPDATA = "{WORKDIR}/home"
+XDG_STATE_HOME = "{WORKDIR}/home"
+XDG_DATA_HOME = "{WORKDIR}/home"
+XDG_CONFIG_HOME = "{WORKDIR}/home"
+XDG_CACHE_HOME = "{WORKDIR}/home"
+
+[target]
+wall_ms = 200
+# The spec writes MB; the harness reports MiB. The stricter decimal reading is used:
+# 15 MB = 15,000,000 bytes = 14.3 MiB.
+peak_tree_mib = 14.3
+source = "spec section 11 row 2 (15 MB = 14.3 MiB)"

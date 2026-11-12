@@ -1,0 +1,12 @@
+# Spec section 11 row "Desktop app idle (window open, no job)": backend <= 30 MB; no timers
+# firing; webview as measured. Measured like windows-desktop-idle.toml (60 s window, first
+# 15 s excluded). The backend figure is the per-name entry of the app process.
+schema = "argus-bench-scenario-v1"
+name = "argus-next-desktop-idle"
+description = "Tauri desktop app idle for 60 s with its window open and no job (Rust)."
+tags = ["rust", "spec-11", "g-perf", "desktop"]
+command = ["{ARGUS_NEXT}", "gui"]
+duration = "60s"
+measure_after = "15s"
+warmup = 0
+pending = "needs argus-next feature: Tauri desktop app (P5)"

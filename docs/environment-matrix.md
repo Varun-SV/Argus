@@ -5,7 +5,7 @@ Status: **planned; documentation only**
 Implementation gate: **the matrix is built after G-SWITCH, on the Rust core ([re-architecture specification §12](rearchitecture/specification.md#12-migration-plan)). Do not begin implementation until G-SWITCH has passed, the stabilization gates A01–A12 and A16 are met, and this plan is reconciled with the Rust provisioning, desktop and Fleet APIs. Do not start matrix work on the Python line.** PR #27 and PR #28 are merged and remain the design baseline:
 
 - PR #27: ISO-backed OS environment provisioning
-- PR #28: Claude-style desktop GUI and website redesign
+- PR #28: desktop GUI and website redesign
 
 This document records the intended design. It is not an implementation contract yet. Details may be refined against the Rust APIs at the implementation trigger, but the architectural boundaries below should be preserved.
 

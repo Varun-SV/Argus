@@ -1,0 +1,5 @@
+{
+  "description": "collect must be a list.",
+  "construct": "TestSpec",
+  "args": {"name": "c", "adapter": "cli", "launch": "tool", "steps": [], "collect": "out.txt"}
+}

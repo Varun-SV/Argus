@@ -1,0 +1,6 @@
+# An Ollama embedding model name in the sentence-transformers field (the ARG-09 case).
+provider: ollama
+knowledge:
+  type: local
+  vector_backend: chroma
+  embedding_model: nomic-embed-text

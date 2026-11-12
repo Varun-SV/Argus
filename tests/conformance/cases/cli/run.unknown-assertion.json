@@ -1,0 +1,61 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.run.unknown-assertion",
+  "title": "argus run rejects an unknown assertion kind and lists the supported ones",
+  "requirements": [
+    "C-07",
+    "PARITY-2"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "setup": {
+    "files": [
+      {
+        "path": ".argus/config.yaml",
+        "content": "provider: ollama\nproviders:\n  ollama:\n    model: conformance-model\n    base_url: http://127.0.0.1:9\nbudgets:\n  time_minutes: 1\n"
+      },
+      {
+        "path": ".argus/unknown.test.yaml",
+        "content": "name: unknown\ntarget:\n  adapter: cli\n  launch: echo x\nsteps:\n  - assert:\n      no_such_assertion: 1\n"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "args": [
+        "run",
+        "unknown.test.yaml",
+        "--dry-run"
+      ],
+      "expect": {
+        "exit": 2,
+        "output": {
+          "contains": [
+            "unknown.test.yaml",
+            "no_such_assertion",
+            "text_visible",
+            "window_title_contains",
+            "element_exists",
+            "process_running",
+            "dialog_open",
+            "stdout_contains",
+            "stderr_contains",
+            "exit_code_is",
+            "url_contains",
+            "page_title_contains"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

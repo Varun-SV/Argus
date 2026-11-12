@@ -1,0 +1,15 @@
+# Unknown top-level keys, unknown target keys and extra keys next to an assert
+# block are ignored without a warning.
+name: unknown keys
+description: not a recognised key
+tags: [smoke]
+timeout: 30
+target:
+  adapter: cli
+  launch: echo hi
+  working_dir: somewhere
+steps:
+  - "Run it"
+  - assert:
+      stdout_contains: hi
+    note: ignored sibling key

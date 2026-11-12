@@ -1,0 +1,7 @@
+# A mapping where a list is expected is iterated over its keys, so the
+# "assert" key becomes a natural-language step with the text "assert".
+target:
+  launch: notepad.exe
+steps:
+  assert:
+    text_visible: hello

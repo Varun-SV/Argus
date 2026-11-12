@@ -1,0 +1,6 @@
+target:
+  launch: tool.exe
+steps:
+  - "Run it"
+staging:
+  - a.txt

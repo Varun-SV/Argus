@@ -1,0 +1,10 @@
+name: browser opens the example page
+target:
+  adapter: browser
+  launch: https://example.com
+steps:
+  - "Open the page and wait until it has loaded"
+  - assert:
+      url_contains: example.com
+  - assert:
+      page_title_contains: Example

@@ -1,0 +1,8 @@
+# ARGUS_PROVIDER / ARGUS_MODEL / ARGUS_BASE_URL / ARGUS_API_KEY (see sidecar) win over the file.
+provider: ollama
+providers:
+  ollama:
+    model: gemma3:9b
+  openai:
+    model: gpt-4o
+    api_key: TEST-ONLY-file-key

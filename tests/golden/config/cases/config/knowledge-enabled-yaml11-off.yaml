@@ -1,0 +1,4 @@
+# YAML 1.1 (PyYAML) reads unquoted off/no as boolean false.
+provider: ollama
+knowledge:
+  enabled: off

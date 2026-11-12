@@ -1,0 +1,18 @@
+# Unknown keys inside known sections are ignored, with no warning.
+provider: ollama
+providers:
+  ollama:
+    model: gemma3:9b
+    temperature: 0.2
+budgets:
+  time_minutes: 10
+  max_cost_usd: 5
+knowledge:
+  enabled: true
+  index_on_start: true
+execution:
+  environment: local
+  sandbox: strict
+  capsule:
+    provider: hyperv
+    gpu_passthrough: true

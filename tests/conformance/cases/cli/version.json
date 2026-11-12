@@ -1,0 +1,35 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.version",
+  "title": "argus --version exits 0 and prints the program name and a version",
+  "requirements": [
+    "C-07"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "active"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "--version"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "regex": [
+            "(?i)\\bargus",
+            "\\d+\\.\\d+\\.\\d+"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

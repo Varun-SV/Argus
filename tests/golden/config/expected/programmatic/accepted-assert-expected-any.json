@@ -1,0 +1,37 @@
+{
+  "case": "programmatic/accepted-assert-expected-any",
+  "category": "programmatic",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/programmatic/accepted-assert-expected-any.json",
+        "sha256": "68360498954c78043a47eb6399d4691609774189d83796e8781971a02923abb3"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.AssertStep",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "assertion": "exit_code_is",
+    "class": "AssertStep",
+    "describe": "exit_code_is: ['not', 'an', 'int']",
+    "expected": [
+      "not",
+      "an",
+      "int"
+    ],
+    "kind": "assert"
+  }
+}

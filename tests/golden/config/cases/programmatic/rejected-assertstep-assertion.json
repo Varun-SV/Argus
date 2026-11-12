@@ -1,0 +1,5 @@
+{
+  "description": "AssertStep rejects assertions outside the ten supported kinds.",
+  "construct": "AssertStep",
+  "args": {"assertion": "screenshot_matches", "expected": "baseline.png"}
+}

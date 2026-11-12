@@ -1,0 +1,6 @@
+# A falsy launch value (0) counts as missing.
+target:
+  adapter: cli
+  launch: 0
+steps:
+  - "Run it"

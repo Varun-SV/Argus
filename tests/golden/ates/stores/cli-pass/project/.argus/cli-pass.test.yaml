@@ -1,0 +1,9 @@
+name: CLI passes
+target:
+  adapter: cli
+  launch: 'python3 -c "print(''OK'')"'
+steps:
+  - assert:
+      exit_code_is: 0
+  - assert:
+      stdout_contains: "OK"

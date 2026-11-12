@@ -1,0 +1,44 @@
+{
+  "case": "spec/duplicate-keys",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": null,
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/duplicate-keys.test.yaml",
+        "sha256": "37b004f67511ccdca14a8e04295a4dfac4b560b8f966075f73def9faf15b66bf"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "loaded",
+  "schema": "argus-golden-config-v1",
+  "value": {
+    "adapter": "desktop-gui",
+    "collect": [],
+    "continue_on_failure": false,
+    "file_name": "duplicate-keys.test.yaml",
+    "launch": "notepad.exe",
+    "name": "second",
+    "path": "<PROJECT>/.argus/duplicate-keys.test.yaml",
+    "retries": 0,
+    "staging": [],
+    "steps": [
+      {
+        "class": "NLStep",
+        "kind": "step",
+        "text": "Type hello"
+      }
+    ]
+  }
+}

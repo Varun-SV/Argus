@@ -1,0 +1,1 @@
+{"provider": "openai", "env": {"ARGUS_PROVIDER": "ollama"}}

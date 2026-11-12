@@ -1,0 +1,87 @@
+{
+  "api": "argus run <spec>; argus.ates.inspect_finalization_trust / verify_finalized_run / verify_report_bundle",
+  "case": "cli-fail",
+  "note": "the command exits 3 and writes to stderr; one assertion fails",
+  "schema": "argus-golden-ates-v1",
+  "value": {
+    "argus_run_exit_code": 1,
+    "effective_status": "failed",
+    "event_types": [
+      "RUN_STARTED",
+      "ENVIRONMENT_PREPARED",
+      "TARGET_LAUNCHED",
+      "STEP_ATTEMPT_STARTED",
+      "OBSERVATION_CAPTURED",
+      "ASSERTION_EVALUATED",
+      "STEP_ATTEMPT_COMPLETED",
+      "STEP_ATTEMPT_STARTED",
+      "OBSERVATION_CAPTURED",
+      "ARTIFACT_SUPPRESSED",
+      "ASSERTION_EVALUATED",
+      "STEP_ATTEMPT_COMPLETED",
+      "TARGET_CLOSED",
+      "ENVIRONMENT_RELEASED",
+      "RUN_MARKED_INCOMPLETE",
+      "RUN_COMPLETED"
+    ],
+    "files": [
+      ".argus/runs/.ates-runtime-identity.key",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/approvals.jsonl",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/audit.jsonl",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/evidence.jsonl",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/manifests/manifest-0001.json",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/manifests/package-manifest-0001.json",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/junit.xml",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report-manifest-0001.json",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report.html",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report.json",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report.md",
+      ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/run.json"
+    ],
+    "run_dir": ".argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9",
+    "trust_state": "bound_verified",
+    "verifiers": {
+      "inspect_finalization_trust": {
+        "value": {
+          "error": null,
+          "run_dir": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9",
+          "trust_state": "bound_verified"
+        }
+      },
+      "verify_finalized_run": {
+        "value": {
+          "binding_path": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/run.json",
+          "evidence_manifest_bytes": {
+            "sha256": "sha256:71f0422ceb306507e88d025e2529c745c236286f9aab864bca33d9a5c7f5ea3d",
+            "size": 977
+          },
+          "evidence_manifest_path": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/manifests/manifest-0001.json",
+          "outcome": {
+            "authorization": null,
+            "correction_ids": [],
+            "effective_status": "failed",
+            "evidence_revision": 1,
+            "finalization_id": "FINAL-be3df88f06474ee592669ab21347ef85",
+            "finalized_at": "2026-01-01T00:00:00.079000+00:00",
+            "revision": 1,
+            "run_id": "RUN-34765ecacaf14128acb51334a3c81eb9",
+            "status_policy_version": "ates-status-v1",
+            "supersedes_finalization_id": null,
+            "verification": null
+          },
+          "package_manifest_path": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/manifests/package-manifest-0001.json",
+          "run_dir": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9",
+          "trust_state": "bound_verified"
+        }
+      },
+      "verify_report_bundle": {
+        "value": {
+          "error": null,
+          "manifest_path": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports/report-manifest-0001.json",
+          "report_dir": "<PROJECT>/.argus/runs/RUN-34765ecacaf14128acb51334a3c81eb9/reports",
+          "trust_state": "regenerated_verified"
+        }
+      }
+    }
+  }
+}

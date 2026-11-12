@@ -1,0 +1,4 @@
+target:
+  adapter: cli
+steps:
+  - "Run it"

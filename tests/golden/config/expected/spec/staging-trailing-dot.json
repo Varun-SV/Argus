@@ -1,0 +1,37 @@
+{
+  "case": "spec/staging-trailing-dot",
+  "category": "spec",
+  "diagnostics": {
+    "log_records": [],
+    "stderr": "",
+    "stdout": "",
+    "warnings": []
+  },
+  "error": {
+    "category": "spec_error",
+    "cause": {
+      "message": "Capsule guest path segments cannot end in a space or dot",
+      "module": "argus.capsule.base",
+      "type": "CapsuleError"
+    },
+    "message": "staging[0] is invalid: Capsule guest path segments cannot end in a space or dot",
+    "module": "argus.engine.spec",
+    "type": "SpecError"
+  },
+  "implementation": {
+    "loader_sources_sha256": "91d825de6af207361ade693625451dba912658345ef1fe453386424488db5006",
+    "name": "argus (Python)"
+  },
+  "input": {
+    "files": [
+      {
+        "path": "cases/spec/staging-trailing-dot.test.yaml",
+        "sha256": "99fa5f23bdb107be9fb4579fdba34bf02fb2acc09c148debd0a75c2d691c9e57"
+      }
+    ]
+  },
+  "loader": "argus.engine.spec.load_spec",
+  "outcome": "error",
+  "schema": "argus-golden-config-v1",
+  "value": null
+}

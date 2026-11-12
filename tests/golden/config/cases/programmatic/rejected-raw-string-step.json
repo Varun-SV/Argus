@@ -1,0 +1,10 @@
+{
+  "description": "A plain string is not a step object.",
+  "construct": "TestSpec",
+  "args": {
+    "name": "raw",
+    "adapter": "cli",
+    "launch": "tool",
+    "steps": [{"class": "NLStep", "args": {"text": "Run"}}, {"class": "raw", "value": "Click OK"}]
+  }
+}

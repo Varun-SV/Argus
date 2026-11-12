@@ -1,0 +1,9 @@
+# ADR-001 section 2 row "Import argus.cli (warm)". The warm-up run compiles bytecode, so the
+# counted runs measure a warm import.
+schema = "argus-bench-scenario-v1"
+name = "python-import-argus-cli"
+description = "Warm import of argus.cli (configuration, providers and their dependencies), then exit."
+tags = ["python", "baseline", "adr-001"]
+command = ["{PYTHON}", "-c", "import argus.cli"]
+timeout = "60s"
+warmup = 1

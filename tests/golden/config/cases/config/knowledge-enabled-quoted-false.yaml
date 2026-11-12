@@ -1,0 +1,4 @@
+# A quoted "false" is a non-empty string, so bool() makes it true.
+provider: ollama
+knowledge:
+  enabled: "false"

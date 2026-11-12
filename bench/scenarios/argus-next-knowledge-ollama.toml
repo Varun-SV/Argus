@@ -1,0 +1,10 @@
+# Spec section 11 row "Knowledge, local embedder", `ollama` backend: <= 10 MB extra in the
+# Argus tree (the model runs in the separate Ollama service, which is not part of the tree).
+schema = "argus-bench-scenario-v1"
+name = "argus-next-knowledge-ollama"
+description = "CLI test run with the `ollama` embedding backend (Rust); extra memory in the Argus tree over argus-next-cli-test-run."
+tags = ["rust", "spec-11", "g-perf", "knowledge"]
+command = ["{ARGUS_NEXT}", "run", ".argus/two-assertions-{OS_FAMILY}.test.yaml"]
+cwd = "{WORKDIR}"
+timeout = "180s"
+pending = "needs argus-next feature: knowledge store with the ollama embedding backend (P4), and a running Ollama service"

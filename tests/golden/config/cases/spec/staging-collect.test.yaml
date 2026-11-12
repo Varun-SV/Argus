@@ -1,0 +1,16 @@
+# staging and collect paths are normalized; sha256 is lower-cased.
+name: capsule file movement
+target:
+  adapter: cli
+  launch: tool.exe --input input/data.csv
+steps:
+  - "Run the tool"
+staging:
+  - source: fixtures\data.csv
+    destination: input/data.csv
+    sha256: "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"
+  - source: fixtures/config.json
+    destination: " input/config.json "
+collect:
+  - out\report.txt
+  - " logs/run.log "

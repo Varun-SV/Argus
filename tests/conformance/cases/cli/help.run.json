@@ -1,0 +1,43 @@
+{
+  "schema": "argus-conformance-case-v1",
+  "id": "cli.help.run",
+  "title": "argus run --help exits 0 and documents its options",
+  "requirements": [
+    "C-07",
+    "PARITY-1"
+  ],
+  "impls": {
+    "python": {
+      "status": "active"
+    },
+    "rust": {
+      "status": "pending",
+      "note": "argus-next implements only --help and --version in P0; commands arrive in later phases (spec section 12)"
+    }
+  },
+  "steps": [
+    {
+      "args": [
+        "run",
+        "--help"
+      ],
+      "expect": {
+        "exit": 0,
+        "output": {
+          "contains": [
+            "--minutes",
+            "--max-tokens",
+            "--dry-run"
+          ],
+          "regex": [
+            "(?i)\\busage\\b",
+            "(?i)\\bTEST\\b"
+          ],
+          "not_regex": [
+            "Traceback \\(most recent call last\\)"
+          ]
+        }
+      }
+    }
+  ]
+}

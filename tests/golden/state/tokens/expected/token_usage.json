@@ -1,0 +1,79 @@
+{
+  "api": "argus.gui.app.ArgusAPI.token_usage",
+  "case": "tokens/token_usage",
+  "note": "session = this desktop window's charged jobs; project = .argus/usage.json (cumulative across processes). Per-run totals are RunResult.tokens (see history/).",
+  "schema": "argus-golden-state-v1",
+  "value": {
+    "load_persisted": {
+      "calls": 6,
+      "completion_tokens": 545,
+      "prompt_tokens": 2090,
+      "total_tokens": 2635
+    },
+    "per_call": [
+      {
+        "completion_tokens": 300,
+        "prompt_tokens": 1200,
+        "total_tokens": 1500
+      },
+      {
+        "completion_tokens": 200,
+        "prompt_tokens": 800,
+        "total_tokens": 1000
+      },
+      {
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "total_tokens": 0
+      }
+    ],
+    "persistence_steps": [
+      {
+        "step": "argus run: TokenTracker.persist after three calls",
+        "tracker_snapshot": {
+          "calls": 3,
+          "completion_tokens": 500,
+          "prompt_tokens": 2000,
+          "total_tokens": 2500
+        },
+        "usage_json": "{\n  \"prompt_tokens\": 2000,\n  \"completion_tokens\": 500,\n  \"calls\": 3,\n  \"total_tokens\": 2500\n}"
+      },
+      {
+        "step": "second invocation merges into usage.json",
+        "tracker_snapshot": {
+          "calls": 1,
+          "completion_tokens": 25,
+          "prompt_tokens": 50,
+          "total_tokens": 75
+        },
+        "usage_json": "{\n  \"prompt_tokens\": 2050,\n  \"completion_tokens\": 525,\n  \"calls\": 4,\n  \"total_tokens\": 2575\n}"
+      },
+      {
+        "step": "desktop job charged through ArgusAPI._charge (plus an idle tracker)",
+        "tracker_snapshot": {
+          "calls": 2,
+          "completion_tokens": 20,
+          "prompt_tokens": 40,
+          "total_tokens": 60
+        },
+        "usage_json": "{\n  \"prompt_tokens\": 2090,\n  \"completion_tokens\": 545,\n  \"calls\": 6,\n  \"total_tokens\": 2635\n}"
+      }
+    ],
+    "token_usage": {
+      "max_tokens": 50000,
+      "project": {
+        "calls": 6,
+        "completion_tokens": 545,
+        "prompt_tokens": 2090,
+        "total_tokens": 2635
+      },
+      "provider": "ollama",
+      "session": {
+        "calls": 2,
+        "completion_tokens": 20,
+        "prompt_tokens": 40,
+        "total_tokens": 60
+      }
+    }
+  }
+}

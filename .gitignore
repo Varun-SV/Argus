@@ -10,3 +10,11 @@ venv/
 .argus/runs/
 .argus/roam/
 .argus/usage.json
+
+# Rust workspace (re-architecture preview)
+target/
+*.whl
+wheelhouse/
+**/*.rs.bk
+# Wheel build stages the real argus-next binary here; never commit it
+python/argus_next.data/

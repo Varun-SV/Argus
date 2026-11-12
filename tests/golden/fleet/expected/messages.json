@@ -1,0 +1,328 @@
+{
+  "api": "argus.fleet signed messages and their verifiers",
+  "case": "messages",
+  "schema": "argus-golden-fleet-v1",
+  "value": [
+    {
+      "canonical_message": "{\"fleet_identity_version\":\"argus-fleet-node-ed25519-v1\",\"kind\":\"node-enrollment\",\"payload\":{\"control_center_id\":\"cc://golden\",\"enrollment_request_id\":\"ENROLL-84ef01531b2142efb0174f1a046e966f\",\"public_key_b64\":\"lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU\",\"public_key_fingerprint\":\"sha256:3955dee20beeb65947e4747793abc6fa6287a517628f3c8c5e37ca3a38329321\"}}",
+      "canonical_message_sha256": "sha256:5d47726b6664925f904fab022ad02ee4073b1ae2436197c0677bc70f6eb47463",
+      "kind": "node-enrollment",
+      "message": {
+        "control_center_id": "cc://golden",
+        "enrollment_request_id": "ENROLL-84ef01531b2142efb0174f1a046e966f",
+        "proof_signature": "oO1SGfHFwrjZqk6LzF0upaZSlwRLM61NdA5gC1ADOYdgXHLzTRdkSct-6Xq-zzbppWB2hcn83p3DT_Z77OGPDA",
+        "public_key_b64": "lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU",
+        "public_key_fingerprint": "sha256:3955dee20beeb65947e4747793abc6fa6287a517628f3c8c5e37ca3a38329321"
+      },
+      "signature": "oO1SGfHFwrjZqk6LzF0upaZSlwRLM61NdA5gC1ADOYdgXHLzTRdkSct-6Xq-zzbppWB2hcn83p3DT_Z77OGPDA",
+      "signature_field": "proof_signature",
+      "tampered": [
+        {
+          "field": "control_center_id",
+          "value": "cc://other",
+          "verify": {
+            "error": {
+              "message": "Node enrollment proof-of-possession failed",
+              "type": "FleetEnrollmentError"
+            }
+          }
+        },
+        {
+          "field": "enrollment_request_id",
+          "value": "ENROLL-00000000000000000000000000000000",
+          "verify": {
+            "error": {
+              "message": "Node enrollment proof-of-possession failed",
+              "type": "FleetEnrollmentError"
+            }
+          }
+        },
+        {
+          "field": "public_key_b64",
+          "value": "JZRM6bHMWPnRFf1LMVMC1j4ph8X_xMTeEsvbX-DNmSE",
+          "verify": {
+            "error": {
+              "message": "Node public-key fingerprint does not match",
+              "type": "FleetEnrollmentError"
+            }
+          }
+        }
+      ],
+      "verify": {
+        "value": null
+      }
+    },
+    {
+      "canonical_message": "{\"fleet_identity_version\":\"argus-fleet-node-ed25519-v1\",\"kind\":\"node-enrollment-ack\",\"payload\":{\"control_center_id\":\"cc://golden\",\"enrollment_request_id\":\"ENROLL-84ef01531b2142efb0174f1a046e966f\",\"node_id\":\"NODE-bfcd47430811459b8d76faa6f1d51bb0\",\"public_key_fingerprint\":\"sha256:3955dee20beeb65947e4747793abc6fa6287a517628f3c8c5e37ca3a38329321\"}}",
+      "canonical_message_sha256": "sha256:3e6fa7339cf62a7c0e9c4b156ac969f858e318b090d57650352eac9432c2ff56",
+      "kind": "node-enrollment-ack",
+      "message": {
+        "control_center_id": "cc://golden",
+        "enrollment_request_id": "ENROLL-84ef01531b2142efb0174f1a046e966f",
+        "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "proof_signature": "g0xp09EDe1nLfqRbmFt2BVHm6ca1DnAsoOJQasHxaKdW6gRmLXr7BVFlQo0cX1ZSuTg-fydSEDgOlW6PaeXcDw",
+        "public_key_b64": "lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU"
+      },
+      "signature": "g0xp09EDe1nLfqRbmFt2BVHm6ca1DnAsoOJQasHxaKdW6gRmLXr7BVFlQo0cX1ZSuTg-fydSEDgOlW6PaeXcDw",
+      "signature_field": "proof_signature",
+      "tampered": [
+        {
+          "field": "node_id",
+          "value": "NODE-99999999999999999999999999999999",
+          "verify": {
+            "error": {
+              "message": "Node proof-of-possession signature is invalid",
+              "type": "FleetIdentityError"
+            }
+          }
+        },
+        {
+          "field": "control_center_id",
+          "value": "cc://other",
+          "verify": {
+            "error": {
+              "message": "Node proof-of-possession signature is invalid",
+              "type": "FleetIdentityError"
+            }
+          }
+        }
+      ],
+      "verify": {
+        "value": null
+      }
+    },
+    {
+      "canonical_message": "{\"fleet_identity_version\":\"argus-fleet-node-ed25519-v1\",\"kind\":\"node-heartbeat\",\"payload\":{\"active_session_ids\":[\"SESSION-golden\"],\"agent_version\":\"0.1.0\",\"boot_id\":\"BOOTID-11111111111111111111111111111111\",\"capacity\":{\"active_sessions\":1,\"available_memory_mb\":20000,\"disk_free_mb\":100000,\"max_sessions\":4,\"memory_mb\":32768},\"control_center_id\":\"cc://golden\",\"degraded_conditions\":[],\"heartbeat_id\":\"HEARTBEAT-22222222222222222222222222222222\",\"heartbeat_version\":\"argus-fleet-heartbeat-v1\",\"host_os\":\"windows\",\"images\":[{\"alias\":\"win11-qa\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"guest_os\":\"windows\",\"image_id\":\"IMG-WIN11-QA-2026-09\"}],\"monotonic_seconds\":51.0,\"node_id\":\"NODE-bfcd47430811459b8d76faa6f1d51bb0\",\"node_time\":1001.0,\"previous_boot_id\":null,\"provider\":\"hyperv\",\"public_key_b64\":\"lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU\",\"sequence\":1,\"sync_status\":\"unknown\"}}",
+      "canonical_message_sha256": "sha256:c8bfd24e5f743345852497d64dc0dfa96573a0c3db370dcbfb92c6e1ca0ec4cb",
+      "kind": "node-heartbeat",
+      "message": {
+        "active_session_ids": [
+          "SESSION-golden"
+        ],
+        "agent_version": "0.1.0",
+        "boot_id": "BOOTID-11111111111111111111111111111111",
+        "capacity": {
+          "active_sessions": 1,
+          "available_memory_mb": 20000,
+          "disk_free_mb": 100000,
+          "max_sessions": 4,
+          "memory_mb": 32768
+        },
+        "control_center_id": "cc://golden",
+        "degraded_conditions": [],
+        "heartbeat_id": "HEARTBEAT-22222222222222222222222222222222",
+        "host_os": "windows",
+        "images": [
+          {
+            "alias": "win11-qa",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "guest_os": "windows",
+            "image_id": "IMG-WIN11-QA-2026-09"
+          }
+        ],
+        "monotonic_seconds": 51.0,
+        "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "node_time": 1001.0,
+        "previous_boot_id": null,
+        "proof_signature": "ZlCOr3-JWhvR_vEpgtfdwdkAIMbv7Z5ymJSdwtVUCeH_56rUkTd1aLqNQwDlfm4gip1V1w4yXC-3dKodqV5xAQ",
+        "provider": "hyperv",
+        "public_key_b64": "lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU",
+        "sequence": 1,
+        "sync_status": "unknown"
+      },
+      "signature": "ZlCOr3-JWhvR_vEpgtfdwdkAIMbv7Z5ymJSdwtVUCeH_56rUkTd1aLqNQwDlfm4gip1V1w4yXC-3dKodqV5xAQ",
+      "signature_field": "proof_signature",
+      "tampered": [
+        {
+          "field": "sequence",
+          "value": 2,
+          "verify": {
+            "error": {
+              "message": "Node heartbeat signature is invalid",
+              "type": "FleetHeartbeatError"
+            }
+          }
+        },
+        {
+          "field": "provider",
+          "value": "libvirt",
+          "verify": {
+            "error": {
+              "message": "Node heartbeat signature is invalid",
+              "type": "FleetHeartbeatError"
+            }
+          }
+        },
+        {
+          "field": "node_time",
+          "value": 1002.0,
+          "verify": {
+            "error": {
+              "message": "Node heartbeat signature is invalid",
+              "type": "FleetHeartbeatError"
+            }
+          }
+        },
+        {
+          "field": "control_center_id",
+          "value": "cc://other",
+          "verify": {
+            "error": {
+              "message": "Node heartbeat signature is invalid",
+              "type": "FleetHeartbeatError"
+            }
+          }
+        }
+      ],
+      "verify": {
+        "value": null
+      }
+    },
+    {
+      "canonical_message": "{\"fleet_identity_version\":\"argus-fleet-node-ed25519-v1\",\"kind\":\"node-clock-probe\",\"payload\":{\"boot_id\":\"BOOTID-11111111111111111111111111111111\",\"clock_assessment_version\":\"argus-fleet-clock-assessment-v1\",\"control_center_id\":\"cc://golden\",\"node_id\":\"NODE-bfcd47430811459b8d76faa6f1d51bb0\",\"node_monotonic_seconds\":50.0,\"node_received_at\":1000.12,\"node_sent_at\":1000.13,\"probe_id\":\"CLOCKPROBE-86c4e6db698545dd94e0bc328add5859\",\"public_key_b64\":\"lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU\"}}",
+      "canonical_message_sha256": "sha256:b645c5a6f22313720c4d0507b21d0ba389f679ea623ef53f1605181b2b238cbd",
+      "kind": "node-clock-probe",
+      "message": {
+        "boot_id": "BOOTID-11111111111111111111111111111111",
+        "control_center_id": "cc://golden",
+        "node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "node_monotonic_seconds": 50.0,
+        "node_received_at": 1000.12,
+        "node_sent_at": 1000.13,
+        "probe_id": "CLOCKPROBE-86c4e6db698545dd94e0bc328add5859",
+        "proof_signature": "x84rJvpDC0CIUNZSy64rUir_N3Dqu9EUr9aKGZcUC2cw6MVimi2CyvGDe1RxWTfJsOzPNW4VvkGryM55T99vDQ",
+        "public_key_b64": "lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU"
+      },
+      "signature": "x84rJvpDC0CIUNZSy64rUir_N3Dqu9EUr9aKGZcUC2cw6MVimi2CyvGDe1RxWTfJsOzPNW4VvkGryM55T99vDQ",
+      "signature_field": "proof_signature",
+      "tampered": [
+        {
+          "field": "node_sent_at",
+          "value": 1000.5,
+          "verify": {
+            "error": {
+              "message": "Node clock probe signature is invalid",
+              "type": "FleetHeartbeatError"
+            }
+          }
+        },
+        {
+          "field": "probe_id",
+          "value": "CLOCKPROBE-86c4e6db698545dd94e0bc328add5850",
+          "verify": {
+            "error": {
+              "message": "Node clock probe signature is invalid",
+              "type": "FleetHeartbeatError"
+            }
+          }
+        }
+      ],
+      "verify": {
+        "value": null
+      }
+    },
+    {
+      "canonical_message": "{\"fleet_identity_version\":\"argus-fleet-node-ed25519-v1\",\"kind\":\"fleet-placement-authorization\",\"payload\":{\"authorization_version\":\"argus-fleet-placement-auth-v1\",\"control_center_id\":\"cc://golden\",\"dispatch_operation_id\":\"DISPATCH-5531ea6dcade4e23a16f419bfddd5619\",\"owner_node_id\":\"NODE-bfcd47430811459b8d76faa6f1d51bb0\",\"placement_generation\":1,\"request_digest\":\"sha256:e1e01db9c83e8cf0dcd87f9d514779650bd5970fa0557a0260f4082bed68dd8c\",\"run_id\":\"RUN-33333333333333333333333333333333\",\"session_request_id\":\"SESSION-golden\",\"signer_public_key_b64\":\"_gy-ELpjmzCUuiXtiRDH1BQmUgcK6wsNv2w_WCCuCKs\"}}",
+      "canonical_message_sha256": "sha256:2b8392cbf1ab01a1bc9440423665d546a7371423166af770572bfa2780dbae12",
+      "kind": "fleet-placement-authorization",
+      "message": {
+        "control_center_id": "cc://golden",
+        "dispatch_operation_id": "DISPATCH-5531ea6dcade4e23a16f419bfddd5619",
+        "owner_node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "placement_generation": 1,
+        "request_digest": "sha256:e1e01db9c83e8cf0dcd87f9d514779650bd5970fa0557a0260f4082bed68dd8c",
+        "run_id": "RUN-33333333333333333333333333333333",
+        "session_request_id": "SESSION-golden",
+        "signature": "IwFkA9v38EVFEs-XCe7RZhb-Db6eVG3bGHaafZUL_8O24DIczLk8XhOsC7qphGWAGaphVk9O5-wpckc8nfDtCA",
+        "signer_public_key_b64": "_gy-ELpjmzCUuiXtiRDH1BQmUgcK6wsNv2w_WCCuCKs"
+      },
+      "signature": "IwFkA9v38EVFEs-XCe7RZhb-Db6eVG3bGHaafZUL_8O24DIczLk8XhOsC7qphGWAGaphVk9O5-wpckc8nfDtCA",
+      "signature_field": "signature",
+      "tampered": [
+        {
+          "field": "placement_generation",
+          "value": 2,
+          "verify": {
+            "error": {
+              "message": "placement authorization signature is invalid",
+              "type": "FleetPlacementError"
+            }
+          }
+        },
+        {
+          "field": "owner_node_id",
+          "value": "NODE-99999999999999999999999999999999",
+          "verify": {
+            "error": {
+              "message": "placement authorization signature is invalid",
+              "type": "FleetPlacementError"
+            }
+          }
+        },
+        {
+          "field": "control_center_id",
+          "value": "cc://other",
+          "verify": {
+            "error": {
+              "message": "placement authorization audience mismatch",
+              "type": "FleetPlacementError"
+            }
+          }
+        },
+        {
+          "field": "signer_public_key_b64",
+          "value": "lmEwp4FKPqyYuWXrDwKhc0BBz7DoJBW4Tt6HWe1QJjU",
+          "verify": {
+            "error": {
+              "message": "placement authorization signer is not the pinned Control Center",
+              "type": "FleetPlacementError"
+            }
+          }
+        }
+      ],
+      "verify": {
+        "value": null
+      }
+    },
+    {
+      "canonical_message": "{\"fleet_identity_version\":\"argus-fleet-node-ed25519-v1\",\"kind\":\"fleet-generation-retirement\",\"payload\":{\"control_center_id\":\"cc://golden\",\"owner_node_id\":\"NODE-bfcd47430811459b8d76faa6f1d51bb0\",\"placement_generation\":1,\"retirement_version\":\"argus-fleet-generation-retirement-v1\",\"session_request_id\":\"SESSION-golden\",\"signer_public_key_b64\":\"_gy-ELpjmzCUuiXtiRDH1BQmUgcK6wsNv2w_WCCuCKs\"}}",
+      "canonical_message_sha256": "sha256:9a1720d536b9d74fb5d1471b4e3d6aff8185c30dde3d545e372b6197a64509a4",
+      "kind": "fleet-generation-retirement",
+      "message": {
+        "control_center_id": "cc://golden",
+        "owner_node_id": "NODE-bfcd47430811459b8d76faa6f1d51bb0",
+        "placement_generation": 1,
+        "session_request_id": "SESSION-golden",
+        "signature": "vlBPXgyR-ZCr4XuHzy0AzRJuNPul8sQ9IL5_SwyuqNV0COnRj9TNcVDZlyUTVpaGkAa-tiqBn9aIOwDW0P_dAQ",
+        "signer_public_key_b64": "_gy-ELpjmzCUuiXtiRDH1BQmUgcK6wsNv2w_WCCuCKs"
+      },
+      "signature": "vlBPXgyR-ZCr4XuHzy0AzRJuNPul8sQ9IL5_SwyuqNV0COnRj9TNcVDZlyUTVpaGkAa-tiqBn9aIOwDW0P_dAQ",
+      "signature_field": "signature",
+      "tampered": [
+        {
+          "field": "placement_generation",
+          "value": 7,
+          "verify": {
+            "error": {
+              "message": "generation retirement signature is invalid",
+              "type": "FleetPlacementError"
+            }
+          }
+        },
+        {
+          "field": "session_request_id",
+          "value": "SESSION-other",
+          "verify": {
+            "error": {
+              "message": "generation retirement signature is invalid",
+              "type": "FleetPlacementError"
+            }
+          }
+        }
+      ],
+      "verify": {
+        "value": null
+      }
+    }
+  ]
+}
