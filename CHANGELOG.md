@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - `argus serve` now requires a per-launch access token (one-time `?token=` link exchanged for an HttpOnly, SameSite=Strict cookie) on every page and `/api/*` route, refuses state-changing requests from another `Origin`, refuses a non-loopback `--host` unless `--allow-remote` is passed (with a warning), never enables the Werkzeug debugger (`--debug` only raises log verbosity), and no longer shows the project path to unauthenticated visitors (spec §8.1, SEC-01…05)
 ### Fixed
+- Release publication explicitly selects its GitHub repository and validates/stages all 18 package files before checksumming, attesting and uploading; nested Linux installers are published as individual download assets
 - Browser adapter: typing into an observed element id now targets exactly the element that was observed (it used a different selector list and could report success while the input stayed empty). Unknown, stale, hidden, disabled or non-editable targets are rejected before dispatch, never redirected to the focused element, and the typed value is read back so a mismatch fails the action
 - Hyper-V session-storage removal retries briefly on transient Windows sharing violations (e.g. antivirus holding the new session disk) instead of reporting a cleanup failure
 - Integrated ISO-backed provisioning and secure Capsule generation/reconnect contracts from PR #27 while preserving the desktop theme and session provider picker

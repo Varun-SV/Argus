@@ -59,6 +59,32 @@ The automatic workflow:
 
 The tag step is idempotent: if publication fails after the tag was created, rerunning the workflow reuses that tag instead of incrementing the version again.
 
+### Complete installer publication
+
+Both release entry points check out their immutable release source and explicitly
+select `github.repository` through `GH_REPO` for GitHub CLI commands. Publication
+does not depend on the runner's working directory supplying repository context.
+
+Before publication, `.github/scripts/prepare_release_assets.py` collects the
+downloaded artifacts recursively into a flat `release-upload/` directory. This
+includes Linux DEB, RPM and Arch packages stored under the downloaded `packages/`
+directory. Downloads preserve separate artifact directories so duplicate relative
+paths cannot silently overwrite each other before validation. It requires all 18 versioned package files from the table above,
+including the Python wheel and sdist, and rejects missing, empty, duplicate-name,
+unexpected or wrong-version files. Validation happens before copying any files.
+
+The script hashes the staged bytes into `SHA256SUMS`. Attestation and GitHub
+Release upload use this same flat directory, so every installer appears as an
+individual downloadable release asset with a matching checksum. Retrying an
+existing release uploads the same complete asset set with `--clobber` and never
+moves the release tag.
+
+The next patch after `v0.1.7` is `v0.1.8`. The repair PR uses the normal patch
+release policy: its merged commit becomes the release source. If another release
+lands first, the existing version resolver selects the next available patch
+instead of reusing or moving a tag. Package preview builds remain unpublished
+PR artifacts.
+
 ### README and hosted-page release status
 
 The README uses GitHub's dynamic release badge and a stable `releases/latest` link, so it reflects the newest published release without an automated commit to protected `main`.

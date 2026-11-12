@@ -58,27 +58,33 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: release-assets
-          merge-multiple: true
-      - name: Generate SHA-256 manifest
-        working-directory: release-assets
-        run: sha256sum * | sort -k2 > SHA256SUMS
+          merge-multiple: false
+      - name: Validate and stage release assets
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: python .github/scripts/prepare_release_assets.py release-assets release-upload --version "$VERSION"
       - uses: actions/attest-build-provenance@v4
         with:
-          subject-path: release-assets/*
+          subject-path: release-upload/*
       - name: Create or refresh GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.metadata.outputs.tag }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" release-assets/* --clobber
+            gh release upload "$TAG" release-upload/* --clobber
           else
-            gh release create "$TAG" release-assets/* \
+            gh release create "$TAG" release-upload/* \
               --verify-tag --title "$TAG" --generate-notes
           fi
 
