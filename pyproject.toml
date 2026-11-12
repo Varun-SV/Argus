@@ -69,8 +69,13 @@ knowledge = [
 knowledge-remote = [
     "qdrant-client>=1.9",
 ]
+# Argus 2 (the new minimal app in argus2/): Claude SDK + browser driver
+app = [
+    "anthropic>=1.0",
+    "playwright>=1.40",
+]
 all = [
-    "argus-app-testing[windows,linux,browser,serve,watch,gui,knowledge]",
+    "argus-app-testing[windows,linux,browser,serve,watch,gui,knowledge,app]",
 ]
 dev = [
     "pytest>=8.0",
@@ -90,13 +95,15 @@ Releases = "https://github.com/Varun-SV/Argus/releases"
 [project.scripts]
 argus = "argus.cli:main"
 argus-gui = "argus.gui.app:run_gui"
+argus2 = "argus2.cli:main"
 argus-guest-runtime-build = "argus.provisioning.build_guest_runtime:main"
 
 [tool.setuptools.packages.find]
-include = ["argus*"]
+include = ["argus", "argus.*", "argus2", "argus2.*"]
 
 [tool.setuptools.package-data]
 "argus.gui" = ["web/*", "web/fonts/*"]
+"argus2" = ["web/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -7,6 +7,7 @@ This directory separates **implemented behavior** from **planned architecture** 
 ## Start here
 
 - [Desktop app: project setup, chat, model configuration, and recovery](desktop-app.md)
+- [Argus 2 (preview): the new minimal app — settings page, plain-language tests, exploration](argus2.md)
 - [ISO-backed OS provisioning: supported contracts and native validation gates](os-environment-provisioning.md)
 
 ### Execution environments
