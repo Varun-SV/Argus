@@ -205,7 +205,7 @@ jobs:
           delocate-merge build/markupsafe-arm64/*.whl build/markupsafe-x64/*.whl -w build/markupsafe-universal
           python -m pip install --force-reinstall --no-deps build/markupsafe-universal/*.whl
           python -m pip download --only-binary=:all: --no-deps --platform macosx_11_0_arm64 --python-version 312 --implementation cp --abi cp312 "PyYAML==$PYYAML_VERSION" -d build/pyyaml-arm64
-          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_x86_64 --python-version 312 --implementation cp --abi cp312 "PyYAML==$PYYAML_VERSION" -d build/pyyaml-x64
+          python -m pip download --only-binary=:all: --no-deps --platform macosx_10_15_x86_64 --python-version 312 --implementation cp --abi cp312 "PyYAML==$PYYAML_VERSION" -d build/pyyaml-x64
           delocate-merge build/pyyaml-arm64/*.whl build/pyyaml-x64/*.whl -w build/pyyaml-universal
           python -m pip install --force-reinstall --no-deps build/pyyaml-universal/*.whl
           python -m pip download --only-binary=:all: --no-deps --platform macosx_10_13_universal2 --python-version 312 --implementation cp --abi cp312 "watchdog==$WATCHDOG_VERSION" -d build/watchdog-universal
