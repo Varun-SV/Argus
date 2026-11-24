@@ -7,6 +7,7 @@ and in-guest Argus agent are configured.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Mapping, Optional
 import yaml
 
 from argus.providers import LLMProvider, create_provider
+from argus.secrets import ArgusSecretStore, SecretStoreError
 from argus.tokens import Budget, TokenTracker
 
 CAPSULE_GUEST_TOKEN_ENV = "ARGUS_CAPSULE_GUEST_TOKEN"
@@ -238,8 +240,8 @@ class ArgusConfig:
         if cc.environment_definition:
             guest_token = ""
         elif cc.guest_token_ref:
-            from argus.secrets import ArgusSecretStore
-
+            if cc.guest_token_ref.startswith("secret://argus/desktop/") and "/model/" in cc.guest_token_ref:
+                raise ValueError("A model credential cannot be used as a Capsule bootstrap token")
             guest_token = ArgusSecretStore().get(cc.guest_token_ref).rstrip("\r\n")
         else:
             guest_token = os.environ.get(CAPSULE_GUEST_TOKEN_ENV, "")
@@ -423,9 +425,23 @@ class ArgusConfig:
         )
 
 
-def _resolve_api_key(entry: dict, allow_generic_env: bool = True) -> str:
+def desktop_secret_scope(project_dir: Path) -> str:
+    identity = os.path.normcase(str(project_dir.resolve()))
+    return f"secret://argus/desktop/{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]}/"
+
+
+def _resolve_api_key(entry: dict, allow_generic_env: bool = True, *,
+                     project_dir: Path, provider: str) -> str:
     if allow_generic_env and os.environ.get("ARGUS_API_KEY"):
         return os.environ["ARGUS_API_KEY"]
+    if entry.get("api_key_ref"):
+        ref = entry["api_key_ref"]
+        if not isinstance(ref, str) or not ref.startswith(desktop_secret_scope(project_dir) + f"model/{provider}/"):
+            return ""
+        try:
+            return ArgusSecretStore().get(ref)
+        except (SecretStoreError, OSError, ValueError, TypeError):
+            return ""
     if entry.get("api_key"):
         return str(entry["api_key"])
     env_name = entry.get("api_key_env")
@@ -489,6 +505,12 @@ def load_config(
         if loaded is not None and not isinstance(loaded, dict):
             raise ValueError("Argus configuration must be a YAML mapping")
         raw = loaded or {}
+
+    return config_from_mapping(project_dir, raw, provider)
+
+
+def config_from_mapping(project_dir: Path, raw: dict, provider: Optional[str] = None) -> ArgusConfig:
+    """Resolve CLI and desktop settings with the same process-level precedence."""
 
     env_provider = (os.environ.get("ARGUS_PROVIDER") or "").strip()
     # ARGUS_PROVIDER is an explicit process-level pin and remains authoritative.
@@ -618,7 +640,8 @@ def load_config(
         provider=ProviderConfig(
             type=active,
             model=str(model),
-            api_key=_resolve_api_key(entry, allow_generic_env=allow_generic_env),
+            api_key=_resolve_api_key(entry, allow_generic_env=allow_generic_env,
+                                     project_dir=project_dir, provider=active),
             base_url=base_url,
         ),
         knowledge=knowledge,
@@ -638,7 +661,8 @@ def _default_model(provider_type: str) -> str:
     }.get(provider_type, "gemma3:9b")
 
 
-def init_project(project_dir: Optional[Path] = None, *, create_example: bool = True) -> Path:
+def init_project(project_dir: Optional[Path] = None, *, create_example: bool = True,
+                 config_text: str = DEFAULT_CONFIG) -> Path:
     project_dir = (project_dir or Path.cwd()).resolve()
     argus_dir = project_dir / ".argus"
     argus_dir.mkdir(parents=True, exist_ok=True)
@@ -646,8 +670,11 @@ def init_project(project_dir: Optional[Path] = None, *, create_example: bool = T
     (argus_dir / "roam").mkdir(exist_ok=True)
 
     cfg = argus_dir / "config.yaml"
-    if not cfg.exists():
-        cfg.write_text(DEFAULT_CONFIG, encoding="utf-8")
+    try:
+        with cfg.open("x", encoding="utf-8") as handle:
+            handle.write(config_text)
+    except FileExistsError:
+        pass
 
     example = argus_dir / "notepad.test.yaml"
     if create_example and not example.exists():

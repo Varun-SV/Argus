@@ -57,7 +57,7 @@ watch = [
 ]
 # The Argus desktop app window (WebView2 on Windows, WebKit elsewhere)
 gui = [
-    "pywebview>=5.0",
+    "pywebview>=6.2",
 ]
 # Persistent knowledge engine (graph + vector store)
 knowledge = [

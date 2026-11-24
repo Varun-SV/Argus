@@ -2,4 +2,5 @@
 set -eu
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 export PYWEBVIEW_GUI=qt
-exec "$HERE/usr/lib/argus/Argus/Argus" "$@"
+export QT_API=pyside6
+exec "$HERE/usr/lib/argus/Argus" "$@"

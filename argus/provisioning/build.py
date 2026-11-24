@@ -144,6 +144,7 @@ def publish_derived_image(
     install: Callable[[Path, Path, BuildPayload], None],
     *,
     validate_baseline: Callable[[Path], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
 ) -> ProvisioningResult:
     """Stage media, build privately, then publish image and manifest together.
 
@@ -168,6 +169,8 @@ def publish_derived_image(
     lock_path = plan.cache_dir.parent / f".{plan.output_format}.lock"
     with _build_lock(lock_path):
         if plan.cache_dir.exists() or plan.cache_dir.is_symlink():
+            if on_stage is not None:
+                on_stage("cache_verification")
             return _published(definition, plan)
 
         workspace = Path(tempfile.mkdtemp(prefix=".building-", dir=plan.cache_dir.parent))
@@ -179,17 +182,23 @@ def publish_derived_image(
         try:
             ensure_private_directory(workspace)
             recorder = AtesProvisioningRecorder(_evidence_root(plan), definition, plan)
+
+            def begin(stage: str) -> None:
+                if on_stage is not None:
+                    on_stage(stage)
+                recorder.begin_stage(stage)
+
             staged_iso = workspace / "installation.iso"
             image = workspace / plan.image_path.name
-            recorder.begin_stage("media_verified")
+            begin("media_verified")
             _copy_verified_media(definition, staged_iso)
             build_payload = create_build_payload(
                 definition, workspace / "build-payload"
             )
             recorder.complete_stage("media_verified")
-            recorder.begin_stage("provider_selected")
+            begin("provider_selected")
             recorder.complete_stage("provider_selected")
-            recorder.begin_stage("installation")
+            begin("installation")
             installation_attempted = True
             try:
                 install(staged_iso, image, build_payload)
@@ -207,7 +216,7 @@ def publish_derived_image(
             if not image.is_file() or image.is_symlink():
                 raise ProvisioningError("installer did not produce a regular base image")
             recorder.complete_stage("installation")
-            recorder.begin_stage("baseline_validated")
+            begin("baseline_validated")
             validate_baseline(image)
             recorder.complete_stage("baseline_validated")
             # The installer may have granted QEMU group write access. Revoke
@@ -215,7 +224,7 @@ def publish_derived_image(
             if os.name == "posix":
                 workspace.chmod(0o750)
             image.chmod(0o444)
-            recorder.begin_stage("image_hashed")
+            begin("image_hashed")
             digest = sha256()
             with image.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -243,7 +252,7 @@ def publish_derived_image(
                 handle.flush()
                 os.fsync(handle.fileno())
             (workspace / "manifest.json").chmod(0o444)
-            recorder.begin_stage("publication")
+            begin("publication")
             # The lock protects cooperating builders. A foreign cache entry is
             # never overwritten, even when it appears during installation.
             if plan.cache_dir.exists() or plan.cache_dir.is_symlink():

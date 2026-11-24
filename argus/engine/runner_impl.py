@@ -374,10 +374,7 @@ def run_test(
 
     # Assertion-only specs (and the built-in "close" teardown) never call the model, so
     # don't probe it: the probe can cost requests and fails when the provider is offline.
-    needs_model = any(
-        isinstance(step, NLStep) and not (step.kind == "teardown" and step.text == "close")
-        for step in spec.steps
-    )
+    needs_model = spec.requires_model
     try:
         use_vision = provider.supports_vision() if needs_model else False
     except ProviderError as exc:

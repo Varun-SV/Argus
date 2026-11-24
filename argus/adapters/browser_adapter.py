@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
+import shutil
+import sys
 
 from argus.adapters.base import Adapter, AdapterError, Observation, UIElement
 
@@ -17,6 +20,15 @@ _FILLABLE_INPUT_TYPES = frozenset({
     "text", "password", "email", "number", "search", "tel", "url",
     "date", "time", "datetime-local", "month", "week", "color", "range",
 })
+
+
+def chromium_launch_options(launcher) -> dict:
+    """Prefer Playwright's binary and reuse distro Chromium on Linux when installed."""
+    if sys.platform.startswith("linux") and not Path(launcher.executable_path).is_file():
+        executable = shutil.which("chromium") or shutil.which("chromium-browser")
+        if executable:
+            return {"executable_path": executable}
+    return {}
 
 
 class BrowserAdapter(Adapter):
@@ -59,15 +71,23 @@ class BrowserAdapter(Adapter):
                 "browser adapter requires playwright — "
                 "install with: pip install argus-app-testing[browser] && playwright install chromium"
             )
-        self._pw = sync_playwright().__enter__()
-        launcher = getattr(self._pw, self._browser_type)
-        self._browser = launcher.launch(headless=self._headless)
-        self._page = self._browser.new_page()
-        self._reset_elements()
         try:
+            self._pw = sync_playwright().start()
+            launcher = getattr(self._pw, self._browser_type)
+            options = chromium_launch_options(launcher) if self._browser_type == "chromium" else {}
+            self._browser = launcher.launch(headless=self._headless, **options)
+            self._page = self._browser.new_page()
             self._page.goto(target, wait_until="domcontentloaded", timeout=30000)
         except Exception as exc:
-            raise AdapterError(f"failed to navigate to '{target}': {exc}") from exc
+            had_page = self._page is not None
+            try:
+                self.close()
+            except AdapterError as cleanup:
+                raise AdapterError(f"Browser launch failed and teardown could not be confirmed: {cleanup}") from exc
+            if had_page:
+                raise AdapterError(f"failed to navigate to '{target}': {exc}") from exc
+            hint = "Open Settings → Runtime to install or check Chromium."
+            raise AdapterError(f"Could not start the browser. {hint}") from exc
 
     def observe(self, include_screenshot: bool = True) -> Observation:
         self._reset_elements()
@@ -265,17 +285,18 @@ class BrowserAdapter(Adapter):
         raise AdapterError(f"browser adapter: unknown action '{kind}'")
 
     def close(self) -> None:
-        try:
-            if self._page:
-                self._page.close()
-            if self._browser:
-                self._browser.close()
-            if self._pw:
-                self._pw.__exit__(None, None, None)
-        except Exception:
-            pass
+        page, browser, driver = self._page, self._browser, self._pw
+        self._reset_elements()
         self._page = self._browser = self._pw = None
-        self._elements = {}
+        errors = []
+        for resource, method in ((page, "close"), (browser, "close"), (driver, "stop")):
+            if resource is not None:
+                try:
+                    getattr(resource, method)()
+                except Exception as exc:
+                    errors.append(type(exc).__name__)
+        if errors:
+            raise AdapterError("Browser teardown failed (" + ", ".join(errors) + ").")
 
 
 def _normalize(value: str, probe: dict) -> str:

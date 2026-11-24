@@ -19,11 +19,12 @@
       <button class="nav-btn new hov" id="new-chat"><span class="new-dot"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></span><b>New chat</b></button>
       <button class="nav-btn hov" data-nav="tests"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5E5D59" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/></svg>Tests</button>
       <button class="nav-btn hov" data-nav="roam"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5E5D59" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>Roam</button>
+      <button class="nav-btn hov" data-nav="history"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 11a8.5 8.5 0 1 1 1.7 6.1M4 5v6h6m2-4v5l3 2"/></svg>Run history</button>
       <button class="nav-btn hov" data-nav="knowledge"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5E5D59" stroke-width="1.7" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8.3 7l7.4.6M16.6 10l-6 6M6.6 8.4l1.8 7.2"/></svg>Knowledge</button>
       <button class="nav-btn hov" data-nav="evidence"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5E5D59" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/></svg>Evidence</button>
     </nav>
     <div class="side-scroll scroll">
-      <div class="side-label">Project · .argus</div>
+      <div class="side-label">Project tests</div>
       <div class="side-list" id="test-list"></div>
       <div class="side-label">Recents</div>
       <div class="side-list" id="recents"></div>
@@ -38,6 +39,9 @@
   <main class="main">
     <header class="topbar">
       <span class="title" id="chat-title">Chat with Argus</span>
+      <button class="btn hov" id="settings-btn" type="button">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 6h5m4 0h7M4 12h10m4 0h2M4 18h3m4 0h9"/><circle cx="11" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></svg>Settings
+      </button>
       <button class="btn hov" id="help-btn" style="height:32px">What can Argus do?</button>
     </header>
     <div class="chat scroll" id="chat">
@@ -102,6 +106,16 @@
 
   <button class="scrim" id="scrim" aria-label="Close menu" hidden></button>
 </div>
+<dialog class="workspace-dialog" id="workspace-dialog" aria-labelledby="workspace-title">
+  <section class="workspace-shell">
+    <header class="workspace-head">
+      <div><p id="workspace-context"></p><h1 id="workspace-title"></h1></div>
+      <button class="workspace-close hov" id="workspace-close" type="button" aria-label="Close workspace">×</button>
+    </header>
+    <div id="workspace-content" class="workspace-content scroll"></div>
+  </section>
+</dialog>
 <script src="app.js"></script>
+<script src="workspace.js"></script>
 </body>
 </html>

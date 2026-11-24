@@ -82,6 +82,7 @@ class HyperVProvisioner(EnvironmentProvisioner):
         sleeper: Callable[[float], None] = time.sleep,
         baseline_settings: CapsuleSettings | None = None,
         baseline_validator: Callable[[Path], None] | None = None,
+        on_stage: Callable[[str], None] | None = None,
     ) -> None:
         self.switch_name = switch_name
         self.install_timeout_seconds = install_timeout_seconds
@@ -90,6 +91,7 @@ class HyperVProvisioner(EnvironmentProvisioner):
         self._sleep = sleeper
         self._baseline_settings = baseline_settings
         self._baseline_validator = baseline_validator
+        self._on_stage = on_stage
         self._powershell = None
 
     def capabilities(self) -> ProvisioningProviderCapabilities:
@@ -325,6 +327,7 @@ class HyperVProvisioner(EnvironmentProvisioner):
                 definition, iso, image, build_payload
             ),
             validate_baseline=validate,
+            on_stage=self._on_stage,
         )
 
 
@@ -340,6 +343,7 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         baseline_validator: Callable[[Path], None] | None = None,
         qemu_group: str = "",
         secret_store: ArgusSecretStore | None = None,
+        on_stage: Callable[[str], None] | None = None,
     ) -> None:
         self.network_name = network_name
         self.install_timeout_seconds = install_timeout_seconds
@@ -350,6 +354,7 @@ class LibvirtProvisioner(EnvironmentProvisioner):
         self._baseline_validator = baseline_validator
         self.qemu_group = qemu_group
         self._secret_store = secret_store
+        self._on_stage = on_stage
 
     def capabilities(self) -> ProvisioningProviderCapabilities:
         return ProvisioningProviderCapabilities(
@@ -694,4 +699,5 @@ class LibvirtProvisioner(EnvironmentProvisioner):
                 )
             ),
             validate_baseline=validate,
+            on_stage=self._on_stage,
         )
