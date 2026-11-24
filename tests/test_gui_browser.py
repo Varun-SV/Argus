@@ -8,6 +8,7 @@ import json
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -388,13 +389,18 @@ def test_workspace_configuration_and_capsule_preflight(desktop_browser):
 def test_browser_adapter_can_launch_again_after_close(desktop_browser):
     page, _, _ = desktop_browser
     url = page.url
-    adapter = BrowserAdapter()
-    for _ in range(2):
-        adapter.launch(url)
-        try:
-            assert adapter.observe(include_screenshot=False).window_title == "Argus"
-        finally:
-            adapter.close()
+
+    def launch_twice():
+        adapter = BrowserAdapter()
+        for _ in range(2):
+            adapter.launch(url)
+            try:
+                assert adapter.observe(include_screenshot=False).window_title == "Argus"
+            finally:
+                adapter.close()
+
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        worker.submit(launch_twice).result(timeout=30)
 
 
 def test_reload_restores_live_watch_and_handles_missing_jobs_and_corrupt_cards(desktop_browser):
