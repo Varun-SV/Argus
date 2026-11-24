@@ -174,6 +174,13 @@ class TestSpec:
     def file_name(self) -> str:
         return self.path.name if self.path else self.name
 
+    @property
+    def requires_model(self) -> bool:
+        return any(
+            isinstance(step, NLStep) and not (step.kind == "teardown" and step.text == "close")
+            for step in self.steps
+        )
+
 
 def _parse_step(raw, kind: str) -> Step:
     if isinstance(raw, str):

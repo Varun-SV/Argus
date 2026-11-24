@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
 export PYWEBVIEW_GUI=qt
-exec /usr/lib/argus/Argus/Argus "$@"
+export QT_API=pyside6
+exec /usr/lib/argus/Argus "$@"

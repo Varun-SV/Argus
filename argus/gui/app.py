@@ -17,6 +17,9 @@ import math
 import os
 import stat
 import re
+import shlex
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -27,13 +30,17 @@ from typing import Dict, List, Optional
 import yaml
 
 from argus import __version__
-from argus.config import ArgusConfig, _env_bool, init_project, load_config
+from argus.config import (
+    DEFAULT_CONFIG, ArgusConfig, _env_bool, config_from_mapping, desktop_secret_scope,
+    init_project, load_config,
+)
 from argus.engine.results import load_runs, run_history_paths, valid_run_history
 from argus.engine.spec import AssertStep, SpecError, discover_tests, load_spec, parse_spec
-from argus.gui import assistant
+from argus.gui import assistant, iso_images, project_settings, runtime, test_editor
 from argus.gui.state import ProjectLease, ProjectInUse, gui_state_root, project_identity
-from argus.providers.base import ProviderError
+from argus.providers.base import LLMProvider, ProviderError
 from argus.providers.registry import PROVIDER_TYPES
+from argus.secrets import ArgusSecretStore, SecretStoreError
 from argus.tokens import Budget, TokenTracker
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -53,6 +60,21 @@ class EnvironmentConfigurationError(ValueError):
 
 class ProviderConfigurationError(ValueError):
     pass
+
+
+class _AssertionProvider(LLMProvider):
+    """Run explicit checks through the normal runner and evidence path."""
+
+    type_name = "deterministic"
+
+    def chat(self, system, user, images=None):
+        raise ProviderError("This test has no model configured for action steps.")
+
+    def _detect_vision(self) -> bool:
+        return False
+
+    def check_connection(self) -> dict:
+        return {"ok": True}
 
 
 def _forced_environment() -> Optional[str]:
@@ -96,6 +118,11 @@ class ArgusAPI:
             self._conversation_identity = None
         self._project_required = project_required
         self._project_opener = project_opener
+        self._file_picker = None
+        self._runtime_lock = threading.Lock()
+        self._image_build = {"state": "idle"}
+        self._image_cancel = threading.Event()
+        self._inspecting_capsule = False
         self._startup_error = None
         self._lock = threading.RLock()
         self._persist_lock = threading.Lock()
@@ -138,7 +165,7 @@ class ArgusAPI:
             return load_config(self._project_dir, provider=provider or self._session["provider"])
         except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
             # Parser diagnostics can contain credential-bearing YAML lines.
-            raise ValueError("Could not load .argus/config.yaml. Check its YAML structure and setting values, then retry.") from None
+            raise ValueError("Could not load project settings (config.yaml). Open Settings to recover this project.") from None
 
     def open_project(self) -> dict:
         """Open a separate project window; never rebind an active job's project."""
@@ -150,6 +177,372 @@ class ArgusAPI:
             return {"ok": False, "error": str(exc)}
         except (OSError, ValueError):
             return {"ok": False, "error": "Could not open that folder. Choose an existing project folder."}
+
+    def pick_input(self, kind: str) -> dict:
+        allowed = {"desktop-command", "cli-command", "iso", "runtime", "disk", "ca", "folder", "definition"}
+        if kind not in allowed or self._file_picker is None:
+            return {"ok": False, "error": "File selection is available in the installed desktop app."}
+        try:
+            path = self._file_picker(kind)
+        except (ValueError, OSError, RuntimeError):
+            return {"ok": False, "error": "Could not open the file chooser."}
+        if not path:
+            return {"ok": True, "cancelled": True}
+        if kind == "desktop-command" and sys.platform == "win32":
+            path = subprocess.list2cmdline([path])
+        elif kind in {"desktop-command", "cli-command"}:
+            path = shlex.quote(path)
+        return {"ok": True, "path": path}
+
+    def _settings_project(self):
+        if self._project_required:
+            raise ValueError("Open a project folder to manage its settings.")
+        project = (self._project_dir or Path.cwd()).resolve(strict=True)
+        return SimpleNamespace(project_dir=project, argus_dir=project / ".argus")
+
+    def _settings_snapshot(self, project):
+        path = project.argus_dir / "config.yaml"
+        try:
+            path = _argus_root(project, create=False) / "config.yaml"
+            stamp, data = _spec_snapshot(path)
+        except FileNotFoundError:
+            return path, "", b""
+        return path, stamp[2], data
+
+    def desktop_settings(self) -> dict:
+        try:
+            project = self._settings_project()
+            _, revision, data = self._settings_snapshot(project)
+        except (OSError, ValueError):
+            return {"ok": False, "error": "Could not safely read this project's settings."}
+        try:
+            raw = yaml.safe_load(data)
+            view = project_settings.settings_view(project.project_dir, {} if raw is None else raw)
+        except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+            if revision:
+                return {"ok": False, "recoverable": True, "revision": revision,
+                        "error": "Argus could not read the saved settings. Restore defaults to repair this project."}
+            return {"ok": False, "error": "Argus could not resolve the project settings."}
+        return {"ok": True, "revision": revision, **view}
+
+    def save_desktop_settings(self, section: str, revision: str, values: dict) -> dict:
+        if section not in {"model", "defaults", "disk"}:
+            return {"ok": False, "error": "Choose a settings section."}
+        try:
+            project = self._settings_project()
+            with self._lock:
+                path, current, data = self._settings_snapshot(project)
+                if revision != current:
+                    return {"ok": False, "error": "Settings changed. Reopen Settings and try again."}
+                raw = yaml.safe_load(data)
+                raw = {} if raw is None else raw
+                value = values.get("api_key" if section == "model" else "guest_token") if section != "defaults" else None
+                value = str(value).strip() if value else ""
+                if len(value) > 4096 or "\n" in value or "\r" in value:
+                    return {"ok": False, "error": "Enter a single credential without line breaks."}
+                prefix = desktop_secret_scope(project.project_dir)
+                if section == "model":
+                    prefix += f"model/{values.get('provider')}/"
+                else:
+                    prefix += "capsule/"
+                ref = prefix + uuid.uuid4().hex if value else ""
+                old_ref = ""
+                if section == "model":
+                    entry = (raw.get("providers") or {}).get(values.get("provider")) or {}
+                    old_ref = str(entry.get("api_key_ref") or "")
+                    project_settings.update_model(raw, values, ref)
+                elif section == "defaults":
+                    project_settings.update_defaults(raw, values)
+                else:
+                    old_ref = str(((raw.get("execution") or {}).get("capsule") or {}).get("guest_token_ref") or "")
+                    project_settings.update_capsule(raw, values, project.project_dir, ref)
+                try:
+                    config_from_mapping(project.project_dir, raw)
+                except (ValueError, TypeError, AttributeError):
+                    return {"ok": False, "error": "Project settings are invalid. Reopen Settings to recover them."}
+                _argus_root(project, create=True)
+                encoded = yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode()
+                store = ArgusSecretStore() if ref or values.get("clear_key") else None
+                if ref and store is not None:
+                    store.set(ref, value)
+                try:
+                    _write_atomic(path, encoded, exclusive=not current)
+                except OSError:
+                    if ref and store is not None:
+                        # A directory sync can fail after replace. Keep the credential when
+                        # the new file is already visible or the outcome cannot be proven.
+                        try:
+                            if self._settings_snapshot(project)[1] == current:
+                                store.delete(ref)
+                        except (OSError, SecretStoreError):
+                            pass
+                    raise
+                if store is not None and old_ref.startswith(prefix):
+                    try:
+                        store.delete(old_ref)
+                    except (OSError, SecretStoreError):
+                        pass
+                if section == "model" and values.get("use_by_default"):
+                    self._session["provider"] = None
+                elif section == "defaults":
+                    self._session.update(environment=None, capsule_provider=None, retain=None, memory=True)
+                elif section == "disk":
+                    self._session["capsule_provider"] = None
+        except SecretStoreError:
+            return {"ok": False, "error": "Could not save the credential in the Argus secret store."}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, TypeError, AttributeError, yaml.YAMLError):
+            return {"ok": False, "error": "Could not save project settings. Check folder permissions and try again."}
+        return self.desktop_settings()
+
+    def restore_desktop_settings(self, revision: str) -> dict:
+        from argus.capsule.base import CapsuleError
+        from argus.capsule.permissions import ensure_private_directory
+
+        try:
+            project = self._settings_project()
+            with self._lock:
+                path, current, data = self._settings_snapshot(project)
+                if not current or current != revision:
+                    return {"ok": False, "error": "Settings changed. Reopen Settings and try again."}
+                backup = gui_state_root() / "settings-recovery"
+                ensure_private_directory(backup)
+                _write_atomic(backup / f"{uuid.uuid4().hex}.yaml", data, exclusive=True)
+                raw = {"provider": "ollama", "execution": {"environment": "local"}, "knowledge": {"type": "json"}}
+                _write_atomic(path, yaml.safe_dump(raw, sort_keys=False).encode())
+                self._session.update(provider=None, environment=None, capsule_provider=None, retain=None, memory=True)
+        except (OSError, CapsuleError, ValueError):
+            return {"ok": False, "error": "Could not back up and restore project settings. Check folder permissions."}
+        return self.desktop_settings()
+
+    def test_model_connection(self, name: str) -> dict:
+        """Probe a saved model with a fixed prompt and no project material."""
+        if name not in PROVIDER_TYPES:
+            return {"ok": False, "error": "Select a model provider."}
+        tracker = TokenTracker()
+        try:
+            cfg = self._config(provider=name)
+        except ValueError:
+            return {"ok": False, "error": "Open Settings and repair the project configuration."}
+        if cfg.provider.type != name:
+            return {"ok": False, "error": "Administrator policy selects a different provider for this app."}
+        if name != "ollama" and not cfg.provider.api_key:
+            return {"ok": False, "error": "Enter and save an API key before checking this provider."}
+        if name in {"azure", "litellm"} and not cfg.provider.base_url:
+            return {"ok": False, "error": "Save the provider's endpoint first."}
+        try:
+            provider = cfg.make_provider(tracker)
+            if hasattr(provider, "timeout"):
+                provider.timeout = min(provider.timeout, 20)
+            # The text completion verifies the selected deployment, beyond endpoint reachability.
+            reply = provider.chat("Reply with OK.", "Connection check")
+            if not reply.text.strip():
+                raise ProviderError("empty completion")
+            try:
+                vision = "Available" if provider.supports_vision() else "Text only"
+            except Exception:
+                vision = "Unverified"
+        except Exception:
+            return {"ok": False, "error": "The model did not return a response. Check its name, endpoint, and credentials."}
+        finally:
+            self._charge(tracker, cfg)
+        return {"ok": True, "model": cfg.provider.model, "vision": vision}
+
+    def runtime_status(self) -> dict:
+        return {"browser": runtime.browser_readiness(), "desktop": runtime.desktop_readiness()}
+
+    def chromium(self, install: bool = False) -> dict:
+        if not self._runtime_lock.acquire(blocking=False):
+            return {"ok": False, "error": "Chromium setup is already in progress."}
+        try:
+            return runtime.install_browser() if install is True else runtime.check_browser()
+        finally:
+            self._runtime_lock.release()
+
+    # ---- Capsule images and retained sessions ---------------------------------
+
+    def image_build_status(self) -> dict:
+        with self._lock:
+            return {
+                **{k: v for k, v in self._image_build.items() if k != "binding"},
+                "hosts": {name: iso_images.host_blocker(name) for name in ("ubuntu", "windows-11")},
+            }
+
+    def start_image_build(self, values: dict) -> dict:
+        try:
+            project = self._settings_project()
+        except (OSError, ValueError):
+            return {"ok": False, "error": "Open a project folder first."}
+        with self._lock:
+            if (self._closing or self._active_work() or self._inspecting_capsule
+                    or self._image_build["state"] == "running"):
+                return {"ok": False, "error": "Wait for the current operation before building an image."}
+            if self._watch and self._watch["running"]:
+                return {"ok": False, "error": "Stop watching tests before building an image."}
+            blocker = iso_images.host_blocker(values.get("os"))
+            if blocker:
+                return {"ok": False, "error": blocker}
+            self._image_cancel.clear()
+            self._image_build = {"state": "running", "stage": "preflight"}
+            threading.Thread(target=self._build_image, args=(project, dict(values)), daemon=True).start()
+        return {"ok": True}
+
+    def _active_work(self) -> bool:
+        return bool(self._active_job and self._jobs.get(self._active_job, {}).get("running"))
+
+    def cancel_image_build(self) -> dict:
+        with self._lock:
+            if self._image_build["state"] != "running" or self._image_build.get("stage") == "publication":
+                return {"ok": False, "error": "The build can no longer be cancelled."}
+            self._image_cancel.set()
+            self._image_build["cancelling"] = True
+        return {"ok": True}
+
+    def _build_image(self, project, values: dict) -> None:
+        from argus.provisioning import ProvisioningCleanupError, ProvisioningError, load_environment_definition
+
+        class BuildCancelled(Exception):
+            pass
+
+        def stage(name):
+            with self._lock:
+                if self._image_cancel.is_set():
+                    raise BuildCancelled
+                self._image_build["stage"] = name
+
+        def sleep(seconds):
+            if self._image_cancel.wait(seconds):
+                raise BuildCancelled
+
+        try:
+            writer, definition, definition_data, plan, binding = iso_images.prepare_build(
+                values, on_stage=stage, sleeper=sleep,
+            )
+            # Validate the project's storage boundary before any VM work.
+            _argus_root(project, create=True)
+            directory = _argus_subdir(project, "environments")
+            result = writer.provision(definition, plan)
+            path = directory / f"{definition.environment_id}.yaml"
+            content = yaml.safe_dump(definition_data, sort_keys=False, allow_unicode=True).encode("utf-8")
+            try:
+                _write_atomic(path, content, exclusive=True)
+            except FileExistsError:
+                _spec_snapshot(path)
+                if load_environment_definition(path).definition_sha256 != definition.definition_sha256:
+                    raise ProvisioningError("The saved environment definition conflicts with the built image.")
+            binding["environment_definition"] = str(path)
+            output = {"state": "ready", "name": definition.name, "environment_id": definition.environment_id,
+                      "image_sha256": result.manifest.image_sha256, "image_path": str(plan.image_path),
+                      "evidence_run_id": result.manifest.evidence_run_id, "binding": binding}
+        except BuildCancelled:
+            output = {"state": "cancelled"}
+        except ProvisioningCleanupError as exc:
+            output = {"state": "recovery_required", "error": str(exc)}
+        except ProvisioningError as exc:
+            output = {"state": "error", "error": str(exc)}
+        except ValueError as exc:
+            output = {"state": "error", "error": str(exc)}
+        except Exception:
+            output = {"state": "error", "error": "Image build could not finish. Check the selected files, folders, and hypervisor."}
+        with self._lock:
+            self._image_build = output
+
+    def select_image(self, revision: str, inputs: Optional[dict] = None) -> dict:
+        """Verify a published image and bind it to the project without starting a VM."""
+        from argus.capsule.base import CapsuleError
+        from argus.provisioning import ProvisioningError
+
+        try:
+            project = self._settings_project()
+            with self._lock:
+                path, current, data = self._settings_snapshot(project)
+                if revision != current:
+                    return {"ok": False, "error": "Settings changed. Reopen Settings and try again."}
+                if inputs is None:
+                    binding = self._image_build.get("binding")
+                    if not binding:
+                        return {"ok": False, "error": "Build or select a published image first."}
+                else:
+                    fields = ("environment_definition", "image_cache_root", "provisioning_evidence_root", "vm_root",
+                              "provider", "image_format", "switch_name", "libvirt_qemu_group")
+                    binding = {key: str(inputs.get(key) or "").strip() for key in fields}
+                raw = yaml.safe_load(data) or {}
+            execution = raw["execution"] = raw.get("execution") or {}
+            capsule = execution["capsule"] = execution.get("capsule") or {}
+            capsule.update(binding)
+            for key in ("image", "memory_mb", "cpu_count"):
+                capsule.pop(key, None)
+            if not capsule.get("control_root"):
+                capsule["control_root"] = str(project.argus_dir / "capsule-control")
+            cfg = config_from_mapping(project.project_dir, raw)
+            env = cfg.make_execution_environment("cli", "capsule")
+            if env.environment_type != "capsule":
+                return {"ok": False, "error": "The administrator has locked this app to Local execution."}
+            env._validate_provider_host_platform(env.provider)
+            env._validate_provisioned_security()
+            with self._lock:
+                if self._settings_snapshot(project)[1] != current:
+                    return {"ok": False, "error": "Settings changed during verification. Reopen Settings and try again."}
+                _argus_root(project, create=True)
+                _write_atomic(path, yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode(),
+                              exclusive=not current)
+                self._session["capsule_provider"] = None
+        except (ProvisioningError, CapsuleError) as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, ValueError, RuntimeError, TypeError, AttributeError, yaml.YAMLError):
+            return {"ok": False, "error": "Argus could not verify the published image and its evidence. Check the selected files and provider policy."}
+        return self.desktop_settings()
+
+    def inspect_failure_capsule(self, result_key: str) -> dict:
+        """Reconnect for one observation and return the same VM to quarantine."""
+        with self._lock:
+            if (self._closing or self._active_work() or self._inspecting_capsule
+                    or self._image_build["state"] == "running"):
+                return {"ok": False, "error": "Wait for the active operation to finish."}
+            self._inspecting_capsule = True
+        try:
+            cfg = self._config()
+            data = (self._history_result(result_key[8:]) if result_key.startswith("history:")
+                    else self._results.get(result_key))
+            failure = (data or {}).get("failure_capsule")
+            if not isinstance(failure, dict) or not failure.get("capsule_id"):
+                return {"ok": False, "error": "This run has no retained Capsule with secure reconnect support."}
+            # Older manual images do not own a project-scoped control registry.
+            control = Path(cfg.execution.capsule.control_root).expanduser()
+            if not cfg.execution.capsule.environment_definition or not control.resolve().is_relative_to(cfg.argus_dir):
+                return {"ok": False, "error": "Select the matching verified image and project Capsule registry."}
+            env = cfg.make_execution_environment(data["adapter"], "capsule", {"retain_on_failure": True})
+            if env.environment_type != "capsule":
+                return {"ok": False, "error": "This app is locked to Local execution."}
+            path = Path(failure["root_dir"]) / "failure-capsule.json"
+            if _redirected_entry(path.parent) or path.parent.resolve().parent != env.settings.resolved_vm_root:
+                return {"ok": False, "error": "The retained Capsule is outside the verified VM storage folder."}
+            env.restore_failure(path)
+            env.reconnect_failure()
+            screenshot = None
+            title = ""
+            try:
+                obs = env.observe()
+                if obs.screenshot_png and len(obs.screenshot_png) <= 10 * 1024 * 1024:
+                    screenshot = base64.b64encode(obs.screenshot_png).decode("ascii")
+                title = str(obs.window_title or "")[:200]
+            except Exception:
+                title = "The guest did not return an observation."
+            finally:
+                try:
+                    env.record_failure("Desktop inspection completed")
+                    env.close()
+                except Exception:
+                    return {"ok": False, "error": "Capsule quarantine could not be confirmed. Recovery is required."}
+            retained = env.failure_capsule
+            return {"ok": True, "screenshot": screenshot, "title": title,
+                    "generation": retained["failed_generation"], "capsule_id": retained["capsule_id"]}
+        except Exception:
+            return {"ok": False, "error": "Secure reconnect did not complete. Verify the matching image, host and Capsule ownership before retrying."}
+        finally:
+            with self._lock:
+                self._inspecting_capsule = False
 
     def _session_view(self, cfg: ArgusConfig, environment: Optional[str] = None,
                       capsule_provider: Optional[str] = None) -> dict:
@@ -237,7 +630,7 @@ class ArgusAPI:
                 "retain": False, "memory": True, "last_target": "",
                 "tokens": self._usage_now(),
                 "error": (str(exc) if explained else self._startup_error or "Open a folder to start testing. Each project keeps its own tests and conversations."
-                          if required else "Could not load .argus/config.yaml. Check its YAML structure and setting values, then retry."),
+                          if required else "Could not load project settings (config.yaml). Open Settings to recover this project."),
             }
         return {
             "ok": True, "project_required": False, "can_open_project": self._project_opener is not None,
@@ -248,6 +641,7 @@ class ArgusAPI:
             "provider": cfg.provider.type,
             "model": cfg.provider.model,
             "providers": self._configured_providers(cfg),
+            "model_credential_ready": cfg.provider.type == "ollama" or bool(cfg.provider.api_key),
             "time_minutes": cfg.time_minutes,
             "max_tokens": cfg.max_tokens,
             "environment": s["environment"],
@@ -273,7 +667,7 @@ class ArgusAPI:
             entry = entry if isinstance(entry, dict) else {}
             model = cfg.provider.model if name == cfg.provider.type else str(entry.get("model") or "")
             if name == "ollama":
-                note = "Local · " + str(entry.get("base_url") or "http://localhost:11434")
+                note = "Ollama endpoint"
             elif entry.get("base_url"):
                 note = "OpenAI-compatible · base_url"
             elif entry.get("api_key_env"):
@@ -342,10 +736,10 @@ class ArgusAPI:
         self._session["memory"] = bool(on)
         return {"ok": True, **self.app_info()}
 
-    def environment(self) -> dict:
+    def environment(self, preview_capsule: bool = False) -> dict:
         cfg = self._config()
         try:
-            s = self._session_view(cfg)
+            s = self._session_view(cfg, "capsule" if preview_capsule is True else None)
         except EnvironmentConfigurationError as exc:
             return {"ok": False, "label": "Check environment", "environment": None,
                     "env_locked": bool(os.environ.get("ARGUS_EXECUTION_ENVIRONMENT", "").strip()),
@@ -382,9 +776,15 @@ class ArgusAPI:
                     env._validate_provisioned_security()
                     rows.append({"k": "environment ID", "v": env.settings.environment_id})
                 elif not env.settings.image or not Path(env.settings.image).is_file():
-                    raise ValueError("Configure an existing golden image in execution.capsule.image.")
+                    raise ValueError("Select an existing prepared virtual disk or a verified published image.")
+                elif Path(env.settings.image).suffix.lower() == ".iso":
+                    raise ValueError("Use Build from ISO for installation media.")
                 elif not env.settings.guest_token:
-                    raise ValueError("Configure the manual guest's control credential using the documented host secret settings.")
+                    raise ValueError("Save the prepared guest's control credential in Settings → Capsules.")
+                elif env.settings.guest_transport == "https" and (
+                    env.settings.resolved_guest_ca_cert is None or not env.settings.resolved_guest_ca_cert.is_file()
+                ):
+                    raise ValueError("Select the prepared guest's HTTPS CA certificate.")
                 rows.append({"k": "configuration", "v": "verified · VM and guest readiness checked when a run starts"})
             except Exception as exc:
                 rows.append({"k": "configuration", "v": "not ready"})
@@ -476,6 +876,81 @@ class ArgusAPI:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "content": path.read_text(encoding="utf-8")}
 
+    def test_form(self, file_name: str = "", draft_id: str = "") -> dict:
+        try:
+            project = self._settings_project()
+            revision = ""
+            if draft_id:
+                draft, error = self._get_draft(draft_id)
+                if error:
+                    for conversation in self.load_conversations():
+                        if not isinstance(conversation, dict):
+                            continue
+                        draft = next((message.get("draft") for message in conversation.get("msgs", [])
+                                      if isinstance(message, dict) and isinstance(message.get("draft"), dict)
+                                      and message["draft"].get("id") == draft_id), None)
+                        if draft:
+                            break
+                    if not draft or not isinstance(draft.get("yaml"), str) or len(draft["yaml"]) > 200000:
+                        return {"ok": False, "error": "This draft could not be recovered. Draft the test again."}
+                data = draft["yaml"]
+            elif file_name:
+                path = self._test_path(project, file_name)
+                if path is None:
+                    raise FileNotFoundError
+                root = _argus_root(project, create=False)
+                stamp, data = _spec_snapshot(root / path.name)
+                revision = stamp[2]
+                try:
+                    data = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    data = data.decode("cp1252")
+            else:
+                return {"ok": True, "form": test_editor.editor_view({
+                    "target": {"adapter": "cli"}, "steps": [{"assert": {"exit_code_is": 0}}],
+                })}
+            parse_spec(data)
+            return {"ok": True, "form": test_editor.editor_view(yaml.safe_load(data)),
+                    "revision": revision, "file": file_name, "draft_id": draft_id}
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, yaml.YAMLError):
+            return {"ok": False, "error": "Argus could not open this test in the editor. Create a replacement test or select another one."}
+
+    def save_test_form(self, values: dict, file_name: str = "", revision: str = "",
+                       draft_id: str = "") -> dict:
+        try:
+            project = self._settings_project()
+            with self._lock:
+                root = _argus_root(project, create=True)
+                if file_name:
+                    path = self._test_path(project, file_name)
+                    if not path:
+                        return {"ok": False, "error": "This test was removed. Reopen Tests to refresh the list."}
+                    path = root / path.name
+                    stamp, data = _spec_snapshot(path)
+                    if not revision or revision != stamp[2]:
+                        return {"ok": False, "error": "This test changed. Reopen it in the editor before saving."}
+                    try:
+                        previous = yaml.safe_load(data.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        previous = yaml.safe_load(data.decode("cp1252"))
+                else:
+                    file_name = assistant.unique_file_name(
+                        assistant.slug(values.get("name")) + ".test.yaml",
+                        (path.name for path in root.iterdir()),
+                    )
+                    path = root / file_name
+                    previous = {}
+                content, spec = test_editor.serialize_test(values, previous)
+                _write_atomic(path, content.encode("utf-8"), exclusive=not revision)
+                if draft_id and draft_id in self._drafts:
+                    self._drafts[draft_id].update(saved=True, file=file_name)
+        except (SpecError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        except (OSError, TypeError, AttributeError, yaml.YAMLError):
+            return {"ok": False, "error": "Could not save this test. Check the project folder and reopen the editor."}
+        return {"ok": True, "file": file_name, "path": f".argus/{file_name}",
+                "requires_model": spec.requires_model, "draft_id": draft_id}
+
     def _get_draft(self, draft_id: Optional[str]):
         """Return (draft, error). With an id, only that draft; without one, the latest."""
         if draft_id:
@@ -558,7 +1033,8 @@ class ArgusAPI:
         if not name.endswith(".test.yaml") or name != file_name or name.startswith("."):
             return {"ok": False, "error": "Test files must be named <name>.test.yaml."}
         try:
-            parse_spec(content)
+            if test_editor.has_draft_placeholder(parse_spec(content)):
+                return {"ok": False, "error": "Open this draft in the editor and fill in the expected values."}
         except assistant.SPEC_ERRORS as exc:
             return {"ok": False, "error": f"The spec doesn't parse: {exc}"}
         try:
@@ -580,7 +1056,10 @@ class ArgusAPI:
                  "smoke.test.yaml": "CLI smoke test · no model calls required",
                  "runs": "run results + ATES evidence", "roam": "roam reports + regression stubs"}
         existed = {name for name in notes if (cfg.argus_dir / name).exists()}
-        path = init_project(cfg.project_dir, create_example=False)
+        defaults = yaml.safe_load(DEFAULT_CONFIG)
+        defaults["knowledge"] = {"type": "json"}
+        defaults = yaml.safe_dump(defaults, sort_keys=False)
+        path = init_project(cfg.project_dir, create_example=False, config_text=defaults)
         sample = {
             "name": "CLI smoke test", "target": {"adapter": "cli", "launch": (
                 "cmd.exe /d /c echo Argus is ready" if os.name == "nt" else "/bin/echo Argus is ready")},
@@ -602,6 +1081,8 @@ class ArgusAPI:
 
     def _begin_job(self, job: dict) -> Optional[str]:
         with self._lock:
+            if self._image_build["state"] == "running" or self._inspecting_capsule:
+                return "Wait for the Capsule operation to finish."
             if self._closing:
                 return "This window is closing. Reopen the project to start another job."
             if self._active_job and self._jobs[self._active_job]["running"]:
@@ -706,16 +1187,26 @@ class ArgusAPI:
             self._active_ks = ks
             if spec is None:
                 raise SpecError(f"{run['file']} could not be parsed when the run started")
-            provider = cfg.make_provider(tracker)
+            if test_editor.has_draft_placeholder(spec):
+                raise SpecError("Edit this test and fill in its expected values before running it.")
+            try:
+                provider = cfg.make_provider(tracker)
+            except ProviderError:
+                if spec.requires_model:
+                    raise
+                provider = _AssertionProvider("structured-checks", tracker)
             # Each test gets a fresh provider (for its own token tracker), but the model's
             # capabilities don't change within a job: probe vision once, not per test.
             if job["id"] in self._job_vision and hasattr(provider, "_vision"):
                 provider._vision = self._job_vision[job["id"]]
             capsule = ({"provider": job["capsule_provider"], "retain_on_failure": job["retain"]}
                        if job["env"] == "capsule" else None)
-            adapter = _ScreenshotCapturingAdapter(
-                cfg.make_execution_environment(spec.adapter, job["env"], capsule), self
-            )
+            environment = cfg.make_execution_environment(spec.adapter, job["env"], capsule)
+            if spec.adapter == "cli" and job["env"] == "local":
+                setter = getattr(environment, "set_working_directory", None)
+                if setter is not None:
+                    setter(str(cfg.project_dir))
+            adapter = _ScreenshotCapturingAdapter(environment, self)
             budget = _StoppableBudget(cfg.make_budget(tracker), self._stop)
 
             def on_step(sr) -> None:
@@ -853,9 +1344,12 @@ class ArgusAPI:
             provider = cfg.make_provider(tracker)
             capsule = ({"provider": job["capsule_provider"], "retain_on_failure": job["retain"]}
                        if job["env"] == "capsule" else None)
-            adapter = _ScreenshotCapturingAdapter(
-                cfg.make_execution_environment(job["adapter"], job["env"], capsule), self
-            )
+            environment = cfg.make_execution_environment(job["adapter"], job["env"], capsule)
+            if job["adapter"] == "cli" and job["env"] == "local":
+                setter = getattr(environment, "set_working_directory", None)
+                if setter is not None:
+                    setter(str(cfg.project_dir))
+            adapter = _ScreenshotCapturingAdapter(environment, self)
             budget = _StoppableBudget(
                 cfg.make_budget(tracker, time_minutes=job["minutes"]), self._stop
             )
@@ -1484,6 +1978,8 @@ class ArgusAPI:
                 "duration": round(float(r.get("duration_s") or 0), 1),
                 "tokens": (r.get("tokens") or {}).get("total_tokens", 0),
                 "provider": r.get("provider", ""), "started_at": r.get("started_at"),
+                "evidence_key": r.get("ates_run_id"),
+                "retained": isinstance(r.get("failure_capsule"), dict) and bool(r["failure_capsule"].get("capsule_id")),
             })
         return rows
 
@@ -1666,8 +2162,12 @@ def _argus_root(cfg: ArgusConfig, create: bool = False) -> Path:
     """Return an attested project-local ``.argus`` root."""
     project_root = Path(cfg.project_dir).resolve(strict=True)
     argus_dir = project_root / ".argus"
-    if argus_dir.is_symlink():
-        raise OSError(f".argus cannot be a symlink: {argus_dir}")
+    try:
+        if _redirected_entry(argus_dir):
+            raise OSError(f".argus cannot be a symlink or reparse point: {argus_dir}")
+    except FileNotFoundError:
+        if not create:
+            raise
     if create:
         argus_dir.mkdir(exist_ok=True)
     elif not argus_dir.is_dir():
@@ -1738,7 +2238,7 @@ def _read_nofollow(path: Path) -> bytes:
         return fh.read()
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
+def _write_atomic(path: Path, data: bytes, *, exclusive: bool = False) -> None:
     """Replace ``path`` with ``data`` via a fresh, exclusively created temp file.
 
     The temp name is random and opened with O_EXCL (and O_NOFOLLOW where available), so a
@@ -1753,7 +2253,11 @@ def _write_atomic(path: Path, data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        if exclusive:
+            os.link(tmp, path)
+            tmp.unlink()
+        else:
+            os.replace(tmp, path)
         if os.name != "nt":
             directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
@@ -1908,6 +2412,22 @@ def run_gui() -> None:
             return {"ok": True, "project": str(folder)}
 
         api._project_opener = open_project
+
+        def pick_input(kind):
+            filters = {
+                "iso": "Installation media (*.iso)", "runtime": "Argus guest runtime (*.zip)",
+                "disk": "Virtual disks (*.qcow2;*.raw;*.vhdx)",
+                "ca": "Certificates (*.pem;*.crt;*.cer)",
+                "definition": "Environment definitions (*.yaml;*.yml)",
+            }
+            if kind == "folder":
+                selected = window.create_file_dialog(webview.FileDialog.FOLDER)
+            else:
+                file_types = (filters[kind], "All files (*.*)") if kind in filters else ()
+                selected = window.create_file_dialog(webview.FileDialog.OPEN, file_types=file_types)
+            return selected[0] if selected else None
+
+        api._file_picker = pick_input
         close_state = {"ready": False, "attempt": None}
 
         def notify_failed():
@@ -1947,6 +2467,13 @@ def run_gui() -> None:
                 if close_state["ready"]:
                     return True
                 if close_state["attempt"] is not None:
+                    return False
+                capsule_busy = api._image_build["state"] == "running" or api._inspecting_capsule
+                if capsule_busy:
+                    threading.Thread(
+                        target=lambda: window.evaluate_js("window.dispatchEvent(new Event('arguscapsulebusy'))"),
+                        daemon=True,
+                    ).start()
                     return False
                 job = api._jobs.get(api._active_job) if api._active_job else None
                 if job and job.get("running"):

@@ -212,11 +212,12 @@ async function execute(res, conv = state.conv) {
         if (!r.ok) return sayError(r.error);
         push({ role: "argus", kind: "dry", items: r.items });
         setFollowups(a.tests === "draft"
-          ? [{ label: "Save it to .argus", intent: I("save_test", { draft: a.draft || null }) }]
+          ? [{ label: "Review draft", intent: I("edit_draft", { draft: a.draft || null }) }]
           : [{ label: "Run all tests", intent: I("run", { tests: "all" }) }, { label: "Watch for changes", intent: I("watch", { action: "start" }) }]);
         return;
       }
       case "roam": return await startRoam(a, conv);
+      case "edit_draft": return await openTestEditor("", a.draft || "");
       case "write_test": {
         const draft = await withThinking(() => api().draft_test(a.description || ""));
         showDraft(draft, conv);
@@ -300,6 +301,7 @@ async function execute(res, conv = state.conv) {
       }
       case "init": {
         const r = await api().init_project();
+        if (!r.ok) return sayError(r.error);
         push({ role: "argus", kind: "init", files: r.files });
         await refreshInfo(); await refreshTests();
         setFollowups([{ label: "Check my provider connection and vision", intent: I("providers") }, { label: "Dry run all", intent: I("dry_run", { tests: "all" }) }]);
@@ -372,16 +374,19 @@ function showDraft(draft, conv = state.conv) {
   push({ role: "argus", kind: "spec", draft });
   setFollowups(draft.ok
     ? [{ label: "Dry run it", intent: I("dry_run", { tests: "draft", draft: draft.id }) },
-       { label: "Save it to .argus", intent: I("save_test", { draft: draft.id }) }]
+       { label: "Review draft", intent: I("edit_draft", { draft: draft.id }) }]
     : [{ label: "Try again with more detail", prefill: "/write " }]);
 }
-function markDraftSaved(draftId) {
+function markDraftSaved(draftId, file) {
   if (!draftId) return;
   for (const c of [state.conv, ...state.conversations]) {
     for (const m of c.msgs) {
-      if (m.kind === "spec" && m.draft && m.draft.id === draftId) update(m, { draft: Object.assign({}, m.draft, { saved: true }) });
+      if (m.kind === "spec" && m.draft && m.draft.id === draftId) {
+        update(m, { draft: { ...m.draft, saved: true, file: file || m.draft.file } });
+      }
     }
   }
+  scheduleSave();
 }
 
 async function knowledge(action, target, conv = state.conv) {
@@ -643,27 +648,27 @@ function renderThread() {
 
 function renderHero() {
   if (state.info && state.info.project_required) {
-    return h("div", { class: "hero" },
-      h("h1", { icon: "logoBig" }, "What should Argus test today?"),
-      h("p", { class: "muted", text: state.info.error }),
-      h("div", { class: "chips" }, h("button", { class: "chip hov", text: "Open project folder", onClick: openProject })));
+    return h("section", { class: "hero workspace-hero" },
+      h("span", { class: "hero-mark", icon: "logoBig" }),
+      h("h1", { text: "Open a project to start testing" }),
+      h("p", { class: "workspace-muted", text: state.info.error }),
+      workspaceButton("Open project folder", openProject, true));
   }
-  const hasProject = !state.info || state.info.initialized;
-  const starters = hasProject
-    ? [
-      { title: "Run all tests", fn: () => runChip("Run all tests", I("run", { tests: "all" })) },
-      { title: "Free roam", fn: () => prefill("Roam ") },
-      { title: "Write a test", fn: () => prefill("Write a test for ") },
-      { title: "Check my model", fn: () => runChip("Check my provider connection and vision", I("providers")) },
-    ]
-    : [
-      { title: "Set up this project", fn: () => runChip("Set up this project", I("init")) },
-      { title: "Check my model", fn: () => runChip("Check my provider connection and vision", I("providers")) },
-      { title: "What can Argus do?", fn: () => runChip("What can Argus do?", I("help")) },
-    ];
-  return h("div", { class: "hero" },
-    h("h1", { icon: "logoBig" }, "What should Argus test today?"),
-    h("div", { class: "chips" }, starters.map((s) => h("button", { class: "chip hov", onClick: s.fn, text: s.title }))));
+  if (!state.info) return h("div", { class: "hero workspace-hero" }, h("p", { text: "Opening Argus…" }));
+  if (!state.info.initialized) return h("section", { class: "hero workspace-hero" },
+    h("span", { class: "hero-mark", icon: "logoBig" }), h("h1", { text: "Set up " + state.info.project_name }),
+    h("p", { class: "workspace-muted", text: "Create a sample command test and verify execution without a model." }),
+    workspaceButton("Set up this project", () => runChip("Set up this project", I("init")), true));
+  return h("section", { class: "hero workspace-hero" },
+    h("span", { class: "hero-mark", icon: "logoBig" }),
+    h("h1", { text: "What should Argus test?" }),
+    h("div", { class: "hero-actions" },
+      h("button", { class: "hero-action hov", onClick: openTestLibrary },
+        iconEl("flask"), h("strong", { text: "Tests" }), h("span", { text: "Build, preview, and run checks" })),
+      h("button", { class: "hero-action hov", onClick: openRoamForm },
+        iconEl("compass"), h("strong", { text: "Roam" }), h("span", { text: "Explore an app with a model" })),
+      h("button", { class: "hero-action hov", onClick: () => openSettings("model") },
+        iconEl("fileDark"), h("strong", { text: "Model setup" }), h("span", { text: "Set your provider and API key" }))));
 }
 
 function renderMsg(m) {
@@ -735,10 +740,10 @@ const RENDER = {
     m.env.rows.map((r) => h("div", { class: "kv" }, h("span", { class: "k", text: r.k }), h("span", { class: "v", text: r.v }))),
     h("div", { class: "note", text: m.env.note })),
   init: (m) => h("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
-    h("div", { class: "say", text: m.files.some((f) => f.created) ? "Your project is set up. I created:" : "This project was already set up:" }),
-    h("div", { class: "list-card" }, m.files.map((f) => h("div", { class: "kv" },
-      h("span", { class: "mono", style: { fontSize: "12px" }, text: f.path }),
-      h("span", { class: "k", text: f.created ? f.note : "already there" }))))),
+    h("div", { class: "say", text: "Project ready. Run the sample to check command execution and verify its evidence." }),
+    h("div", { class: "workspace-actions" },
+      workspaceButton("Run smoke test", () => runChip("Run smoke test", I("run", { tests: ["smoke.test.yaml"] })), true),
+      workspaceButton("Model settings", () => openSettings("model")))),
   watch: renderWatch,
   help: (m) => h("div", { style: { display: "flex", flexDirection: "column", gap: "10px" } },
     h("div", { class: "say", text: "Ask in your own words, or use a command. Everything Argus does is available here:" }),
@@ -787,8 +792,7 @@ function renderRun(m) {
   const failedN = steps.filter((s) => s.status === "fail" || s.status === "error").length;
   const skipped = steps.filter((s) => s.status === "skipped").length + Math.max(0, planned.length - steps.length);
   const tokens = (res.tokens || {}).total_tokens || 0;
-  const exit = r.status === "pass" ? 0 : r.status === "error" ? 2 : 1;
-  const summary = `${passed} passed · ${failedN} failed · ${skipped} skipped · ${(res.duration_s || 0).toFixed(1)}s · ${fmt(tokens)} tokens · exit ${exit}`;
+  const summary = `${passed} passed · ${failedN} failed · ${skipped} skipped · ${(res.duration_s || 0).toFixed(1)}s · ${fmt(tokens)} tokens`;
   const progress = planned.length ? Math.round(100 * Math.min(r.steps.length, planned.length) / planned.length) : 0;
   return h("div", { class: "card" },
     h("div", { class: "card-head" }, iconEl("flask", "icon-tile"),
@@ -802,6 +806,7 @@ function renderRun(m) {
       done ? h("div", { class: "actions", style: { marginTop: "6px" } },
         h("span", { class: "grow summary", text: r.result ? summary : "" }),
         hasEvidence(r) ? h("button", { class: "btn hov", text: "Evidence", onClick: () => runChip("Show ATES evidence", I("evidence", { key: r.key })) }) : null,
+        r.key && res.failure_capsule?.capsule_id ? workspaceButton("Inspect Capsule", () => inspectRetainedCapsule(r.key)) : null,
         h("button", { class: "btn dark", text: "Run again", onClick: () => runChip(`Re-run ${r.file}`, I("run", { tests: [r.file] })) })) : null));
 }
 
@@ -838,14 +843,14 @@ function renderSpec(m) {
   const d = m.draft;
   return h("div", { class: "card" },
     h("div", { class: "card-head tight", icon: "fileDark" },
-      h("span", { style: { flexGrow: 1, fontSize: "14px", fontWeight: 500 }, text: d.file || "draft.test.yaml" }),
-      h("span", { class: "lbl", text: d.adapter ? `YAML · ${d.adapter}` : "YAML" })),
-    h("pre", { class: "yaml", text: d.yaml }),
+      h("span", { class: "head-text" }, h("b", { text: d.name || "Draft test" }),
+        h("span", { text: adapterShort(d.adapter) }))),
+    h("div", { class: "steps" }, (d.steps || []).map((step) => h("div", { class: "step", text: step.text }))),
     h("div", { class: "card-bar" },
-      d.ok ? h("span", { class: "grow", text: d.saved ? `Saved to .argus/${d.file}` : (d.from_finding ? "From a roam finding · refine before committing" : "Review it, then save it to .argus/") })
-        : h("span", { class: "grow bad", text: "Not valid yet: " + (d.error || "unknown error") }),
-      d.ok ? h("button", { class: "btn hov", text: "Dry run", onClick: () => runChip("Dry run it", I("dry_run", { tests: "draft", draft: d.id })) }) : null,
-      d.ok ? h("button", { class: "btn dark", text: d.saved ? "Saved" : "Save to .argus", disabled: d.saved, onClick: () => runChip("Save it to .argus", I("save_test", { draft: d.id })) }) : null));
+      d.ok ? h("span", { class: "grow", text: d.saved ? "Saved to Tests" : (d.from_finding ? "Confirm the expected behavior before saving." : "Review the target and expected results before saving.") })
+        : h("span", { class: "grow bad", text: d.error || "The draft could not be validated." }),
+      d.ok ? h("button", { class: "btn dark", text: d.saved ? "Open test" : "Review draft",
+        onClick: () => (d.saved ? openTestEditor(d.file) : openTestEditor("", d.id)) }) : null));
 }
 
 function renderProviders(m) {
@@ -931,17 +936,19 @@ function renderInfo() {
 }
 
 async function refreshTests() {
-  try { state.tests = await api().list_tests(); } catch (e) { state.tests = []; }
+  try { state.tests = state.info?.project_required ? [] : await api().list_tests(); }
+  catch (e) { state.tests = []; }
   const list = $("test-list");
   if (!state.tests.length) {
-    list.replaceChildren(h("div", { class: "side-empty", text: state.info && state.info.project_required ? "Open a project folder to see its tests." : (state.info && state.info.initialized ? "No .test.yaml files yet." : "No .argus/ here yet. Ask Argus to set up this project.") }));
+    list.replaceChildren(h("div", { class: "side-empty", text: state.info && state.info.project_required ?
+      "Open a project folder to see its tests." : "No saved tests yet." }));
     return;
   }
   const color = { pass: "var(--pass)", fail: "var(--fail)", error: "var(--error)" };
   list.replaceChildren(...state.tests.map((t) => h("button", {
-    class: "test-item hov", title: t.error ? t.error : `${t.name} · ${t.steps} steps · ${adapterShort(t.adapter)} — click to run`,
-    onClick: () => runChip(`Run ${t.file}`, I("run", { tests: [t.file] })) },
-    iconEl("file"), h("span", { class: "name", text: t.file }),
+    class: "test-item hov", title: t.error ? t.error : `${t.name} · ${t.steps} steps · ${adapterShort(t.adapter)}`,
+    onClick: () => openTestEditor(t.file) },
+    iconEl("file"), h("span", { class: "name", text: t.name }),
     h("span", { class: "dot", style: { background: t.error ? "var(--error)" : (color[t.last] || "var(--ink-7)") } }))));
 }
 
@@ -1105,15 +1112,15 @@ function menuItem(label, hint, fn, extra) {
 
 function buildMenu(name) {
   const info = state.info || {};
-  const target = info.last_target;
   let items = [];
   if (name === "tools") {
     items = [
       menuItem("Run all tests", "/run", () => runChip("Run all tests", I("run", { tests: "all" }))),
       menuItem("Dry run", "/dry-run", () => runChip("Dry run all", I("dry_run", { tests: "all" }))),
       menuItem("Watch for changes", "/watch", () => runChip("Watch for changes", I("watch", { action: "start" }))),
-      menuItem("Free roam", "/roam", () => target ? runChip(`Roam ${target} for 5 minutes`, I("roam", { target, minutes: 5 })) : prefill("/roam ")),
-      menuItem("Write a test", "plain English", () => prefill("Write a test for ")),
+      menuItem("Explore a target", "", openRoamForm),
+      menuItem("New test", "", () => openTestEditor()),
+      menuItem("Draft a test", "", () => prefill("Write a test for ")),
       menuItem("Knowledge graph", "/knowledge", () => runChip("Show knowledge", I("knowledge", { action: "show" }))),
       menuItem("ATES evidence", "/evidence", () => runChip("Show ATES evidence", I("evidence"))),
       menuItem("Run history", "/report", () => runChip("Run history", I("report"))),
@@ -1133,11 +1140,12 @@ function buildMenu(name) {
       const r = await api().set_environment(e, c);
       if (r.ok) { state.info = r; renderInfo(); } else sayIn(state.conv, r.error, { error: true });
     }, { desc, radio: true, current: env === e && (e === "local" || cap === c) }));
+    items.push(menuItem("Capsule setup", "", () => openSettings("capsules")));
   } else if (name === "model") {
     items = (info.providers || []).map((p) => menuItem(`${p.type} · ${p.model}`, "", () => {
       if (!p.current) return switchProvider(p.type);
     }, { desc: p.note, radio: true, current: p.current }));
-    if (!items.length) items = [h("div", { class: "side-empty", text: "No providers configured. Run /init first." })];
+    items.push(menuItem("Model settings", "", () => openSettings("model")));
   }
   $(name + "-menu").replaceChildren(...items);
 }
@@ -1153,13 +1161,16 @@ function wire() {
   });
   $("new-chat").addEventListener("click", newChat);
   $("open-project").addEventListener("click", openProject);
+  $("settings-btn").addEventListener("click", () => openSettings());
+  $("workspace-close").addEventListener("click", closeWorkspace);
+  $("workspace-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeWorkspace(); });
   $("help-btn").addEventListener("click", () => runChip("What can Argus do?", I("help")));
   for (const b of document.querySelectorAll("[data-nav]")) {
     b.addEventListener("click", () => {
       const nav = b.dataset.nav;
-      const target = state.info && state.info.last_target;
-      if (nav === "tests") runChip("Dry run all", I("dry_run", { tests: "all" }));
-      else if (nav === "roam") target ? runChip(`Roam ${target} for 5 minutes`, I("roam", { target, minutes: 5 })) : prefill("/roam ");
+      if (nav === "tests") openTestLibrary();
+      else if (nav === "roam") openRoamForm();
+      else if (nav === "history") openRunHistory();
       else if (nav === "knowledge") runChip("Show knowledge", I("knowledge", { action: "show" }));
       else if (nav === "evidence") runChip("Show ATES evidence", I("evidence"));
     });
@@ -1169,6 +1180,11 @@ function wire() {
   $("model-btn").addEventListener("click", () => toggleMenu("model"));
   $("scrim").addEventListener("click", closeMenu);
   document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+      e.preventDefault();
+      openSettings();
+      return;
+    }
     if (!state.menu) return;
     const name = state.menu;
     if (e.key === "Escape") { closeMenu(); $(name + "-btn").focus(); return; }
@@ -1201,6 +1217,9 @@ function wire() {
     poll();
   });
   window.addEventListener("argusclosesavefailed", resumeAfterCloseFailure);
+  window.addEventListener("arguscapsulebusy", () => {
+    sayIn(state.conv, "A Capsule operation is still running. Wait for it to finish before closing Argus.");
+  });
 }
 
 async function openProject() {

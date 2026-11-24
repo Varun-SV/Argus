@@ -338,9 +338,13 @@ class RunResult:
                 raise UnreservedRunError(
                     f"Not added to run history: its place could not be reserved ({self._unreserved}).")
             run_dir = self.run_dir(project_dir)
-            data = json.dumps(self.to_dict(), indent=2)
-            (run_dir / "result.json").write_text(data, encoding="utf-8")
+            document = self.to_dict()
+            (run_dir / "result.json").write_text(json.dumps(document, indent=2), encoding="utf-8")
             write_report(self, run_dir)
+            # History can locate the canonical evidence after a restart without changing
+            # the public result document or treating the flat index as evidence.
+            if getattr(self, "ates_run_id", None):
+                document["ates_run_id"] = str(self.ates_run_id)
             flat = run_dir.parent / f"{run_dir.name}.json"
             identity = self._owned_history_files.get(flat)
             # Reserve history exclusively on the first save. Re-saving may
@@ -353,7 +357,7 @@ class RunResult:
                 self._owned_history_files[flat] = current
                 stream.seek(0)
                 stream.truncate()
-                stream.write(data)
+                stream.write(json.dumps(document, indent=2))
             return run_dir / "result.json"
 
 

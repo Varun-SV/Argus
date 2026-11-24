@@ -5,6 +5,7 @@ suite without the optional browser dependency or a browser installation.
 """
 
 import json
+import os
 import re
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -12,6 +13,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 import yaml
 
+from argus.adapters.browser_adapter import BrowserAdapter, chromium_launch_options
 from argus.config import ArgusConfig
 from argus.gui.app import ArgusAPI, WEB_DIR
 from tests.conftest import FakeProvider
@@ -203,7 +205,7 @@ def desktop_browser(tmp_path, monkeypatch):
     try:
         with playwright.sync_playwright() as p:
             try:
-                browser = p.chromium.launch()
+                browser = p.chromium.launch(**chromium_launch_options(p.chromium))
             except playwright.Error as exc:
                 if "Executable doesn't exist" in str(exc):
                     pytest.skip("Run playwright install chromium to enable desktop browser checks")
@@ -329,9 +331,11 @@ def test_chat_run_draft_evidence_watch_and_keyboard(desktop_browser):
     assert not (project / ".argus" / draft["file"]).exists()
     page.evaluate("execute(I('dry_run', {tests:'draft',draft:state.conv.msgs.find(m=>m.kind==='spec').draft.id}))")
     page.wait_for_function("state.conv.msgs.some(m=>m.kind==='dry')")
-    page.locator(".card").get_by_role("button", name="Save to .argus", exact=True).click()
+    page.locator(".card").get_by_role("button", name="Review draft", exact=True).click()
+    page.get_by_role("button", name="Save test", exact=True).click()
     page.wait_for_function("state.conv.msgs.find(m=>m.kind==='spec').draft.saved")
     assert (project / ".argus" / draft["file"]).is_file()
+    page.locator("#workspace-close").click()
     page.evaluate("runChip('Watch', I('watch', {action:'start'}))")
     page.wait_for_function("state.watchOn")
     file = project / ".argus" / "smoke.test.yaml"
@@ -340,6 +344,57 @@ def test_chat_run_draft_evidence_watch_and_keyboard(desktop_browser):
     page.evaluate("execute(I('watch',{action:'stop'}))")
     page.wait_for_function("!state.watchOn")
     assert page.locator(".box-row").evaluate("e=>e.scrollWidth<=e.clientWidth")
+
+
+def test_workspace_creates_edits_runs_and_verifies_command_test(desktop_browser):
+    page, api, project = desktop_browser
+    page.locator('[data-nav="tests"]').click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_role("button", name="New test").click()
+    dialog.get_by_label("Test name").fill("Workspace execution")
+    dialog.get_by_label("Command", exact=True).fill(
+        "cmd.exe /d /c echo Workspace ready" if os.name == "nt" else "/bin/echo Workspace ready")
+    dialog.get_by_role("button", name="Add check").click()
+    dialog.get_by_label("Check 2", exact=True).select_option("stdout_contains")
+    dialog.get_by_label("Expected value for step 2").fill("Workspace ready")
+    dialog.get_by_role("button", name="Save & run", exact=True).click()
+    page.wait_for_function("state.conv.msgs.some(m=>m.kind==='run' && m.snap.status==='pass')")
+    assert (project / ".argus" / "workspace-execution.test.yaml").is_file()
+    page.locator('[data-nav="history"]').click()
+    dialog.get_by_role("button", name="Evidence").click()
+    page.wait_for_function("state.conv.msgs.some(m=>m.kind==='evidence' && m.e.verified)")
+    page.locator('[data-nav="tests"]').click()
+    dialog.get_by_role("button", name="Edit Workspace execution").click()
+    assert dialog.get_by_label("Expected value for step 2").input_value() == "Workspace ready"
+
+
+def test_workspace_configuration_and_capsule_preflight(desktop_browser):
+    page, api, _ = desktop_browser
+    page.locator("#settings-btn").click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_label("Provider", exact=True).select_option("gemini")
+    dialog.get_by_label("Model or deployment ID").fill("ui-test-model")
+    dialog.get_by_label("Use as the default provider").check()
+    dialog.get_by_role("button", name="Save model settings").click()
+    dialog.get_by_text("Model settings saved.").wait_for()
+    assert api.app_info()["model"] == "ui-test-model"
+    dialog.get_by_role("button", name="Capsules", exact=True).click()
+    dialog.get_by_role("button", name="Build from ISO", exact=True).click()
+    dialog.get_by_label("Operating system").select_option("windows-11")
+    dialog.get_by_text("Windows 11 ISO builds are blocked", exact=False).wait_for()
+    assert dialog.get_by_role("button", name="Build verified image").is_disabled()
+
+
+def test_browser_adapter_can_launch_again_after_close(desktop_browser):
+    page, _, _ = desktop_browser
+    url = page.url
+    adapter = BrowserAdapter()
+    for _ in range(2):
+        adapter.launch(url)
+        try:
+            assert adapter.observe(include_screenshot=False).window_title == "Argus"
+        finally:
+            adapter.close()
 
 
 def test_reload_restores_live_watch_and_handles_missing_jobs_and_corrupt_cards(desktop_browser):
@@ -406,7 +461,7 @@ def test_provider_environment_and_unavailable_knowledge_are_visible(desktop_brow
     page.locator("#model-btn").click()
     config.write_text("providers: [\napi_key: sentinel-secret\n")
     page.locator("#model-menu").get_by_role("menuitemradio", name=re.compile("^anthropic")).click()
-    page.get_by_text("Could not load .argus/config.yaml.", exact=False).wait_for()
+    page.get_by_text("Open Settings to recover this project.", exact=False).wait_for()
     assert "sentinel-secret" not in page.locator("body").inner_text()
 
 
@@ -567,7 +622,7 @@ def test_regression_draft_pending_owner_autosave_and_reload(desktop_browser, ent
     if outcome == "draft":
         draft = next(m["draft"] for m in saved["msgs"] if m["kind"] == "spec")
         assert draft["id"] == "round-five-draft" and not draft.get("saved")
-        assert any(f.get("intent", {}).get("intent") == "save_test" for f in saved["followups"])
+        assert any(f.get("intent", {}).get("intent") == "edit_draft" for f in saved["followups"])
         assert not (project / ".argus" / "regression.test.yaml").exists()
     else:
         assert any(m.get("error") and "Draft unavailable" in m["text"] for m in saved["msgs"])
